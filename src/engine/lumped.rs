@@ -73,11 +73,30 @@
 //! An edge may carry several folded elements (they simply add), but at most
 //! one element with a branch: branches on the same edge are not combined
 //! implicitly.
+//!
+//! # Energy
+//!
+//! Folded capacitance is part of the edge's `C` and hence of the field
+//! energy ([`Engine::energy`]). A branch stores, per edge,
+//!
+//! ```text
+//! W_b^n = ½·L_e·(j^n)² + ½·(q^n)²/C_e
+//! ```
+//!
+//! reported by [`branch_energy`](LumpedElement::branch_energy) and through
+//! [`Operator::energy`] added to [`Engine::energy`]. With the field
+//! invariant `W^n` (engine module docs), the E update gives
+//! `W^{n+1} − W^n = −dt·ū·j̄` per branch edge (`ū = (u^{n+1} + u^n)/2`,
+//! lossless background), and the trapezoidal branch update gives
+//! `W_b^{n+1} − W_b^n = dt·j̄·(ū − V_s/M) − dt·R_e·j̄²`. So
+//! `W + Σ W_b` changes only by the source work and the branch resistor
+//! loss: for lossless L and C it is conserved (up to the `f32` rounding of
+//! `u`), whereas `W` alone oscillates as energy moves into the branch.
 
 use super::Engine;
 use super::excite::Amplitude;
 use super::fields::Fields;
-use super::operator::{Operator, OperatorHandle, StepContext};
+use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
 use crate::axis::Axis;
 use crate::waveform::Waveform;
 use crate::{Error, Result};
@@ -525,6 +544,35 @@ impl LumpedElement {
         b.j_avg.iter().sum::<f64>() / m
     }
 
+    /// Energy stored in the branch state, `Σ ½·L_e·j² + ½·q²/C_e` over
+    /// the edges at `t = n·dt` \[J\] (see [Energy](self#energy)); 0
+    /// without a branch or before installation.
+    pub fn branch_energy(&self) -> f64 {
+        let Some(s) = &self.state else { return 0.0 };
+        let Some(b) = &s.branch else { return 0.0 };
+        let half_l = 0.25 * b.two_l_dt * s.dt;
+        b.j.iter()
+            .zip(&b.q)
+            .map(|(&j, &q)| half_l * j * j + 0.5 * b.inv_c * q * q)
+            .sum()
+    }
+
+    /// Serial hooks used: `pre_e` and `post_e` with a branch, `post_e`
+    /// with only a source, none for a pure coefficient change.
+    pub(crate) fn used_hooks(&self) -> Hooks {
+        let branch = self
+            .state
+            .as_ref()
+            .map_or(self.has_branch(), |s| s.branch.is_some());
+        if branch {
+            Hooks::PRE_E | Hooks::POST_E
+        } else if self.source.is_some() {
+            Hooks::POST_E
+        } else {
+            Hooks::NONE
+        }
+    }
+
     pub(crate) fn pre_e_impl(&mut self, fields: &mut Fields<'_>) {
         let Some(s) = &mut self.state else { return };
         let axis = self.region.axis();
@@ -569,6 +617,15 @@ impl LumpedElement {
 }
 
 impl Operator for LumpedElement {
+    fn hooks(&self) -> Hooks {
+        self.used_hooks()
+    }
+
+    /// [`branch_energy`](Self::branch_energy).
+    fn energy(&self) -> f64 {
+        self.branch_energy()
+    }
+
     fn pre_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         self.pre_e_impl(fields);
     }

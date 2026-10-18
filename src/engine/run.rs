@@ -169,8 +169,8 @@ impl Engine {
     ///    end is given), `W_max > 0` and `W/W_max < energy_ratio` →
     ///    [`StopReason::EnergyDecay`];
     /// 4. otherwise the next `K − 1` steps run without energy evaluation
-    ///    (batched, one barrier per half-step when there are no
-    ///    operators).
+    ///    (batched, one barrier per half-step when no operator has serial
+    ///    hooks).
     ///
     /// The engine therefore stops one step after the deciding sample.
     /// When `max_timesteps` steps have run → [`StopReason::MaxTimesteps`].

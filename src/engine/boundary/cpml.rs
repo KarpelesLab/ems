@@ -160,21 +160,34 @@
 //! scaling the optimum by `1/√ε_r`; set
 //! [`Cpml::sigma_factor`](crate::Cpml::sigma_factor) accordingly.
 //!
-//! # Cost
+//! # Parallel execution and cost
 //!
-//! The operator runs serially on the calling thread between the half-steps
-//! (the workers are parked), touching four field components per face slab
-//! and storing four `f32` `ψ` values per slab node. A model dominated by its
-//! PML therefore loses much of the parallel speed-up; a parallel PML pass is
-//! future work.
+//! The correction runs as [slab hooks](crate::engine::SlabHooks): inside
+//! each half-step, every worker thread corrects the part of every layer
+//! that lies in its own x-slab, right after its kernel update, with no
+//! extra barrier. At registration
+//! ([`Operator::slab_hooks`]) each
+//! layer is cut along x at the engine's slab boundaries: an x-normal layer
+//! (whole x-planes) falls into the slab(s) holding those planes, a y- or
+//! z-normal layer (spanning all x) is split across all slabs. Each piece
+//! owns its own `ψ` values, and every value is computed by the same
+//! expression as in a single piece, so results are bit-identical for any
+//! thread count. The operator declares no serial hooks
+//! ([`Hooks::NONE`](crate::engine::Hooks::NONE)), so an engine with only
+//! CPML keeps one barrier per half-step.
+//!
+//! Per step the pass touches four field components per face layer and
+//! stores four `f32` `ψ` values per layer node.
+
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::axis::Axis;
 use crate::constants::{EPS0, Z0};
 use crate::engine::Engine;
-use crate::engine::fields::{FieldArrays, Fields};
 use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
-use crate::engine::operator::{Operator, StepContext};
+use crate::engine::operator::{Hooks, Operator};
+use crate::engine::slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::fdtd::{Cpml, Face};
 use crate::{Error, Result};
 
@@ -240,7 +253,8 @@ struct Slab {
     a: Vec<f32>,
     /// `1/κ − 1`.
     k: Vec<f32>,
-    /// One value per node of the box, in `(i, j, k)` order.
+    /// One value per node of the box, in `(i, j, k)` order (empty in the
+    /// unpartitioned templates of a [`Layer`]).
     psi: Vec<f32>,
 }
 
@@ -257,7 +271,6 @@ impl Slab {
         } else {
             (-1.0, comp.next())
         };
-        let len = (0..3).map(|d| hi[d] - lo[d]).product();
         Self {
             comp,
             other,
@@ -268,8 +281,32 @@ impl Slab {
             b: co.iter().map(|c| c.b as f32).collect(),
             a: co.iter().map(|c| c.a as f32).collect(),
             k: co.iter().map(|c| (1.0 / c.kappa - 1.0) as f32).collect(),
-            psi: vec![0.0; len],
+            psi: Vec::new(),
         }
+    }
+
+    /// The part of the slab in the x-planes `x0..x1`, with zeroed `ψ`, or
+    /// `None` if it is empty. The per-depth coefficients of an x-normal
+    /// slab are cut accordingly, so every node keeps its values.
+    fn clip(&self, x0: usize, x1: usize) -> Option<Self> {
+        let (lo0, hi0) = (self.lo[0].max(x0), self.hi[0].min(x1));
+        if lo0 >= hi0 || (0..3).any(|d| self.lo[d] >= self.hi[d]) {
+            return None;
+        }
+        let mut s = Self {
+            psi: Vec::new(),
+            ..self.clone()
+        };
+        if self.normal == Axis::X {
+            let r = lo0 - self.lo[0]..hi0 - self.lo[0];
+            s.b = self.b[r.clone()].to_vec();
+            s.a = self.a[r.clone()].to_vec();
+            s.k = self.k[r].to_vec();
+        }
+        (s.lo[0], s.hi[0]) = (lo0, hi0);
+        let len = (0..3).map(|d| s.hi[d] - s.lo[d]).product();
+        s.psi = vec![0.0; len];
+        Some(s)
     }
 
     /// Applies the correction. `e_side`: target is `u` (derivative of `i`
@@ -278,8 +315,8 @@ impl Slab {
     /// is an all-zero x-plane.
     fn apply(
         &mut self,
-        tgt: &mut FieldArrays<'_>,
-        src: &FieldArrays<'_>,
+        tgt: &mut SlabMut<'_>,
+        src: &SlabRef<'_>,
         coef: &[f32],
         zero: &[f32],
         e_side: bool,
@@ -295,7 +332,8 @@ impl Slab {
         let mut q = 0;
         for i in lo[0]..hi[0] {
             let cur = src.plane(c, i);
-            // The neighbouring x-plane for an x-normal layer.
+            // The neighbouring x-plane for an x-normal layer (possibly
+            // the neighbour plane of the next / previous slab).
             let other: &[f32] = match (normal, e_side) {
                 (Axis::X, true) if i == 0 => zero, // outside the domain
                 (Axis::X, true) => src.plane(c, i - 1),
@@ -423,9 +461,10 @@ struct Layer {
 /// [`Operator`].
 ///
 /// See the [module docs](self) for the formulation. Build the engine with
-/// PEC on the CPML faces, then register the operator **before** any
-/// operator that reads fields inside the layer in `post_h` / `post_e`
-/// (probes, dumps), so they see corrected values:
+/// PEC on the CPML faces, then register the operator. Its correction runs
+/// inside the half-steps, in parallel ([module docs](self#parallel-execution-and-cost)),
+/// so serial `post_h` / `post_e` hooks of any operator (probes, dumps)
+/// always see corrected values, whatever the registration order:
 ///
 /// ```
 /// use ems::engine::boundary::cpml::CpmlBoundary;
@@ -439,13 +478,54 @@ struct Layer {
 /// engine.run(10);
 /// # Ok::<(), ems::Error>(())
 /// ```
+///
+/// # Panics
+/// Registering it ([`Engine::add_operator`]) panics if the engine's grid
+/// or time step differ from those it was built for.
 #[derive(Debug, Clone)]
 pub struct CpmlBoundary {
     nodes: [usize; 3],
     dt: f64,
     layers: Vec<Layer>,
+    /// The state partitioned over the engine's slabs, once registered.
+    parts: Option<Arc<CpmlParts>>,
+}
+
+/// The layers' pieces in each x-slab of an engine, run by the workers.
+#[derive(Debug)]
+struct CpmlParts {
+    slabs: Vec<Mutex<Pieces>>,
     /// An all-zero x-plane (out-of-domain neighbours).
     zero: Vec<f32>,
+}
+
+/// The pieces of one x-slab, in layer order.
+#[derive(Debug, Default)]
+struct Pieces {
+    e: Vec<Slab>,
+    h: Vec<Slab>,
+}
+
+impl CpmlParts {
+    fn pieces(&self, slab: usize) -> std::sync::MutexGuard<'_, Pieces> {
+        self.slabs[slab]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl SlabHooks for CpmlParts {
+    fn post_h_slab(&self, i: &mut SlabMut<'_>, u: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        for s in &mut self.pieces(ctx.slab).h {
+            s.apply(i, u, ctx.coefficients.db(s.comp), &self.zero, false);
+        }
+    }
+
+    fn post_e_slab(&self, u: &mut SlabMut<'_>, i: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        for s in &mut self.pieces(ctx.slab).e {
+            s.apply(u, i, ctx.coefficients.cb(s.comp), &self.zero, true);
+        }
+    }
 }
 
 impl CpmlBoundary {
@@ -500,7 +580,7 @@ impl CpmlBoundary {
             nodes: n,
             dt,
             layers: out,
-            zero: vec![0.0; n[1] * n[2]],
+            parts: None,
         })
     }
 
@@ -525,11 +605,6 @@ impl CpmlBoundary {
 
     fn layer(&self, face: Face) -> Option<&Layer> {
         self.layers.iter().find(|l| l.face == face)
-    }
-
-    fn check(&self, ctx: &StepContext<'_>) {
-        assert_eq!(ctx.grid.nodes(), self.nodes, "CPML built for another grid");
-        assert_eq!(ctx.dt, self.dt, "CPML built for another time step");
     }
 }
 
@@ -604,24 +679,34 @@ impl Layer {
 }
 
 impl Operator for CpmlBoundary {
-    fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
-        self.check(ctx);
-        let Fields { u, i } = fields;
-        for l in &mut self.layers {
-            for s in &mut l.h {
-                s.apply(i, u, ctx.coefficients.db(s.comp), &self.zero, false);
-            }
-        }
+    fn hooks(&self) -> Hooks {
+        Hooks::NONE
     }
 
-    fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
-        self.check(ctx);
-        let Fields { u, i } = fields;
-        for l in &mut self.layers {
-            for s in &mut l.e {
-                s.apply(u, i, ctx.coefficients.cb(s.comp), &self.zero, true);
-            }
-        }
+    fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {
+        assert_eq!(
+            part.grid().nodes(),
+            self.nodes,
+            "CPML built for another grid"
+        );
+        assert_eq!(part.dt(), self.dt, "CPML built for another time step");
+        let slabs = (0..part.slabs())
+            .map(|q| {
+                let r = part.planes(q);
+                let mut p = Pieces::default();
+                for l in &self.layers {
+                    p.e.extend(l.e.iter().filter_map(|s| s.clip(r.start, r.end)));
+                    p.h.extend(l.h.iter().filter_map(|s| s.clip(r.start, r.end)));
+                }
+                Mutex::new(p)
+            })
+            .collect();
+        let parts = Arc::new(CpmlParts {
+            slabs,
+            zero: vec![0.0; self.nodes[1] * self.nodes[2]],
+        });
+        self.parts = Some(Arc::clone(&parts));
+        Some(parts)
     }
 }
 

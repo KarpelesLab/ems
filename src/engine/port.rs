@@ -38,7 +38,7 @@
 use super::Engine;
 use super::fields::Fields;
 use super::lumped::{LumpedBox, LumpedElement, Source};
-use super::operator::{Operator, OperatorHandle, StepContext};
+use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
 use crate::axis::Axis;
 use crate::post::{Complex64, PortResult, dft};
 use crate::waveform::Waveform;
@@ -218,6 +218,15 @@ fn current_loop(region: &LumpedBox) -> Vec<(Axis, [usize; 3], f64)> {
 }
 
 impl Operator for LumpedPort {
+    fn hooks(&self) -> Hooks {
+        Hooks::POST_H | Hooks::PRE_E | Hooks::POST_E
+    }
+
+    /// The element's branch energy ([`LumpedElement::branch_energy`]).
+    fn energy(&self) -> f64 {
+        self.element.branch_energy()
+    }
+
     fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         if self.first_step.is_none() {
             self.first_step = Some(ctx.step);

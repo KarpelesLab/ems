@@ -67,13 +67,16 @@
 //! update only writes `i` and only reads `u` (own slab plus the first plane
 //! of the next slab); the E update only writes `u` and reads `i` (own slab
 //! plus the last plane of the previous slab). Each slab's E and H blocks sit
-//! behind separate `RwLock`s, so this is expressed in safe Rust. Without
-//! operators a step costs one barrier per half-step; with operators, two
-//! (the operators run on the calling thread in between). Every value is
-//! computed by the same expression regardless of the partition and there
-//! are no cross-thread reductions, so results are bit-identical for any
-//! thread count. Energy sums are formed per x-plane in a fixed order and
-//! then combined in plane order, so they are bit-identical too.
+//! behind separate `RwLock`s, so this is expressed in safe Rust. A step
+//! costs one barrier per half-step. Bulk operator work (CPML) runs inside
+//! the half-steps on every slab ([`SlabHooks`]); only serial operator hooks
+//! ([`Operator::hooks`]) add a barrier, once per step for each of the two
+//! gaps that has work (`post_h`/`pre_e`, and `post_e`/`pre_h`), while the
+//! hooks run on the calling thread. Every value is computed by the same
+//! expression regardless of the partition and there are no cross-thread
+//! reductions, so results are bit-identical for any thread count. Energy
+//! sums are formed per x-plane in a fixed order and then combined in plane
+//! order, so they are bit-identical too.
 //!
 //! # Energy
 //!
@@ -121,7 +124,10 @@
 //! term is a positive dissipation on average (exactly so for a slowly
 //! varying `i`). Edges with `cb = 0` (PEC, padding) or `db = 0` are
 //! skipped. Operators (sources, boundaries, lumped elements) may add
-//! or remove energy; the invariant then is only the field energy.
+//! or remove energy; the invariant then is only the field energy, plus
+//! what operators report as stored in their own state
+//! ([`Operator::energy`], e.g. lumped L and C branches): for a lossless
+//! closed region with lossless lumped elements that sum is conserved.
 //!
 //! Measured on lossless closed cavities (tests/engine.rs): after the source
 //! has stopped, `W` stays constant to about `1e-6` relative over thousands
@@ -143,6 +149,7 @@ mod pool;
 pub mod port;
 mod probe;
 mod run;
+mod slab;
 
 use core::marker::PhantomData;
 use std::sync::Arc;
@@ -162,16 +169,17 @@ pub use fields::{FieldArrays, Fields};
 pub use grid::Grid;
 pub use lumped::{LumpedBox, LumpedElement, Topology, fold_parallel};
 pub use material::{CellMaterials, Material};
-pub use operator::{Operator, OperatorHandle, StepContext};
+pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
 pub use port::LumpedPort;
 pub use probe::{Probe, ProbeQuantity};
 pub use run::{Progress, RunLimits, RunOutcome, StopReason};
+pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 
 use crate::axis::Axis;
 use crate::fdtd::Face;
 use crate::{Error, Result};
 use fields::{FieldStore, Layout, read, write};
-use pool::{Phase, Pool, Shared};
+use pool::{Gap, Gaps, Plan, Pool, Shared};
 
 /// Configures and builds an [`Engine`]; see [`Engine::builder`].
 #[derive(Debug, Clone)]
@@ -279,8 +287,14 @@ pub struct Engine {
     dt: f64,
     step: u64,
     shared: Arc<Shared>,
-    ops: Vec<Box<dyn Operator>>,
+    ops: Vec<Registered>,
     pool: Option<Pool>,
+}
+
+/// A registered operator and the serial hooks it declared.
+struct Registered {
+    op: Box<dyn Operator>,
+    hooks: Hooks,
 }
 
 impl core::fmt::Debug for Engine {
@@ -343,8 +357,23 @@ impl Engine {
 
     /// Registers an operator; it runs after all previously registered ones
     /// in each hook. The handle gives typed access back.
-    pub fn add_operator<T: Operator>(&mut self, op: T) -> OperatorHandle<T> {
-        self.ops.push(Box::new(op));
+    ///
+    /// [`Operator::hooks`] and [`Operator::slab_hooks`] are queried here,
+    /// once.
+    pub fn add_operator<T: Operator>(&mut self, mut op: T) -> OperatorHandle<T> {
+        let hooks = op.hooks();
+        let part = SlabPartition {
+            grid: &self.grid,
+            dt: self.dt,
+            starts: &self.shared.store.layout.slab_start,
+        };
+        if let Some(s) = op.slab_hooks(&part) {
+            write(&self.shared.slab_ops).0.push(s);
+        }
+        self.ops.push(Registered {
+            op: Box::new(op),
+            hooks,
+        });
         OperatorHandle {
             engine: self.id,
             index: self.ops.len() - 1,
@@ -362,7 +391,7 @@ impl Engine {
     /// # Panics
     /// If `h` was returned by a different engine.
     pub fn operator<T: Operator>(&self, h: &OperatorHandle<T>) -> &T {
-        let op: &dyn core::any::Any = &*self.ops[self.op_index(h)];
+        let op: &dyn core::any::Any = &*self.ops[self.op_index(h)].op;
         op.downcast_ref().expect("operator type matches its handle")
     }
 
@@ -372,7 +401,7 @@ impl Engine {
     /// If `h` was returned by a different engine.
     pub fn operator_mut<T: Operator>(&mut self, h: &OperatorHandle<T>) -> &mut T {
         let i = self.op_index(h);
-        let op: &mut dyn core::any::Any = &mut *self.ops[i];
+        let op: &mut dyn core::any::Any = &mut *self.ops[i].op;
         op.downcast_mut().expect("operator type matches its handle")
     }
 
@@ -429,25 +458,35 @@ impl Engine {
     /// of the leapfrog scheme (design §5.8):
     ///
     /// ```text
-    /// W^n = ½·Σ C·(u^n)² + ½·Σ L·i^{n−½}·i^{n+½}
+    /// W^n = ½·Σ C·(u^n)² + ½·Σ L·i^{n−½}·i^{n+½}  +  Σ_ops W_op^n
     /// ```
     ///
     /// In a lossless closed region with no operators, `W^n` is exactly
     /// constant (up to `f32` rounding of the fields); with losses it never
     /// increases. See the [module docs](self#energy) for the derivation.
+    /// The last term is the energy stored in operator state
+    /// ([`Operator::energy`], summed in registration order after the field
+    /// part, see [`operator_energy`](Self::operator_energy)); with it, a
+    /// cavity loaded by lossless lumped L/C elements conserves `W^n` too.
     ///
     /// `i^{n+½}` is not stored, so this evaluates the H update once more
     /// without committing it (a full read-only pass over the grid on the
     /// calling thread, roughly the cost of one H half-step plus a division
     /// per edge). Operators are not run for that look-ahead, so an operator
-    /// acting on `i` in `pre_h`/`post_h` (e.g. CPML) is not reflected in the
-    /// `i^{n+½}` factor. [`step_with_energy`](Self::step_with_energy) and
+    /// acting on `i` in `pre_h`, `post_h` or a slab hook (e.g. CPML) is not
+    /// reflected in the `i^{n+½}` factor. [`step_with_energy`](Self::step_with_energy) and
     /// [`run_until`](Self::run_until) obtain the same value as a by-product
     /// of a real step, in parallel.
     ///
     /// The result is bit-identical for any thread count.
     pub fn energy(&self) -> f64 {
-        self.shared.current_energy(self.dt)
+        self.shared.current_energy(self.dt) + self.operator_energy()
+    }
+
+    /// Sum of [`Operator::energy`] over the registered operators, in
+    /// registration order \[J\] (`t = n·dt`).
+    pub fn operator_energy(&self) -> f64 {
+        self.ops.iter().map(|r| r.op.energy()).sum()
     }
 
     /// The simple staggered energy `½·Σ C·u² + ½·Σ L·i²` \[J\], with `u` at
@@ -485,32 +524,6 @@ impl Engine {
         w
     }
 
-    fn hooks(&mut self, which: u8) {
-        let co = read(&self.shared.coeffs);
-        let ctx = StepContext {
-            step: self.step,
-            dt: self.dt,
-            grid: &self.grid,
-            coefficients: &co,
-        };
-        let mut f = self.shared.store.lock();
-        for op in &mut self.ops {
-            match which {
-                0 => op.pre_h(&mut f, &ctx),
-                1 => op.post_h(&mut f, &ctx),
-                2 => op.pre_e(&mut f, &ctx),
-                _ => op.post_e(&mut f, &ctx),
-            }
-        }
-    }
-
-    fn half(&mut self, phase: Phase) {
-        match &mut self.pool {
-            Some(p) => p.half(&self.shared, phase),
-            None => self.shared.phase(0, phase),
-        }
-    }
-
     /// Advances one full step (H then E, with all operator hooks).
     pub fn step(&mut self) {
         self.run(1);
@@ -522,48 +535,71 @@ impl Engine {
     /// call), computed by the worker threads as part of the H update.
     ///
     /// Without operators this equals [`energy`](Self::energy) called just
-    /// before the step, bit for bit. With operators, `i^{n+½}` is the H
-    /// kernel result after the `pre_h` hooks and before the `post_h` ones.
+    /// before the step, bit for bit (operator energies are taken before
+    /// the step, as there). With operators, `i^{n+½}` is the H kernel result
+    /// after the `pre_h` hooks and before the slab and `post_h` hooks.
     /// The extra cost is about one division per edge in that half-step;
     /// the result is bit-identical for any thread count.
     pub fn step_with_energy(&mut self) -> f64 {
-        self.full_step(Phase::HEnergy);
-        self.shared.recorded_energy(self.dt)
-    }
-
-    /// One step with operator hooks, using `h` for the H phase.
-    fn full_step(&mut self, h: Phase) {
-        if self.ops.is_empty() {
-            self.half(h);
-            self.half(Phase::E);
-        } else {
-            self.hooks(0);
-            self.half(h);
-            self.hooks(1);
-            self.hooks(2);
-            self.half(Phase::E);
-            self.hooks(3);
-        }
-        self.step += 1;
+        let w_ops = self.operator_energy();
+        self.advance(1, true);
+        self.shared.recorded_energy(self.dt) + w_ops
     }
 
     /// Advances `n` full steps.
     pub fn run(&mut self, n: u64) {
-        if self.ops.is_empty() {
-            match &mut self.pool {
-                Some(p) => p.run(&self.shared, n),
-                None => {
-                    for _ in 0..n {
-                        self.shared.h(0);
-                        self.shared.e(0);
+        self.advance(n, false);
+    }
+
+    /// `n` steps through the pool (the H update of the first one recording
+    /// the energy if `energy_first`), with the serial hooks in the gaps
+    /// that some operator declared.
+    fn advance(&mut self, n: u64, energy_first: bool) {
+        let mask = self.ops.iter().fold(Hooks::NONE, |m, r| m | r.hooks);
+        let plan = Plan {
+            steps: n,
+            step0: self.step,
+            dt: self.dt,
+            energy_first,
+            gaps: Gaps {
+                a: mask.intersects(Hooks::PRE_H | Hooks::POST_E),
+                b: mask.intersects(Hooks::POST_H | Hooks::PRE_E),
+            },
+        };
+        let Self {
+            grid,
+            dt,
+            shared,
+            ops,
+            pool,
+            ..
+        } = self;
+        let mut hook = |g: Gap| {
+            let (t, which): (u64, &[Hooks]) = match g {
+                Gap::PreH(t) => (t, &[Hooks::PRE_H]),
+                Gap::Mid(t) => (t, &[Hooks::POST_H, Hooks::PRE_E]),
+                Gap::PostE(t) => (t, &[Hooks::POST_E]),
+            };
+            let co = read(&shared.coeffs);
+            let ctx = StepContext {
+                step: plan.step0 + t,
+                dt: *dt,
+                grid,
+                coefficients: &co,
+            };
+            let mut f = shared.store.lock();
+            for &w in which {
+                for r in ops.iter_mut().filter(|r| r.hooks.contains(w)) {
+                    match w {
+                        Hooks::PRE_H => r.op.pre_h(&mut f, &ctx),
+                        Hooks::POST_H => r.op.post_h(&mut f, &ctx),
+                        Hooks::PRE_E => r.op.pre_e(&mut f, &ctx),
+                        _ => r.op.post_e(&mut f, &ctx),
                     }
                 }
             }
-            self.step += n;
-            return;
-        }
-        for _ in 0..n {
-            self.full_step(Phase::H);
-        }
+        };
+        pool::drive(pool.as_mut(), shared, &plan, &mut hook);
+        self.step += n;
     }
 }

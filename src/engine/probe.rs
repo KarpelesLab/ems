@@ -1,7 +1,7 @@
 //! Probe operators.
 
 use super::fields::Fields;
-use super::operator::{Operator, StepContext};
+use super::operator::{Hooks, Operator, StepContext};
 use crate::axis::Axis;
 
 /// Which field a [`Probe`] samples.
@@ -91,6 +91,13 @@ impl Probe {
 }
 
 impl Operator for Probe {
+    fn hooks(&self) -> Hooks {
+        match self.quantity {
+            ProbeQuantity::Current => Hooks::POST_H,
+            ProbeQuantity::Voltage => Hooks::POST_E,
+        }
+    }
+
     fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         if self.quantity == ProbeQuantity::Current && ctx.step.is_multiple_of(self.interval) {
             self.sample(&fields.i, ctx.h_time());

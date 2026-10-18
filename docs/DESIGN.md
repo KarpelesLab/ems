@@ -388,7 +388,9 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     x-slabs. Each slab's components sit behind their own `RwLock`: the H update
     writes `i` and reads `u` of its slab and the next one; the E update does the
     reverse. Everything is safe Rust.
-  - Each half-step costs one barrier, or two when operators are registered.
+  - Each half-step costs one barrier. A serial operator gap (`post_h`/`pre_e`,
+    or `post_e`/`pre_h`) adds one barrier per step, only if some registered
+    operator declares a hook in it (`Operator::hooks() -> Hooks`, default all).
     Spawning per step would be too slow for small models.
   - Subnormals are flushed in the kernel arithmetic (`+ 2⁻¹⁰² − 2⁻¹⁰²`).
     Hardware flush-to-zero would need `unsafe`, and this way is still
@@ -396,10 +398,25 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
   - Thread count is configurable and defaults to `available_parallelism()`.
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
-- **Operators** (internal trait): CPML, Mur, sources, lumped elements, probes,
-  dumps, and later ADE/NF2FF.
-  - Each has `pre/post_e` and `pre/post_h` hooks.
-  - Each touches a sparse set of cells.
+- **Operators** (`Operator` trait): CPML, Mur, sources, lumped elements,
+  probes, dumps, and later ADE/NF2FF.
+  - Each has `pre/post_e` and `pre/post_h` serial hooks (calling thread,
+    exclusive field access, registration order) for sparse work.
+  - Bulk work (CPML) uses the optional `Operator::slab_hooks`: at
+    registration the operator gets the x-slab partition and returns an
+    `Arc<dyn SlabHooks>`, which each worker calls on its own slab right after
+    its kernel pass in the same half-step (`post_h_slab` / `post_e_slab`), with
+    the kernel's own lock set: write the updated field in the slab, read the
+    other one plus the neighbour plane. No extra barrier. Slab work runs
+    before all serial `post_*` hooks. State is kept per slab (CPML cuts each
+    layer at the slab boundaries: x-face layers are whole x-planes, y/z-face
+    layers are split along x), so results are bit-identical for any thread
+    count. We chose this over fusing CPML into the kernel: it keeps the kernel
+    simple and the Operator trait the single extension point, at the cost of
+    a second pass over the layer cells only.
+  - `Operator::energy()` (default 0) reports energy held in operator state
+    (lumped L/C branches); `Engine::energy()` adds it, in registration order,
+    so lossless LC-loaded cavities conserve the total.
   - Their order is fixed and documented.
 - **Determinism**: no cross-thread floating-point reductions in updates.
   Energy and probe sums are combined in slab order, so output is bit-identical

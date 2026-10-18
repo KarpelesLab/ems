@@ -563,3 +563,59 @@ fn lumped_deterministic_across_threads() {
     assert_eq!(v1, v4);
     assert_eq!(i1, i4);
 }
+
+/// A lossless closed PEC cavity loaded by lossless lumped elements (a
+/// parallel L ∥ C and a series L + C), started from a charged element:
+/// the total energy `W_fields + W_branch` ([`Engine::energy`]) is
+/// conserved, the field part alone is not (energy sloshes into the
+/// branches), and the in-step energy matches the read-only one.
+#[test]
+fn lc_loaded_cavity_conserves_total_energy() {
+    for threads in [1, 3] {
+        let g = cube(12, D);
+        let mut e = Engine::builder(g).threads(threads).build().unwrap();
+        let par = LumpedBox::new(Axis::Z, [4, 6, 4], [4, 6, 8]).unwrap();
+        let ser = LumpedBox::new(Axis::X, [6, 3, 7], [9, 3, 7]).unwrap();
+        let hp = LumpedElement::new(par)
+            .l(2e-9)
+            .c(0.2e-12)
+            .add_to(&mut e)
+            .unwrap();
+        let hs = LumpedElement::new(ser)
+            .l(3e-9)
+            .c(0.1e-12)
+            .topology(Topology::Series)
+            .add_to(&mut e)
+            .unwrap();
+        {
+            let mut f = e.fields_mut();
+            for p in par.edges() {
+                f.u.set(Axis::Z, p, 0.25);
+            }
+        }
+        e.run(5);
+        let w0 = e.energy();
+        let b0 = e.operator_energy();
+        assert!(w0 > 0.0);
+        let (mut dev, mut fdev, mut bmax) = (0.0f64, 0.0f64, 0.0f64);
+        for _ in 0..400 {
+            let w_ro = e.energy();
+            let w_ops = e.operator_energy();
+            let parts = e.operator(&hp).branch_energy() + e.operator(&hs).branch_energy();
+            assert_eq!(w_ops.to_bits(), parts.to_bits());
+            let w = e.step_with_energy();
+            assert_eq!(w.to_bits(), w_ro.to_bits());
+            dev = dev.max((w / w0 - 1.0).abs());
+            fdev = fdev.max(((w - w_ops) / (w0 - b0) - 1.0).abs());
+            bmax = bmax.max(w_ops / w);
+            e.run(9);
+        }
+        eprintln!(
+            "{threads} threads: W0 = {w0:.4e} J, max |W/W0 − 1| = {dev:.2e}, \
+             fields only {fdev:.2e}, max branch share {bmax:.3}"
+        );
+        assert!(dev < 1e-4, "total energy drifted by {dev:e}");
+        assert!(bmax > 0.05, "branches hold too little energy: {bmax}");
+        assert!(fdev > 100.0 * dev, "fields-only energy {fdev:e} vs {dev:e}");
+    }
+}

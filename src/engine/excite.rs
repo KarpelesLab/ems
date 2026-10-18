@@ -1,7 +1,7 @@
 //! Excitation operators.
 
 use super::fields::Fields;
-use super::operator::{Operator, StepContext};
+use super::operator::{Hooks, Operator, StepContext};
 use crate::axis::Axis;
 
 /// Time function of a source, `t` \[s\] → amplitude \[V\].
@@ -53,6 +53,10 @@ impl EdgeSource {
 }
 
 impl Operator for EdgeSource {
+    fn hooks(&self) -> Hooks {
+        Hooks::POST_E
+    }
+
     fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let a = (self.amplitude)(ctx.h_time()) as f32;
         for &(axis, node, w) in &self.edges {

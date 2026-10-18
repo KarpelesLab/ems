@@ -82,7 +82,7 @@
 //! any engine thread count.
 
 use crate::axis::Axis;
-use crate::engine::{Engine, Fields, Operator, StepContext};
+use crate::engine::{Engine, Fields, Hooks, Operator, StepContext};
 use crate::fdtd::Face;
 use crate::{Error, Result};
 
@@ -276,6 +276,10 @@ impl MurBoundary {
 }
 
 impl Operator for MurBoundary {
+    fn hooks(&self) -> Hooks {
+        Hooks::PRE_E | Hooks::POST_E
+    }
+
     fn pre_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         let u = &fields.u;
         for e in &mut self.edges {

@@ -298,7 +298,10 @@ fn energy_decays_and_stays_small_long() {
     );
 }
 
-fn det_run(threads: usize) -> Vec<Vec<f32>> {
+/// All field arrays after a CPML run, followed by the samples of two
+/// probes inside the x_min / y_max layers and an energy sample. With
+/// `probes_first` the probes are registered before the CPML operator.
+fn det_run(threads: usize, probes_first: bool) -> Vec<Vec<f32>> {
     // Graded mesh, different layer thicknesses, CFS parameters, a lossy
     // dielectric block reaching into the x_max layer.
     let lines = |len: f64, n: usize| -> Vec<f64> {
@@ -329,21 +332,51 @@ fn det_run(threads: usize) -> Vec<Vec<f32>> {
         (Face::ZMax, Cpml::cells(4)),
     ];
     let b = CpmlBoundary::new(&e, layers).unwrap();
-    e.add_operator(b);
+    let probes = |e: &mut Engine| {
+        [
+            e.add_operator(Probe::voltage(Axis::Y, [2, 7, 6])),
+            e.add_operator(Probe::current(Axis::Z, [9, 13, 6])),
+        ]
+    };
+    let hs = if probes_first {
+        let hs = probes(&mut e);
+        e.add_operator(b);
+        hs
+    } else {
+        e.add_operator(b);
+        probes(&mut e)
+    };
     e.add_operator(EdgeSource::new(dgauss(20e-12)).edge(Axis::Y, [9, 7, 6], 1.0));
-    e.run(300);
-    Axis::ALL
+    e.run(150);
+    let w = e.step_with_energy();
+    e.run(149);
+    let mut out: Vec<Vec<f32>> = Axis::ALL
         .iter()
         .flat_map(|&a| [e.u_component(a), e.i_component(a)])
-        .collect()
+        .collect();
+    for h in hs {
+        out.push(e.operator(&h).values().iter().map(|&v| v as f32).collect());
+    }
+    out.push(vec![w as f32, (w - w as f32 as f64) as f32]);
+    out
 }
 
+/// The parallel CPML pass gives bit-identical fields, probe samples and
+/// energy for any thread count (including partitions that cut the x-normal
+/// layers), and serial hooks see corrected values whatever the
+/// registration order.
 #[test]
 fn deterministic_across_threads() {
-    let a = det_run(1);
-    assert!(a.iter().any(|v| v.iter().any(|&x| x != 0.0)));
-    let b = det_run(4);
-    for (x, y) in a.iter().zip(&b) {
-        assert!(x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()));
+    let a = det_run(1, false);
+    assert!(a.iter().all(|v| v.iter().any(|&x| x != 0.0)));
+    for (threads, first) in [(2, false), (4, true), (7, false), (1, true)] {
+        let b = det_run(threads, first);
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.len(), y.len());
+            assert!(
+                x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits()),
+                "{threads} threads (probes first: {first}) differ"
+            );
+        }
     }
 }

@@ -2,10 +2,63 @@
 
 use core::any::Any;
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use super::coeffs::Coefficients;
 use super::fields::Fields;
 use super::grid::Grid;
+use super::slab::{SlabHooks, SlabPartition};
+
+/// A set of serial operator hooks, returned by [`Operator::hooks`] to tell
+/// the engine which ones an operator implements.
+///
+/// Combine with `|`. The engine skips undeclared hooks and the phases (and
+/// barriers) in which no registered operator has work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Hooks(u8);
+
+impl Hooks {
+    /// No serial hook.
+    pub const NONE: Self = Self(0);
+    /// [`Operator::pre_h`].
+    pub const PRE_H: Self = Self(1);
+    /// [`Operator::post_h`].
+    pub const POST_H: Self = Self(2);
+    /// [`Operator::pre_e`].
+    pub const PRE_E: Self = Self(4);
+    /// [`Operator::post_e`].
+    pub const POST_E: Self = Self(8);
+    /// All four hooks (the default).
+    pub const ALL: Self = Self(15);
+
+    /// Whether every hook of `other` is in `self`.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether any hook of `other` is in `self`.
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Whether the set is empty.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl core::ops::BitOr for Hooks {
+    type Output = Self;
+    fn bitor(self, o: Self) -> Self {
+        Self(self.0 | o.0)
+    }
+}
+
+impl core::ops::BitOrAssign for Hooks {
+    fn bitor_assign(&mut self, o: Self) {
+        self.0 |= o.0;
+    }
+}
 
 /// Information about the step being performed, passed to every hook.
 ///
@@ -60,6 +113,19 @@ impl StepContext<'_> {
 /// / [`run`](super::Engine::run), with exclusive access to all fields; the
 /// workers are parked meanwhile. All hooks default to doing nothing.
 ///
+/// Optional extensions (all defaulted, so a simple operator implements only
+/// the hooks it needs):
+///
+/// * [`hooks`](Self::hooks) declares which of the four hooks are used, so
+///   the engine can skip empty phases and their barriers;
+/// * [`slab_hooks`](Self::slab_hooks) provides bulk work run in parallel by
+///   the worker pool inside the half-steps ([`SlabHooks`]): after the
+///   kernel of each slab (2. and 5. above) and before any serial `post_*`
+///   hook, whatever the registration order;
+/// * [`energy`](Self::energy) reports energy stored in the operator's own
+///   state (e.g. lumped inductors and capacitors), added to
+///   [`Engine::energy`](super::Engine::energy).
+///
 /// Operators are `'static + Send` so the engine can be moved between
 /// threads and results can be read back through a typed
 /// [`OperatorHandle`].
@@ -72,6 +138,34 @@ pub trait Operator: Any + Send {
     fn pre_e(&mut self, _fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {}
     /// After the E update (`u` is at `ctx.e_time()`).
     fn post_e(&mut self, _fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {}
+
+    /// The serial hooks this operator implements (default
+    /// [`Hooks::ALL`]). Queried once, at registration; undeclared hooks
+    /// are never called. Declaring fewer hooks only saves time: an
+    /// operator whose hooks are all empty may return [`Hooks::NONE`].
+    fn hooks(&self) -> Hooks {
+        Hooks::ALL
+    }
+
+    /// Slab-parallel work for the engine's x-slab `partition` (default
+    /// none). Called once, at registration; the returned object is run by
+    /// the worker threads (see [`SlabHooks`]). The operator may keep a
+    /// clone of the `Arc` to read results back.
+    fn slab_hooks(&mut self, _partition: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {
+        None
+    }
+
+    /// Energy \[J\] held in the operator's own state at `t = n·dt`, the
+    /// time of the E voltages after `n` completed steps (default 0).
+    ///
+    /// [`Engine::energy`](super::Engine::energy) and
+    /// [`Engine::step_with_energy`](super::Engine::step_with_energy) add
+    /// the values of all operators, in registration order, to the field
+    /// invariant. Implement it so that the sum is the conserved quantity of
+    /// the coupled scheme (see [`LumpedElement`](super::LumpedElement)).
+    fn energy(&self) -> f64 {
+        0.0
+    }
 }
 
 /// Typed handle to an operator registered with
