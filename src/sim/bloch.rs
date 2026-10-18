@@ -136,6 +136,13 @@ pub(crate) fn periodic_spec(
             pw.name
         ));
     };
+    if !pw.spec.medium().is_lossless() {
+        return Err(format!(
+            "plane wave {:?}: lossy backgrounds (kappa = {}, sigma_m = {}) are not supported \
+             for periodic-cell plane waves; ignored",
+            pw.name, pw.spec.kappa, pw.spec.sigma_m
+        ));
+    }
     let n = cell.axis.index();
     let d = unit(pw.spec.direction);
     if d[n] == 0.0 {

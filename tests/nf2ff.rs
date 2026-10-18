@@ -27,6 +27,8 @@ struct Dipole {
     ground: bool,
     f0: f64,
     threads: usize,
+    /// Relative permittivity of the background filling the domain.
+    eps_r: f64,
 }
 
 impl Dipole {
@@ -42,6 +44,16 @@ impl Dipole {
             lines(self.half, d)
         };
         model.grid.set_lines(2, z).unwrap();
+        if self.eps_r != 1.0 {
+            let bg = model.add_property(Property::material(
+                "background",
+                csx::Material::new(self.eps_r, 0.0),
+            ));
+            let e = f64::from(self.half + 1) * d;
+            model
+                .add_primitive(bg, Primitive::new(BoxShape::new([-e; 3], [e; 3])))
+                .unwrap();
+        }
         // The port spans mesh lines 0 .. gap_cells.
         let (z0, z1) = (0.0, f64::from(self.gap_cells) * d);
         if self.arm > 0 {
@@ -110,6 +122,7 @@ fn short_dipole(ground: bool, threads: usize) -> Dipole {
         ground,
         f0: 1e9,
         threads,
+        eps_r: 1.0,
     }
 }
 
@@ -175,6 +188,7 @@ fn half_wave_dipole_directivity_and_power_balance() {
         ground: false,
         f0: 0.9e9,
         threads: 0,
+        eps_r: 1.0,
     };
     let freqs = [0.92e9];
     let (ff, port) = dip.run(22, &freqs);
@@ -210,6 +224,7 @@ fn nf2ff_is_thread_independent() {
         ground: false,
         f0: 1e9,
         threads: 1,
+        eps_r: 1.0,
     };
     let (a, _) = small.run(4, &[1e9]);
     let (b, _) = Dipole {
@@ -221,4 +236,108 @@ fn nf2ff_is_thread_independent() {
         assert_eq!(a.far_field(0, t, p), b.far_field(0, t, p));
     }
     assert_eq!(a.radiated_power(0), b.radiated_power(0));
+}
+
+/// Radiated power and far field of a short dipole of moment `I·l` in a
+/// lossless medium: `P = η·k²·|Il|²/(12π)`, `|rE_θ(90°)| = η·k·|Il|/(4π)`.
+fn hertzian(ff: &Nf2ffResult, k: usize, il: f64) -> (f64, f64) {
+    let (kw, eta) = (ff.wavenumber(k), ff.wave_impedance());
+    (
+        eta * kw * kw * il * il / (12.0 * PI),
+        eta * kw * il / (4.0 * PI),
+    )
+}
+
+/// The short dipole in vacuum and embedded in an ε_r = 4 background (cells
+/// halved, so both have λ/30 cells): directivity 1.5, and box power and
+/// far field against the Hertzian dipole of the measured port current
+/// (`P ∝ η·k² = √ε_r·η0·k0²` at equal current; `|rE| ∝ η·k` is the same).
+#[test]
+fn short_dipole_in_dielectric_background() {
+    let freqs = [1e9];
+    let mut out = Vec::new();
+    for (eps_r, d) in [(1.0, 10.0), (4.0, 5.0)] {
+        let dip = Dipole {
+            d,
+            eps_r,
+            ..short_dipole(false, 0)
+        };
+        let (ff, port) = dip.run(6, &freqs);
+        let i = port.current()[0].norm();
+        let (p_h, e_h) = hertzian(&ff, 0, i * d * 1e-3);
+        let p_box = ff.radiated_power(0);
+        let p_far = ff.radiated_power_far(0, 36, 12);
+        let e90 = ff.far_field(0, PI / 2.0, 0.4).e_theta.norm();
+        let dmax = ff.max_directivity(0);
+        eprintln!(
+            "short dipole, ε_r = {eps_r}: detected ε_r = {:.6}, D_max = {:.4}, \
+             P_far/P_box = {:.5}, P_box/P_hertz = {:.4}, |rE_θ|/hertz = {:.4}, \
+             P_box/|I|² = {:.4e} Ω",
+            ff.background().eps_r,
+            dmax.directivity,
+            p_far / p_box,
+            p_box / p_h,
+            e90 / e_h,
+            p_box / (i * i)
+        );
+        assert!((ff.background().eps_r / eps_r - 1.0).abs() < 1e-5);
+        assert!((dmax.directivity / 1.5 - 1.0).abs() < 0.02, "{dmax:?}");
+        assert!((p_far / p_box - 1.0).abs() < 0.01);
+        assert!((p_box / p_h - 1.0).abs() < 0.03, "{p_box} vs {p_h}");
+        assert!((e90 / e_h - 1.0).abs() < 0.02, "{e90} vs {e_h}");
+        out.push((p_box / (i * i * d * d), e90 / (i * d)));
+    }
+    // Same moment: power ratio √ε_r = 2, far-field magnitude ratio 1.
+    let (pr, er) = (out[1].0 / out[0].0, out[1].1 / out[0].1);
+    eprintln!("ε_r = 4 vs vacuum at equal moment: P ratio {pr:.4}, |rE| ratio {er:.4}");
+    assert!((pr / 2.0 - 1.0).abs() < 0.03, "{pr}");
+    assert!((er - 1.0).abs() < 0.02, "{er}");
+}
+
+/// Background detection on the NF2FF box: an inhomogeneous surface warns
+/// (vacuum assumed), a lossy one is refused, an explicit background wins.
+#[test]
+fn nf2ff_background_detection() {
+    let build = |kappa: f64, cross: bool| {
+        let mut model = ContinuousStructure::new();
+        model.grid.delta_unit = 1e-3;
+        for a in 0..3 {
+            model.grid.set_lines(a, lines(14, 10.0)).unwrap();
+        }
+        let bg = model.add_property(Property::material("bg", csx::Material::new(2.0, kappa)));
+        let (lo, hi) = if cross {
+            ([-150.0, -150.0, -150.0], [150.0, 150.0, 0.0])
+        } else {
+            ([-150.0; 3], [150.0; 3])
+        };
+        model
+            .add_primitive(bg, Primitive::new(BoxShape::new(lo, hi)))
+            .unwrap();
+        let fdtd = Fdtd::new()
+            .waveform(Waveform::gaussian(1e9, 0.5e9))
+            .boundaries(Boundaries::all(Boundary::pml(4)))
+            .max_timesteps(10);
+        Simulation::new(&model, &fdtd).unwrap()
+    };
+    let nb = Nf2ffBox::new([-60.0; 3], [60.0; 3], [1e9]);
+    let mut sim = build(0.0, false);
+    let h = sim.add_nf2ff(&nb).unwrap();
+    assert!((sim.nf2ff(&h).background().eps_r / 2.0 - 1.0).abs() < 1e-5);
+    let mut sim = build(0.0, true);
+    let h = sim.add_nf2ff(&nb).unwrap();
+    assert_eq!(sim.nf2ff(&h).background().eps_r, 1.0);
+    assert!(
+        sim.warnings()
+            .iter()
+            .any(|w| w.contains("NF2FF") && w.contains("not homogeneous")),
+        "{:?}",
+        sim.warnings()
+    );
+    let mut sim = build(0.01, false);
+    assert!(matches!(
+        sim.add_nf2ff(&nb),
+        Err(ems::Error::Unsupported(_))
+    ));
+    let h = sim.add_nf2ff(&nb.clone().background(2.0, 1.0)).unwrap();
+    assert_eq!(sim.nf2ff(&h).background().eps_r, 2.0);
 }

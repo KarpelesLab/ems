@@ -612,6 +612,19 @@ and open (CPML) along the normal `n`.
   K = 50.
 - The run stops when the excitation is over and `W/W_max <` threshold, or at
   `max_timesteps`.
+- **Plane waves.** The TF/SF source injects real field energy: inside the
+  box the fields are total fields, so `W` includes the incident wave while
+  it crosses the box (the look-ahead misses the `post_h` corrections of the
+  H edges just outside the box, an error of the order of the incident
+  energy in one cell layer while the wave is on the surface). Once the
+  pulse has left the box the incident field is zero everywhere and `W` is
+  exactly the scattered-field energy. `Simulation::run_limits` therefore
+  moves the excitation end to `Delay + duration + PlaneWave::transit_time`
+  (far-corner `ξ` at the background speed, +10 % for numerical
+  dispersion), so the criterion judges only the scattered field, relative
+  to the largest total energy seen (normally the incident pulse in the
+  box). Measured: an empty box in ε_r = 4 stops at the first check after
+  the transit with `W/W_max` = −133 dB.
 - `Results` records the reason it stopped (`Engine::run_until` returns a
   `RunOutcome` with a `StopReason`: energy decay, max timesteps, aborted
   by the progress callback, or diverged).
@@ -697,9 +710,19 @@ recorded near fields, by the surface equivalence principle (Balanis,
 - **Far field.** With the e^{jωt} convention of the DFTs and phase
   centre c (the box centre by default):
   N = ∮ J e^{jk r̂·(r'−c)} dS' and L = ∮ M e^{jk r̂·(r'−c)} dS'. Then
-  rE_θ e^{jkr} = −jk/(4π)·(L_φ + η0 N_θ),
-  rE_φ e^{jkr} = +jk/(4π)·(L_θ − η0 N_φ), and
-  U = (|rE_θ|² + |rE_φ|²)/(2η0).
+  rE_θ e^{jkr} = −jk/(4π)·(L_φ + η N_θ),
+  rE_φ e^{jkr} = +jk/(4π)·(L_θ − η N_φ), and
+  U = (|rE_θ|² + |rE_φ|²)/(2η), with k = ω√(ε_r μ_r)/c0 and
+  η = η0·√(μ_r/ε_r) of the background.
+- **Background.** The box must lie in one homogeneous, isotropic,
+  lossless medium (`Nf2ff::with_background`, `Nf2ffResult::with_background`,
+  `Nf2ffBox::background`). `Simulation::add_nf2ff` detects it from the
+  engine coefficients of the recorded faces (`engine::Medium::of_box_surface`
+  sampling: tangential E on the face, crossing H, tangential H half a cell
+  either side; `C = (1 + ca)·dt/(2cb)`, `G = (1 − ca)/cb`, alike for H;
+  PEC edges skipped; relative tolerance 1e-4). Lossy → `Unsupported`
+  (no far field in a lossy medium; an explicit background uses the lossless
+  part); inhomogeneous → warning and vacuum.
 - **Power, directivity and gain.**
   - P_rad is the box Poynting flux ½ Re ∮ n̂·(E × H*) dS = −½ Re ∮ E_t·J* dS.
     `radiated_power_far` integrates U over the sphere instead, as a check.
@@ -724,12 +747,17 @@ recorded near fields, by the surface equivalence principle (Balanis,
   | Monopole over a PEC boundary with a PEC mirror | D = 2.987 = 2 × dipole |
   | Half-wave dipole (L = 0.475 λ) | D = 1.650, P_far/P_box = 1.0001, P_box/P_acc = 1.0013 |
   | Patch antenna example | broadside D = 6.70 dBi |
+  | Short dipole in ε_r = 4 (5 mm cells, λ_med/30) | D = 1.490, P_box/P_Hertz = 0.997, \|rE_θ\|/Hertz = 0.995 |
+  | Same vs vacuum at equal moment Il | P ratio 2.002 (√ε_r), \|rE\| ratio 1.000 |
+
+  (P_Hertz = η k² \|Il\|²/(12π) with the measured port current and the
+  gap length; R_rad = 2P/\|I\|² = 0.438 Ω against (2π/3)·η·(l/λ)² = 0.438 Ω.)
 
   The small short-dipole error comes from the second-order co-location
   of the strong reactive near field close to the source. It shrinks when
   the box is moved further out; the transform itself is exact for any
   closed surface.
-- **Not done.** The background medium is vacuum only (η0, k0).
+- **Not done.** Lossy and inhomogeneous (layered) backgrounds.
   Frequency-dependent phase centres and openEMS's nf2ff file format are
   out of scope: openEMS's nf2ff code is GPL and was not consulted.
 
@@ -764,14 +792,40 @@ csx `PlaneWave` excitations (type 10) are injected with the TF/SF technique
   discrete wave).
 - **Reference.** `E_inc = Excite·a(t − Delay)` at the box corner the wave
   enters first; the 1-D source runs ahead by the numerical travel time.
+- **Background.** Homogeneous, isotropic, possibly lossy (`ε_r`, `μ_r`,
+  `κ`, `σ_m`). The compile step takes it from the effective edge materials
+  of the box faces not on the domain boundary (`compile::planewave`,
+  same sampling as §5.10; inhomogeneous → compile error naming the plane
+  wave). `PlaneWave::new` checks that the coefficients of every edge
+  taking part in a correction match the spec's background (to `f32`
+  rounding) and fails otherwise. The 1-D grid uses the background speed,
+  impedance and the engine's semi-implicit loss terms, so along a mesh
+  axis it is the exact discrete 3-D wave, attenuation included. In a lossy
+  background the source amplitude is raised by the grid's attenuation over
+  the `m0` cells to the reference corner (exact at the matching
+  frequency; propagation constant from
+  `sinh(γΔξ/2) = √(A_e A_h)/(2r)`, `A = 2j·sin(ωdt/2) + 2s·cos(ωdt/2)`),
+  and the matched layer is preceded by a 256-cell C² taper to a
+  distortionless line (equal E and H loss), on which the equal-loss layer is
+  reflectionless (without it the layer's reflection put a 3e-3 backward
+  wave into the incident field).
 - **Measured** (`tests/planewave.rs`, 1 mm cubic mesh, 8–16 GHz pulse):
   scattered-field leakage −130 dB at normal incidence and along the
   diagonals, −77 dB at 30°, about −55 dB on a mesh graded ±20 %. A PEC
   plate and a dielectric slab inside the box give the exact discrete (Yee)
-  reflection to 5e-5 and 4e-5.
-- **Limitations.** Homogeneous lossless background around the box (vacuum
-  from csx; `PlaneWaveSpec::with_background` in the engine API), box clear of
-  CPML/Mur, injected energy not tracked by `Engine::energy`.
+  reflection to 5e-5 and 4e-5. In an ε_r = 4 background (4 GHz, the same
+  cells per wavelength): leakage −131 dB normal, −130 dB (1,1,1), −77 dB
+  at 30°; inside the box E(x2)/E(x1) equals the discrete propagation factor
+  to 1e-7 and |E/H| the discrete impedance η0/2·cos(K/2) to 1e-7. Lossy
+  background (ε_r = 2, κ = 0.13 S/m, tan δ ≈ 0.2): leakage −130 dB,
+  propagation factor (attenuation included) to 2e-5, E_inc(r_ref)/a at the
+  matching frequency 1 to 2e-6. A csx model in ε_r = 4: background
+  detected exactly, probe E within 1e-3 of a(t − ξ/v).
+- **Energy** see §5.8: the end criterion waits for the transit of the
+  incident pulse through the box.
+- **Limitations.** Homogeneous isotropic background around the box
+  (dispersive backgrounds not detected; lossy backgrounds not supported by
+  the periodic-cell variant), box clear of CPML/Mur.
 
 ### 5.12 SAR
 

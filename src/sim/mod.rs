@@ -430,11 +430,16 @@ impl Simulation {
     /// Adds a near-field to far-field box (see [`crate::nf2ff`]), with its
     /// corners in drawing units snapped to the nearest mesh lines. Call it
     /// before running; the box records from the next step on. A box
-    /// reaching into a PML adds a [warning](Self::warnings).
+    /// reaching into a PML adds a [warning](Self::warnings). Unless
+    /// [`Nf2ffBox::background`] sets it, the background medium is detected
+    /// from the materials on the recorded faces (see
+    /// [`crate::nf2ff#requirements`]); an inhomogeneous surface adds a
+    /// warning and falls back to vacuum.
     ///
     /// # Errors
     /// See [`Nf2ff::with_faces`](crate::nf2ff::Nf2ff::with_faces);
-    /// [`Error::Unsupported`](crate::Error::Unsupported) on a cylindrical grid.
+    /// [`Error::Unsupported`](crate::Error::Unsupported) on a cylindrical
+    /// grid or in a lossy background.
     pub fn add_nf2ff(&mut self, b: &Nf2ffBox) -> Result<Nf2ffHandle> {
         if self.bloch.is_some() {
             return Err(crate::Error::Unsupported(
@@ -464,6 +469,47 @@ impl Simulation {
                 ));
             }
         }
+        let mut op = op;
+        if b.get_background().is_none() {
+            let mut faces = [false; 6];
+            for f in op.faces() {
+                faces[f.index()] = true;
+            }
+            // (Faces on a mirror plane are not recorded.)
+            let co = self.engine.coefficients();
+            let media = crate::engine::medium::CoefficientMedia {
+                grid: self.engine.grid(),
+                co: &co,
+                dt: self.engine.dt(),
+            };
+            let found = crate::engine::medium::surface_medium(
+                self.engine.grid(),
+                &media,
+                op.lo(),
+                op.hi(),
+                faces,
+            );
+            drop(co);
+            match found {
+                Ok(Some(m)) if !m.is_lossless() => {
+                    return Err(crate::Error::Unsupported(format!(
+                        "NF2FF box in a lossy background (kappa = {:.4e} S/m, sigma_m = {:.4e} \
+                         Ohm/m): there is no far field in a lossy medium; set \
+                         Nf2ffBox::background to use the lossless part",
+                        m.kappa, m.sigma_m
+                    )));
+                }
+                // (Values within f32 rounding of vacuum stay exactly vacuum.)
+                Ok(Some(m)) if (m.eps_r - 1.0).abs() > 1e-6 || (m.mu_r - 1.0).abs() > 1e-6 => {
+                    op = op.with_background(m.eps_r, m.mu_r)?;
+                }
+                Ok(_) => {}
+                Err(e) => self.warnings.push(format!(
+                    "NF2FF box: {e}; the transform assumes vacuum (keep the faces in one \
+                     homogeneous medium, or set Nf2ffBox::background)"
+                )),
+            }
+        }
         let op = self.engine.add_operator(op);
         Ok(Nf2ffHandle { op, mirrors })
     }
@@ -488,12 +534,25 @@ impl Simulation {
     /// [`RunLimits::max_timesteps`]), the settings' end criteria, and
     /// the waveform's [`duration`](crate::Waveform::duration) as the
     /// excitation end (`∞` for a waveform that never ends, none without a
-    /// waveform).
+    /// waveform). With plane-wave sources the excitation end is pushed
+    /// back to when the incident pulse has left every total-field box
+    /// (`Delay + duration +`
+    /// [`PlaneWave::transit_time`](crate::engine::PlaneWave::transit_time)),
+    /// so the energy criterion judges the scattered field only (see
+    /// [`crate::engine::planewave`] on energy).
     pub fn run_limits(&self) -> RunLimits {
-        let end = self
-            .fdtd
-            .get_waveform()
-            .map(|w| w.duration().unwrap_or(f64::INFINITY));
+        let end = self.fdtd.get_waveform().map(|w| {
+            let d = w.duration().unwrap_or(f64::INFINITY);
+            self.mapped.plane_waves.iter().fold(d, |end, (name, h)| {
+                let delay = self
+                    .sources
+                    .plane_waves
+                    .iter()
+                    .filter(|p| &p.name == name)
+                    .fold(0.0f64, |m, p| m.max(p.delay));
+                end.max(delay + d + self.engine.operator(h).transit_time())
+            })
+        });
         RunLimits::new(self.fdtd.timestep_limit(self.engine.dt()))
             .end_criteria(self.fdtd.get_end_criteria().copied())
             .excitation_end(end)

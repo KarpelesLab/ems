@@ -34,11 +34,18 @@
 //! integrals use the trapezoidal rule over the face nodes (exact for
 //! fields linear between nodes, on any non-uniform mesh).
 //!
+//! `k = ω√(ε_r μ_r)/c0` and `η = Z0·√(μ_r/ε_r)` are those of the
+//! homogeneous, lossless background the box lies in (vacuum by default;
+//! [`Nf2ff::with_background`], [`Nf2ffResult::with_background`],
+//! [`Nf2ffBox::background`]). [`Simulation::add_nf2ff`](crate::Simulation::add_nf2ff)
+//! detects it from the material on the box faces (see
+//! [Requirements](self#requirements)).
+//!
 //! * **Radiated power** [`radiated_power`](Nf2ffResult::radiated_power) is
 //!   the Poynting flux `½ Re ∮ (E × H*)·n̂ dS` through the box. It equals
 //!   the integral of `U` over the sphere
 //!   ([`radiated_power_far`](Nf2ffResult::radiated_power_far)) when the box
-//!   is in lossless free space.
+//!   lies in a lossless background.
 //! * **Directivity** `D = 4π U / P_rad` (with the box flux).
 //! * **Gain** `G = 4π U / P_acc` with the power accepted by the feed, e.g.
 //!   [`PortResult::accepted_power`](crate::post::PortResult::accepted_power)
@@ -54,9 +61,19 @@
 //!
 //! # Requirements
 //!
-//! * The box must enclose all sources and scatterers and lie in vacuum
-//!   (η = Z0, k = ω/c0). Keep it a few cells inside the PML: the faces must
-//!   lie on interior mesh planes (index `1 … n−2`).
+//! * The box must enclose all sources and scatterers and lie in one
+//!   homogeneous, lossless, isotropic medium. Keep it a few cells inside
+//!   the PML: the faces must lie on interior mesh planes (index `1 … n−2`).
+//!   [`Simulation::add_nf2ff`](crate::Simulation::add_nf2ff) takes the
+//!   background from the engine coefficients of the recorded faces
+//!   ([`Medium::of_box_surface`](crate::engine::Medium::of_box_surface)
+//!   rules, faces on a mirror plane excluded) unless
+//!   [`Nf2ffBox::background`] sets it: a homogeneous lossless medium is
+//!   used, a lossy one is an
+//!   [`Error::Unsupported`] (there is no far
+//!   field in a lossy medium; set the background explicitly to use the
+//!   lossless part), and an inhomogeneous surface adds a
+//!   [warning](crate::Simulation::warnings) and falls back to vacuum.
 //! * Accuracy is limited by the second-order co-location of E and H on
 //!   the faces. Very close to a small source, where the reactive near
 //!   field dominates, this costs about 1 % of radiated power; a box a
@@ -98,8 +115,8 @@ use core::f64::consts::PI;
 use crate::axis::Axis;
 use crate::constants::{C0, Z0};
 use crate::engine::{
-    DumpPosition, DumpQuantity, DumpRegion, FieldSampler, Fields, FreqDump, Grid, Hooks, Operator,
-    OperatorHandle, StepContext,
+    DumpPosition, DumpQuantity, DumpRegion, FieldSampler, Fields, FreqDump, Grid, Hooks, Medium,
+    Operator, OperatorHandle, StepContext,
 };
 use crate::fdtd::Face;
 use crate::post::Complex64;
@@ -159,6 +176,18 @@ pub struct Nf2ff {
     freqs: Vec<f64>,
     faces: Vec<FaceDft>,
     center: [f64; 3],
+    medium: Medium,
+}
+
+/// Checks a lossless background.
+fn lossless(eps_r: f64, mu_r: f64) -> Result<Medium> {
+    let m = Medium::lossless(eps_r, mu_r);
+    m.validate().map_err(|_| {
+        Error::Invalid(format!(
+            "NF2FF: invalid background eps_r = {eps_r}, mu_r = {mu_r}"
+        ))
+    })?;
+    Ok(m)
 }
 
 impl Nf2ff {
@@ -255,7 +284,23 @@ impl Nf2ff {
             freqs,
             faces: out,
             center,
+            medium: Medium::VACUUM,
         })
+    }
+
+    /// Sets the homogeneous lossless background the box lies in (default
+    /// vacuum); see the [module docs](self#method).
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] unless both values are positive and finite.
+    pub fn with_background(mut self, eps_r: f64, mu_r: f64) -> Result<Self> {
+        self.medium = lossless(eps_r, mu_r)?;
+        Ok(self)
+    }
+
+    /// The background medium.
+    pub fn background(&self) -> Medium {
+        self.medium
     }
 
     /// Samples only every `k`-th state (`k ≥ 1`, default 1); see
@@ -306,6 +351,7 @@ impl Nf2ff {
             center: self.center,
             faces,
             mirrors: Vec::new(),
+            medium: self.medium,
         }
     }
 }
@@ -340,6 +386,7 @@ pub struct Nf2ffBox {
     faces: [bool; 6],
     mirrors: Vec<(Axis, f64, MirrorKind)>,
     interval: Option<u64>,
+    background: Option<(f64, f64)>,
 }
 
 impl Nf2ffBox {
@@ -354,7 +401,21 @@ impl Nf2ffBox {
             faces: [true; 6],
             mirrors: Vec::new(),
             interval: None,
+            background: None,
         }
+    }
+
+    /// Uses the lossless background `eps_r`, `mu_r` instead of detecting
+    /// it from the materials on the box faces (see the
+    /// [module docs](self#requirements)).
+    pub fn background(mut self, eps_r: f64, mu_r: f64) -> Self {
+        self.background = Some((eps_r, mu_r));
+        self
+    }
+
+    /// The explicit background, if set.
+    pub fn get_background(&self) -> Option<(f64, f64)> {
+        self.background
     }
 
     /// Records only the faces with `faces[f.index()]` set.
@@ -452,8 +513,11 @@ impl Nf2ffBox {
             }
             mirrors.push(Mirror::new(ax, p, kind));
         }
-        let op = Nf2ff::with_faces(grid, lo, hi, self.freqs.clone(), faces)?
+        let mut op = Nf2ff::with_faces(grid, lo, hi, self.freqs.clone(), faces)?
             .interval(self.interval.unwrap_or(default_interval));
+        if let Some((e, m)) = self.background {
+            op = op.with_background(e, m)?;
+        }
         Ok((op, mirrors))
     }
 }
@@ -588,9 +652,17 @@ pub struct FarField {
 
 impl FarField {
     /// Radiation intensity `U = (|rE_θ|² + |rE_φ|²)/(2η0)` (W/sr for peak
-    /// phasors).
+    /// phasors) in vacuum; in another background use
+    /// [`intensity_in`](Self::intensity_in) or
+    /// [`Nf2ffResult::radiation_intensity`].
     pub fn intensity(&self) -> f64 {
-        (self.e_theta.norm_sqr() + self.e_phi.norm_sqr()) / (2.0 * Z0)
+        self.intensity_in(Z0)
+    }
+
+    /// Radiation intensity `(|rE_θ|² + |rE_φ|²)/(2η)` in a medium of wave
+    /// impedance `eta` \[Ω\] (e.g. [`Nf2ffResult::wave_impedance`]).
+    pub fn intensity_in(&self, eta: f64) -> f64 {
+        (self.e_theta.norm_sqr() + self.e_phi.norm_sqr()) / (2.0 * eta)
     }
 
     /// The field `[E_θ, E_φ]` at distance `r` \[m\] for wavenumber `k`
@@ -629,6 +701,7 @@ pub struct Nf2ffResult {
     center: [f64; 3],
     faces: Vec<FaceData>,
     mirrors: Vec<Mirror>,
+    medium: Medium,
 }
 
 /// Unit vectors `(r̂, θ̂, φ̂)`.
@@ -652,9 +725,30 @@ impl Nf2ffResult {
         &self.freqs
     }
 
-    /// Free-space wavenumber `2πf/c0` at frequency index `k`.
+    /// Wavenumber `2πf·√(ε_r μ_r)/c0` of the background at frequency
+    /// index `k` (`2πf/c0` in vacuum).
     pub fn wavenumber(&self, k: usize) -> f64 {
-        2.0 * PI * self.freqs[k] / C0
+        2.0 * PI * self.freqs[k] * (self.medium.eps_r * self.medium.mu_r).sqrt() / C0
+    }
+
+    /// Wave impedance `η = Z0·√(μ_r/ε_r)` of the background \[Ω\].
+    pub fn wave_impedance(&self) -> f64 {
+        self.medium.impedance()
+    }
+
+    /// The background medium (lossless).
+    pub fn background(&self) -> Medium {
+        self.medium
+    }
+
+    /// Evaluates the far field in the lossless background `eps_r`, `mu_r`
+    /// (changes `k` and `η`; the recorded near fields are kept).
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] unless both values are positive and finite.
+    pub fn with_background(mut self, eps_r: f64, mu_r: f64) -> Result<Self> {
+        self.medium = lossless(eps_r, mu_r)?;
+        Ok(self)
     }
 
     /// The phase centre \[m\] (default: the box centre).
@@ -780,14 +874,15 @@ impl Nf2ffResult {
         let (r, t, p) = basis(theta, phi);
         let (n, l) = self.radiation_vectors(k, r);
         let kw = self.wavenumber(k);
+        let eta = self.wave_impedance();
         let a = Complex64::new(0.0, kw / (4.0 * PI));
         let (nt, np) = (dot(n, t), dot(n, p));
         let (lt, lp) = (dot(l, t), dot(l, p));
         FarField {
             theta,
             phi,
-            e_theta: -(a * (lp + nt * Z0)),
-            e_phi: a * (lt - np * Z0),
+            e_theta: -(a * (lp + nt * eta)),
+            e_phi: a * (lt - np * eta),
         }
     }
 
@@ -806,9 +901,10 @@ impl Nf2ffResult {
         phis.iter().map(|&p| self.far_field(k, theta, p)).collect()
     }
 
-    /// Radiation intensity `U(θ, φ)`.
+    /// Radiation intensity `U(θ, φ)` (with the background's `η`).
     pub fn radiation_intensity(&self, k: usize, theta: f64, phi: f64) -> f64 {
-        self.far_field(k, theta, phi).intensity()
+        self.far_field(k, theta, phi)
+            .intensity_in(self.wave_impedance())
     }
 
     /// Radiated power: the Poynting flux `½ Re ∮(E × H*)·n̂ dS` out of the
@@ -993,6 +1089,7 @@ mod tests {
             center: [0.0; 3],
             faces,
             mirrors: Vec::new(),
+            medium: Medium::VACUUM,
         };
         // P_rad of the dipole: η (kIl)²/(12π).
         let p_exact = Z0 * kw * kw / (12.0 * PI);

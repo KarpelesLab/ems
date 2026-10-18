@@ -52,7 +52,8 @@
 //!
 //! where `r_ref` is the box corner the wave enters first (the corner with
 //! the smallest `k̂·r`), `E0` the polarisation vector (V/m, perpendicular
-//! to `k̂`) and `η = Z0·√(μ_r/ε_r)` the background wave impedance.
+//! to `k̂`) and `η = Z0·√(μ_r/ε_r)` the background wave impedance (see
+//! [below](self#background-medium)).
 //!
 //! `F_E` and `F_H` come from an **auxiliary 1-D Yee grid** along `k̂`
 //! (Taflove & Hagness ch. 5, incident-wave source condition) using the
@@ -87,22 +88,67 @@
 //! `m0·Δξ·k/ω_m` so that `F_E(0, t) = a(t)` at `f_m` (exactly, for all
 //! frequencies, in the axis-aligned uniform case).
 //!
+//! # Background medium
+//!
+//! The incident wave is that of the homogeneous, isotropic background
+//! given by the spec (`ε_r`, `μ_r`, and the conductivities `κ`, `σ_m`):
+//! the auxiliary grid runs at its speed `v = c0/√(ε_r μ_r)` and `η` is its
+//! (lossless-part) impedance. [`PlaneWave::new`] checks that the update
+//! coefficients of every edge taking part in a correction are those of
+//! that background (to `f32` rounding) and fails otherwise, so a
+//! background that differs from the spec, or is not homogeneous over the
+//! box surface (a substrate crossing it, a lumped element on it), is an
+//! error rather than a leaking source. [`Medium::of_box_surface`] finds
+//! the background of an engine; [`crate::Simulation`] does this
+//! automatically (from the compiled materials, [`crate::compile::planewave`]).
+//!
+//! # Lossy background
+//!
+//! With conductivities, the auxiliary grid uses the engine's semi-implicit
+//! loss terms (`ca = (1 − s)/(1 + s)`, `cb ∝ 1/(1 + s)` with
+//! `s = κ·dt/(2ε)`, and alike for H with `σ_m·dt/(2μ)`), so along a mesh
+//! axis on a uniform mesh it is again the exact discrete 3-D plane wave,
+//! attenuation included. The auxiliary source sits `m0` cells before the
+//! reference corner; its amplitude is raised by the grid's own attenuation
+//! over that distance at the matching frequency (and advanced by the
+//! phase delay), so `E_inc(r_ref) = E0·a(t)` holds exactly at `f_m` and to
+//! `O(Δα·m0Δξ)` elsewhere (`Δα` the variation of the attenuation constant
+//! over the band; `m0` is a few cells). For oblique incidence the spacing
+//! `Δξ` is matched with the lossless dispersion relation.
+//!
+//! # Energy
+//!
+//! The injected wave is real field energy: inside the box the fields are
+//! the total fields, so [`Engine::energy`](super::Engine::energy) includes
+//! the incident wave while it crosses the box (the source is not
+//! energy-conserving, like any source, and the energy look-ahead does not
+//! see the `post_h` corrections of the H edges just outside the box, which
+//! is an error of the order of the incident energy in one cell layer while
+//! the wave is on the surface). Once the incident pulse has left the box,
+//! the incident field is zero everywhere and the engine energy is exactly
+//! the scattered-field energy. [`PlaneWave::transit_time`] gives that
+//! time; [`crate::Simulation`] adds it (and the excitation delay) to the
+//! excitation end of its [`RunLimits`](super::RunLimits), so the energy end
+//! criterion only judges the scattered field, relative to the largest
+//! total energy seen (normally the incident pulse inside the box).
+//!
 //! # Limitations
 //!
-//! * The background (`ε_r`, `μ_r`, lossless) must be homogeneous around the
-//!   box surface; scatterers belong strictly inside the box.
+//! * The background must be homogeneous and isotropic around the box
+//!   surface; scatterers belong strictly inside the box. Dispersive
+//!   (Debye/Lorentz) backgrounds are not supported.
 //! * The box must stay clear of absorbing boundaries (CPML, Mur): the
 //!   corrections are applied in the serial `post_h` / `post_e` hooks and
 //!   assume the plain Yee update on the surface.
-//! * The energy reported by [`Engine::energy`](super::Engine::energy) does
-//!   not account for the injected wave.
 
 use super::Engine;
 use super::excite::Amplitude;
 use super::fields::Fields;
+use super::medium::{CoefficientMedia, EdgeMedia, Medium};
 use super::operator::{Hooks, Operator, StepContext};
 use crate::axis::Axis;
-use crate::constants::{C0, Z0};
+use crate::constants::{EPS0, MU0};
+use crate::post::Complex64;
 use crate::{Error, Result};
 
 /// Geometry and physics of a [`PlaneWave`] (see the [module docs](self)).
@@ -121,6 +167,10 @@ pub struct PlaneWaveSpec {
     pub eps_r: f64,
     /// Relative permeability of the background around the box (default 1).
     pub mu_r: f64,
+    /// Electric conductivity of the background \[S/m\] (default 0).
+    pub kappa: f64,
+    /// Magnetic conductivity of the background \[Ω/m\] (default 0).
+    pub sigma_m: f64,
     /// Frequency \[Hz\] at which the auxiliary grid's dispersion is matched
     /// to the 3-D grid along `direction`; `0` (default) picks 20 mean cells
     /// per wavelength.
@@ -143,16 +193,46 @@ impl PlaneWaveSpec {
             polarization,
             eps_r: 1.0,
             mu_r: 1.0,
+            kappa: 0.0,
+            sigma_m: 0.0,
             match_frequency: 0.0,
         }
     }
 
-    /// Sets the background material around the box.
+    /// Sets the (lossless part of the) background material around the
+    /// box.
     #[must_use]
     pub fn with_background(mut self, eps_r: f64, mu_r: f64) -> Self {
         self.eps_r = eps_r;
         self.mu_r = mu_r;
         self
+    }
+
+    /// Sets the background conductivities: electric `kappa` \[S/m\] and
+    /// magnetic `sigma_m` \[Ω/m\] (see the
+    /// [module docs](self#lossy-background)).
+    #[must_use]
+    pub fn with_losses(mut self, kappa: f64, sigma_m: f64) -> Self {
+        self.kappa = kappa;
+        self.sigma_m = sigma_m;
+        self
+    }
+
+    /// Sets the whole background medium.
+    #[must_use]
+    pub fn with_medium(self, m: Medium) -> Self {
+        self.with_background(m.eps_r, m.mu_r)
+            .with_losses(m.kappa, m.sigma_m)
+    }
+
+    /// The background medium.
+    pub fn medium(&self) -> Medium {
+        Medium {
+            eps_r: self.eps_r,
+            mu_r: self.mu_r,
+            kappa: self.kappa,
+            sigma_m: self.sigma_m,
+        }
     }
 
     /// Sets the dispersion-matching frequency \[Hz\] (`0`: default).
@@ -177,6 +257,9 @@ struct Correction {
 const AUX_PML: usize = 64;
 /// Design round-trip reflection of that layer.
 const AUX_PML_R: f64 = 1e-12;
+/// Cells of the taper from a lossy background to a distortionless line
+/// before that layer (lossy backgrounds only).
+const AUX_TAPER: usize = 256;
 
 /// Total-field / scattered-field plane-wave source; see the
 /// [module docs](self).
@@ -204,6 +287,9 @@ pub struct PlaneWave {
     dxi: f64,
     m0: usize,
     lead: f64,
+    gain: f64,
+    transit: f64,
+    main: usize,
     e: Vec<f64>,
     h: Vec<f64>,
     ca: Vec<f64>,
@@ -304,6 +390,53 @@ fn match_spacing(dt: f64, v: f64, f: f64, dir: [f64; 3], cell: [f64; 3]) -> Resu
     Ok((bisect(lo, hi, g), k))
 }
 
+/// Propagation constant `γ·Δξ` of the (lossy) auxiliary grid at
+/// `ω·dt = wdt`, for per-step loss numbers `se`, `sm` and Courant number
+/// `r = v·dt/Δξ`: with `A = 2j·sin(ωdt/2) + 2s·cos(ωdt/2)` for either
+/// field, `sinh(γΔξ/2) = √(A_e·A_h)/(2r)`; the root with `Re γ ≥ 0`
+/// (decaying downstream).
+fn aux_gamma(wdt: f64, se: f64, sm: f64, r: f64) -> Complex64 {
+    let (sn, cs) = (0.5 * wdt).sin_cos();
+    let a = |s: f64| Complex64::new(2.0 * s * cs, 2.0 * sn);
+    let z = (a(se) * a(sm)).sqrt() / (2.0 * r);
+    // asinh z = ln(z + √(z² + 1)).
+    let g = (z + (z * z + 1.0).sqrt()).ln() * 2.0;
+    if g.re < 0.0 { -g } else { g }
+}
+
+/// The medium an edge's coefficients correspond to, for error messages.
+fn describe(
+    engine: &Engine,
+    co: &super::Coefficients,
+    what: &str,
+    axis: Axis,
+    node: [usize; 3],
+    e: bool,
+) -> String {
+    let m = CoefficientMedia {
+        grid: engine.grid(),
+        co,
+        dt: engine.dt(),
+    };
+    let v = if e {
+        m.e_edge(axis, node)
+    } else {
+        m.h_edge(axis, node)
+    };
+    let (name, loss) = if e {
+        ("eps_r", "kappa")
+    } else {
+        ("mu_r", "sigma_m")
+    };
+    match v {
+        Some((x, l)) => format!(
+            "the {what} edge along {axis} at {node:?} on the box surface has {name} = {x:.6}, \
+             {loss} = {l:.6e}"
+        ),
+        None => format!("the {what} edge along {axis} at {node:?} on the box surface is PEC"),
+    }
+}
+
 /// 4-point Lagrange stencil for fractional node position `s ≥ 1`: first
 /// node and weights.
 fn stencil(s: f64) -> (usize, [f64; 4]) {
@@ -339,8 +472,10 @@ impl PlaneWave {
     /// # Errors
     /// [`Error::Invalid`] for a box outside the mesh or without volume, a
     /// zero or non-finite direction, a polarisation that is zero or not
-    /// perpendicular to the direction, an invalid background, or a
-    /// matching frequency the mesh cannot resolve;
+    /// perpendicular to the direction, an invalid background or one that
+    /// does not match the engine's coefficients on the box surface (see
+    /// the [module docs](self#background-medium)), or a matching frequency
+    /// the mesh cannot resolve;
     /// [`Error::Unsupported`] on a cylindrical grid.
     pub fn new(
         engine: &Engine,
@@ -376,16 +511,32 @@ impl PlaneWave {
                  direction {k_hat:?}"
             )));
         }
-        let (er, mr) = (spec.eps_r, spec.mu_r);
-        if !(er.is_finite() && er > 0.0 && mr.is_finite() && mr > 0.0) {
+        let medium = spec.medium();
+        if medium.validate().is_err() {
             return Err(Error::Invalid(format!(
-                "plane wave: invalid background eps_r = {er}, mu_r = {mr}"
+                "plane wave: invalid background eps_r = {}, mu_r = {}, kappa = {}, sigma_m = {}",
+                spec.eps_r, spec.mu_r, spec.kappa, spec.sigma_m
             )));
         }
-        let v = C0 / (er * mr).sqrt();
-        let eta = Z0 * (mr / er).sqrt();
+        let (er, mr) = (spec.eps_r, spec.mu_r);
+        let v = medium.velocity();
+        let eta = medium.impedance();
         let h0 = cross(k_hat, e0).map(|x| x / eta);
         let dt = engine.dt();
+        // Per-step loss numbers of the background, `G·dt/(2C)`, `R·dt/(2L)`.
+        let se = spec.kappa * dt / (2.0 * EPS0 * er);
+        let sm = spec.sigma_m * dt / (2.0 * MU0 * mr);
+        // Coefficients the background gives an edge of geometry factor
+        // `geo`, as the coefficient builder computes them.
+        let expect = |geo: f64, c: f64, g: f64| {
+            let (cap, cond) = (c * geo, g * geo);
+            let den = cap + 0.5 * cond * dt;
+            (((cap - 0.5 * cond * dt) / den) as f32, (dt / den) as f32)
+        };
+        let matches = |(a, b): (f32, f32), (ea, eb): (f32, f32)| {
+            (a - ea).abs() <= 1e-5 && (b - eb).abs() <= 1e-5 * eb.abs()
+        };
+        let mut mismatch: Option<String> = None;
         let cell = Axis::ALL.map(|ax| {
             let a = ax.index();
             let l = grid.lines(ax);
@@ -457,6 +608,7 @@ impl PlaneWave {
                         let mut p = [0; 3];
                         (p[ai], p[bi], p[ci]) = (pa, pb, pc);
                         let cbv = cb_a[grid.index(p)] as f64;
+                        let mut e_checked = false;
                         // The H neighbours in the circulation of u_a(p),
                         // with their signs (see the E kernel).
                         let minus = |t: usize| {
@@ -475,6 +627,26 @@ impl PlaneWave {
                                 continue;
                             }
                             let di = d.index();
+                            if mismatch.is_none() && cbv != 0.0 && !e_checked {
+                                e_checked = true;
+                                let geo = grid.dual_delta(b, pb) * grid.dual_delta(c, pc)
+                                    / grid.delta(a, pa);
+                                let got = (co.ca(a)[grid.index(p)], co.cb(a)[grid.index(p)]);
+                                if !matches(got, expect(geo, EPS0 * er, spec.kappa)) {
+                                    mismatch = Some(describe(engine, &co, "E", a, p, true));
+                                }
+                            }
+                            let dbv = co.db(d)[grid.index(q)] as f64;
+                            if mismatch.is_none() && dbv != 0.0 {
+                                let (de, df) = d.others();
+                                let geo = grid.delta(de, q[de.index()])
+                                    * grid.delta(df, q[df.index()])
+                                    / grid.dual_delta(d, q[di]);
+                                let got = (co.da(d)[grid.index(q)], co.db(d)[grid.index(q)]);
+                                if !matches(got, expect(geo, MU0 * mr, spec.sigma_m)) {
+                                    mismatch = Some(describe(engine, &co, "H", d, q, false));
+                                }
+                            }
                             if cbv != 0.0 && h0[di] != 0.0 {
                                 e_raw.push(Raw {
                                     axis: a,
@@ -483,7 +655,6 @@ impl PlaneWave {
                                     xi: xi(h_pos(d, q)),
                                 });
                             }
-                            let dbv = co.db(d)[grid.index(q)] as f64;
                             if dbv != 0.0 && ea != 0.0 {
                                 h_raw.push(Raw {
                                     axis: d,
@@ -498,6 +669,13 @@ impl PlaneWave {
             }
         }
         drop(co);
+        if let Some(m) = mismatch {
+            return Err(Error::Invalid(format!(
+                "plane wave: {m}, not the background {medium:?} of the source; the medium \
+                 around the total-field box must be homogeneous and match \
+                 PlaneWaveSpec::with_background / with_losses"
+            )));
+        }
 
         // Auxiliary grid: E node m at ξ = (m − m0)·Δξ, H node m at
         // ξ = (m + ½ − m0)·Δξ.
@@ -522,25 +700,37 @@ impl PlaneWave {
         });
         let m0 = (-xi_min / dxi).ceil().max(0.0) as usize + 3;
         let main = (xi_dom / dxi).ceil() as usize + m0 + 4;
-        let nodes = main + AUX_PML + 1;
+        // The matched layer has equal (normalised) E and H losses, which is
+        // reflectionless only on a line with equal background losses (a
+        // distortionless line, impedance η at all frequencies). In a lossy
+        // background the smaller of the two losses is first raised to the
+        // larger one by a smooth (C²) taper.
+        let taper = if se == sm { 0 } else { AUX_TAPER };
+        let s_top = se.max(sm);
+        let pml0 = main + taper;
+        let nodes = pml0 + AUX_PML + 1;
         let r = v * dt / dxi;
         let smax = -AUX_PML_R.ln() * r / AUX_PML as f64;
-        let loss = |x: f64| {
-            if x > 0.0 {
-                smax * (x / AUX_PML as f64).powi(3)
+        let loss = |x: f64, bg: f64| {
+            let t = ((x - main as f64) / taper.max(1) as f64).clamp(0.0, 1.0);
+            let g = t * t * t * (10.0 - 15.0 * t + 6.0 * t * t);
+            let pml = x - pml0 as f64;
+            let p = if pml > 0.0 {
+                smax * (pml / AUX_PML as f64).powi(3)
             } else {
                 0.0
-            }
+            };
+            bg + (s_top - bg) * if taper == 0 { 0.0 } else { g } + p
         };
         let (mut ca, mut cb) = (vec![1.0; nodes], vec![0.0; nodes]);
         for m in 1..nodes - 1 {
-            let s = loss(m as f64 - main as f64);
+            let s = loss(m as f64, se);
             ca[m] = (1.0 - s) / (1.0 + s);
             cb[m] = r / (1.0 + s);
         }
         let (mut da, mut db) = (vec![1.0; nodes - 1], vec![0.0; nodes - 1]);
         for m in 0..nodes - 1 {
-            let s = loss(m as f64 + 0.5 - main as f64);
+            let s = loss(m as f64 + 0.5, sm);
             da[m] = (1.0 - s) / (1.0 + s);
             db[m] = r / (1.0 + s);
         }
@@ -559,6 +749,28 @@ impl PlaneWave {
                 .collect()
         };
         let omega = 2.0 * core::f64::consts::PI * f;
+        // The source runs m0 cells ahead: advance it by the travel time and,
+        // in a lossy background, raise it by the attenuation over that
+        // distance, both from the auxiliary grid's propagation constant at
+        // the matching frequency (exact there).
+        let (lead, gain) = if se == 0.0 && sm == 0.0 {
+            (m0 as f64 * dxi * k / omega, 1.0)
+        } else {
+            let g = aux_gamma(omega * dt, se, sm, r) / dxi;
+            let x = m0 as f64 * dxi;
+            (g.im * x / omega, (g.re * x).exp())
+        };
+        // Time for the wave to cross the box: the far corner's ξ at the
+        // background speed, plus 10 % for the numerical dispersion.
+        let far = (0..8).fold(0.0f64, |m, c: usize| {
+            let r = Axis::ALL.map(|ax| {
+                let l = grid.lines(ax);
+                let a = ax.index();
+                l[if c >> a & 1 == 1 { hi[a] } else { lo[a] }]
+            });
+            m.max(xi(r))
+        });
+        let transit = 1.1 * far / v;
         Ok(Self {
             spec: spec.clone(),
             amplitude: Box::new(amplitude),
@@ -568,7 +780,10 @@ impl PlaneWave {
             r_ref,
             dxi,
             m0,
-            lead: m0 as f64 * dxi * k / omega,
+            lead,
+            gain,
+            transit,
+            main,
             e: vec![0.0; nodes],
             h: vec![0.0; nodes - 1],
             ca,
@@ -601,6 +816,16 @@ impl PlaneWave {
         self.r_ref
     }
 
+    /// Time \[s\] the incident wave takes to cross the total-field box,
+    /// from the reference corner to the corner it leaves last, at the
+    /// background speed plus 10 % for the numerical dispersion. A pulse
+    /// that is over at the reference corner at time `t` has left the box
+    /// by `t + transit_time()`; from then on the fields everywhere are
+    /// scattered fields only (see the [module docs](self#energy)).
+    pub fn transit_time(&self) -> f64 {
+        self.transit
+    }
+
     /// Number of E and H edge corrections applied per step.
     pub fn corrections(&self) -> (usize, usize) {
         (self.e_corr.len(), self.h_corr.len())
@@ -615,7 +840,7 @@ impl PlaneWave {
             r[2] - self.r_ref[2],
         ];
         let s = dot(self.k_hat, d) / self.dxi + self.m0 as f64 - half;
-        (s >= 1.0 && s + 3.0 < (self.e.len() - AUX_PML - 1) as f64).then(|| stencil(s))
+        (s >= 1.0 && s + 3.0 < self.main as f64).then(|| stencil(s))
     }
 
     /// Incident E \[V/m\] at `r` \[m\] at the time of the engine's E
@@ -662,13 +887,36 @@ impl Operator for PlaneWave {
         for m in 1..last {
             self.e[m] = self.ca[m] * self.e[m] - self.cb[m] * (self.h[m] - self.h[m - 1]);
         }
-        self.e[0] = (self.amplitude)(ctx.e_time() + self.lead);
+        self.e[0] = self.gain * (self.amplitude)(ctx.e_time() + self.lead);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::C0;
+
+    /// The lossy auxiliary-grid propagation constant satisfies the
+    /// semi-implicit Yee relation `4·sin²(K/2) = Ω²με·Δ² − jΩμκ·cos(ωdt/2)·Δ²`
+    /// (`K = −jγΔ`, `Ω = (2/dt)·sin(ωdt/2)`), and decays downstream.
+    #[test]
+    fn aux_gamma_solves_the_dispersion_relation() {
+        let dt = 0.99e-3 / (C0 * 3f64.sqrt());
+        let (er, kappa, f) = (2.0f64, 0.13, 8e9 / 2f64.sqrt());
+        let se = kappa * dt / (2.0 * EPS0 * er);
+        let r = C0 / er.sqrt() * dt / 1e-3;
+        let g = aux_gamma(2.0 * core::f64::consts::PI * f * dt, se, 0.0, r);
+        let om = 2.0 / dt * (core::f64::consts::PI * f * dt).sin();
+        let c = (core::f64::consts::PI * f * dt).cos();
+        let x = Complex64::new(
+            om * om * MU0 * EPS0 * er * 1e-6,
+            -om * MU0 * kappa * c * 1e-6,
+        );
+        let sh = ((g * 0.5).exp() - (g * -0.5).exp()) * 0.5;
+        // sinh²(γΔ/2) = −sin²(K/2).
+        assert!((sh * sh + x * 0.25).norm() < 1e-12 * x.norm(), "{g:?}");
+        assert!(g.re > 0.0 && g.im > 0.0, "{g:?}");
+    }
 
     #[test]
     fn stencil_reproduces_cubics() {

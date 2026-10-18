@@ -957,6 +957,7 @@ pub fn compile(
         &mut warnings,
     );
 
+    planewave::set_backgrounds(&mut plane_waves, &grid, &materials)?;
     let (faces, (mut mur, mut pml)) = map_boundaries(fdtd);
     if cyl {
         cylindrical::drop_ignored_boundaries(&grid, &mut mur, &mut pml, &mut warnings);

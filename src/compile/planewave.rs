@@ -16,8 +16,16 @@
 //!   functions are not used for plane waves (warning if set).
 //! * The incident wave is `Excite·a(t − Delay − ξ/c)` with `ξ` the distance
 //!   along `PropDir` from the box corner the wave enters first (see
-//!   [`crate::engine::planewave`]); the background around the box is taken
-//!   to be vacuum.
+//!   [`crate::engine::planewave`]).
+//! * The background medium is the material on the box surface
+//!   (after rasterisation): the effective edge
+//!   materials of the faces that do not lie on the domain boundary must be
+//!   one homogeneous, isotropic medium (relative tolerance 1e-4, PEC edges
+//!   ignored); its `ε_r`, `μ_r`, `κ` and `σ_m` go into the spec (lossy
+//!   backgrounds included). Otherwise compiling fails with
+//!   [`Error::Invalid`] naming the plane wave and
+//!   the offending edges. Dispersive materials on the surface are not
+//!   detected (only their static part is seen).
 //! * The auxiliary grid's dispersion is matched at the centre of the
 //!   waveform: `f0` of a Gaussian (`fc/2` for `f0 = 0`), `f0` of a
 //!   sinusoid, otherwise half the maximum frequency of the settings, or
@@ -27,9 +35,11 @@ use csx::properties::ExcitationType;
 use csx::{ContinuousStructure, PropertyKind};
 
 use super::snap_primitive;
-use crate::engine::PlaneWaveSpec;
+use crate::engine::medium::{interior_faces, surface_medium};
+use crate::engine::{EdgeMaterials, Grid, PlaneWaveSpec};
 use crate::fdtd::Fdtd;
 use crate::waveform::Waveform;
+use crate::{Error, Result};
 
 /// A plane-wave excitation of the model (see the [module docs](self)).
 #[derive(Debug, Clone, PartialEq)]
@@ -133,4 +143,32 @@ pub(super) fn plane_wave_sources(
         }
     }
     out
+}
+
+/// Sets the background of every source to the medium on its box surface
+/// (see the [module docs](self)).
+///
+/// # Errors
+/// [`Error::Invalid`] if the surface of a box is not homogeneous.
+pub(super) fn set_backgrounds(
+    sources: &mut [PlaneWaveSource],
+    grid: &Grid,
+    materials: &EdgeMaterials,
+) -> Result<()> {
+    for s in sources {
+        let (lo, hi) = (s.spec.start, s.spec.stop);
+        let faces = interior_faces(grid, lo, hi);
+        match surface_medium(grid, materials, lo, hi, faces) {
+            Ok(Some(m)) => s.spec = s.spec.clone().with_medium(m),
+            Ok(None) => {}
+            Err(e) => {
+                return Err(Error::Invalid(format!(
+                    "plane wave {:?} (box {lo:?}..={hi:?}): {e}; the total-field box must \
+                     lie in a homogeneous background, with scatterers strictly inside",
+                    s.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
