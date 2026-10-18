@@ -205,7 +205,7 @@ impl DumpResult {
     /// The file type the DumpBox asks for (`FileType`: VTK or HDF5). The
     /// writers here do not look at it; it tells a runner which one to use
     /// ([`write_vtr`](Self::write_vtr) or, with feature `hdf5`,
-    /// [`write_h5`](Self::write_h5)).
+    /// `write_h5`).
     pub fn file_type(&self) -> csx::properties::DumpFileType {
         self.file_type
     }

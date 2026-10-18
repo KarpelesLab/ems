@@ -8,7 +8,7 @@
 //!   VisIt).
 //! * [`csv`]: delimited text tables for probe time series and frequency
 //!   series, with comment-prefixed metadata lines.
-//! * [`h5`] (feature `hdf5`): HDF5 files for field dumps and probe series,
+//! * `h5` (feature `hdf5`): HDF5 files for field dumps and probe series,
 //!   in an ems-native layout.
 
 mod base64;
