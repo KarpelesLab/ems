@@ -130,8 +130,8 @@ part of M1 (§3).
 | M2 | AbsorbingBC sheets — **done** (`engine::boundary::abc`) | AbsorbingBC |
 | M3 | NF2FF, radiation patterns, gain/directivity — **done** (`ems::nf2ff`, §5.10) | DumpBox |
 | M3 | Periodic / Bloch boundaries — **done** (`Boundary::Periodic`, engine-level `BlochPair`, §5.6.1) | — |
-| M4 | Cylindrical-coordinate mesh (incl. multigrid near the axis) | cylindrical `RectilinearGrid` |
-| M4 | Conformal / sub-cell PEC, thin wires | Wire/Curve primitives |
+| M4 | Cylindrical-coordinate mesh — **done** (§5.15); multigrid near the axis not yet | cylindrical `RectilinearGrid` |
+| M4 | Conformal / sub-cell PEC, thin wires — **done** (§5.13, §5.14) | Wire/Curve primitives |
 | M4 | SAR — **done** (`ems::post::sar`, §5.12) | DumpBox |
 | later | Python bindings (pyo3, probably a separate `ems-py` crate covering both), GPU backend | — |
 
@@ -1253,6 +1253,9 @@ These are reported here, not fixed in csx from this repo.
     edge whose line it keeps; in `examples/microstrip.rs` this put a line
     outside the domain and graded the PML (worked around with
     `with_thirds([NaN, 0.25, NaN])`).
+12. **Thin wires in `MeshBuilder`.** Mesh lines are placed on a thin `Wire`'s
+    bounding box (its surface) rather than on its axis, so models with
+    sub-cell wires have to be meshed with zero-radius stand-ins.
 
 ### 8.2 Feedback for hdf5rs
 
@@ -1315,7 +1318,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-19, after wave 7)
+### Status (2026-10-19, after wave 8)
 
 | Step | State |
 |---|---|
@@ -1333,11 +1336,17 @@ scripts). M3 done: NF2FF, periodic boundaries, Bloch pairs (engine level).
 Also done: plane-wave TF/SF sources (§5.11), SAR (M4, §5.12), energy
 invariant with magnetic poles and conducting sheets, medium-tuned CPML.
 
+Wave 8 (M4 done): cylindrical grids (§5.15), conformal PEC (§5.13), thin
+wires (§5.14), Bloch / oblique incidence through `Simulation` (§5.6.2).
+
 Remaining:
 - openEMS output layout (M2, needs reference files).
-- Bloch boundaries through `Simulation`/`Fdtd` (needs a matching oblique
-  plane wave; `BlochPair` drives two engines).
-- M4: cylindrical mesh, conformal / sub-cell PEC, thin wires.
+- Multigrid near the cylindrical axis (the innermost arcs set the time
+  step); a cylindrical PML on the outer radius (the Cartesian-style layer
+  reflects about −31 to −43 dB, scaling as 1/(kρ)).
+- Oblique thin wires; conformal PEC for sheets and on cylindrical grids;
+  NF2FF, plane waves, MSL/waveguide ports, sheets and dispersive media on
+  cylindrical grids.
 
 Open conventions to confirm against real openEMS files:
 - Waveguide probe `ModeFunction*` coordinates are taken in drawing units

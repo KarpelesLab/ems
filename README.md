@@ -17,8 +17,8 @@ intended as a replacement for [openEMS](https://openems.de).
 * Goal: run existing openEMS XML models unchanged.
 * Edition 2024, MSRV 1.95.
 
-Status: early development (milestones 1 and 3 done, 2 mostly done, SAR from
-milestone 4). The API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
+Status: early development (milestones 1, 3 and 4 done, milestone 2 done
+except the openEMS output-file layout). The API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
 roadmap.
 
 ## Quick start
@@ -79,10 +79,10 @@ It prints warnings, progress and the outcome, and writes every probe as
 
 | area | implemented | not yet |
 |---|---|---|
-| mesh | Cartesian rectilinear (non-uniform), solver-aware checks (`ems::mesh`) | cylindrical (M4) |
+| mesh | Cartesian and cylindrical (ρ, α, z, with axis and closed azimuth) rectilinear, non-uniform; solver-aware checks (`ems::mesh`) | multigrid near the cylindrical axis |
 | materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`); Drude, Lorentz, Debye (electric and magnetic) | |
-| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor) | conformal (M4) |
-| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch (engine-level `BlochPair`) | Bloch through `Simulation` |
+| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor); conformal PEC (`CompileOptions::with_conformal`); thin wires (radius below the cell size) | oblique thin wires |
+| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave) | cylindrical PML on the outer radius |
 | sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF); Gaussian, sine, Dirac, step, custom waveforms | plane waves in a non-vacuum background |
 | lumped elements | R, L, C, parallel and series | |
 | probes | voltage, current, E/H field, waveguide mode voltage/current; DFT | |
