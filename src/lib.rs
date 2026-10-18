@@ -15,6 +15,7 @@ pub mod engine;
 pub mod error;
 pub mod fdtd;
 pub mod io;
+pub mod mesh;
 pub mod post;
 mod sim;
 pub mod waveform;
