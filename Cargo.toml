@@ -19,6 +19,10 @@ xml = ["csx/xml"]
 [dependencies]
 csx = { version = "0.0.1", default-features = false }
 
+[[example]]
+name = "run_xml"
+required-features = ["xml"]
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

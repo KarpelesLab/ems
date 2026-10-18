@@ -13,7 +13,8 @@ pub use results::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Res
 use crate::Result;
 use crate::compile::{BoundaryHandles, CompileOptions, Compiled, ModelSources, NodeMap, compile};
 use crate::engine::{
-    EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle, RunLimits, TimeDump,
+    EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle, Progress, RunLimits,
+    TimeDump,
 };
 use crate::fdtd::Fdtd;
 use map::{DumpOp, Mapped, ProbeOp};
@@ -298,6 +299,23 @@ impl Simulation {
     pub fn run(&mut self) -> Result<Results> {
         let limits = self.run_limits();
         let outcome = self.engine.run_until(&limits)?;
+        let mut r = self.results();
+        r.outcome = Some(outcome);
+        Ok(r)
+    }
+
+    /// Runs like [`run`](Self::run), calling `progress` after every energy
+    /// check (see [`Engine::run_until_with`]); returning
+    /// [`ControlFlow::Break`](core::ops::ControlFlow::Break) stops the run.
+    ///
+    /// # Errors
+    /// See [`Engine::run_until_with`].
+    pub fn run_with<F>(&mut self, progress: F) -> Result<Results>
+    where
+        F: FnMut(&Progress) -> core::ops::ControlFlow<()>,
+    {
+        let limits = self.run_limits();
+        let outcome = self.engine.run_until_with(&limits, progress)?;
         let mut r = self.results();
         r.outcome = Some(outcome);
         Ok(r)
