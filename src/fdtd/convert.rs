@@ -30,7 +30,7 @@ impl Fdtd {
     /// | `number_of_timesteps` (`NumberOfTimesteps`) | [`max_timesteps`](Fdtd::max_timesteps); absent → [`OPENEMS_DEFAULT_TIMESTEPS`](Fdtd::OPENEMS_DEFAULT_TIMESTEPS) |
     /// | `end_criteria` (`endCriteria`) | [`EndCriteria::energy_ratio`]: a linear energy ratio (1e-5 = −50 dB); `0` → no end criteria; absent → [`OPENEMS_DEFAULT_END_CRITERIA`](Fdtd::OPENEMS_DEFAULT_END_CRITERIA) |
     /// | `f_max` (`f_max`) | [`max_frequency`](Fdtd::max_frequency); else the `f_max` of a Dirac / step signal (if > 0). Written back as [`Fdtd::get_max_frequency`] |
-    /// | `over_sampling` (`OverSampling`) | [`oversampling`](Fdtd::oversampling) (stored only; warning) |
+    /// | `over_sampling` (`OverSampling`) | [`oversampling`](Fdtd::oversampling) (dump sampling interval) |
     /// | `time_step_method` (`TimeStepMethod`) | CFL is what ems implements; Rennings or other ids → warning, CFL is used |
     /// | `max_time` (`MaxTime`) | [`max_time`](Fdtd::max_time) |
     /// | `time_step` (`TimeStep`) | [`timestep`](Fdtd::timestep) |
@@ -87,12 +87,9 @@ impl Fdtd {
         };
         f.max_frequency = s.f_max.or(signal_fmax);
         f.max_time = s.max_time;
-        if let Some(n) = s.over_sampling {
-            f.oversampling = Some(n);
-            warn.push(format!(
-                "FDTD OverSampling={n} stored but not used: probes record every timestep"
-            ));
-        }
+        // Used by field dumps to choose their sampling interval; probes still
+        // record every timestep.
+        f.oversampling = s.over_sampling;
 
         match s.time_step_method {
             None | Some(TimeStepMethod::Cfl) => {}
@@ -367,8 +364,7 @@ mod tests {
         assert_eq!(f.get_timestep(), Some(1e-13));
         assert_eq!(f.get_max_time(), Some(2e-9));
         assert_eq!(f.get_oversampling(), Some(4));
-        assert_eq!(warn.len(), 1, "{warn:?}");
-        assert!(warn[0].contains("OverSampling"));
+        assert!(warn.is_empty(), "{warn:?}");
 
         s.over_sampling = None;
         s.time_step_method = Some(TimeStepMethod::Rennings);

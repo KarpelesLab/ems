@@ -70,7 +70,7 @@ It prints warnings, progress and the outcome, and writes every probe as
 | area | implemented | not yet |
 |---|---|---|
 | mesh | Cartesian rectilinear (non-uniform), solver-aware checks (`ems::mesh`) | cylindrical (M4) |
-| materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`) | dispersive (M2) |
+| materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`); Drude, Lorentz, Debye (electric and magnetic) | |
 | metal | PEC volumes, sheets and lines; priorities | conducting-sheet model (approximated as PEC), conformal (M4) |
 | boundaries | PEC, PMC, Mur, CPML (`PML_n`) | periodic (M3) |
 | sources | E/H soft/hard excitations with weighting and delay; Gaussian, sine, Dirac, step, custom waveforms | plane waves |
