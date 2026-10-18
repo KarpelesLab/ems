@@ -2,19 +2,26 @@
 //! impedance.
 //!
 //! ```text
-//! cargo run --release --example dipole
+//! cargo run --release --example dipole [-- RADIUS_MM]
 //! ```
 //!
-//! The dipole is a 152.5 mm long PEC line along z (two arms of zero
-//! thickness on the mesh line `x = y = 0`) with a one-cell (2.5 mm) gap in
-//! the middle holding a 50 Ω lumped port. A wire of PEC edges behaves like
-//! a round wire of radius ≈ 0.135·Δ (Taflove & Hagness, ch. 10, thin-wire
-//! models), here ≈ 0.34 mm, so `L/a ≈ 450`.
+//! The dipole is a 152.5 mm long PEC line along z (two arms on the mesh
+//! line `x = y = 0`) with a one-cell (2.5 mm) gap in the middle holding a
+//! 50 Ω lumped port. Without an argument the arms have zero thickness: a
+//! wire of PEC edges behaves like a round wire of the lattice radius
+//! `0.1985·Δ` ([`lattice_radius`]), here ≈ 0.50 mm, so `L/a ≈ 310`.
+//! With `RADIUS_MM` below that, the arms are csx `Wire`s of that radius
+//! and the thin-wire model ([`ems::engine::wire`]) applies: thinner wires
+//! resonate a little higher, with a steeper reactance (e.g. `-- 0.05`).
 //!
 //! For a thin dipole the first resonance (`X_in = 0`) is slightly below
 //! `L = λ/2`, at `L ≈ 0.47…0.48 λ`, with `R_in ≈ 65…73 Ω` (the 73 Ω of
 //! the infinitely thin half-wave dipole, Balanis, *Antenna Theory*,
-//! §4.6). The mesh is generated with csx's [`MeshBuilder`], fine along and
+//! §4.6). This example gives `L = 0.464 λ` for the zero-thickness arms
+//! (whose open ends, like any staircase wire's, sit half a cell beyond
+//! the end nodes), `0.474 λ` for 0.3 mm and `0.482 λ` for 0.05 mm wires
+//! (thin-wire ends are at the end nodes), all with `R_in ≈ 72.7 Ω`.
+//! The mesh is generated with csx's [`MeshBuilder`], fine along and
 //! around the wire and graded to λ/20 at `f_max` outside; an 8-cell CPML
 //! closes the domain.
 //!
@@ -23,8 +30,9 @@
 //! dipole (Balanis §4.6), with gain = directivity in vacuum.
 
 use csx::mesh::{MeshBuilder, MeshOptions};
-use csx::primitives::BoxShape;
+use csx::primitives::{BoxShape, Wire};
 use csx::{ContinuousStructure, Primitive, Property, TypeMask};
+use ems::engine::wire::lattice_radius;
 use ems::nf2ff::Nf2ffBox;
 use ems::prelude::*;
 
@@ -34,6 +42,13 @@ const D: f64 = 2.5;
 const ARM_CELLS: usize = 30;
 
 fn main() -> Result<()> {
+    let radius: Option<f64> = match std::env::args().nth(1) {
+        Some(a) => Some(
+            a.parse()
+                .map_err(|_| Error::Invalid(format!("invalid radius {a:?}")))?,
+        ),
+        None => None,
+    };
     let gap = D / 2.0; // half gap
     let tip = gap + ARM_CELLS as f64 * D;
     let length = 2.0 * tip;
@@ -69,6 +84,14 @@ fn main() -> Result<()> {
     .with_lines(1, near)
     .with_lines(2, (0..=2 * ARM_CELLS + 1).map(|i| -tip + i as f64 * D))
     .apply(&mut model)?;
+    // Wires replace the lines after meshing (the mesh builder would put
+    // mesh lines on the wire surface).
+    if let Some(r) = radius {
+        model.property_mut(wire).expect("wire").primitives = [(gap, tip), (-tip, -gap)]
+            .into_iter()
+            .map(|(a, b)| Primitive::new(Wire::new([[0.0, 0.0, a], [0.0, 0.0, b]], r)))
+            .collect();
+    }
 
     let mut sim = Simulation::new(&model, &fdtd)?;
     // NF2FF box 2–3 cells around the wire, every 5 MHz near resonance.
@@ -81,6 +104,13 @@ fn main() -> Result<()> {
     ))?;
     for w in sim.warnings() {
         println!("warning: {w}");
+    }
+    match radius {
+        Some(r) => println!(
+            "wire radius {r} mm (staircase radius {:.3} mm)",
+            lattice_radius(D, D)
+        ),
+        None => println!("zero-thickness arms: radius {:.3} mm", lattice_radius(D, D)),
     }
     let n = sim.grid().nodes();
     println!(

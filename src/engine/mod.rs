@@ -156,6 +156,7 @@ mod rows;
 mod run;
 pub mod sheet;
 mod slab;
+pub mod wire;
 
 use core::marker::PhantomData;
 use std::sync::Arc;
@@ -188,6 +189,7 @@ pub use probe::{FieldProbe, Probe, ProbeQuantity};
 pub use run::{Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+pub use wire::ThinWire;
 
 use crate::axis::Axis;
 use crate::fdtd::Face;

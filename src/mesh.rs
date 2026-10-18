@@ -481,7 +481,17 @@ pub fn check_compiled(
     let mut ctx = Ctx::new(model, &compiled.grid, fdtd, opts);
     ctx.unit = compiled.delta_unit;
     ctx.pml = compiled.pml.iter().map(|&(f, p)| (f, p.cells)).collect();
-    let index = slab_index_from_materials(&compiled.grid, &compiled.materials);
+    // The thin-wire correction scales materials next to the wires; it is
+    // not a medium (the wave speed is unchanged), so look past it.
+    let index = if compiled.thin_wires.is_empty() {
+        slab_index_from_materials(&compiled.grid, &compiled.materials)
+    } else {
+        let mut m = compiled.materials.clone();
+        for w in &compiled.thin_wires {
+            w.remove(&compiled.grid, &mut m)?;
+        }
+        slab_index_from_materials(&compiled.grid, &m)
+    };
     let mut r = ctx.run(&index, compiled.timestep);
     for w in &compiled.warnings {
         let sev = if w.contains("is not on a mesh plane") || w.contains("line not on mesh lines") {

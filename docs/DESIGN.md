@@ -802,6 +802,75 @@ samples are not seen. Voltage probes on cut edges read `E·l_open`. The
 power-iteration check costs a few hundred matrix–vector products on the
 whole grid at setup (single thread).
 
+### 5.14 Thin wires
+
+A line of PEC edges (csx's staircase of a `Curve` or thin `Wire`) acts like
+a round wire of the *lattice radius* `r_eq` of its node, whatever the real
+radius: the potential of one node of the infinite 2-D lattice relative to
+far points is `(1/2π)·ln(ρ/r_eq)` per unit conductivity. From the lattice
+Green's function, `r_eq = e^(−γ)/(2√2)·Δ = 0.1985·Δ` for square cells
+(`engine::wire::lattice_radius`, any aspect ratio). Antenna impedances depend
+on `ln(Δ/r0)`, so this matters (a dipole of `Δ/100` and one of `Δ/5` would
+otherwise be the same). `engine::wire` (`ThinWire`) models straight,
+axis-aligned wires with `0 < r0 < r_eq` by changing only edge materials,
+which keeps the scheme the symmetric Yee scheme (exact energy invariant,
+every operator unchanged):
+
+- Per unit length, the transverse E field is a resistor network (edge
+  conductance `ε·l*/l`) and the transverse H field the same network for the
+  flux function (`l*/(μ·l)` across each face). Dividing the four
+  conductances from the wire node to its neighbours by `g` adds
+  `(g − 1)/Σc` in series (exact on square cells by symmetry), so
+  `g = 1 + Σc/(2π)·ln(r_eq/r0)` (square cells: `1 + (2/π)·ln(r_eq/r0)`) turns
+  the node into a wire of radius `r0`: radial E edges `ε/g`, the four faces
+  around each wire edge `μ·g`. `L'C' = με` is unchanged, so the wave speed
+  along the wire is too. (The classic contour-path model of Umashankar and
+  Taflove assumes the `1/r` profile across the first cell, `g = ln(Δ/r0)/2`,
+  i.e. `r_eq = 0.135·Δ`, and corrects only the H update, so it leaves the
+  capacitance and the TEM impedance unchanged.)
+- The four axial faces around each wire node also get `μ·g`: with them no
+  local loop of modified elements is stiffer than the unmodified lattice, so
+  the Courant limit still holds (without them a run at `g ≈ 2.5` diverged).
+- **Open ends.** A full cell of wire at the end node puts the open end half a
+  cell beyond it (as for any staircase), and the lattice capacitance of the
+  E edge continuing the wire (the cap edge) loads the end like a top hat
+  that is far too large for a thin wire (a dipole on 10 mm cells resonated
+  8 % low). Open ends get half a cell at the end node (radial edges
+  `ε/(2g)`, axial and end-segment faces `μ·2g`) and the cap edge scaled like
+  a lattice whose staircase radius is `r0` (`ε·r0/r_eq`, its faces
+  `μ·max(2g, r_eq/r0)` for stability). The open end is then at the end node.
+- Compile (`compile::wire`): every polyline segment of a metal `Wire` that
+  runs along an axis on mesh lines becomes a run between the nearest mesh
+  lines; lumped edges on the same line touching a run (dipole feed gaps,
+  monopole bases) join it; contiguous runs of one radius form one
+  `ThinWire` (`Compiled::thin_wires`). Oblique or off-mesh segments, radii
+  at or above `r_eq` (below half a cell) and cylindrical structures keep the
+  plain staircase with a warning; wires sharing a node warn. The mesh check
+  looks past the correction (`ThinWire::remove`) when it estimates the
+  refractive index.
+
+Limits: wires closer than about three cells to each other or to other
+conductors, bends and junctions are outside the isolated straight-wire
+assumption; on rectangular or graded cells `(g − 1)/Σc` is approximate
+(0.4 % of `Z0` on 1 × 1.5 mm cells); fields polarised across the wire see a
+one-cell rod of `ε/g`, `μ·g` that a real thin wire does not present.
+
+**Validation** (`tests/thin_wire.rs`, `tests/thin_wire_dipole.rs`):
+
+| case | result |
+|---|---|
+| staircase wire in a 10 mm square tube, `Z0` vs closed form `η/(2π)·ln(1.0787·D/d)` at `r_eq` | 197.72 vs 197.99 Ω (−0.14 %), confirms `r_eq` |
+| thin wire, `r_eq/r0` = 5, 50, 1000: `Z0 − Z0(staircase)` vs `η/(2π)·ln(r_eq/r0)` | within 6.4·10⁻⁵ of `Z0`; within 0.1 % of the closed form |
+| same, phase constant vs the 1-D Yee line | within 9.3·10⁻⁵ |
+| 1 × 1.5 mm cells, `r_eq/r0` = 10, 100 | 0.39 %, 0.36 % |
+| dipole (170 mm, 10 mm gap), `a` = 0.496 mm on 5 / 10 mm cells vs staircase on 2.5 mm | `f_res` −0.53 / +0.31 %, `R_in` −0.22 / −0.28 %, `dX/df` +1.8 / +0.1 % |
+| `a` = 0.248 mm on 2.5 / 5 / 10 mm vs staircase on 1.25 mm | `f_res` −0.32 / −0.22 / +0.71 %, `R_in` −0.13 / −0.23 / −0.74 % |
+| closed tube, `r_eq/r0` = 1000 with a feed gap, Courant 0.999, 2·10⁴ steps | energy within 2·10⁻⁶, bounded; 1 vs 4 threads bit-identical |
+
+The plain staircase on 10 mm cells (`a ≈ 2 mm`) gives a dipole slope of
+661 Ω/GHz; the thin wire of 0.496 mm on the same mesh 974 Ω/GHz (reference
+973), and 0.198 mm 1160 Ω/GHz with a 1.4 % higher resonance.
+
 ## 6. Engine architecture
 
 ```

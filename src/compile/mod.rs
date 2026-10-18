@@ -31,7 +31,9 @@
 //!    [`Compiled::build`] as one [`ConductingSheet`] operator (thin lossy
 //!    conductor with skin effect, see [`crate::engine::sheet`]); the
 //!    mapping rules (sheet normal, face shares, fallbacks) are in
-//!    [`sheet`].
+//!    [`sheet`]. Metal `Wire` primitives thinner than the staircase get
+//!    the thin-wire correction of [`crate::engine::wire`] on their edge
+//!    materials ([`Compiled::thin_wires`]; rules in `compile/wire.rs`).
 //! 5. **Boundaries** from [`Fdtd::get_boundaries`]: PEC and PMC map to
 //!    [`FaceCondition`]s; Mur and PML faces are built as PEC faces and
 //!    listed in [`Compiled::mur`] / [`Compiled::pml`], from which
@@ -132,6 +134,7 @@ mod mode;
 pub mod planewave;
 pub mod sar;
 pub mod sheet;
+mod wire;
 
 pub use planewave::PlaneWaveSource;
 
@@ -141,7 +144,8 @@ use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
-    EdgePole, Engine, FaceCondition, FaceConditions, Grid, OperatorHandle, SheetEdge, TimeStep,
+    EdgePole, Engine, FaceCondition, FaceConditions, Grid, OperatorHandle, SheetEdge, ThinWire,
+    TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
@@ -368,6 +372,10 @@ pub struct Compiled {
     /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
     /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
     pub dispersive: Vec<EdgePole>,
+    /// Thin wires (csx `Wire` primitives thinner than the staircase; see
+    /// [`crate::engine::wire`]), already applied to
+    /// [`materials`](Self::materials).
+    pub thin_wires: Vec<ThinWire>,
     /// Conducting-sheet edges from csx `ConductingSheet` properties (see
     /// [`sheet`]); installed by [`build`](Self::build) as one
     /// [`ConductingSheet`] operator.
@@ -893,6 +901,14 @@ pub fn compile(
 
     let dispersive =
         dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings);
+    let thin_wires = wire::thin_wires(
+        model,
+        &grid,
+        &mg.lumped,
+        opts.snap_tolerance,
+        &mut materials,
+        &mut warnings,
+    );
 
     let (faces, (mur, pml)) = map_boundaries(fdtd);
     sheet::pml_warning(&sheet_map.edges, grid.nodes(), &pml, &mut warnings);
@@ -926,6 +942,7 @@ pub fn compile(
         node_map,
         abc,
         dispersive,
+        thin_wires,
         sheets: sheet_map.edges,
         max_frequency: fdtd.get_max_frequency(),
         conformal,
