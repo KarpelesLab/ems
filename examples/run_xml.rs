@@ -1,8 +1,11 @@
 //! Runs an openEMS XML model file and writes its probe and dump results.
 //!
 //! ```text
-//! cargo run --release --example run_xml -- model.xml [--threads N] [--out DIR]
+//! cargo run --release --example run_xml -- model.xml [--threads N] [--out DIR] [--conformal]
 //! ```
+//!
+//! `--conformal` resolves solid metal below the cell size (conformal PEC,
+//! `ems::CompileOptions::conformal`) instead of the staircase mask.
 //!
 //! Prints the compile warnings, progress (energy decay, throughput) and how
 //! the run ended. Every probe is written as `DIR/<probe>.csv` (time series,
@@ -41,15 +44,17 @@ struct Args {
     model: PathBuf,
     threads: Option<usize>,
     out: Option<PathBuf>,
+    conformal: bool,
 }
 
 fn usage() -> String {
-    "usage: run_xml MODEL.xml [--threads N] [--out DIR]".into()
+    "usage: run_xml MODEL.xml [--threads N] [--out DIR] [--conformal]".into()
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let (mut model, mut threads, mut out) = (None, None, None);
+    let mut conformal = false;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--threads" | "-j" => {
@@ -61,6 +66,7 @@ fn parse_args() -> Result<Args, String> {
                 threads = Some(n);
             }
             "--out" | "-o" => out = Some(PathBuf::from(it.next().ok_or_else(usage)?)),
+            "--conformal" => conformal = true,
             "--help" | "-h" => return Err(usage()),
             _ if a.starts_with('-') => return Err(format!("unknown option {a:?}\n{}", usage())),
             _ if model.is_none() => model = Some(PathBuf::from(a)),
@@ -71,6 +77,7 @@ fn parse_args() -> Result<Args, String> {
         model: model.ok_or_else(usage)?,
         threads,
         out,
+        conformal,
     })
 }
 
@@ -93,11 +100,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     let doc = csx::OpenEmsDocument::read_file(&args.model)?;
     let threads = args.threads;
-    let mut sim =
-        Simulation::from_document_with(&doc, &CompileOptions::default(), |f| match threads {
-            Some(n) => f.threads(n),
-            None => f,
-        })?;
+    let opts = CompileOptions::default().with_conformal(args.conformal);
+    let mut sim = Simulation::from_document_with(&doc, &opts, |f| match threads {
+        Some(n) => f.threads(n),
+        None => f,
+    })?;
     let g = sim.grid();
     let n = g.nodes();
     println!(

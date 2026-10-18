@@ -742,6 +742,66 @@ meshes), a linear gradient to the centre value (1e-12), the air rule and
 boundary cubes on a half-space and a one-voxel slab, results independent of
 the thread count.
 
+### 5.13 Conformal PEC
+
+Opt-in (`CompileOptions::conformal`, `run_xml --conformal`); off by default,
+so existing results are unchanged. Geometry in `compile::conformal`, scheme
+in `engine::conformal`.
+
+**Geometry.** "In metal" = the highest-priority material/metal at the point
+is a `Metal` property with a solid (3-D) primitive; sheets, curves and wires
+keep csx's staircase PEC mask. Nodes and edge midpoints in the bounding box
+of the solid metal are queried; an edge whose three samples differ is
+sampled at 9 points and each transition bisected (2⁻³⁰ of the edge), giving
+the open fraction `f_e`. A face's open area `f_A` is the shoelace area of
+the polygon of its open corners and transition points in perimeter order
+(straight chords across the metal: exact for planar walls). Edges with
+`f_e = 0` become PEC, cut edges non-PEC (unless their PEC came from a
+sheet/wire).
+
+**Scheme (Dey–Mittra in integral form).** With `u = E·l_open` on cut edges,
+Dey–Mittra is a coefficient change: `cb → f_e·cb`, `db → db/f_A`. The
+system stays `C·du/dt = Kᵀi`, `L·di/dt = −K·u`, so the energy invariant of
+§6 remains exact.
+
+**Stability: merging instead of thresholds.** Slivers (small `f_A`, long
+open edge) resonate above the Courant limit: unmodified Dey–Mittra gave an
+estimated `s = ωdt/2` up to 8 (sphere) and diverged. Area floors
+(`f_A ≥ τ`) only became stable at τ ≈ 0.3–0.5 and then converged at first
+order again. Instead, faces with `f_A < 0.5` are merged with the in-plane
+neighbour across their most-open edge (enlarged-cell / USC idea; groups
+still below the threshold merge on): one current per group,
+`L_g = Σ f_A·L`, circulation of the merged contour, read back by Ampère on
+every member face, i.e. `K → P·K` with a 0/1 merge matrix `P`, which keeps
+the scheme symmetric. Groups run in a `post_h` operator (`MergedFaces`; the
+member faces get `da = 1`, `db = 0` and the operator reports the group
+energy). A power iteration on `S = √cb·(PK)ᵀ·(dt/L)·(PK)·√cb`, started on the
+cut cells, checks `s < 0.999` before the first step; if not, the threshold
+is raised ×1.25 (up to 4 rounds) and a warning is issued if it still fails.
+The power estimate is from below (not a proof); the long-run energy test is
+the direct check.
+
+**Validation** (`tests/conformal.rs`, PEC block with a vacuum cavity carved
+out, centres off the nodes; resonance from the windowed spectrum of a probe):
+
+| cavity | cells | staircase | conformal |
+|---|---|---|---|
+| cylinder TM010 (r = 10 mm) | 5 / 10 / 20 per radius | −6.84 / −3.76 / −1.91 % | −0.32 / −0.081 / −0.020 % (order 2.02) |
+| sphere lowest TM (r = 10 mm) | 5 / 8 per radius | −10.4 / −6.5 % | +0.31 / +0.41 % |
+| rectangle 20×13 mm rotated 17°, TM110 | h = 1 / 0.5 mm | −4.89 / −2.46 % | −0.156 / −0.036 % |
+
+Stability estimates 0.89–0.98 (Courant factor 0.99), no floored faces;
+coarse sphere: energy drift 1.3e-6 over 20 000 steps after the source;
+bit-identical results for 1 and 3 threads. The sphere's lowest mode is
+triply degenerate and split by the mesh, which limits the frequency
+estimate of a single probe at these resolutions.
+
+**Limitations.** Only solid metal; metal intruding into a face without
+crossing its edges and features thinner than half a cell between the edge
+samples are not seen. Voltage probes on cut edges read `E·l_open`. The
+power-iteration check costs a few hundred matrix–vector products on the
+whole grid at setup (single thread).
+
 ## 6. Engine architecture
 
 ```

@@ -187,6 +187,9 @@ impl Simulation {
         let compiled = compile(model, fdtd, opts)?;
         let (mut engine, boundaries) = compiled.build()?;
         let mut warnings = compiled.warnings.clone();
+        if let Some(w) = boundaries.conformal.as_ref().and_then(|r| r.warning()) {
+            warnings.push(w);
+        }
         if opts.mesh_check {
             warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
         }

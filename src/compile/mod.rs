@@ -24,7 +24,9 @@
 //!    is the magnetic loss: csx averages `sigma` arithmetically, the
 //!    per-cell path combines the half cells as series `R`–`L` branches
 //!    (`R = L²·Σ R_c/L_c²`). Both agree on homogeneous dual edges.
-//! 4. **Metal.** The csx PEC mask becomes the engine PEC mask.
+//! 4. **Metal.** The csx PEC mask becomes the engine PEC mask (with
+//!    [`CompileOptions::conformal`], solid metal is instead resolved below
+//!    the cell size, see [Conformal PEC](#conformal-pec)).
 //!    Conducting sheets become [`Compiled::sheets`], installed by
 //!    [`Compiled::build`] as one [`ConductingSheet`] operator (thin lossy
 //!    conductor with skin effect, see [`crate::engine::sheet`]); the
@@ -46,6 +48,19 @@
 //!    [`TimeStep::Fixed`], otherwise [`TimeStep::Courant`] with the time
 //!    step factor; the thread count is used for both the discretisation and
 //!    the engine.
+//!
+//! # Conformal PEC
+//!
+//! With [`CompileOptions::conformal`], the open (non-metal) fraction of
+//! every E edge and cell face cut by a *solid* metal primitive is computed
+//! ([`Compiled::conformal`]; geometry rules in `src/compile/conformal.rs`):
+//! edges are bisected to the metal surface, faces get the polygon of their
+//! open part. Cut edges are removed from the PEC mask, fully covered ones
+//! added. [`Compiled::build`] then scales the coefficients
+//! (Dey–Mittra in integral form, with a stability floor and check; see
+//! [`crate::engine::conformal`]). Metal sheets, curves and wires keep the
+//! staircase mask. A cut edge's voltage `u` is then the voltage over its
+//! open part, `E·l_open`.
 //!
 //! # Dispersive materials
 //!
@@ -111,6 +126,7 @@
 //! per-cell conductivity and mass density sampled from the model (see
 //! [`sar`]).
 
+mod conformal;
 pub mod dispersive;
 mod mode;
 pub mod planewave;
@@ -124,8 +140,8 @@ use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
 use crate::engine::{
-    ConductingSheet, Dispersive, EdgeMaterials, EdgePole, Engine, FaceCondition, FaceConditions,
-    Grid, OperatorHandle, SheetEdge, TimeStep,
+    ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
+    EdgePole, Engine, FaceCondition, FaceConditions, Grid, OperatorHandle, SheetEdge, TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
@@ -154,6 +170,26 @@ pub struct CompileOptions {
     /// warnings and errors to its warnings (default `true`). Not used by
     /// [`compile`] itself.
     pub mesh_check: bool,
+    /// Conformal (sub-cell) PEC for solid metal (default `false`: the
+    /// staircase PEC mask of csx). See [Conformal PEC](self#conformal-pec).
+    pub conformal: bool,
+    /// Options of the conformal scheme (stability floor and check), used
+    /// when [`conformal`](Self::conformal) is set.
+    pub conformal_options: ConformalOptions,
+}
+
+impl CompileOptions {
+    /// Returns `self` with [`conformal`](Self::conformal) set to `on`.
+    ///
+    /// ```
+    /// let o = ems::CompileOptions::default().with_conformal(true);
+    /// assert!(o.conformal);
+    /// ```
+    #[must_use]
+    pub fn with_conformal(mut self, on: bool) -> Self {
+        self.conformal = on;
+        self
+    }
 }
 
 impl Default for CompileOptions {
@@ -164,6 +200,8 @@ impl Default for CompileOptions {
             snap_tolerance: d.snap_tolerance,
             update_model: true,
             mesh_check: true,
+            conformal: false,
+            conformal_options: ConformalOptions::default(),
         }
     }
 }
@@ -337,6 +375,9 @@ pub struct Compiled {
     /// Highest frequency of interest \[Hz\] ([`Fdtd::get_max_frequency`]),
     /// used to grade the conducting-sheet layers.
     pub max_frequency: Option<f64>,
+    /// Conformal PEC geometry ([`CompileOptions::conformal`]); applied to
+    /// the coefficients by [`build`](Self::build) before any operator.
+    pub conformal: Option<ConformalPec>,
     /// Not yet mapped model parts.
     pub sources: ModelSources,
     /// Diagnostics: csx model and discretisation warnings plus the
@@ -358,10 +399,13 @@ pub struct BoundaryHandles {
     pub sheets: Option<OperatorHandle<ConductingSheet>>,
     /// One operator per [`Compiled::abc`] sheet, in the same order.
     pub abc: Vec<OperatorHandle<AbsorbingSheet>>,
+    /// What the conformal PEC step did, if [`Compiled::conformal`] is set.
+    pub conformal: Option<ConformalReport>,
 }
 
 impl Compiled {
-    /// Builds the engine (coefficients, threads) and registers the boundary
+    /// Builds the engine (coefficients, threads), applies the conformal PEC
+    /// geometry if any ([`ConformalPec::apply`]), and registers the boundary
     /// operators, first the [`CpmlBoundary`], then the [`MurBoundary`],
     /// then the [`Dispersive`] medium (after the CPML, so that a medium
     /// reaching into the PML is coupled implicitly with it), then the
@@ -379,6 +423,9 @@ impl Compiled {
             .threads(self.threads)
             .build()?;
         let mut h = BoundaryHandles::default();
+        if let Some(c) = &self.conformal {
+            h.conformal = Some(c.apply(&mut engine)?);
+        }
         if !self.pml.is_empty() {
             let op = CpmlBoundary::new(&engine, self.pml.iter().copied())?;
             h.cpml = Some(engine.add_operator(op));
@@ -829,6 +876,20 @@ pub fn compile(
             .pec_mask_mut(axis)
             .copy_from_slice(&node_map.reorder(&pec));
     }
+    let conformal = if opts.conformal {
+        let pec: [&[bool]; 3] = [
+            materials.pec_mask(Axis::X),
+            materials.pec_mask(Axis::Y),
+            materials.pec_mask(Axis::Z),
+        ];
+        let geo = conformal::geometry(model, &pec, fdtd.resolved_threads());
+        for &(axis, k, v) in &geo.pec {
+            materials.pec_mask_mut(axis)[k] = v;
+        }
+        Some(geo.conformal.with_options(opts.conformal_options))
+    } else {
+        None
+    };
 
     let dispersive =
         dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings);
@@ -867,6 +928,7 @@ pub fn compile(
         dispersive,
         sheets: sheet_map.edges,
         max_frequency: fdtd.get_max_frequency(),
+        conformal,
         sources: ModelSources {
             excitations,
             lumped,

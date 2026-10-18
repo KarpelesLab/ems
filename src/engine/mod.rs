@@ -136,6 +136,7 @@
 
 pub mod boundary;
 mod coeffs;
+pub mod conformal;
 pub mod dispersive;
 pub mod dump;
 pub mod edge_dft;
@@ -164,6 +165,9 @@ pub use boundary::periodic::BlochPair;
 pub use coeffs::{
     Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,
     primary_edge_cg,
+};
+pub use conformal::{
+    ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, MergedFaces,
 };
 pub use dispersive::{Dispersive, EdgePole, Pole};
 pub use dump::{
