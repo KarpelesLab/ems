@@ -138,6 +138,7 @@ pub mod boundary;
 mod coeffs;
 pub mod dispersive;
 pub mod dump;
+pub mod edge_dft;
 mod edge_material;
 mod excite;
 mod fields;
@@ -169,6 +170,7 @@ pub use dump::{
     DumpPosition, DumpQuantity, DumpRegion, DumpSink, FieldSampler, FreqDump, MemorySink, Schedule,
     Snapshot, TimeDump, VtrSeries,
 };
+pub use edge_dft::{CellBox, EdgeDft};
 pub use edge_material::EdgeMaterials;
 pub use excite::{Amplitude, EdgeSource, SourceKind};
 pub use fields::{FieldArrays, Fields};

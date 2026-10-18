@@ -8,7 +8,7 @@ mod results;
 #[cfg(feature = "xml")]
 mod xml;
 
-pub use results::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results};
+pub use results::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results, SarResult};
 
 use crate::Result;
 use crate::compile::{BoundaryHandles, CompileOptions, Compiled, ModelSources, NodeMap, compile};
@@ -18,6 +18,7 @@ use crate::engine::{
 };
 use crate::fdtd::Fdtd;
 use crate::nf2ff::{Nf2ffBox, Nf2ffHandle, Nf2ffResult};
+use crate::post::sar::SarVolume;
 use map::{DumpOp, Mapped, ProbeOp};
 
 /// A compiled simulation: the [`Engine`] with the model's excitations,
@@ -133,8 +134,16 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///    without a maximum frequency. The probe settings' `StartTime` /
 ///    `StopTime` restrict the recorded states (by the quantity's own time;
 ///    `StartTime ≤ 0`: from the start, `StopTime ≤ 0`: no limit; see
-///    [`TimeDump::window`]). Other dump types are not supported
-///    (warning). Write VTR files with [`DumpResult::write_vtr`].
+///    [`TimeDump::window`]). Write VTR files with
+///    [`DumpResult::write_vtr`].
+/// 5. **SAR dumps** (csx `DumpBox` of type `SARLocal`, `SAR1g`, `SAR10g`,
+///    `SARRaw`): an [`EdgeDft`](crate::engine::EdgeDft) of the E edges of
+///    the box's cells at the property's frequencies (same interval `K`),
+///    with the cell conductivity and density sampled from the model
+///    ([`compile::sar`](crate::compile::sar)). They are reported in
+///    [`Results::sar_dumps`] (not in [`Results::dumps`]) as
+///    [`SarResult`]s; see [`post::sar`](crate::post::sar) for the
+///    evaluation. Other dump types are not supported (warning).
 #[derive(Debug)]
 pub struct Simulation {
     engine: Engine,
@@ -481,12 +490,42 @@ impl Simulation {
                 },
             })
             .collect();
+        let sar = self
+            .mapped
+            .sar
+            .iter()
+            .map(|e| {
+                let spec = &self.sources.sar[e.spec];
+                let op = self.engine.operator(&e.op);
+                let volumes = (0..spec.frequencies.len())
+                    .map(|k| {
+                        SarVolume::from_edge_dft(
+                            self.engine.grid(),
+                            op,
+                            k,
+                            &spec.sigma,
+                            spec.density.clone(),
+                        )
+                        .expect("SAR specs are validated at compile time")
+                    })
+                    .collect();
+                SarResult {
+                    name: spec.name.clone(),
+                    id: spec.id,
+                    kind: spec.kind,
+                    file_type: spec.file_type,
+                    frequencies: spec.frequencies.clone(),
+                    volumes,
+                }
+            })
+            .collect();
         Results {
             outcome: None,
             dt,
             probes,
             lumped,
             dumps,
+            sar,
         }
     }
 }

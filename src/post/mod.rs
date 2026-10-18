@@ -1,5 +1,5 @@
-//! Post-processing: complex arithmetic, discrete Fourier transforms and
-//! port analysis (power waves, S-parameters).
+//! Post-processing: complex arithmetic, discrete Fourier transforms,
+//! port analysis (power waves, S-parameters) and SAR ([`sar`]).
 //!
 //! Sign convention used throughout `ems`: a time signal `x(t)` is mapped to
 //! the frequency domain with the kernel `e^{-j2πft}`, i.e.
@@ -11,6 +11,7 @@
 pub mod complex;
 pub mod dft;
 pub mod port;
+pub mod sar;
 
 pub use complex::Complex64;
 pub use dft::{RunningDft, dft};

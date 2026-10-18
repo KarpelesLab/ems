@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
+use crate::compile::sar::SarKind;
 use crate::engine::{FieldSampler, FreqDump, RunOutcome, Snapshot, VtrSeries};
+use crate::post::sar::{SarField, SarVolume};
 use crate::post::{Complex64, dft};
 use crate::{Error, Result};
 
@@ -269,6 +271,80 @@ impl DumpResult {
     }
 }
 
+/// One SAR dump result (csx `DumpBox` of type `SARLocal`, `SAR1g`,
+/// `SAR10g` or `SARRaw`), named after its csx property: the absorbed power
+/// and mass density per cell at each of its frequencies (see
+/// [`post::sar`](crate::post::sar)).
+///
+/// The power comes from DFTs of the transient run, so it is a spectral
+/// density (W/m³·s²); normalise it to the accepted port power at the same
+/// frequency ([`SarVolume::scaled`]) for SAR per watt.
+#[derive(Debug, Clone)]
+pub struct SarResult {
+    pub(crate) name: String,
+    pub(crate) id: u32,
+    pub(crate) kind: SarKind,
+    pub(crate) file_type: csx::properties::DumpFileType,
+    pub(crate) frequencies: Vec<f64>,
+    pub(crate) volumes: Vec<SarVolume>,
+}
+
+impl SarResult {
+    /// csx property name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// csx property id.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// What the dump asks for.
+    pub fn kind(&self) -> SarKind {
+        self.kind
+    }
+
+    /// The DumpBox `FileType` (VTK or HDF5).
+    pub fn file_type(&self) -> csx::properties::DumpFileType {
+        self.file_type
+    }
+
+    /// The analysis frequencies \[Hz\].
+    pub fn frequencies(&self) -> &[f64] {
+        &self.frequencies
+    }
+
+    /// The power and density per cell at frequency index `k`.
+    ///
+    /// # Panics
+    /// If `k` is out of range.
+    pub fn volume(&self, k: usize) -> &SarVolume {
+        &self.volumes[k]
+    }
+
+    /// All volumes, one per frequency.
+    pub fn volumes(&self) -> &[SarVolume] {
+        &self.volumes
+    }
+
+    /// The SAR the dump asks for at frequency index `k`: local
+    /// (`SARLocal`, `SARRaw`) or averaged over 1 g / 10 g.
+    ///
+    /// # Errors
+    /// See [`SarVolume::averaged`].
+    ///
+    /// # Panics
+    /// If `k` is out of range.
+    pub fn field(&self, k: usize) -> Result<SarField> {
+        let v = &self.volumes[k];
+        match self.kind {
+            SarKind::Local | SarKind::Raw => Ok(v.local()),
+            SarKind::Averaged(m) => v.averaged(m),
+        }
+    }
+}
+
 /// Results of a [`Simulation`](crate::Simulation): every model probe and
 /// dump, looked up by csx property name or id, plus the run outcome.
 ///
@@ -283,6 +359,7 @@ pub struct Results {
     pub(crate) probes: Vec<ProbeResult>,
     pub(crate) lumped: Vec<ProbeResult>,
     pub(crate) dumps: Vec<DumpResult>,
+    pub(crate) sar: Vec<SarResult>,
 }
 
 impl Results {
@@ -346,5 +423,16 @@ impl Results {
     /// The dump of the csx property `id`.
     pub fn dump_by_id(&self, id: csx::PropertyId) -> Option<&DumpResult> {
         self.dumps.iter().find(|d| d.id == id.get())
+    }
+
+    /// All SAR dumps, in model order (they are not in
+    /// [`dumps`](Self::dumps)).
+    pub fn sar_dumps(&self) -> &[SarResult] {
+        &self.sar
+    }
+
+    /// The SAR dump of the csx property named `name`.
+    pub fn sar(&self, name: &str) -> Option<&SarResult> {
+        self.sar.iter().find(|d| d.name == name)
     }
 }

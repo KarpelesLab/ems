@@ -692,6 +692,56 @@ csx `PlaneWave` excitations (type 10) are injected with the TF/SF technique
   from csx; `PlaneWaveSpec::with_background` in the engine API), box clear of
   CPML/Mur, injected energy not tracked by `Engine::energy`.
 
+### 5.12 SAR
+
+`post::sar`, fed by csx `DumpBox` types `SARLocal` / `SAR1g` / `SAR10g` /
+`SARRaw` (or directly from an engine `EdgeDft`).
+
+**Input.** An `EdgeDft` operator transforms the raw voltages of every E
+edge of the box's cells (no interpolation: SAR needs the mean of `|E|²`,
+not the square of a mean field). The compile step samples, per cell, the
+conductivity `κ` (per axis) and the csx `Density` with `n³` points (`n` =
+subsampling); metal and background have `ρ = 0` and are not tissue.
+
+**Power.** With peak phasors, per cell
+`p = ½·Σ_a σ_a·¼·Σ_{4 edges ∥ a}|E_e|²`, `E_e = U_e/l_e·cos(πf·dt)`. The
+cosine is the transform of the time-averaged voltage `(u^{n+1}+u^n)/2` that
+the conduction term of the update uses, so `Σ p·V` is exactly the loss of
+the discrete scheme: it equals `Σ_e ½·G_e·|Ū_e|²` for the area-weighted edge
+conductances, and a time-domain integral of `G_e·ū_e²·dt` agrees with the
+Parseval sum of the DFTs to 1e-9. Local SAR is `p/ρ`. Values from transient
+DFTs are spectral densities; normalise by the accepted port power. Only `κ`
+contributes: dispersive-pole losses are not included.
+
+**Mass averaging.** After the cube procedure of IEEE Std 1528 /
+IEC/IEEE 62704-1 as publicly described:
+
+1. per tissue voxel, an axis-aligned cube centred on it is grown until its
+   tissue mass is `m` (voxels cut by the cube count with their volume
+   fraction, solved to 1e-10 of the mass, via 3-D prefix sums); valid if at
+   most 10 % of its volume is non-tissue (outside the domain counts as air);
+2. voxels whose centred cube is invalid take the largest average of the
+   valid cubes containing their centre;
+3. voxels in no valid cube take the cube with the voxel at the centre of a
+   face, of the six orientations the one with least air.
+
+Deviations: no rotated/tilted cubes; step 3 simplifies the standards'
+surface treatment; non-biological lossy material counts as air.
+
+**Output.** `SarField`: per-voxel values plus how each was obtained
+(`VoxelClass`), the peak and its location, `.vtr` (cell data) and, with
+`hdf5`, an `ems-sar` HDF5 layout.
+
+**Validation** (`tests/sar.rs`, `post::sar` unit tests): lossy tissue block
+in a closed PEC box fed by a one-cell lumped port inside it: absorbed power
+equals the port's accepted power within 3e-6 / 1.6e-5 / 3.9e-5 at
+0.5 / 1 / 1.5 GHz (a multi-edge port is ~1 % off because its terminal
+current is the mean over its series edges). Averaging: a constant field
+averages to the local value everywhere (incl. boundary voxels and graded
+meshes), a linear gradient to the centre value (1e-12), the air rule and
+boundary cubes on a half-space and a one-voxel slab, results independent of
+the thread count.
+
 ## 6. Engine architecture
 
 ```

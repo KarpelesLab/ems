@@ -22,6 +22,12 @@
 //! HDF5 (`FileType="1"`) are written as `DIR/<dump>.h5` instead (ems layout,
 //! see `ems::io::h5`), and all probes also go to `DIR/probes.h5`. Without
 //! it, such dumps fall back to `.vtr` with a warning.
+//!
+//! SAR dumps (`SARLocal`, `SAR1g`, `SAR10g`, `SARRaw`) are written per
+//! frequency as `DIR/<dump>_f<k>.vtr` (cell data `SAR`, `class`), or `.h5`
+//! for HDF5 dumps with the feature. Their values are spectral densities of
+//! the transient run (see `ems::post::sar`): normalise them by the accepted
+//! port power for SAR per watt.
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -218,6 +224,27 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         d.write_vtr(&out, &base)?;
         println!("wrote {}/{base}_*.vtr", out.display());
+    }
+    for d in res.sar_dumps() {
+        let base = file_stem(d.name());
+        let h5 = cfg!(feature = "hdf5") && d.file_type() == csx::properties::DumpFileType::Hdf5;
+        for (k, f) in d.frequencies().iter().enumerate() {
+            let sar = d.field(k)?;
+            let path = out.join(format!("{base}_f{k}.{}", if h5 { "h5" } else { "vtr" }));
+            #[cfg(feature = "hdf5")]
+            if h5 {
+                sar.write_h5(&path)?;
+            }
+            if !h5 {
+                sar.write_vtr(&path)?;
+            }
+            let peak = sar.max().map_or(0.0, |m| m.value);
+            println!(
+                "wrote {} ({f:e} Hz: peak {peak:.4e} W/kg·s², absorbed {:.4e} W·s²)",
+                path.display(),
+                d.volume(k).total_power()
+            );
+        }
     }
     Ok(())
 }

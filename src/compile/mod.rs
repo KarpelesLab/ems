@@ -103,10 +103,18 @@
 //! (mode function in 1/m over drawing-unit coordinates, `V = w·∫E_t·f dA`
 //! after the E update, `I = w·∫H_t·f dA` after the H update, with H
 //! interpolated from the two adjacent dual planes onto the probe plane).
+//!
+//! # SAR dumps
+//!
+//! `SARLocal` / `SAR1g` / `SAR10g` / `SARRaw` dumps with frequencies are
+//! collected in [`ModelSources::sar`], with the cells of their box and the
+//! per-cell conductivity and mass density sampled from the model (see
+//! [`sar`]).
 
 pub mod dispersive;
 mod mode;
 pub mod planewave;
+pub mod sar;
 pub mod sheet;
 
 pub use planewave::PlaneWaveSource;
@@ -254,6 +262,9 @@ pub struct ModelSources {
     /// Plane-wave excitations (total-field / scattered-field boxes, see
     /// [`planewave`]).
     pub plane_waves: Vec<PlaneWaveSource>,
+    /// The SAR dumps among [`dumps`](Self::dumps), with their cells and
+    /// per-cell materials ([`sar`]).
+    pub sar: Vec<sar::SarSpec>,
 }
 
 /// A ProbeBox or DumpBox property (`T`) with its box snapped to mesh
@@ -475,11 +486,26 @@ fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
             },
             PropertyKind::DumpBox(d) => match d.dump_type {
                 DumpType::EField | DumpType::HField => continue,
-                DumpType::EFieldFd | DumpType::HFieldFd if d.probe.frequencies.is_empty() => {
+                DumpType::EFieldFd
+                | DumpType::HFieldFd
+                | DumpType::SarLocal
+                | DumpType::Sar1g
+                | DumpType::Sar10g
+                | DumpType::SarRaw
+                    if d.probe.frequencies.is_empty() =>
+                {
                     "frequency-domain dump without frequencies; ignored"
                 }
-                DumpType::EFieldFd | DumpType::HFieldFd => continue,
-                _ => "only E/H field dumps (time or frequency domain) are supported; ignored",
+                DumpType::EFieldFd
+                | DumpType::HFieldFd
+                | DumpType::SarLocal
+                | DumpType::Sar1g
+                | DumpType::Sar10g
+                | DumpType::SarRaw => continue,
+                _ => {
+                    "only E/H field dumps (time or frequency domain) and SAR dumps are \
+                     supported; ignored"
+                }
             },
             _ => continue,
         };
@@ -825,6 +851,7 @@ pub fn compile(
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
     let (probes, dumps) = probe_specs(model, &grid, &mut warnings);
+    let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);
     let abc = abc_specs(model, &mut warnings);
     Ok(Compiled {
         grid,
@@ -847,6 +874,7 @@ pub fn compile(
             probes,
             dumps,
             plane_waves,
+            sar,
         },
         warnings,
     })

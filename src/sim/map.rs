@@ -12,7 +12,7 @@ use crate::axis::Axis;
 use crate::compile::{ModelSources, NodeMap};
 use crate::engine::port::loop_entries;
 use crate::engine::{
-    DumpPosition, DumpQuantity, DumpRegion, EdgeSource, EdgeValues, Engine, FieldProbe,
+    DumpPosition, DumpQuantity, DumpRegion, EdgeDft, EdgeSource, EdgeValues, Engine, FieldProbe,
     FieldSampler, FreqDump, LumpedElement, OperatorHandle, PlaneWave, Probe, ProbeQuantity,
     Schedule, SourceKind, TimeDump, Topology,
 };
@@ -59,6 +59,13 @@ pub(crate) struct DumpEntry {
     pub op: DumpOp,
 }
 
+/// A mapped SAR dump: index into [`ModelSources::sar`] and its edge DFT.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SarEntry {
+    pub spec: usize,
+    pub op: OperatorHandle<EdgeDft>,
+}
+
 /// Everything [`map_sources`] registered.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Mapped {
@@ -69,6 +76,7 @@ pub(crate) struct Mapped {
     pub plane_waves: Vec<(String, OperatorHandle<PlaneWave>)>,
     pub probes: Vec<ProbeEntry>,
     pub dumps: Vec<DumpEntry>,
+    pub sar: Vec<SarEntry>,
 }
 
 /// A csx lumped element being assembled.
@@ -465,6 +473,15 @@ pub(crate) fn map_sources(
             id: d.id,
             file_type: s.file_type,
             op,
+        });
+    }
+
+    // ---- SAR dumps (edge DFTs, evaluated by the results).
+    for (spec, s) in src.sar.iter().enumerate() {
+        let op = EdgeDft::new(s.cells, s.frequencies.clone()).interval(k);
+        mapped.sar.push(SarEntry {
+            spec,
+            op: engine.add_operator(op),
         });
     }
     Ok(mapped)

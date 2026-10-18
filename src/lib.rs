@@ -29,7 +29,9 @@ pub use engine::{CellMaterials, EdgeMaterials, Engine, Grid};
 pub use error::{Error, Result};
 pub use fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
 pub use post::Complex64;
-pub use sim::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results, Simulation};
+pub use sim::{
+    DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results, SarResult, Simulation,
+};
 pub use waveform::{ExpressionWaveform, Waveform};
 
 /// The main user-facing types, for glob import: `use ems::prelude::*;`.
