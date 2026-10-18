@@ -579,6 +579,18 @@ These are reported here, not fixed in csx from this repo.
     cells, while μ is combined harmonically (in series). ems's per-cell path
     combines σ_m in series. Worth deciding on one convention.
 
+### 8.2 Feedback for hdf5rs
+
+Found while adding the `hdf5` feature (hdf5rs 0.0.1):
+
+1. No `H5Write` for `hdf5rs::Complex<T>` (reading works); ems defines its own
+   `{r, i}` compound.
+2. `.deflate()` on a dataset builder compiles without the `deflate` feature;
+   the behaviour should be a compile-time gate or a documented error.
+3. `Datatype::packed_compound` returns `Result`, so fixed compounds need an
+   `expect`; an infallible complex constructor would help.
+4. `Sizes` is only reachable as `hdf5rs::format::Sizes`.
+
 ## 9. Validation strategy
 
 Tests check against physics, not openEMS output. Each test is small and fast
@@ -633,14 +645,13 @@ parallel.
 | Step | State |
 |---|---|
 | 1–8 | done |
-| 9 | examples (cavity, microstrip, patch antenna, dipole, run_xml), README and idle-machine benchmark done; `hdf5` in progress |
+| 9 | examples (cavity, microstrip, patch antenna, dipole, run_xml), README, idle-machine benchmark and optional `hdf5` output (via `hdf5rs`) done |
 
 Pulled forward from M2:
 - Dispersive media (Drude/Lorentz/Debye, electric and magnetic) via ADE.
 - Second-order lumped-port reference plane.
 
-Remaining M1 items:
-- The optional `hdf5` feature.
+M1 is complete. M2 so far: AbsorbingBC sheets done (`engine::boundary::abc`).
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:
