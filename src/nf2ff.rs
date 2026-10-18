@@ -408,6 +408,11 @@ impl Nf2ffBox {
         unit: f64,
         default_interval: u64,
     ) -> Result<(Nf2ff, Vec<Mirror>)> {
+        if grid.is_cylindrical() {
+            return Err(Error::Unsupported(
+                "NF2FF boxes need a Cartesian grid".into(),
+            ));
+        }
         let snap = |ax: Axis, x: f64| -> Result<usize> {
             if !x.is_finite() {
                 return Err(Error::Invalid(format!(

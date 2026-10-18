@@ -1,4 +1,4 @@
-//! Cylindrical-coordinate engine (design §5.13): circular PEC cavity
+//! Cylindrical-coordinate engine (design §5.15): circular PEC cavity
 //! resonances against the Bessel-zero formulas, energy conservation and
 //! stability with an axis, thread-count determinism, and a coaxial line.
 
@@ -6,10 +6,11 @@ use std::f64::consts::{PI, TAU};
 
 use ems::constants::{C0, Z0};
 use ems::engine::{
-    EdgeSource, Engine, FaceCondition, FaceConditions, Grid, Probe, ProbeQuantity, TimeStep,
-    boundary::MurBoundary,
+    DumpPosition, DumpQuantity, DumpRegion, EdgeSource, Engine, FaceCondition, FaceConditions,
+    FieldSampler, Grid, Probe, ProbeQuantity, TimeStep,
+    boundary::{CpmlBoundary, MurBoundary},
 };
-use ems::{Axis, Face};
+use ems::{Axis, Cpml, Face};
 
 /// Gaussian-modulated sine centred at `f0` with ~`bw` bandwidth (zero
 /// mean, so a soft E source leaves no net charge); returns the pulse and
@@ -349,4 +350,174 @@ impl Dft {
 fn phase(p: &Probe, f: f64) -> f64 {
     let d = dft(p, f);
     d.1.atan2(d.0)
+}
+
+/// Largest |difference| of two equally sampled series over their common
+/// length, relative to the largest |reference| value.
+fn rel_diff(test: &[f64], reference: &[f64]) -> f64 {
+    let n = test.len().min(reference.len());
+    let d = (0..n).fold(0.0f64, |m, q| m.max((test[q] - reference[q]).abs()));
+    let r = reference[..n].iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    d / r
+}
+
+/// TEM voltage at k = 60 on a coax (a = 1 mm, b = 3 mm) with `nz` cells
+/// of 0.5 mm, 8-cell CPML on both z faces, soft source at k = 20, over
+/// 1.2 ns.
+fn coax_cpml(nz: usize) -> Vec<f64> {
+    let rho = lines(1e-3, 3e-3, 10);
+    let grid = Grid::cylindrical([
+        rho.clone(),
+        lines(0.0, TAU, 8),
+        lines(0.0, nz as f64 * 0.5e-3, nz),
+    ])
+    .unwrap();
+    let mut e = Engine::builder(grid).threads(2).build().unwrap();
+    let cpml = CpmlBoundary::new(
+        &e,
+        [(Face::ZMin, Cpml::cells(8)), (Face::ZMax, Cpml::cells(8))],
+    )
+    .unwrap();
+    e.add_operator(cpml);
+    let (p, _) = pulse(6e9, 5e9);
+    let mut src = EdgeSource::new(p);
+    for i in 0..10 {
+        let w = (rho[i + 1] - rho[i]) / (0.5 * (rho[i] + rho[i + 1]));
+        for j in 0..9 {
+            src = src.edge(Axis::X, [i, j, 20], w);
+        }
+    }
+    e.add_operator(src);
+    let mut v = Probe::new(ProbeQuantity::Voltage);
+    for i in 0..10 {
+        v = v.entry(Axis::X, [i, 2, 60], 1.0);
+    }
+    let h = e.add_operator(v);
+    e.run((1.2e-9 / e.dt()).ceil() as u64);
+    e.operator(&h).values().to_vec()
+}
+
+#[test]
+fn cpml_on_z_faces_absorbs_tem() {
+    // The CPML layer of the short line starts 52 cells past the probe; the
+    // reference line is long enough that nothing returns within 1.2 ns.
+    let r = rel_diff(&coax_cpml(120), &coax_cpml(420));
+    let db = 20.0 * r.log10();
+    println!("coax CPML(8) reflection {db:.1} dB");
+    assert!(db < -60.0, "{db:.1} dB");
+}
+
+/// E_z at ρ index `probe` of a z-invariant radial (TM₀) wave from a soft
+/// source on the axis, between PEC plates 1 mm apart, with an 8-cell CPML
+/// on the ρ_max face (`nr` cells of 0.5 mm), over 0.9 ns.
+fn radial_cpml(nr: usize, probe: usize) -> Vec<f64> {
+    radial(nr, probe, true)
+}
+
+fn radial(nr: usize, probe: usize, use_cpml: bool) -> Vec<f64> {
+    let grid = Grid::cylindrical([
+        lines(0.0, nr as f64 * 0.5e-3, nr),
+        lines(0.0, TAU, 8),
+        lines(0.0, 1e-3, 2),
+    ])
+    .unwrap();
+    let mut e = Engine::builder(grid).threads(2).build().unwrap();
+    if use_cpml {
+        let cpml = CpmlBoundary::new(&e, [(Face::XMax, Cpml::cells(8))]).unwrap();
+        e.add_operator(cpml);
+    } else {
+        e.add_operator(MurBoundary::new(&e, Face::XMax, C0).unwrap());
+    }
+    let (p, _) = pulse(15e9, 10e9);
+    let mut src = EdgeSource::new(p);
+    for j in 0..9 {
+        for k in 0..2 {
+            src = src.edge(Axis::Z, [0, j, k], 1.0);
+        }
+    }
+    e.add_operator(src);
+    let h = e.add_operator(Probe::voltage(Axis::Z, [probe, 3, 0]));
+    e.run((0.9e-9 / e.dt()).ceil() as u64);
+    e.operator(&h).values().to_vec()
+}
+
+#[test]
+fn rho_face_absorbers_treat_the_wave_as_plane() {
+    // CPML and Mur on the ρ_max face use the plane-wave (Cartesian)
+    // stretch / one-way equation, so a cylindrical wave reflects at the
+    // order of 1/(kρ): about −31 dB at ρ = 26 mm (5–25 GHz), −37 dB at
+    // 56 mm, −43 dB at 116 mm, alike for both. Probe at ρ = 50 mm, layer from
+    // ρ = 56 mm; the reference ends at 260 mm.
+    let reference = radial(520, 100, true);
+    let cpml = 20.0 * rel_diff(&radial_cpml(120, 100), &reference).log10();
+    let mur = 20.0 * rel_diff(&radial(120, 100, false), &reference).log10();
+    println!("rho_max reflection: CPML(8) {cpml:.1} dB, Mur {mur:.1} dB");
+    assert!(cpml < -35.0 && mur < -34.0, "{cpml:.1} / {mur:.1} dB");
+}
+
+#[test]
+fn dumps_sample_physical_components() {
+    // A uniform E_α = 2 V/m (u_α = 2·ρ_i·Δα_j) and H_α = 3 A/m
+    // (i_α = 3·ρ_{i+½}·Δα*_j) read back as such, at nodes and cell centres
+    // (next to the axis from the outer edge alone); E_α on the axis itself
+    // is 0 (the edges do not exist).
+    let grid =
+        Grid::cylindrical([lines(0.0, 4e-3, 4), lines(0.0, 1.0, 4), lines(0.0, 2e-3, 2)]).unwrap();
+    let mut e = Engine::builder(grid.clone())
+        .face(Face::YMin, FaceCondition::Pmc)
+        .face(Face::YMax, FaceCondition::Pmc)
+        .threads(1)
+        .build()
+        .unwrap();
+    {
+        let mut f = e.fields_mut();
+        for i in 0..5 {
+            for j in 0..5 {
+                for k in 0..3 {
+                    let n = [i, j, k];
+                    if j < 4 {
+                        f.u.set(Axis::Y, n, (2.0 * grid.edge_length(Axis::Y, n)) as f32);
+                    }
+                    if i < 4 && k < 2 {
+                        f.i.set(Axis::Y, n, (3.0 * grid.dual_edge_length(Axis::Y, n)) as f32);
+                    }
+                }
+            }
+        }
+    }
+    let region = DumpRegion::new([0, 0, 0], [4, 4, 2]);
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6 * b.abs().max(1.0);
+    for pos in [DumpPosition::Nodes, DumpPosition::CellCenters] {
+        let se = FieldSampler::new(e.grid(), region, DumpQuantity::E, pos).unwrap();
+        let sh = FieldSampler::new(e.grid(), region, DumpQuantity::H, pos).unwrap();
+        let (ve, vh) = {
+            let f = e.fields_mut();
+            (se.sample(&f), sh.sample(&f))
+        };
+        let [dx, dy, dz] = se.dims();
+        for p in 0..dx {
+            let rho = se.coords(Axis::X)[p];
+            for q in 0..dy {
+                for r in 0..dz {
+                    let v = ve[(p * dy + q) * dz + r][1] as f64;
+                    if rho == 0.0 {
+                        assert_eq!(v, 0.0);
+                    } else {
+                        assert!(close(v, 2.0), "{pos:?} E_α {v} at ρ {rho}");
+                    }
+                    let h = vh[(p * dy + q) * dz + r][1] as f64;
+                    assert!(close(h, 3.0), "{pos:?} H_α {h} at ρ {rho}");
+                }
+            }
+        }
+        // α coordinates in radians.
+        assert!(close(
+            se.coords(Axis::Y)[se.dims()[1] - 1],
+            if pos == DumpPosition::Nodes {
+                1.0
+            } else {
+                0.875
+            }
+        ));
+    }
 }

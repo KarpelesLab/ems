@@ -10,6 +10,7 @@ use super::results::ProbeKind;
 use crate::Result;
 use crate::axis::Axis;
 use crate::compile::{ModelSources, NodeMap};
+use crate::engine::cylindrical;
 use crate::engine::port::loop_entries;
 use crate::engine::{
     DumpPosition, DumpQuantity, DumpRegion, EdgeDft, EdgeSource, EdgeValues, Engine, FieldProbe,
@@ -93,6 +94,41 @@ struct Group {
     /// Per-edge voltage weights of each overlapping excitation, keyed by
     /// excitation index.
     sources: Vec<(usize, Vec<f64>)>,
+    /// Cylindrical grids: every edge csx listed, copies included.
+    raw: Vec<[usize; 3]>,
+}
+
+/// `(series, parallel)` edge counts of a set of edge start nodes along
+/// `axis`: distinct positions along the axis, and edges per position.
+fn counts(axis: Axis, nodes: impl Iterator<Item = [usize; 3]>) -> (f64, f64) {
+    let mut n = 0usize;
+    let mut along = std::collections::BTreeSet::new();
+    for p in nodes {
+        n += 1;
+        along.insert(p[axis.index()]);
+    }
+    let s = along.len().max(1) as f64;
+    (s, n as f64 / s)
+}
+
+/// Cylindrical grids: csx spreads an element over the edges it lists,
+/// `R·p/s`, `L·p/s`, `C·s/p` per edge (`s` in series, `p` in parallel),
+/// counting every stored copy of an edge (the α copies on the axis, both
+/// α faces of a closed grid) as a parallel edge. Only one copy per
+/// physical edge is kept, so the per-edge values are rescaled to the kept
+/// counts (`R_e' = R_e·(s/p)·(p'/s')`), which keeps the element's totals.
+fn redistribute(g: &mut Group) {
+    let (s0, p0) = counts(g.axis, g.raw.iter().copied());
+    let (s1, p1) = counts(g.axis, g.edges.iter().map(|e| e.node));
+    if g.edges.is_empty() || (s0 == s1 && p0 == p1) {
+        return;
+    }
+    let f = (s0 / p0) * (p1 / s1);
+    for e in &mut g.edges {
+        e.r = e.r.map(|r| r * f);
+        e.l = e.l.map(|l| l * f);
+        e.c = e.c.map(|c| c / f);
+    }
 }
 
 /// Positive finite value, or `None` (csx uses NaN for "unset").
@@ -158,8 +194,21 @@ pub(crate) fn map_sources(
     let mut by_name: HashMap<&str, usize> = HashMap::new();
     // (axis, node) → (group, edge position).
     let mut lumped_edge: HashMap<(Axis, [usize; 3]), (usize, usize)> = HashMap::new();
+    let cyl_grid = engine.grid().clone();
+    let cylindrical = cyl_grid.is_cylindrical();
+    // Cylindrical grids: (group, canonical edge) pairs already placed.
+    let mut placed = std::collections::HashSet::new();
     for le in &src.lumped {
-        let (axis, node) = node_map.edge(le.edge);
+        let (axis, raw_node) = node_map.edge(le.edge);
+        // A lumped element acts on the physical edge: on a cylindrical grid
+        // its canonical copy carries it (see
+        // `engine::cylindrical::e_edge_copies`); further copies are skipped
+        // and the per-edge values redistributed below.
+        let node = if cylindrical {
+            cylindrical::e_edge_copies(&cyl_grid, axis, raw_node)[0]
+        } else {
+            raw_node
+        };
         let g = *by_name.entry(le.name.as_str()).or_insert_with(|| {
             let topology = match le.le_type {
                 None | Some(LumpedElementType::Parallel) => Topology::Parallel,
@@ -180,10 +229,17 @@ pub(crate) fn map_sources(
                 edges: Vec::new(),
                 can_source: false,
                 sources: Vec::new(),
+                raw: Vec::new(),
             });
             groups.len() - 1
         });
         let grp = &mut groups[g];
+        if cylindrical {
+            grp.raw.push(raw_node);
+            if !placed.insert((g, axis, node)) {
+                continue;
+            }
+        }
         if axis != grp.axis {
             warnings.push(format!(
                 "lumped element {:?}: edge {axis}:{node:?} not along {}; ignored",
@@ -216,6 +272,11 @@ pub(crate) fn map_sources(
         }
         lumped_edge.insert((axis, node), (g, grp.edges.len()));
         grp.edges.push(ev);
+    }
+    if cylindrical {
+        for g in &mut groups {
+            redistribute(g);
+        }
     }
     for g in &mut groups {
         g.can_source = match g.topology {
@@ -252,12 +313,24 @@ pub(crate) fn map_sources(
         let mut op = EdgeSource::new(move |t| wf.value(t - delay, dt)).kind(kind);
         let mut thevenin = 0;
         let mut hard_on_lumped = 0usize;
+        // Cylindrical grids: physical edges already handled (canonical copy).
+        let mut seen = std::collections::HashSet::new();
         for &(edge, a) in &ex.amplitudes {
             let (axis, node) = node_map.edge(edge);
-            let len = if kind.is_magnetic() {
-                grid.dual_delta(axis, node[axis.index()])
+            let copies = if grid.is_cylindrical() && !kind.is_magnetic() {
+                let c = cylindrical::e_edge_copies(&grid, axis, node);
+                if !seen.insert((axis, c[0])) {
+                    continue;
+                }
+                c
             } else {
-                grid.delta(axis, node[axis.index()])
+                vec![node]
+            };
+            let node = copies[0];
+            let len = if kind.is_magnetic() {
+                grid.dual_edge_length(axis, node)
+            } else {
+                grid.edge_length(axis, node)
             };
             let weight = a * len;
             if kind == SourceKind::SoftE
@@ -287,7 +360,9 @@ pub(crate) fn map_sources(
             if kind == SourceKind::HardE && lumped_edge.contains_key(&(axis, node)) {
                 hard_on_lumped += 1;
             }
-            op = op.edge(axis, node, weight);
+            for &c in &copies {
+                op = op.edge(axis, c, weight);
+            }
         }
         if hard_on_lumped > 0 {
             warnings.push(format!(

@@ -316,6 +316,11 @@ impl MslPort {
         if self.props.is_some() {
             return Err(Error::Invalid(format!("MSL port {n} was already added")));
         }
+        if model.grid.coord_system != csx::CoordSystem::Cartesian {
+            return Err(Error::Unsupported(format!(
+                "MSL port {n}: MSL ports need a Cartesian grid"
+            )));
+        }
         let w_axis = self.width_axis()?;
         if self.start.iter().chain(&self.stop).any(|v| !v.is_finite())
             || !self.delay.is_finite()

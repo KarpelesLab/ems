@@ -36,8 +36,8 @@ impl Fdtd {
     /// | `time_step` (`TimeStep`) | [`timestep`](Fdtd::timestep) |
     /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor) |
     /// | `cell_constant_material` | `true` → warning (ems averages materials onto edges) |
-    /// | `coord_system` | `0` → Cartesian; anything else → [`Error::Unsupported`] |
-    /// | `multi_grid` | warning (cylindrical only) |
+    /// | `coord_system` | `0` (Cartesian) or `1` (cylindrical) accepted: the coordinate system is that of the model's grid; anything else → [`Error::Unsupported`] |
+    /// | `multi_grid` | warning: multigrid near the axis of cylindrical grids is not implemented |
     /// | `excitation` (`<Excitation>`) | [`waveform`](Fdtd::waveform) via [`Waveform::from_csx`] |
     /// | `boundary.faces` (`<BoundaryCond>`) | PEC / PMC / Mur / `PML_n` → [`Boundary`] with [`Cpml::cells`]`(n)` and default grading; absent → all PEC |
     /// | `boundary.mur_phase_velocity` | [`Mur::phase_velocity`] of every Mur face |
@@ -49,13 +49,18 @@ impl Fdtd {
 
         if let Some(cs) = s.coord_system
             && cs != 0
+            && cs != 1
         {
             return Err(Error::Unsupported(format!(
-                "FDTD CoordSystem={cs}: only Cartesian (0) simulations are supported"
+                "FDTD CoordSystem={cs}: only Cartesian (0) and cylindrical (1) are supported"
             )));
         }
         if s.multi_grid.is_some() {
-            warn.push("FDTD MultiGrid ignored (cylindrical meshes only)".into());
+            warn.push(
+                "FDTD MultiGrid ignored: multigrid near the axis of cylindrical grids is not \
+                 implemented (the full azimuthal resolution is used up to the axis)"
+                    .into(),
+            );
         }
 
         f.max_timesteps = match s.number_of_timesteps {
@@ -432,8 +437,11 @@ mod tests {
         }
 
         // Impossible settings are errors.
+        let mut cyl = FdtdSettings::new();
+        cyl.coord_system = Some(1);
+        assert!(Fdtd::from_csx(&cyl).is_ok());
         let mut bad = FdtdSettings::new();
-        bad.coord_system = Some(1);
+        bad.coord_system = Some(2);
         assert!(matches!(Fdtd::from_csx(&bad), Err(Error::Unsupported(_))));
         let mut bad = FdtdSettings::new();
         bad.number_of_timesteps = Some(0);

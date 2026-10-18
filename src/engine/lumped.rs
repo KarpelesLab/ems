@@ -353,8 +353,13 @@ struct CurrentRecord {
 struct Installed {
     dt: f64,
     edges: Vec<[usize; 3]>,
-    /// Final `cb` of each edge (after folding).
+    /// Final `cb` of each edge (after folding); for an edge stored in
+    /// several copies (cylindrical grids) the `cb` of the merged edge.
     cb: Vec<f64>,
+    /// The other stored copies of each edge (cylindrical grids, see
+    /// [`e_edge_copies`](super::cylindrical::e_edge_copies)); empty when
+    /// the edge has a single copy.
+    copies: Vec<Vec<[usize; 3]>>,
     /// Per-edge conductance in series with the source (0 where the source
     /// sits in the branch).
     g_src: Vec<f64>,
@@ -787,20 +792,50 @@ impl LumpedElement {
         let parts = self.edge_parts();
         let axis = self.axis();
         let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
+        {
+            let co = engine.coefficients();
+            let cb = co.cb(axis);
+            if let Some(p) = edges.iter().find(|&&p| cb[idx(p)] == 0.0) {
+                return Err(Error::Invalid(format!(
+                    "lumped element edge {axis}:{p:?} is PEC (metal or a PEC outer face)"
+                )));
+            }
+        }
+        // On a cylindrical grid an edge may be stored in several copies
+        // that the engine merges with 1/cb weights after the E update. The
+        // element sits on the given copy; it then works with the merged
+        // edge's cb and writes its result to every copy, so that the merge
+        // after its post_e hook keeps it.
+        let grid = engine.grid().clone();
+        let copies: Vec<Vec<[usize; 3]>> = edges
+            .iter()
+            .map(|&p| {
+                let all = super::cylindrical::e_edge_copies(&grid, axis, p);
+                all.into_iter().filter(|&q| q != p).collect()
+            })
+            .collect();
         let mut co = engine.coefficients_mut();
         let (ca, cb) = co.e_mut(axis);
-        if let Some(p) = edges.iter().find(|&&p| cb[idx(p)] == 0.0) {
+        if let Some(p) = copies.iter().flatten().find(|&&p| cb[idx(p)] == 0.0) {
             return Err(Error::Invalid(format!(
-                "lumped element edge {axis}:{p:?} is PEC (metal or a PEC outer face)"
+                "lumped element edge {axis}:{p:?} has a PEC copy (PEC face)"
             )));
         }
         let mut cbs = Vec::with_capacity(edges.len());
-        for (&p, &(g_e, c_e, _)) in edges.iter().zip(&parts) {
+        for ((&p, &(g_e, c_e, _)), others) in edges.iter().zip(&parts).zip(&copies) {
             let i = idx(p);
             if g_e != 0.0 || c_e != 0.0 {
                 (ca[i], cb[i]) = fold_parallel(ca[i], cb[i], dt, g_e, c_e);
             }
-            cbs.push(cb[i] as f64);
+            if others.is_empty() {
+                cbs.push(cb[i] as f64);
+            } else {
+                let w: f64 = core::iter::once(i)
+                    .chain(others.iter().map(|&q| idx(q)))
+                    .map(|j| 1.0 / cb[j] as f64)
+                    .sum();
+                cbs.push(1.0 / w);
+            }
         }
         drop(co);
         let ne = edges.len();
@@ -846,6 +881,7 @@ impl LumpedElement {
             dt,
             edges,
             cb: cbs,
+            copies,
             g_src,
             series,
             v: vec![0.0; if terms.is_empty() { 0 } else { ne }],
@@ -1006,6 +1042,14 @@ impl LumpedElement {
                 b.q[e] += s.dt * jb;
                 b.j_avg[e] = jb;
                 fields.u.set(axis, p, u_new as f32);
+            }
+        }
+        for (&p, others) in s.edges.iter().zip(&s.copies) {
+            if !others.is_empty() {
+                let v = fields.u.get(axis, p);
+                for &q in others {
+                    fields.u.set(axis, q, v);
+                }
             }
         }
         if let Some(r) = &mut s.record {

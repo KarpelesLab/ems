@@ -433,7 +433,8 @@ impl Simulation {
     /// reaching into a PML adds a [warning](Self::warnings).
     ///
     /// # Errors
-    /// See [`Nf2ff::with_faces`](crate::nf2ff::Nf2ff::with_faces).
+    /// See [`Nf2ff::with_faces`](crate::nf2ff::Nf2ff::with_faces);
+    /// [`Error::Unsupported`](crate::Error::Unsupported) on a cylindrical grid.
     pub fn add_nf2ff(&mut self, b: &Nf2ffBox) -> Result<Nf2ffHandle> {
         if self.bloch.is_some() {
             return Err(crate::Error::Unsupported(

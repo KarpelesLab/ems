@@ -340,13 +340,19 @@ impl PlaneWave {
     /// [`Error::Invalid`] for a box outside the mesh or without volume, a
     /// zero or non-finite direction, a polarisation that is zero or not
     /// perpendicular to the direction, an invalid background, or a
-    /// matching frequency the mesh cannot resolve.
+    /// matching frequency the mesh cannot resolve;
+    /// [`Error::Unsupported`] on a cylindrical grid.
     pub fn new(
         engine: &Engine,
         spec: &PlaneWaveSpec,
         amplitude: impl Fn(f64) -> f64 + Send + 'static,
     ) -> Result<Self> {
         let grid = engine.grid();
+        if grid.is_cylindrical() {
+            return Err(Error::Unsupported(
+                "plane waves need a Cartesian grid".into(),
+            ));
+        }
         let n = grid.nodes();
         let (lo, hi) = (spec.start, spec.stop);
         if (0..3).any(|a| lo[a] >= hi[a] || hi[a] >= n[a]) {

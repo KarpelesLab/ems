@@ -483,12 +483,21 @@ fn delta_unit_scales_to_metres() {
 }
 
 #[test]
-fn cylindrical_grid_is_unsupported() {
+fn cylindrical_grid_compiles() {
+    // ρ and z in drawing units (scaled), α in radians (not scaled). The
+    // grid lines 0..4 are a sector of 4 rad with an axis.
     let mut model = uniform_model([4, 4, 4], 1.0, 1e-3);
     model.grid.coord_system = CoordSystem::Cylindrical;
+    let sim = Simulation::new(&model, &serial()).unwrap();
+    let g = sim.grid();
+    assert!(g.is_cylindrical() && g.has_axis() && !g.is_closed());
+    assert_eq!(g.lines(ems::Axis::X)[4], 4e-3);
+    assert_eq!(g.lines(ems::Axis::Y)[4], 4.0);
+    // An azimuth over 2π is an error.
+    model.grid.set_lines(1, (0..=7).map(f64::from)).unwrap();
     assert!(matches!(
         Simulation::new(&model, &serial()),
-        Err(Error::Unsupported(_))
+        Err(Error::Invalid(_))
     ));
 }
 

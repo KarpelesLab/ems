@@ -230,6 +230,11 @@ impl RectWaveguidePort {
         if self.mode == (0, 0) {
             return Err(Error::Invalid(format!("port {n}: TE00 is not a mode")));
         }
+        if model.grid.coord_system != csx::CoordSystem::Cartesian {
+            return Err(Error::Unsupported(format!(
+                "port {n}: waveguide ports need a Cartesian grid"
+            )));
+        }
         if self.start.iter().chain(&self.stop).any(|v| !v.is_finite())
             || !self.delay.is_finite()
             || self.amplitude.is_some_and(|a| !a.is_finite())

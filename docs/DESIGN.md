@@ -201,8 +201,8 @@ Design rules:
   primary-face centres.
 - Dual nodes are the primary-cell midpoints. Dual cells at the domain boundary
   are half cells.
-- M1 requires a Cartesian grid. A cylindrical grid is rejected with a clear
-  error until M4.
+- Cartesian `(x, y, z)` or cylindrical `(ρ, α, z)` (§5.13): `ρ`, `z` scaled
+  by the delta unit, `α` in radians.
 
 ### 5.2 Integral (voltage/current) form
 We store edge integrals, not field values:
@@ -951,6 +951,108 @@ one-cell rod of `ε/g`, `μ·g` that a real thin wire does not present.
 The plain staircase on 10 mm cells (`a ≈ 2 mm`) gives a dipole slope of
 661 Ω/GHz; the thin wire of 0.496 mm on the same mesh 974 Ω/GHz (reference
 973), and 0.198 mm 1160 Ω/GHz with a 1.4 % higher resonance.
+
+### 5.15 Cylindrical coordinates
+
+A csx grid with `CoordSystem` 1 becomes an engine `Grid::cylindrical`: axes
+`(ρ, α, z)` (`Axis::X`, `Y`, `Z`), `ρ` and `z` in metres, `α` in radians
+(`ρ ≥ 0`, azimuth span `≤ 2π`). Code: `engine::cylindrical`,
+`compile::cylindrical`; tests: `tests/cylindrical.rs`,
+`tests/cylindrical_sim.rs`.
+
+**Geometry, not kernels.** The integral form (§5.2) only sees circulations
+of `u = ∫E·dl` and `i = ∫H·dl`; all geometry is in the coefficients
+`C = ε·A*/l`, `L = μ·A/l*`. The grid supplies the physical lengths and
+areas (`Grid::edge_length`, `dual_edge_length`, `dual_face_area`,
+`face_area`):
+
+| edge | primary length `l` | dual face `A*` (E) / primary face `A` (H) | dual length `l*` |
+|---|---|---|---|
+| ρ | `Δρ` | `ρ_{i+½}·Δα*·Δz*` | `Δρ*` |
+| α | `ρ_i·Δα` | `Δρ*·Δz*` | `ρ_{i+½}·Δα*` |
+| z | `Δz` | `Δα*·(ρ_hi² − ρ_lo²)/2` (dual lines around `ρ_i`) | `Δz*` |
+| ρ face (H_ρ) | | `ρ_i·Δα·Δz` | |
+| α face (H_α) | | `Δρ·Δz` | |
+| z face (H_z) | | `Δα·(ρ_{i+1}² − ρ_i²)/2` | |
+
+csx's discretisation already uses the Jacobian in its volume weights; the
+per-cell engine path (`CellMaterials`) weights the quarter cells around a z
+edge by their annular areas. The Cartesian path is untouched (bit-identical).
+
+**Closed azimuth.** An `α` span of 2π makes the α faces periodic (§5.6.1),
+whatever the boundary settings say; absorbing boundaries configured there are
+dropped with a warning.
+
+**Axis.** If `ρ_0 = 0`, the `ρ_min` face is the z axis (its boundary
+setting is ignored, built like PMC). α edges on the axis have zero length and
+H_ρ faces zero area: neither exists (`ca = cb = 0`, `da = db = 0`). The axis
+z edge is one edge stored once per α index. Ampère's law over the dual disc
+`ρ ≤ ρ_½` gives `C·du/dt + G·u = Σ_j i_α(ρ_½, α_j)` with `C = Σ_j C_j`,
+which is exactly the `1/cb`-weighted mean of the copies' kernel results (the
+derivation of the periodic merge). The engine applies that merge after every
+E update, after the periodic merge; the field energy sums the copies
+(`Σ C_j u² = C u²`), so the energy invariant holds (measured drift
+`2.5e-8` over 5000 steps).
+
+**Copies of an edge.** The axis z edge and the edges on the α faces of a
+closed grid exist in several stored copies (`engine::cylindrical::e_edge_copies`).
+Sources and elements act on the physical edge: the simulation mapping puts
+an additive source on every copy, a lumped element on the canonical copy
+only. The element works with the merged edge's `cb` and writes its result to
+all copies, so the merge after its hook keeps it. csx spreads an element over
+the edges it lists counting every copy as a parallel edge; the per-edge
+values are rescaled to the edges kept, which preserves the element's totals.
+
+**Periodic merge fix.** A pair of copies that both have `cb = 0` (e.g. a Mur
+face crossing a periodic face) is not updated by the kernel; the merge now
+keeps the operator's values (mean) instead of forcing 0, which had made Mur
+reflect along the seam.
+
+**Time step.** No per-axis formula bounds the operator near the axis, where
+the α arcs `ρ_½·Δα` are short. `courant_limit` computes the limit of the
+discrete operator: leapfrog is stable for `dt < 2/√λ_max`, with `λ_max` of
+`A = C⁻¹KᵀL⁻¹K`, estimated by Lanczos in the `C` inner product on the vacuum
+operator with all non-periodic faces open (PMC — PEC faces and materials only
+lower `λ_max`), including the merges, plus 0.1 % margin; cached in the grid.
+On a uniform Cartesian box it reproduces the CFL formula to 1e-6; runs at
+Courant factor 1.0 stay stable. Multigrid (coarsening α near the axis) is not
+implemented, so the time step is set by the innermost arcs (the mesh check
+warns).
+
+**Dumps and probes.** Components are `(ρ, α, z)`; `E_α = u_α/(ρ_i·Δα)`,
+`H_α = i_α/(ρ_{i+½}·Δα*)` (the α edges next to the axis are interpolated
+from the outer edge only). Dump coordinates are `(ρ, α, z)`, so VTK files
+show the parameter box, not the physical cylinder.
+
+**Boundaries.** CPML and Mur work on the z faces as on Cartesian grids
+(coax TEM reflection −86 dB with CPML(8)). On the `ρ_max` face they use the
+plane-wave stretch / one-way equation, which does not match an outgoing
+cylindrical wave: the reflection is of order `1/(kρ)`, measured −31 dB at
+`ρ = 26 mm`, −37 dB at 56 mm, −43 dB at 116 mm (5–25 GHz, CPML(8) and Mur
+alike). A cylindrical PML (complex-stretched `ρ̃` in the α metric) is future
+work.
+
+**Not available on cylindrical grids** (dropped with a warning or refused):
+conducting sheets (PEC instead), dispersive poles (static values only), plane
+waves, SAR dumps, waveguide mode probes, NF2FF boxes, MSL and waveguide port
+helpers (`Error::Unsupported`). Lumped ports, lumped elements, voltage,
+current and field probes, field dumps (VTK and HDF5) work.
+
+**Validation.**
+
+| case | result |
+|---|---|
+| circular PEC cavity `a = 10 mm`, `h = 15 mm`, 20 × 24 × 15 cells, with axis: TM010, TE111, TM011, TM110, TE011 | within 0.19 % of the Bessel-zero frequencies |
+| same, TE211 (m = 2) | −0.65 %: the discrete azimuthal wavenumber `(2/Δα)·sin(mΔα/2)` of 24 cells accounts for −0.61 % |
+| same cavity built in csx (`Simulation`), TM010 / TE111 / TM011 / TM110 | −0.07 / −0.15 / −0.41 / −0.19 % |
+| lossless cavity energy, 5000 steps | drift 2.5e-8 |
+| random fields at Courant factor 1.0, 20 000 steps | energy constant to 1.3e-6 |
+| coax `b/a = 3`, closed azimuth, Mur ends | `|Z|` within 2e-4 of the discrete TEM value (0.1 % of `η/2π·ln(b/a)`), phase velocity 0.9999 c |
+| coax with radial lumped port and 100 Ω load spanning the circle | `Z_in` within 0.7 % of the transmission-line model (0.25–2 GHz) |
+| one-column port on the periodic α = 0 face vs at α = π/2 | equal within 3e-5 |
+| axis port listed on one or all α copies | bit-identical |
+| openEMS XML (`CoordSystem="1"`) round trip | bit-identical probes |
+| 1 vs 3 threads | bit-identical |
 
 ## 6. Engine architecture
 

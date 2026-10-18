@@ -9,8 +9,10 @@
 //!    mutated.
 //! 2. **Grid.** The csx mesh lines (drawing units) are multiplied by
 //!    [`csx::RectilinearGrid::delta_unit`] to give the engine [`Grid`] in
-//!    metres. Cylindrical grids are rejected with [`Error::Unsupported`]
-//!    (milestone M4).
+//!    metres. A cylindrical csx grid becomes a [`Grid::cylindrical`] (`ρ`,
+//!    `z` scaled, `α` in radians); the cylindrical rules (features that
+//!    still need a Cartesian grid, ignored boundaries, copies of edges) are
+//!    in design §5.15 and the `compile::cylindrical` module.
 //! 3. **Materials.** [`csx::discretize::discretize`] samples the model onto
 //!    the grid (sub-cell averaging and priorities are csx's business, see
 //!    its module docs). Its arrays use the csx node order
@@ -129,6 +131,7 @@
 //! [`sar`]).
 
 mod conformal;
+mod cylindrical;
 pub mod dispersive;
 mod mode;
 pub mod planewave;
@@ -482,21 +485,23 @@ impl Compiled {
 
 /// Converts the csx grid (drawing units) into an engine [`Grid`] in metres.
 ///
+/// A cylindrical csx grid becomes a [`Grid::cylindrical`]: `ρ` and `z`
+/// are scaled by the delta unit, `α` stays in radians.
+///
 /// # Errors
-/// [`Error::Unsupported`] for a cylindrical grid; [`Error::Invalid`] for a
-/// non-finite or non-positive delta unit or a grid with fewer than two
-/// lines on an axis.
+/// [`Error::Invalid`] for a non-finite or non-positive delta unit, a grid
+/// with fewer than two lines on an axis, or an invalid cylindrical grid
+/// (negative `ρ`, azimuth span over 2π).
 pub fn grid_from_csx(g: &csx::RectilinearGrid) -> Result<Grid> {
-    if g.coord_system != CoordSystem::Cartesian {
-        return Err(Error::Unsupported(
-            "cylindrical grids are not supported yet (milestone M4)".into(),
-        ));
-    }
     let unit = g.delta_unit;
     if !(unit.is_finite() && unit > 0.0) {
         return Err(Error::Invalid(format!(
             "grid delta unit {unit} must be finite and > 0"
         )));
+    }
+    if g.coord_system == CoordSystem::Cylindrical {
+        let scale = |a: usize, s: f64| g.lines(a).iter().map(|&x| x * s).collect();
+        return Grid::cylindrical([scale(0, unit), scale(1, 1.0), scale(2, unit)]);
     }
     Grid::new(core::array::from_fn(|a| {
         g.lines(a).iter().map(|&x| x * unit).collect()
@@ -616,10 +621,18 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
         let (start, stop) = snap_primitive(&model.grid, prim, "probe/dump", &p.name, warnings);
         match &p.kind {
             PropertyKind::ProbeBox(pb) => {
-                let mode_entries = if matches!(
+                let waveguide = matches!(
                     pb.probe_type,
                     ProbeType::WaveguideVoltage | ProbeType::WaveguideCurrent
-                ) {
+                );
+                if waveguide && grid.is_cylindrical() {
+                    warnings.push(format!(
+                        "probe {:?}: waveguide mode probes need a Cartesian grid; ignored",
+                        p.name
+                    ));
+                    continue;
+                }
+                let mode_entries = if waveguide {
                     match mode::mode_entries(
                         model,
                         p,
@@ -681,9 +694,10 @@ fn snap_primitive(
     name: &str,
     warnings: &mut Vec<String>,
 ) -> ([usize; 3], [usize; 3]) {
-    let cart = prim
-        .coord_system
-        .is_none_or(|c| c == CoordSystem::Cartesian);
+    // Box and point values are used as given when they are in the grid's
+    // coordinate system (the default for primitives without their own).
+    let gcs = grid.coord_system;
+    let cart = prim.effective_cs(gcs) == gcs;
     let tf = |v: csx::Vec3| {
         if prim.transform.is_empty() {
             v
@@ -702,7 +716,7 @@ fn snap_primitive(
                 "{what} {name:?}: {} primitive replaced by its bounding box",
                 other.type_name()
             ));
-            let bb = prim.bounding_box(CoordSystem::Cartesian);
+            let bb = prim.bounding_box_in(gcs, gcs);
             (bb.min, bb.max)
         }
     };
@@ -782,7 +796,8 @@ fn abc_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> Ve
                 ));
                 continue;
             };
-            let bb = prim.bounding_box(CoordSystem::Cartesian);
+            let gcs = model.grid.coord_system;
+            let bb = prim.bounding_box_in(gcs, gcs);
             if bb.max.0[d] - bb.min.0[d] > 0.0 {
                 warnings.push(format!(
                     "AbsorbingBC {:?}: primitive has a thickness along {}; flattened onto \
@@ -813,8 +828,8 @@ fn abc_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> Ve
 /// the [module docs](self) for the steps and conventions.
 ///
 /// # Errors
-/// [`Error::Unsupported`] for cylindrical grids, [`Error::Invalid`] for
-/// invalid settings or meshes, [`Error::Csx`] for model errors (parameter
+/// [`Error::Invalid`] for invalid settings or meshes (including invalid
+/// cylindrical grids), [`Error::Csx`] for model errors (parameter
 /// evaluation, discretisation).
 pub fn compile(
     model: &csx::ContinuousStructure,
@@ -864,9 +879,21 @@ pub fn compile(
             .cloned(),
     );
     property_warnings(model, &mut warnings);
-    let plane_waves = planewave::plane_wave_sources(model, fdtd, &mut warnings);
+    let cyl = grid.is_cylindrical();
+    let mut plane_waves = planewave::plane_wave_sources(model, fdtd, &mut warnings);
+    if cyl && !plane_waves.is_empty() {
+        warnings.push(format!(
+            "{} plane-wave excitation(s) ignored: plane waves need a Cartesian grid",
+            plane_waves.len()
+        ));
+        plane_waves.clear();
+    }
 
-    let sheet_map = sheet::sheet_edges(model, &mg, &node_map, opts.snap_tolerance, &mut warnings);
+    let sheet_map = if cyl {
+        cylindrical::sheets_as_pec(&mg, &mut warnings)
+    } else {
+        sheet::sheet_edges(model, &mg, &node_map, opts.snap_tolerance, &mut warnings)
+    };
     let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
     for &(d, idx) in &sheet_map.pec {
         sheet_pec[d][idx] = true;
@@ -895,7 +922,12 @@ pub fn compile(
             .pec_mask_mut(axis)
             .copy_from_slice(&node_map.reorder(&pec));
     }
-    let conformal = if opts.conformal {
+    if opts.conformal && cyl {
+        warnings.push(
+            "conformal PEC is not available on cylindrical grids; using the staircase".into(),
+        );
+    }
+    let conformal = if opts.conformal && !cyl {
         let pec: [&[bool]; 3] = [
             materials.pec_mask(Axis::X),
             materials.pec_mask(Axis::Y),
@@ -910,8 +942,12 @@ pub fn compile(
         None
     };
 
-    let dispersive =
-        dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings);
+    let dispersive = if cyl {
+        cylindrical::no_dispersive(model, &mut warnings);
+        Vec::new()
+    } else {
+        dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings)
+    };
     let thin_wires = wire::thin_wires(
         model,
         &grid,
@@ -921,7 +957,10 @@ pub fn compile(
         &mut warnings,
     );
 
-    let (faces, (mur, pml)) = map_boundaries(fdtd);
+    let (faces, (mut mur, mut pml)) = map_boundaries(fdtd);
+    if cyl {
+        cylindrical::drop_ignored_boundaries(&grid, &mut mur, &mut pml, &mut warnings);
+    }
     sheet::pml_warning(&sheet_map.edges, grid.nodes(), &pml, &mut warnings);
     let timestep = match fdtd.get_timestep() {
         Some(dt) => TimeStep::Fixed(dt),
@@ -938,8 +977,13 @@ pub fn compile(
             .property_by_name(&f.name)
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
-    let (probes, dumps) = probe_specs(model, &grid, &mut warnings);
-    let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);
+    let (probes, mut dumps) = probe_specs(model, &grid, &mut warnings);
+    let sar = if cyl {
+        cylindrical::no_sar(&mut dumps, &mut warnings);
+        Vec::new()
+    } else {
+        sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings)
+    };
     let abc = abc_specs(model, &mut warnings);
     Ok(Compiled {
         grid,

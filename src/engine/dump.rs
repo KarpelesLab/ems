@@ -41,7 +41,11 @@
 //! ([`Grid::delta`]) and `H = i/Δ*` with `Δ*` the dual edge length
 //! ([`Grid::dual_delta`], half a cell on the outer nodes). This is the
 //! average of the field along the edge, which is second-order accurate at
-//! the edge midpoint.
+//! the edge midpoint. On a cylindrical grid ([`Grid::cylindrical`]) the
+//! components are `(E_ρ, E_α, E_z)` (likewise H), the α edge lengths are
+//! `ρ·Δα` ([`Grid::edge_length`]), and the sample coordinates are
+//! `(ρ, α, z)` (metres, radians, metres); a VTK file then shows the
+//! `(ρ, α, z)` parameter box, not the physical cylinder.
 //!
 //! # Interpolation
 //!
@@ -250,7 +254,7 @@ fn taps(grid: &Grid, q: DumpQuantity, comp: Axis, axis: Axis, pos: Pos) -> Taps 
             [(j - 1, dh / (dl + dh)), (j, dl / (dl + dh))]
         }
     };
-    match (q, comp == axis, pos) {
+    let mut t = match (q, comp == axis, pos) {
         (DumpQuantity::E, true, Pos::Node(j)) => {
             let [(a, wa), (b, wb)] = lin(j);
             [(a, wa / d(a)), (b, wb / d(b))]
@@ -265,7 +269,29 @@ fn taps(grid: &Grid, q: DumpQuantity, comp: Axis, axis: Axis, pos: Pos) -> Taps 
         ],
         (DumpQuantity::H, false, Pos::Node(j)) => lin(j),
         (DumpQuantity::H, false, Pos::Mid(j)) => one(j, 1.0),
+    };
+    // Cylindrical grids: the α edges have length ρ·Δα (E on the ρ lines,
+    // H on the dual lines ρ_{i+½}); the α rule above divides by Δα only, so
+    // the ρ taps divide by ρ. On the axis α edges do not exist: their
+    // weight goes to the other tap (0 if there is none).
+    if grid.is_cylindrical() && comp == Axis::Y && axis == Axis::X {
+        let r = grid.lines(Axis::X);
+        let rho = |i: usize| match q {
+            DumpQuantity::E => r[i],
+            DumpQuantity::H => grid.dual_line(Axis::X, i.min(n - 2)),
+        };
+        let total: f64 = t.iter().map(|x| x.1).sum();
+        let valid: f64 = t.iter().filter(|x| rho(x.0) > 0.0).map(|x| x.1).sum();
+        for x in &mut t {
+            let p = rho(x.0);
+            x.1 = if p > 0.0 && valid != 0.0 {
+                x.1 * (total / valid) / p
+            } else {
+                0.0
+            };
+        }
     }
+    t
 }
 
 /// Converts and interpolates one field over a [`DumpRegion`]; see the

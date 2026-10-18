@@ -7,7 +7,7 @@
 //! discussion there). At the outer boundary the dual cells are half cells.
 //!
 //! A grid is either Cartesian `(x, y, z)` or cylindrical `(ρ, α, z)`
-//! ([`Grid::cylindrical`], design §5.13). The cylindrical geometry
+//! ([`Grid::cylindrical`], design §5.15). The cylindrical geometry
 //! (edge lengths, face areas) is in [`Grid::edge_length`],
 //! [`Grid::dual_edge_length`], [`Grid::dual_face_area`] and
 //! [`Grid::face_area`]; the [`Axis`] names `X`, `Y`, `Z` then stand for
@@ -141,7 +141,7 @@ impl Grid {
     }
 
     /// Whether the grid is cylindrical with its first `ρ` line at 0 (the
-    /// z axis lies on the `ρ_min` face, see design §5.13).
+    /// z axis lies on the `ρ_min` face, see design §5.15).
     pub fn has_axis(&self) -> bool {
         self.is_cylindrical() && self.lines[0][0] == 0.0
     }

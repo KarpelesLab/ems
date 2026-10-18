@@ -22,6 +22,12 @@
 //!   cell on every axis; a few tiny cells can make the whole simulation
 //!   many times slower. The report gives `dt`, the limiting cells and the
 //!   ratio to the time step a typical (median) cell would allow.
+//!   On a cylindrical grid ([`Grid::cylindrical`](crate::engine::Grid::cylindrical))
+//!   the limit comes from the discrete operator and is usually set by the
+//!   short arcs `ρ·Δα` next to the axis (design §5.15).
+//! * **Cylindrical grids.** Messages name the axes `x`, `y`, `z` for `ρ`,
+//!   `α`, `z`; α positions are in radians. The resolution check uses the
+//!   largest arc `ρ_max·Δα` of each α cell.
 //! * **PML** (design §5.6): the layer occupies the outermost `n` mesh cells
 //!   of a face; the mesh needs enough cells for it, structure primitives
 //!   should stay out of it, and the cells in it should be roughly uniform
@@ -696,28 +702,57 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Mesh lines of `axis` in drawing units.
+    /// Drawing unit of `axis` in grid units: the delta unit, or 1 for the α
+    /// axis (radians) of a cylindrical grid.
+    fn unit_of(&self, axis: Axis) -> f64 {
+        if self.grid.is_cylindrical() && axis == Axis::Y {
+            1.0
+        } else {
+            self.unit
+        }
+    }
+
+    /// Mesh lines of `axis` in drawing units (radians for α).
     fn du_lines(&self, axis: Axis) -> Vec<f64> {
-        self.grid
-            .lines(axis)
-            .iter()
-            .map(|x| x / self.unit)
-            .collect()
+        let u = self.unit_of(axis);
+        self.grid.lines(axis).iter().map(|x| x / u).collect()
     }
 
     fn cell_loc(&self, axis: Axis, index: usize) -> Location {
         let l = self.grid.lines(axis);
+        let u = self.unit_of(axis);
         Location::Cell {
             axis,
             index,
-            from: l[index] / self.unit,
-            to: l[index + 1] / self.unit,
+            from: l[index] / u,
+            to: l[index + 1] / u,
         }
     }
 
-    /// Bounding box of a primitive in drawing units (Cartesian).
+    /// Physical cell sizes \[m\] along `axis`: [`Grid::deltas`], except
+    /// for the α axis of a cylindrical grid, where the largest arc
+    /// `ρ_max·Δα` of each cell is used (the wavelength resolution is worst
+    /// at the outer radius).
+    fn phys_deltas(&self, axis: Axis) -> Vec<f64> {
+        let d = self.grid.deltas(axis);
+        if self.grid.is_cylindrical() && axis == Axis::Y {
+            let r = self.grid.lines(Axis::X);
+            let rmax = r[r.len() - 1];
+            d.into_iter().map(|x| x * rmax).collect()
+        } else {
+            d
+        }
+    }
+
+    /// Bounding box of a primitive in drawing units, in the grid's
+    /// coordinate system.
     fn bbox(&self, prim: &Primitive) -> BoundingBox {
-        prim.bounding_box_in(CoordSystem::Cartesian, self.model.coord_system)
+        let cs = if self.grid.is_cylindrical() {
+            CoordSystem::Cylindrical
+        } else {
+            CoordSystem::Cartesian
+        };
+        prim.bounding_box_in(cs, self.model.coord_system)
     }
 
     /// `true` if `b` overlaps the mesh on every axis
@@ -725,7 +760,8 @@ impl<'a> Ctx<'a> {
     fn overlaps_domain(&self, b: &BoundingBox) -> bool {
         (0..3).all(|a| {
             let l = self.grid.lines(Axis::ALL[a]);
-            let (lo, hi) = (l[0] / self.unit, l[l.len() - 1] / self.unit);
+            let u = self.unit_of(Axis::ALL[a]);
+            let (lo, hi) = (l[0] / u, l[l.len() - 1] / u);
             let tol = 1e-9 * (hi - lo).abs();
             b.max[a] >= lo - tol && b.min[a] <= hi + tol
         })
@@ -776,7 +812,7 @@ impl<'a> Ctx<'a> {
         s.cells = g.num_cells();
         for axis in Axis::ALL {
             let a = axis.index();
-            let d = g.deltas(axis);
+            let d = self.phys_deltas(axis);
             let (mut imin, mut dmin, mut dmax) = (0, f64::INFINITY, 0.0f64);
             for (i, &x) in d.iter().enumerate() {
                 if x < dmin {
@@ -808,7 +844,7 @@ impl<'a> Ctx<'a> {
         let median: f64 = Axis::ALL
             .iter()
             .map(|&ax| {
-                let mut d = g.deltas(ax);
+                let mut d = self.phys_deltas(ax);
                 d.sort_by(f64::total_cmp);
                 let m = d[d.len() / 2];
                 1.0 / (m * m)
@@ -873,7 +909,7 @@ impl<'a> Ctx<'a> {
         let mut worst_all = f64::INFINITY;
         for axis in Axis::ALL {
             let a = axis.index();
-            let d = self.grid.deltas(axis);
+            let d = self.phys_deltas(axis);
             let mut worst: Option<(usize, f64, f64)> = None; // (cell, cells/λ, n)
             let (mut count, mut count_err) = (0usize, 0usize);
             for (i, &dx) in d.iter().enumerate() {
@@ -950,6 +986,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn check_timestep(&self, r: &mut MeshReport) {
+        if self.grid.is_cylindrical() {
+            return self.check_timestep_cylindrical(r);
+        }
         let s = &r.stats;
         // The axis contributing most to Σ 1/Δ_min².
         let a = (0..3)
@@ -975,6 +1014,44 @@ impl<'a> Ctx<'a> {
                 Severity::Warning,
                 loc,
                 format!("{msg}: tiny cells dominate the time step"),
+            );
+        } else {
+            r.push(Severity::Info, loc, msg);
+        }
+    }
+
+    /// The time step of a cylindrical grid comes from its discrete operator
+    /// and is usually set by the short arcs `ρ·Δα` next to `ρ_min` (or the
+    /// axis); there is no azimuthal coarsening (multigrid) yet.
+    fn check_timestep_cylindrical(&self, r: &mut MeshReport) {
+        let s = &r.stats;
+        let rho = self.grid.lines(Axis::X);
+        let inner = if self.grid.has_axis() {
+            0.5 * rho[1]
+        } else {
+            rho[0]
+        };
+        let arc = inner * self.grid.min_delta(Axis::Y);
+        let ratio = s.dt / s.dt_typical;
+        let msg = format!(
+            "time step {:.4e} s (stability limit of the cylindrical operator); the shortest \
+             arc next to {} is {arc:.3e} m; {ratio:.2} x the step of the median cells",
+            s.dt,
+            if self.grid.has_axis() {
+                "the axis"
+            } else {
+                "rho_min"
+            }
+        );
+        let loc = Location::Global;
+        if ratio < self.opts.timestep_ratio {
+            r.push(
+                Severity::Warning,
+                loc,
+                format!(
+                    "{msg}: the arcs near the axis dominate the time step (fewer alpha lines \
+                     or a larger rho_min help; multigrid is not implemented)"
+                ),
             );
         } else {
             r.push(Severity::Info, loc, msg);

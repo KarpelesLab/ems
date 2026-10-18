@@ -701,8 +701,11 @@ fn layer_index(grid: &Grid, co: &Coefficients, dt: f64, face: Face, cells: usize
                     let idx = grid.index(node);
                     let along = node[p.index()];
                     if lines.contains(&along) && node[a] + 1 < n[a] && cb[idx] != 0.0 {
-                        let area = grid.dual_delta(ab, node[b]) * grid.dual_delta(ac, node[c]);
-                        let l = grid.delta(comp, node[a]);
+                        // Physical geometry (also cylindrical; the same
+                        // products as `dual_delta`·`dual_delta`, `delta` on
+                        // Cartesian grids).
+                        let area = grid.dual_face_area(comp, node);
+                        let l = grid.edge_length(comp, node);
                         let cap = dt * (1.0 + ca[idx] as f64) / (2.0 * cb[idx] as f64);
                         let vol = area * l;
                         we += vol;
@@ -713,8 +716,8 @@ fn layer_index(grid: &Grid, co: &Coefficients, dt: f64, face: Face, cells: usize
                         && node[c] + 1 < n[c]
                         && db[idx] != 0.0
                     {
-                        let area = grid.delta(ab, node[b]) * grid.delta(ac, node[c]);
-                        let l = grid.dual_delta(comp, node[a]);
+                        let area = grid.face_area(comp, node);
+                        let l = grid.dual_edge_length(comp, node);
                         let ind = dt * (1.0 + da[idx] as f64) / (2.0 * db[idx] as f64);
                         let vol = area * l;
                         wh += vol;

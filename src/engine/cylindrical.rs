@@ -1,5 +1,5 @@
 //! Cylindrical-coordinate support: the axis, the closed azimuth and the
-//! stability limit (design §5.13).
+//! stability limit (design §5.15).
 //!
 //! A cylindrical [`Grid`] has the axes `(ρ, α, z)` ([`Axis::X`], `Y`, `Z`).
 //! The update kernels are the Cartesian ones: in integral form they only
@@ -44,7 +44,7 @@
 //!   (see the derivation in [`boundary::periodic`](super::boundary::periodic)).
 //!   After every E update (in the serial `post_e` gap, after the periodic
 //!   merge and again after operator `post_e` hooks) all copies are replaced
-//!   by that mean ([`AxisMerge`]). A copy with `cb = 0` (e.g. on a PEC α
+//!   by that mean. A copy with `cb = 0` (e.g. on a PEC α
 //!   face of a sector) makes the axis edge PEC; if all copies have
 //!   `cb = 0` (an axis end on a Mur face) the operator's values are kept
 //!   (averaged). The field energy sums all
@@ -53,7 +53,7 @@
 //! # Time step
 //!
 //! The α edges near the axis are short (`ρ·Δα`), and no simple per-axis
-//! formula bounds the Yee operator there. [`courant_limit`] computes the
+//! formula bounds the Yee operator there. [`courant_limit`](super::courant_limit) computes the
 //! limit of the actual discrete operator instead: the leapfrog scheme is
 //! stable for `dt < 2/√λ_max` with `λ_max` the largest eigenvalue of
 //! `A = C⁻¹·Kᵀ·L⁻¹·K` (`K` the face circulation, `C`, `L` the edge
@@ -85,6 +85,35 @@ pub(crate) fn effective_faces(grid: &Grid, faces: &FaceConditions) -> FaceCondit
         f[Face::XMin] = FaceCondition::Pmc;
     }
     f
+}
+
+/// The stored copies of the physical E edge along `axis` at `node`, the
+/// canonical one (lowest index) first: all α copies of an axis z edge,
+/// both copies of an edge on the α faces of a closed grid, else the edge
+/// itself (always on Cartesian grids).
+///
+/// Sources and lumped elements act on the physical edge: the simulation
+/// mapping applies an additive source to every copy (the merges keep the
+/// copies equal) and a lumped element to the canonical copy only (the
+/// `1/cb`-weighted merge then gives the full edge exactly that element).
+pub fn e_edge_copies(grid: &Grid, axis: Axis, node: [usize; 3]) -> Vec<[usize; 3]> {
+    let n = grid.nodes();
+    if grid.has_axis() && axis == Axis::Z && node[0] == 0 {
+        return (0..n[1])
+            .map(|j| {
+                let mut p = node;
+                p[1] = j;
+                p
+            })
+            .collect();
+    }
+    if grid.is_closed() && axis != Axis::Y && (node[1] == 0 || node[1] == n[1] - 1) {
+        let (mut lo, mut hi) = (node, node);
+        lo[1] = 0;
+        hi[1] = n[1] - 1;
+        return vec![lo, hi];
+    }
+    vec![node]
 }
 
 /// The axis merge of a cylindrical grid with an axis; see the
