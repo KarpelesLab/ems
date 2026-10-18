@@ -61,13 +61,35 @@ pub struct PortProperties {
 ///   of `amplitude` volts per column (see [`Simulation`](crate::Simulation)):
 ///   an open port reads `V = amplitude·waveform(t)`.
 /// * The **voltage** probe is the line from `start` to `stop` along `axis`
-///   through the transverse centre of the box: `V = ∫E·dl`.
+///   through the transverse centre of the box: `V = ∫E·dl`. On each
+///   transverse axis the centre is moved to the mesh line nearest to it
+///   (if the model has lines there), so a multi-column port's probe lies
+///   on a column of port edges instead of between two.
 /// * The **current** probe covers the whole box with normal `axis` and
-///   weight `−1`: `I` is the current leaving the `+` terminal into the
+///   weight `−1`: the H-loop current leaving the `+` terminal into the
 ///   structure, so `P = V·I` is the power delivered to it (the convention
-///   of [`PortResult`]).
+///   of [`PortResult`]). It is written for openEMS compatibility and for
+///   inspection; [`analyze`](Self::analyze) uses the element current
+///   instead (see [Reference plane](#reference-plane)).
 /// * The element has PEC end caps (csx `Caps`, default) and the given
 ///   priority (default 0) for all four primitives.
+///
+/// # Reference plane
+///
+/// [`analyze`](Self::analyze) takes the port current from the terminal
+/// current of the port's `LumpedElement`
+/// ([`Results::lumped_current`]): `I = −i_R` along the port direction,
+/// the current of the Thevenin branch. Like the engine-level
+/// [`engine::LumpedPort`](crate::engine::LumpedPort) (whose
+/// [module docs](crate::engine::port#reference-plane) give the
+/// derivation), `V` and `I` are then both defined at the port edges and the
+/// port cell's own capacitance is part of the structure, which makes the
+/// S-parameters second-order accurate in the mesh size. The H-loop current
+/// of the `port_it<n>` probe differs from it by exactly that displacement
+/// current, `I_loop = I − C_p·dV/dt`: it is effectively taken half a cell
+/// away from the voltage, and an analysis based on it has a first-order
+/// reference-plane error (`|S11| = tan(K/4)` for a matched line with phase
+/// advance `K` per cell, instead of `tan²(K/4)`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LumpedPort {
     number: u32,
@@ -212,6 +234,19 @@ impl LumpedPort {
         let mut mid = [0.0; 3];
         for d in 0..3 {
             mid[d] = 0.5 * (start[d] + stop[d]);
+            if d != a {
+                let (lo, hi) = (start[d].min(stop[d]), start[d].max(stop[d]));
+                let near = model
+                    .grid
+                    .lines(d)
+                    .iter()
+                    .copied()
+                    .filter(|x| (lo..=hi).contains(x))
+                    .min_by(|x, y| (x - mid[d]).abs().total_cmp(&(y - mid[d]).abs()));
+                if let Some(x) = near {
+                    mid[d] = x;
+                }
+            }
         }
         let (mut vs, mut vt) = (mid, mid);
         vs[a] = start[a];
@@ -247,13 +282,17 @@ impl LumpedPort {
     }
 
     /// Frequency-domain analysis with reference impedance `z_ref`: `V(f)`
-    /// and `I(f)` are the DFTs of the voltage and current probes with their
-    /// own sample times ([`ProbeResult::dft`](crate::ProbeResult::dft)), so
-    /// the half-step offset of the current is exact.
+    /// is the DFT of the voltage probe and `I(f)` that of minus the port
+    /// element's terminal current ([`Results::lumped_current`], sign
+    /// flipped again for a reversed port), each with its own sample times
+    /// ([`ProbeResult::dft`](crate::ProbeResult::dft)), so the half-step
+    /// offset of the current is exact. See
+    /// [Reference plane](#reference-plane).
     ///
     /// # Errors
-    /// [`Error::Invalid`] if the port was not added, its probes are missing
-    /// from `results` or have no samples, or `z_ref` is invalid.
+    /// [`Error::Invalid`] if the port was not added, its voltage probe or
+    /// element is missing from `results` or has no samples, or `z_ref` is
+    /// invalid.
     pub fn analyze_with(
         &self,
         results: &Results,
@@ -270,7 +309,20 @@ impl LumpedPort {
                 .ok_or_else(|| Error::Invalid(format!("no probe {name:?} in the results")))
         };
         let v = get(&p.voltage.0)?.dft(freqs)?;
-        let i = get(&p.current.0)?.dft(freqs)?;
+        let el = results.lumped_current(&p.element.0).ok_or_else(|| {
+            Error::Invalid(format!(
+                "no lumped element {:?} in the results",
+                p.element.0
+            ))
+        })?;
+        // The element current flows along +axis; the + terminal is `start`.
+        let a = self.axis.index();
+        let sign = if self.stop[a] >= self.start[a] {
+            -1.0
+        } else {
+            1.0
+        };
+        let i = el.dft(freqs)?.into_iter().map(|x| x * sign).collect();
         PortResult::new(freqs.to_vec(), v, i, z_ref)
     }
 }

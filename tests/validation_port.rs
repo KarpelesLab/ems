@@ -13,20 +13,18 @@
 //!
 //! # Reference plane
 //!
-//! The port current is the loop integral of H around the port edges' dual
-//! face (`LumpedPort` docs), i.e. the resistor current minus the
-//! displacement current of the port edges' own (half-cell) capacitance:
-//! that capacitance belongs to the port, and the current is effectively
-//! taken at the first H plane, `Δz/2` into the line, while the voltage is
-//! taken at `z = 0`. For a pure forward wave of the discrete line this
-//! gives exactly `Z_in = Z·e^{jK/2}` (`K = k̃Δz`, the Yee phase advance
-//! per cell), so a perfectly matched port reads `|S11| = tan(K/4)`, first
-//! order in `kΔz` (−31.6 dB at 10 GHz with 0.5 mm cells, −37.6 dB with
-//! the 0.25 mm used here). The power actually reflected towards the
-//! resistor is second order: the half-cell capacitance in parallel with
-//! the line is the discrete line's real mid-shunt image impedance
-//! `Z/cos(K/2)`. The test checks both the §9 bound and the exact
-//! discrete `Z_in`.
+//! The port current is the current of the port's Thevenin branch
+//! (`LumpedPort` docs, "Reference plane"), so `V` and `I` are both defined
+//! at the port edges and the edges' own half-cell capacitance belongs to
+//! the line. The line then starts with a half-cell shunt section, whose
+//! input impedance is the discrete line's real mid-shunt image impedance
+//! `Z/cos(K/2)` (`K = k̃Δz`, the Yee phase advance per cell): a matched
+//! port reads `|S11| = tan²(K/4)`, second order in `kΔz` (−63 dB at
+//! 10 GHz with 0.5 mm cells). (Measuring the H loop around the port edges
+//! instead would put the current half a cell into the line,
+//! `Z_in = Z·e^{jK/2}`, `|S11| = tan(K/4)`: first order, −31.6 dB.) The
+//! test checks the exact discrete `Z_in`, the §9 bound and the
+//! second-order convergence of `|S11|` from 0.5 mm to 0.25 mm cells.
 
 mod common;
 
@@ -39,30 +37,34 @@ use ems::{Axis, Cpml, Face};
 
 const H: f64 = 2e-3;
 const W: f64 = 2e-3;
-const DZ: f64 = 0.25e-3;
-const NZ: usize = 408;
+/// Line length (CPML included) \[m\].
+const LEN: f64 = 102e-3;
+/// Simulated time \[s\] (2000 steps of the 0.25 mm mesh).
+const T_END: f64 = 1.33e-9;
 
 fn z_line() -> f64 {
     Z0 * H / W
 }
 
-/// Runs the line driven by a port of resistance `r`; returns the analysis
-/// at `freqs` and the time step.
-fn run(r: f64, freqs: &[f64]) -> (PortResult, f64) {
-    let z: Vec<f64> = (0..=NZ).map(|q| q as f64 * DZ).collect();
+/// Runs the line with cells `dz` driven by a port of resistance `r`;
+/// returns the analysis at `freqs` and the time step.
+fn run(r: f64, dz: f64, freqs: &[f64]) -> (PortResult, f64) {
+    let nz = (LEN / dz).round() as usize;
+    let z: Vec<f64> = (0..=nz).map(|q| q as f64 * dz).collect();
     let g = Grid::new([vec![0.0, 0.5 * H, H], vec![0.0, W], z]).unwrap();
     let faces = FaceConditions::all(FaceCondition::Pec)
         .with(Face::YMin, FaceCondition::Pmc)
         .with(Face::YMax, FaceCondition::Pmc)
         .with(Face::ZMin, FaceCondition::Pmc);
     let mut e = Engine::builder(g).faces(faces).threads(1).build().unwrap();
-    e.add_operator(CpmlBoundary::new(&e, [(Face::ZMax, Cpml::cells(8))]).unwrap());
+    let pml = (4e-3 / dz).round() as usize;
+    e.add_operator(CpmlBoundary::new(&e, [(Face::ZMax, Cpml::cells(pml))]).unwrap());
     let region = LumpedBox::new(Axis::X, [0, 0, 0], [2, 1, 0]).unwrap();
     let h = LumpedPort::new(region, r)
         .excite(sine_pulse(5.5e9, 4e9))
         .add_to(&mut e)
         .unwrap();
-    e.run(2000);
+    e.run((T_END / e.dt()).ceil() as u64);
     let p = e.operator(&h);
     let v = p.voltage();
     let tail = peak(&v[v.len() - 20..]) / peak(v);
@@ -70,10 +72,10 @@ fn run(r: f64, freqs: &[f64]) -> (PortResult, f64) {
     (p.analyze(freqs).unwrap(), e.dt())
 }
 
-/// `Z_in = Z·e^{jK/2}` of the discrete line (see the module docs).
-fn z_discrete(f: f64, dt: f64) -> ems::Complex64 {
-    let k = yee_k(f, dt, DZ, 1.0, 0.0).re;
-    ems::Complex64::cis(0.5 * k) * z_line()
+/// `Z_in = Z/cos(K/2)` of the discrete line (see the module docs).
+fn z_discrete(f: f64, dt: f64, dz: f64) -> f64 {
+    let k = yee_k(f, dt, dz, 1.0, 0.0).re;
+    z_line() / (0.5 * k).cos()
 }
 
 #[test]
@@ -81,37 +83,50 @@ fn lumped_port_matched_parallel_plate() {
     let _t = Timer::start("lumped_port_matched_parallel_plate");
     let z = z_line();
     let freqs = linspace(1e9, 10e9, 19);
-    let (m, dt) = run(z, &freqs);
-    let s = m.s11();
-    let zin = m.z_in();
-    let worst = s.iter().map(|s| s.norm()).fold(0.0, f64::max);
-    let zerr = zin
-        .iter()
-        .map(|zi| (*zi - z).norm() / z)
-        .fold(0.0, f64::max);
-    let zd = freqs
-        .iter()
-        .zip(&zin)
-        .map(|(&f, zi)| (*zi / z_discrete(f, dt) - 1.0).norm())
-        .fold(0.0, f64::max);
-    eprintln!(
-        "matched port R = Z = {z:.2} Ω: max |S11| = {:.1} dB over 1–10 GHz \
-         (1 GHz {:.1} dB, 10 GHz {:.1} dB); max |Z_in − Z|/Z = {zerr:.2e}, \
-         max |Z_in/(Z·e^(jK/2)) − 1| = {zd:.2e}",
-        db(worst),
-        db(s[0].norm()),
-        db(s[s.len() - 1].norm()),
-    );
-    assert!(db(worst) < -30.0, "|S11| = {:.1} dB", db(worst));
-    assert!(zd < 1e-3, "{zd}");
+    let mut s10 = Vec::new();
+    for dz in [0.5e-3, 0.25e-3] {
+        let (m, dt) = run(z, dz, &freqs);
+        let s = m.s11();
+        let zin = m.z_in();
+        let worst = s.iter().map(|s| s.norm()).fold(0.0, f64::max);
+        let zd = freqs
+            .iter()
+            .zip(&zin)
+            .map(|(&f, zi)| (*zi / z_discrete(f, dt, dz) - 1.0).norm())
+            .fold(0.0, f64::max);
+        let k10 = yee_k(10e9, dt, dz, 1.0, 0.0).re;
+        let exact = (0.25 * k10).tan().powi(2);
+        let last = s[s.len() - 1].norm();
+        eprintln!(
+            "dz = {:.2} mm, matched port R = Z = {z:.2} Ω: max |S11| = {:.1} dB over \
+             1–10 GHz (1 GHz {:.1} dB, 10 GHz {:.1} dB, tan²(K/4) = {:.1} dB); \
+             max |Z_in/(Z/cos(K/2)) − 1| = {zd:.2e}",
+            dz * 1e3,
+            db(worst),
+            db(s[0].norm()),
+            db(last),
+            db(exact),
+        );
+        assert!(db(worst) < -55.0, "|S11| = {:.1} dB", db(worst));
+        assert!(zd < 2e-4, "{zd}");
+        s10.push(last);
+    }
+    let rate = (s10[0] / s10[1]).log2();
+    eprintln!("|S11| at 10 GHz: convergence rate {rate:.2} (0.5 → 0.25 mm)");
+    assert!((rate - 2.0).abs() < 0.3, "rate {rate}");
 
-    // Mismatched port: the line still presents Z, S11 = (Z − 2Z)/(Z + 2Z).
-    let (m2, _) = run(2.0 * z, &freqs);
+    // Mismatched port: the line presents Z/cos(K/2) ≈ Z, S11 ≈ −1/3.
+    let dz = 0.25e-3;
+    let (m2, dt) = run(2.0 * z, dz, &freqs);
     let (mut es, mut ez) = (0.0f64, 0.0f64);
     for ((s, zi), &f) in m2.s11().iter().zip(m2.z_in()).zip(&freqs) {
-        es = es.max((*s - (-1.0 / 3.0)).norm());
-        ez = ez.max((zi / z_discrete(f, dt) - 1.0).norm());
+        let zd = z_discrete(f, dt, dz);
+        let want = (zd - 2.0 * z) / (zd + 2.0 * z);
+        es = es.max((*s - want).norm());
+        ez = ez.max((zi / zd - 1.0).norm());
     }
-    eprintln!("port R = 2Z: max |S11 + 1/3| = {es:.2e}, max |Z_in/(Z·e^(jK/2)) − 1| = {ez:.2e}");
-    assert!(es < 0.03 && ez < 1e-3, "{es} {ez}");
+    eprintln!(
+        "port R = 2Z: max |S11 − S11_exact| = {es:.2e}, max |Z_in/(Z/cos(K/2)) − 1| = {ez:.2e}"
+    );
+    assert!(es < 1e-4 && ez < 2e-4, "{es} {ez}");
 }

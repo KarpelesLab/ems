@@ -20,16 +20,60 @@
 //!   `t = (n + 1)·dt`.
 //! * **Current** `I`: the terminal current **leaving the `+` terminal into
 //!   the structure** (so `P = V·I > 0` is power delivered to the
-//!   structure). It is measured as the loop integral of H around the whole
-//!   port cross-section (all columns) in the dual plane through the middle
-//!   edge layer `lo[axis] + (M − 1)/2` (the lower of the two middle layers
-//!   when `M` is even): `∮H·dl` (right-handed about `+axis`) is the total
-//!   (conduction + displacement) current through the port along `+axis`,
-//!   and `I = −∮H·dl`. Sampled after the H update of step `n`, at
-//!   `t = (n + ½)·dt`.
+//!   structure). It is the current through the Thevenin branch (source in
+//!   series with `R`), i.e. minus the resistor's
+//!   [terminal current](super::lumped#terminal-current) along `+axis`:
 //!
-//! With these conventions an ideal load `Z_L` gives `V = Z_L·I` and the
-//! source sees `V = V_s − R·I`.
+//!   ```text
+//!   I^{n+½} = (V_s^{n+½} − (V^n + V^{n+1})/2) / R
+//!   ```
+//!
+//!   for a uniform port (the semi-implicit resistor current, exactly the
+//!   term in the edges' Ampère law). Centred at `t = (n + ½)·dt`.
+//!
+//! With these conventions an ideal load `Z_L` gives `V = Z_L·I`, and the
+//! source sees `V = V_s − R·I` up to the second-order time average of `V`.
+//!
+//! # Reference plane
+//!
+//! The port edges are ordinary Yee edges: besides the resistor they carry
+//! their own background capacitance `C_p` (the material over the edges'
+//! dual face, e.g. half a cell of line for a port on a boundary), and
+//! Ampère's law on them reads
+//!
+//! ```text
+//! C_p·(u^{n+1} − u^n)/dt + G_p·ū + i_R = ∮H·dl.
+//! ```
+//!
+//! Both `V` and `I` are therefore defined *at the port edges*, and `C_p`,
+//! `G_p` belong to the structure seen by the port, as in circuit theory:
+//! the source branch current `−i_R` is split into the displacement and
+//! conduction current of the port cell and the current `−∮H·dl` that
+//! leaves it through the surrounding H loop.
+//!
+//! Measuring `I = −∮H·dl` instead (the H loop around the port edges)
+//! excludes the port cell's own displacement current: that current is
+//! taken half a cell away from the voltage. For a port feeding a matched
+//! TEM line with phase advance `K = k̃·Δ` per cell, the loop current gives
+//! `Z_in = Z·e^{jK/2}` and `|S11| = tan(K/4) ≈ K/4`, a first-order error in
+//! the mesh size, although the power reflected towards the resistor is
+//! second order. With the branch current, the port cell is a half-cell
+//! (mid-shunt) termination of the discrete line, whose input impedance is
+//! the line's real image impedance: with the Yee dispersion relation
+//! `sin(K/2) = (ω̃·Δ/2)·√(L'C')` (`ω̃ = (2/dt)·sin(ω·dt/2)`) and
+//! `C_p = C'·Δ/2`,
+//!
+//! ```text
+//! Y_in = jω̃·C_p + e^{−jK/2}/Z = j·sin(K/2)/Z + (cos(K/2) − j·sin(K/2))/Z
+//!      = cos(K/2)/Z,
+//! ```
+//!
+//! so `Z_in = Z/cos(K/2)` and `|S11| = tan²(K/4)`: second order, and the
+//! actual reflection seen by the resistor. (Image impedances of a
+//! discretised line: e.g. Pozar, *Microwave Engineering*, periodic
+//! structures / image parameter method; the lumped-port treatment follows
+//! Taflove & Hagness, *Computational Electrodynamics*, 3rd ed., ch. 15, and
+//! Piket-May, Taflove and Baron, IEEE Trans. MTT 42(8), 1994.)
 //!
 //! [`LumpedPort::analyze`] turns the two series into a
 //! [`PortResult`] (DFTs with their own sample times, power waves,
@@ -51,7 +95,6 @@ pub struct LumpedPort {
     element: LumpedElement,
     resistance: f64,
     edges: Vec<[usize; 3]>,
-    loop_entries: Vec<(Axis, [usize; 3], f64)>,
     dt: f64,
     /// Step index of the first sample.
     first_step: Option<u64>,
@@ -64,10 +107,9 @@ impl LumpedPort {
     pub fn new(region: LumpedBox, r: f64) -> Self {
         Self {
             region,
-            element: LumpedElement::resistor(region, r),
+            element: LumpedElement::resistor(region, r).record_current(),
             resistance: r,
             edges: Vec::new(),
-            loop_entries: Vec::new(),
             dt: 0.0,
             first_step: None,
             v: Vec::new(),
@@ -108,7 +150,6 @@ impl LumpedPort {
         self.element.install(engine)?;
         self.dt = engine.dt();
         self.edges = region.edges();
-        self.loop_entries = current_loop(&region);
         Ok(engine.add_operator(self))
     }
 
@@ -151,12 +192,6 @@ impl LumpedPort {
         (0..self.i.len()).map(|n| t0 + n as f64 * self.dt).collect()
     }
 
-    /// The H dual edges `(axis, node, weight)` whose weighted sum is the
-    /// port current `I`.
-    pub fn current_loop(&self) -> &[(Axis, [usize; 3], f64)] {
-        &self.loop_entries
-    }
-
     /// Frequency-domain analysis at `freqs` \[Hz\] with the reference
     /// impedance `Z_ref = R`.
     pub fn analyze(&self, freqs: &[f64]) -> Result<PortResult> {
@@ -180,9 +215,11 @@ impl LumpedPort {
     }
 }
 
-/// Dual edges of the loop around all columns of `region` at the middle
-/// edge layer, weighted so that their sum is `−∮H·dl` (right-handed about
-/// `+axis`).
+/// Dual edges `(axis, node, weight)` whose weighted sum is `−∮H·dl`
+/// (right-handed about `+axis`) around the E edges along `axis` whose
+/// transverse node coordinates lie in `lo ..= hi`, in the dual plane
+/// crossing the edge layer `layer` (edges from node `layer` to
+/// `layer + 1` along `axis`). `lo[axis]`, `hi[axis]` are ignored.
 ///
 /// The E edge along `a` at node `p` is updated with
 /// `(i_c[p] − i_c[p − e_b]) − (i_b[p] − i_b[p − e_c])` (`(a, b, c)`
@@ -190,17 +227,6 @@ impl LumpedPort {
 /// the boundary loop remains. Low-side entries outside the domain are
 /// dropped (they read as zero in the kernel); high-side entries at the
 /// domain edge are padding and stay zero.
-fn current_loop(region: &LumpedBox) -> Vec<(Axis, [usize; 3], f64)> {
-    let a = region.axis().index();
-    let layer = region.lo()[a] + (region.series_edges() - 1) / 2;
-    loop_entries(region.axis(), region.lo(), region.hi(), layer)
-}
-
-/// Dual edges `(axis, node, weight)` whose weighted sum is `−∮H·dl`
-/// (right-handed about `+axis`) around the E edges along `axis` whose
-/// transverse node coordinates lie in `lo ..= hi`, in the dual plane
-/// crossing the edge layer `layer` (edges from node `layer` to
-/// `layer + 1` along `axis`). `lo[axis]`, `hi[axis]` are ignored.
 pub(crate) fn loop_entries(
     axis: Axis,
     lo: [usize; 3],
@@ -234,7 +260,7 @@ pub(crate) fn loop_entries(
 
 impl Operator for LumpedPort {
     fn hooks(&self) -> Hooks {
-        Hooks::POST_H | Hooks::PRE_E | Hooks::POST_E
+        Hooks::PRE_E | Hooks::POST_E
     }
 
     /// The element's branch energy ([`LumpedElement::branch_energy`]).
@@ -242,24 +268,17 @@ impl Operator for LumpedPort {
         self.element.branch_energy()
     }
 
-    fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
-        if self.first_step.is_none() {
-            self.first_step = Some(ctx.step);
-        }
-        let s = self
-            .loop_entries
-            .iter()
-            .map(|&(ax, p, w)| w * fields.i.get(ax, p) as f64)
-            .sum();
-        self.i.push(s);
-    }
-
     fn pre_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         self.element.pre_e_impl(fields);
     }
 
     fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        if self.first_step.is_none() {
+            self.first_step = Some(ctx.step);
+        }
         self.element.post_e_impl(fields, ctx);
+        let i = self.element.current().last().copied().unwrap_or(0.0);
+        self.i.push(-i);
         let axis = self.region.axis();
         let n = self.region.columns() as f64;
         let s: f64 = self
@@ -275,11 +294,17 @@ impl Operator for LumpedPort {
 mod tests {
     use super::*;
 
+    fn mid_loop(region: &LumpedBox) -> Vec<(Axis, [usize; 3], f64)> {
+        let a = region.axis().index();
+        let layer = region.lo()[a] + (region.series_edges() - 1) / 2;
+        loop_entries(region.axis(), region.lo(), region.hi(), layer)
+    }
+
     #[test]
     fn loop_single_column() {
         // z column at (3, 4), z 1..=4 (M = 3): middle layer 2.
         let r = LumpedBox::new(Axis::Z, [3, 4, 1], [3, 4, 4]).unwrap();
-        let l = current_loop(&r);
+        let l = mid_loop(&r);
         // curl_z = (iy[i] − iy[i−1]) − (ix[j] − ix[j−1]); I = −curl.
         let want = vec![
             (Axis::Y, [3, 4, 2], -1.0),
@@ -290,7 +315,7 @@ mod tests {
         assert_eq!(l, want);
         // At the low domain faces the outside entries are dropped.
         let r = LumpedBox::new(Axis::X, [0, 0, 0], [2, 1, 0]).unwrap();
-        let l = current_loop(&r);
+        let l = mid_loop(&r);
         // (a, b, c) = (x, y, z); layer (2 − 1)/2 = 0.
         assert_eq!(
             l,

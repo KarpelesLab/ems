@@ -81,6 +81,28 @@
 //! `L_e`, `R_e`, and sources carry an explicit voltage per edge
 //! ([`LumpedElement::edge_source`]) instead of `V_s/M`.
 //!
+//! # Terminal current
+//!
+//! With [`record_current`](LumpedElement::record_current) the element
+//! records, every step, the current through it along `+axis`,
+//!
+//! ```text
+//! i^{n+½} = (1/M)·Σ_e [ g_e·(ū_e − v_e) + C_e·(u_e^{n+1} − u_e^n)/dt + j̄_e ],
+//! ū_e = (u_e^{n+1} + u_e^n)/2,
+//! ```
+//!
+//! summed over all edges (columns in parallel) and divided by the number
+//! `M` of series positions: the resistor (with its series source voltage
+//! `v_e`), the folded capacitor and the branch current, exactly the terms
+//! that the element adds to each edge's Ampère law. It is centred at
+//! `t = (n + ½)·dt`, like the H currents. For a uniform element this is
+//! the circuit current of the element's terminals; the edges' own
+//! background capacitance and conductance (material) are *not* included,
+//! they belong to the surrounding structure. [`LumpedPort`] uses it as the
+//! port current (see [its docs](super::port#reference-plane)).
+//!
+//! [`LumpedPort`]: super::LumpedPort
+//!
 //! # Energy
 //!
 //! Folded capacitance is part of the edge's `C` and hence of the field
@@ -312,6 +334,22 @@ struct Branch {
     j_avg: Vec<f64>,
 }
 
+/// Recorder of the element's terminal current (see the
+/// [module docs](self#terminal-current)).
+#[derive(Debug, Clone)]
+struct CurrentRecord {
+    /// Folded conductance `g_e` per edge \[S\].
+    g: Vec<f64>,
+    /// Folded capacitance `C_e` per edge \[F\].
+    c: Vec<f64>,
+    /// `u^n` saved before the E update.
+    u_prev: Vec<f64>,
+    /// Step index of the first sample.
+    first_step: Option<u64>,
+    /// `i^{n+½}` per recorded step \[A\].
+    values: Vec<f64>,
+}
+
 struct Installed {
     dt: f64,
     edges: Vec<[usize; 3]>,
@@ -329,6 +367,7 @@ struct Installed {
     /// Whether the source drives the branch (series topology with branch).
     src_in_branch: bool,
     branch: Option<Branch>,
+    record: Option<CurrentRecord>,
 }
 
 /// A lumped R/L/C element, optionally with Thevenin voltage sources, over
@@ -354,6 +393,7 @@ pub struct LumpedElement {
     topology: Topology,
     source: Option<Source>,
     edge_sources: Vec<(Source, Vec<f64>)>,
+    record: bool,
     state: Option<Installed>,
 }
 
@@ -367,6 +407,7 @@ impl core::fmt::Debug for LumpedElement {
             .field("topology", &self.topology)
             .field("source", &self.source.is_some())
             .field("edge_sources", &self.edge_sources.len())
+            .field("record", &self.record)
             .finish_non_exhaustive()
     }
 }
@@ -392,6 +433,7 @@ impl LumpedElement {
             topology: Topology::Parallel,
             source: None,
             edge_sources: Vec::new(),
+            record: false,
             state: None,
         }
     }
@@ -439,6 +481,7 @@ impl LumpedElement {
             topology,
             source: None,
             edge_sources: Vec::new(),
+            record: false,
             state: None,
         })
     }
@@ -509,6 +552,14 @@ impl LumpedElement {
     ) -> Self {
         self.edge_sources
             .push((Source::Waveform(waveform, amplitude), weights));
+        self
+    }
+
+    /// Records the element's terminal current every step (see
+    /// [Terminal current](self#terminal-current)); read it with
+    /// [`current`](Self::current). Adds a `pre_e` and a `post_e` hook.
+    pub fn record_current(mut self) -> Self {
+        self.record = true;
         self
     }
 
@@ -779,6 +830,13 @@ impl LumpedElement {
             .map(|&(g, _, _)| if src_in_branch { 0.0 } else { g })
             .collect();
         let series = self.series_edges();
+        let record = self.record.then(|| CurrentRecord {
+            g: parts.iter().map(|p| p.0).collect(),
+            c: parts.iter().map(|p| p.1).collect(),
+            u_prev: vec![0.0; ne],
+            first_step: None,
+            values: Vec::new(),
+        });
         let mut terms = Vec::new();
         if let Some(s) = self.source.take() {
             terms.push((s, vec![1.0 / series as f64; ne]));
@@ -794,6 +852,7 @@ impl LumpedElement {
             terms,
             src_in_branch,
             branch,
+            record,
         });
         Ok(())
     }
@@ -828,6 +887,33 @@ impl LumpedElement {
         b.j_avg.iter().sum::<f64>() / s.series as f64
     }
 
+    /// Recorded terminal currents `i^{n+½}` along `+axis` \[A\] (see
+    /// [Terminal current](self#terminal-current)); empty unless
+    /// [`record_current`](Self::record_current) was set.
+    pub fn current(&self) -> &[f64] {
+        self.state
+            .as_ref()
+            .and_then(|s| s.record.as_ref())
+            .map_or(&[], |r| &r.values)
+    }
+
+    /// Time of the first [`current`](Self::current) sample,
+    /// `(n0 + ½)·dt` \[s\]; samples are `dt` apart.
+    pub fn current_t0(&self) -> f64 {
+        let Some(s) = &self.state else { return 0.0 };
+        let n0 = s.record.as_ref().and_then(|r| r.first_step).unwrap_or(0);
+        (n0 as f64 + 0.5) * s.dt
+    }
+
+    /// Sample times of [`current`](Self::current) \[s\].
+    pub fn current_times(&self) -> Vec<f64> {
+        let t0 = self.current_t0();
+        let dt = self.state.as_ref().map_or(0.0, |s| s.dt);
+        (0..self.current().len())
+            .map(|n| t0 + n as f64 * dt)
+            .collect()
+    }
+
     /// Energy stored in the branch state, `Σ ½·L_e·j² + ½·q²/C_e` over
     /// the edges at `t = n·dt` \[J\] (see [Energy](self#energy)); 0
     /// without a branch or before installation.
@@ -842,12 +928,16 @@ impl LumpedElement {
             .sum()
     }
 
-    /// Serial hooks used: `pre_e` and `post_e` with a branch, `post_e`
-    /// with only a source, none for a pure coefficient change.
+    /// Serial hooks used: `pre_e` and `post_e` with a branch or a current
+    /// record, `post_e` with only a source, none for a pure coefficient
+    /// change.
     pub(crate) fn used_hooks(&self) -> Hooks {
         let (branch, source) = match &self.state {
-            Some(s) => (s.branch.is_some(), !s.terms.is_empty()),
-            None => (self.has_branch(), self.has_source()),
+            Some(s) => (
+                s.branch.is_some() || s.record.is_some(),
+                !s.terms.is_empty(),
+            ),
+            None => (self.has_branch() || self.record, self.has_source()),
         };
         if branch {
             Hooks::PRE_E | Hooks::POST_E
@@ -863,6 +953,11 @@ impl LumpedElement {
         let Some(s) = &mut self.state else { return };
         if let Some(b) = &mut s.branch {
             for (u, &p) in b.u_prev.iter_mut().zip(&s.edges) {
+                *u = fields.u.get(axis, p) as f64;
+            }
+        }
+        if let Some(r) = &mut s.record {
+            for (u, &p) in r.u_prev.iter_mut().zip(&s.edges) {
                 *u = fields.u.get(axis, p) as f64;
             }
         }
@@ -912,6 +1007,26 @@ impl LumpedElement {
                 b.j_avg[e] = jb;
                 fields.u.set(axis, p, u_new as f32);
             }
+        }
+        if let Some(r) = &mut s.record {
+            if r.first_step.is_none() {
+                r.first_step = Some(ctx.step);
+            }
+            // Deterministic: fixed edge order, f64 accumulation.
+            let mut sum = 0.0;
+            for (e, &p) in s.edges.iter().enumerate() {
+                let (u0, u1) = (r.u_prev[e], fields.u.get(axis, p) as f64);
+                let v = if active && !s.src_in_branch {
+                    s.v[e]
+                } else {
+                    0.0
+                };
+                sum += r.g[e] * (0.5 * (u0 + u1) - v) + r.c[e] * (u1 - u0) / s.dt;
+                if let Some(b) = &s.branch {
+                    sum += b.j_avg[e];
+                }
+            }
+            r.values.push(sum / s.series as f64);
         }
     }
 }

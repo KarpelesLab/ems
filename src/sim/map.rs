@@ -62,6 +62,8 @@ pub(crate) struct DumpEntry {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Mapped {
     pub lumped: Vec<(String, OperatorHandle<LumpedElement>)>,
+    /// csx property id of each entry of `lumped` (filled by the caller).
+    pub lumped_ids: Vec<u32>,
     pub sources: Vec<(String, OperatorHandle<EdgeSource>)>,
     pub probes: Vec<ProbeEntry>,
     pub dumps: Vec<DumpEntry>,
@@ -220,6 +222,7 @@ pub(crate) fn map_sources(
         let (wf, delay) = (w.clone(), ex.delay);
         let mut op = EdgeSource::new(move |t| wf.value(t - delay, dt)).kind(kind);
         let mut thevenin = 0;
+        let mut hard_on_lumped = 0usize;
         for &(edge, a) in &ex.amplitudes {
             let (axis, node) = node_map.edge(edge);
             let len = if kind.is_magnetic() {
@@ -252,7 +255,18 @@ pub(crate) fn map_sources(
                     ex.name
                 ));
             }
+            if kind == SourceKind::HardE && lumped_edge.contains_key(&(axis, node)) {
+                hard_on_lumped += 1;
+            }
             op = op.edge(axis, node, weight);
+        }
+        if hard_on_lumped > 0 {
+            warnings.push(format!(
+                "excitation {:?}: hard E source on {hard_on_lumped} edge(s) of a lumped \
+                 element; the source overwrites the edge voltage and the element has no \
+                 effect there",
+                ex.name
+            ));
         }
         let has_edges = op.edges().next().is_some();
         if has_edges {
@@ -279,7 +293,7 @@ pub(crate) fn map_sources(
             add_caps(engine, g.axis, &g.edges);
         }
         let ne = g.edges.len();
-        let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?;
+        let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?.record_current();
         for (k, weights) in g.sources {
             debug_assert_eq!(weights.len(), ne);
             let ex = &src.excitations[k];
@@ -340,20 +354,19 @@ pub(crate) fn map_sources(
                 ProbeOp::Scalar(engine.add_operator(pr))
             }
             ProbeKind::EField | ProbeKind::HField => {
-                if p.start != p.stop {
-                    warnings.push(format!(
-                        "field probe {:?}: box is not a point; sampled at its start corner",
-                        p.name
-                    ));
-                }
                 let q = if kind == ProbeKind::EField {
                     DumpQuantity::E
                 } else {
                     DumpQuantity::H
                 };
-                let region = DumpRegion::new(p.start, p.start);
-                let sampler = FieldSampler::new(&grid, region, q, DumpPosition::Nodes)?;
-                ProbeOp::Field(engine.add_operator(FieldProbe::new(sampler)))
+                // The centre of the (snapped) box: the node itself for a
+                // point probe, interpolated otherwise.
+                let centre = Axis::ALL.map(|a| {
+                    let l = grid.lines(a);
+                    let d = a.index();
+                    0.5 * (l[p.start[d]] + l[p.stop[d]])
+                });
+                ProbeOp::Field(engine.add_operator(FieldProbe::at(&grid, q, centre)?))
             }
         };
         mapped.probes.push(ProbeEntry {
@@ -393,11 +406,21 @@ pub(crate) fn map_sources(
             _ => DumpPosition::Nodes,
         };
         let sampler = FieldSampler::new(&grid, region, q, pos)?;
+        // StartTime ≤ 0: from the start (including the initial state, whose
+        // H time is −dt/2); StopTime ≤ 0: no limit.
+        let t0 = Some(s.probe.start_time.value())
+            .filter(|&t| t > 0.0)
+            .unwrap_or(f64::NEG_INFINITY);
+        let t1 = s.probe.stop_time.value();
         let op = if fd {
-            let op = FreqDump::new(sampler, s.probe.frequencies.clone()).interval(k);
+            let op = FreqDump::new(sampler, s.probe.frequencies.clone())
+                .interval(k)
+                .window(t0, t1);
             DumpOp::Freq(engine.add_operator(op))
         } else {
-            let op = TimeDump::new(sampler).schedule(Schedule::Every(k));
+            let op = TimeDump::new(sampler)
+                .schedule(Schedule::Every(k))
+                .window(t0, t1);
             DumpOp::Time(engine.add_operator(op))
         };
         mapped.dumps.push(DumpEntry {

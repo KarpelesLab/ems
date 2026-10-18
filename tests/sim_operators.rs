@@ -133,10 +133,13 @@ fn csx_port_matches_engine_port() {
         .unwrap();
     b.run().unwrap();
     let p = b.engine().operator(&h);
-    let (va, ia) = (
-        ra.probe("port_ut1").unwrap().scalar().unwrap(),
-        ra.probe("port_it1").unwrap().scalar().unwrap(),
-    );
+    // The port current is minus the port resistor's terminal current.
+    let el = ra.lumped_current("port_resist_1").unwrap();
+    assert_eq!(el.kind(), ems::ProbeKind::Current);
+    assert_eq!(Some(el.id()), m.property_id("port_resist_1"));
+    assert!((el.times()[0] - 0.5 * ra.dt()).abs() < 1e-24);
+    let va = ra.probe("port_ut1").unwrap().scalar().unwrap();
+    let ia: Vec<f64> = el.scalar().unwrap().iter().map(|i| -i).collect();
     assert_eq!(va.len(), p.voltage().len());
     let vmax = p.voltage().iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let imax = p.current().iter().fold(0.0f64, |m, v| m.max(v.abs()));
@@ -459,4 +462,115 @@ fn lumped_caps() {
     };
     assert_eq!(run(true), [true, false, true]);
     assert_eq!(run(false), [false, false, false]);
+}
+
+/// Field probes sample the centre of their box (interpolated between
+/// nodes); dumps honour the probe settings' start / stop time; a hard
+/// source on a lumped element's edge warns; a multi-column port's voltage
+/// probe sits on a mesh line (no snapping warning).
+#[test]
+fn field_probe_centre_dump_window_and_warnings() {
+    let wave = Waveform::sinusoid(1e9);
+    let mut m = line_model();
+    add_box(
+        &mut m,
+        Property::excitation(
+            "src",
+            Excitation::new([0.0, 0.0, 3.0]).with_type(ExcitationType::EFieldHard),
+        ),
+        [4.0, 4.0, 3.0],
+        [4.0, 4.0, 5.0],
+    );
+    let point = |m: &mut ContinuousStructure, name: &str, lo: [f64; 3], hi: [f64; 3]| {
+        add_box(
+            m,
+            Property::probe(name, ProbeBox::new(ProbeType::EField)),
+            lo,
+            hi,
+        );
+    };
+    point(&mut m, "p4", [4.0, 4.0, 4.0], [4.0, 4.0, 4.0]);
+    point(&mut m, "p5", [5.0, 4.0, 4.0], [5.0, 4.0, 4.0]);
+    point(&mut m, "box_z", [4.0, 4.0, 3.0], [4.0, 4.0, 5.0]);
+    point(&mut m, "box_x", [4.0, 4.0, 4.0], [5.0, 4.0, 4.0]);
+    let (t0, t1) = (20e-12, 60e-12);
+    let mut td = DumpBox::new(DumpType::EField);
+    td.probe.start_time = csx::Scalar::new(t0);
+    td.probe.stop_time = csx::Scalar::new(t1);
+    add_box(
+        &mut m,
+        Property::dump("td", td),
+        [0.0, 0.0, 4.0],
+        [8.0, 8.0, 4.0],
+    );
+    let fdtd = Fdtd::new()
+        .waveform(wave)
+        .max_timesteps(60)
+        .oversampling(1000)
+        .threads(1);
+    let mut sim = Simulation::new(&m, &fdtd).unwrap();
+    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
+    let res = sim.run().unwrap();
+    let v = |n: &str| res.probe(n).unwrap().vector().unwrap().to_vec();
+    let (p4, p5, bz, bx) = (v("p4"), v("p5"), v("box_z"), v("box_x"));
+    assert!(p4.iter().any(|x| x[2].abs() > 1.0));
+    for k in 0..p4.len() {
+        assert_eq!(bz[k], p4[k], "box centred on a node is that node");
+        for c in 0..3 {
+            let want = 0.5 * (p4[k][c] + p5[k][c]);
+            assert!((bx[k][c] - want).abs() <= 1e-12 * (1.0 + want.abs()));
+        }
+    }
+    let snaps = res.dump("td").unwrap().snapshots().unwrap();
+    let dt = res.dt();
+    let want = (0..=60u64)
+        .filter(|&m| {
+            let t = m as f64 * dt;
+            t >= t0 && t <= t1
+        })
+        .count();
+    assert!(want > 5);
+    assert_eq!(snaps.len(), want);
+    assert!(snaps.iter().all(|s| s.time >= t0 && s.time <= t1));
+
+    // A hard E source on a lumped element's edges overrides it: warning.
+    let mut m = line_model();
+    add_box(
+        &mut m,
+        Property::lumped_element(
+            "r",
+            csx::properties::LumpedElement::resistor(csx::Axis::Z, 50.0),
+        ),
+        [4.0, 4.0, 3.0],
+        [4.0, 4.0, 5.0],
+    );
+    add_box(
+        &mut m,
+        Property::excitation(
+            "hard",
+            Excitation::new([0.0, 0.0, 1.0]).with_type(ExcitationType::EFieldHard),
+        ),
+        [4.0, 4.0, 3.0],
+        [4.0, 4.0, 5.0],
+    );
+    let fdtd = Fdtd::new()
+        .waveform(Waveform::gaussian(1e9, 1e9))
+        .max_timesteps(1)
+        .threads(1);
+    let sim = Simulation::new(&m, &fdtd).unwrap();
+    let w = sim.warnings();
+    assert!(
+        w.iter()
+            .any(|s| s.contains("\"hard\"") && s.contains("hard E source on 2 edge(s)")),
+        "{w:?}"
+    );
+
+    // A two-column port: the voltage probe sits on a mesh line.
+    let mut m = line_model();
+    LumpedPort::new(1, 50.0, [3.0, 4.0, 3.0], [4.0, 4.0, 5.0], Axis::Z)
+        .excite(1.0)
+        .add_to(&mut m)
+        .unwrap();
+    let sim = Simulation::new(&m, &fdtd).unwrap();
+    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
 }

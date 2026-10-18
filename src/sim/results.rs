@@ -11,7 +11,9 @@ use crate::{Error, Result};
 pub enum ProbeKind {
     /// Line integral of E \[V\], sampled at the E times `(n + 1)·dt`.
     Voltage,
-    /// Loop integral of H \[A\], sampled at the H times `(n + ½)·dt`.
+    /// Loop integral of H \[A\] (or, for
+    /// [`Results::lumped_current`], a lumped element's terminal current),
+    /// sampled at the H times `(n + ½)·dt`.
     Current,
     /// E field vector at a node \[V/m\], at the E times.
     EField,
@@ -257,6 +259,7 @@ pub struct Results {
     pub(crate) outcome: Option<RunOutcome>,
     pub(crate) dt: f64,
     pub(crate) probes: Vec<ProbeResult>,
+    pub(crate) lumped: Vec<ProbeResult>,
     pub(crate) dumps: Vec<DumpResult>,
 }
 
@@ -285,6 +288,27 @@ impl Results {
     /// The probe of the csx property `id`.
     pub fn probe_by_id(&self, id: csx::PropertyId) -> Option<&ProbeResult> {
         self.probes.iter().find(|p| p.id == id.0)
+    }
+
+    /// The terminal current of the csx `LumpedElement` named `name`: the
+    /// current through the element along `+axis` \[A\], i.e. the current
+    /// of its resistor (with any Thevenin source), folded capacitor and
+    /// inductor / series branch, without the background capacitance of its
+    /// edges (see [`LumpedElement`](crate::engine::LumpedElement), "Terminal
+    /// current"). Sampled at the H times `(n + ½)·dt`, kind
+    /// [`ProbeKind::Current`], number 0, no frequencies; its
+    /// [`id`](ProbeResult::id) is the element's property id.
+    ///
+    /// This is the port current used by
+    /// [`port::LumpedPort::analyze`](crate::port::LumpedPort::analyze).
+    pub fn lumped_current(&self, name: &str) -> Option<&ProbeResult> {
+        self.lumped.iter().find(|p| p.name == name)
+    }
+
+    /// The terminal currents of all mapped lumped elements (see
+    /// [`lumped_current`](Self::lumped_current)), in model order.
+    pub fn lumped_currents(&self) -> &[ProbeResult] {
+        &self.lumped
     }
 
     /// All dumps, in model order.

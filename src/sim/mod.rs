@@ -53,7 +53,9 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///    non-positive ones are dropped with a warning. Edges that are PEC are
 ///    dropped with a warning. With `Caps` set (the csx default), the
 ///    transverse E edges of the two end planes of the element (within its
-///    transverse extent) are made PEC, i.e. metal end plates.
+///    transverse extent) are made PEC, i.e. metal end plates. Every
+///    element records its terminal current
+///    ([`Results::lumped_current`]).
 /// 2. **Excitations** (csx `Excitation`, only enabled ones), driven by the
 ///    settings' [`Waveform`](crate::Waveform) delayed by the property's
 ///    `Delay`: `a(t) = waveform.value(t − delay)`. csx gives the field
@@ -70,8 +72,10 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///      the same box is a resistive voltage source of `Σw = E·L` volts per
 ///      column — exactly the engine's [`LumpedPort`](crate::engine::LumpedPort)
 ///      model, so XML ports behave like native ones.
-///    * `EFieldHard` overwrites the edge voltage, `HFieldSoft` /
-///      `HFieldHard` add to / overwrite the H dual-edge currents.
+///    * `EFieldHard` overwrites the edge voltage (after the lumped
+///      updates, so on a lumped element's edge the element has no effect:
+///      warning), `HFieldSoft` / `HFieldHard` add to / overwrite the H
+///      dual-edge currents.
 ///    * Plane waves are not supported yet (warning).
 ///
 ///    Without a waveform in the settings, excitations are ignored with a
@@ -90,9 +94,14 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///      node coordinates are inside the box, in the dual plane through the
 ///      middle edge layer of the box (for a flat box at node `k`, the layer
 ///      from `k` to `k + 1`). Sampled at the H times `(n + ½)·dt`.
-///    * `EField` / `HField`: the field vector at the box's start node,
-///      interpolated like the dumps (see [`crate::engine::dump`]), at the E
-///      / H times.
+///    * `EField` / `HField`: the field vector at the **centre** of the
+///      (snapped) box, at the E / H times: for a point probe
+///      (`start == stop`) the node itself, interpolated like the dumps (see
+///      [`crate::engine::dump`]); for a box, the node values trilinearly
+///      interpolated at its centre ([`FieldProbe::at`](crate::engine::FieldProbe::at)).
+///      The openEMS documentation describes field probes at a point; using
+///      the centre of a box is this crate's choice (no averaging over the
+///      box).
 ///    * Waveguide probes: not supported yet (warning).
 ///
 ///    `FD_Samples` frequencies are available through
@@ -104,7 +113,10 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///    `SubSampling` → stride. Both sample every `K` steps, with `K` the
 ///    Nyquist interval of [`Fdtd::get_max_frequency`] divided by the
 ///    oversampling factor ([`Fdtd::get_oversampling`], default 4); `K = 1`
-///    without a maximum frequency. Other dump types are not supported
+///    without a maximum frequency. The probe settings' `StartTime` /
+///    `StopTime` restrict the recorded states (by the quantity's own time;
+///    `StartTime ≤ 0`: from the start, `StopTime ≤ 0`: no limit; see
+///    [`TimeDump::window`]). Other dump types are not supported
 ///    (warning). Write VTR files with [`DumpResult::write_vtr`].
 #[derive(Debug)]
 pub struct Simulation {
@@ -141,13 +153,18 @@ impl Simulation {
         let compiled = compile(model, fdtd, opts)?;
         let (mut engine, boundaries) = compiled.build()?;
         let mut warnings = compiled.warnings;
-        let mapped = map::map_sources(
+        let mut mapped = map::map_sources(
             &mut engine,
             &compiled.sources,
             &compiled.node_map,
             fdtd,
             &mut warnings,
         )?;
+        mapped.lumped_ids = mapped
+            .lumped
+            .iter()
+            .map(|(n, _)| model.property_id(n).map_or(u32::MAX, |p| p.0))
+            .collect();
         Ok(Self {
             engine,
             fdtd: fdtd.clone(),
@@ -324,6 +341,25 @@ impl Simulation {
                 }
             })
             .collect();
+        let lumped = self
+            .mapped
+            .lumped
+            .iter()
+            .zip(&self.mapped.lumped_ids)
+            .map(|((name, h), &id)| {
+                let op = self.engine.operator(h);
+                ProbeResult {
+                    name: name.clone(),
+                    id,
+                    number: 0,
+                    kind: ProbeKind::Current,
+                    frequencies: Vec::new(),
+                    dt,
+                    times: op.current_times(),
+                    values: results::ProbeValues::Scalar(op.current().to_vec()),
+                }
+            })
+            .collect();
         let dumps = self
             .mapped
             .dumps
@@ -347,6 +383,7 @@ impl Simulation {
             outcome: None,
             dt,
             probes,
+            lumped,
             dumps,
         }
     }

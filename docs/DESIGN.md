@@ -312,6 +312,13 @@ ProbeBox, emitted into csx by the helper.
 
 **Port analysis** (pure post-processing over probe results):
 - V and I DFTs; the current is corrected for its half-step time offset.
+- Reference plane: `I` is the Thevenin branch current (the port
+  resistor's terminal current, recorded by the lumped element), not the H
+  loop around the port edges. Both V and I then sit at the port edges and
+  the port cell's own capacitance belongs to the structure: a matched TEM
+  line reads `Z/cos(K/2)`, `|S11| = tan²(K/4)` (second order), instead of
+  `Z·e^{jK/2}`, `|S11| = tan(K/4)` with the loop current
+  (`tests/validation_port.rs`).
 - Power waves with reference `Z_ref` (Pozar) give `S_ij`, `Z_in`, and
   accepted/incident power.
 

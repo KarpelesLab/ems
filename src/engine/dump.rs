@@ -472,6 +472,32 @@ pub enum Schedule {
     Interval(f64),
 }
 
+/// A recording window on the sampled quantity's own time `t`
+/// ([`FieldSampler::time`]): `start ≤ t ≤ stop`, with `stop ≤ 0` meaning
+/// "no upper limit" (the csx `StartTime` / `StopTime` convention), both
+/// with a tolerance of `1e-9·dt` against rounding of the sample times.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Window {
+    start: f64,
+    stop: f64,
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self {
+            start: f64::NEG_INFINITY,
+            stop: 0.0,
+        }
+    }
+}
+
+impl Window {
+    fn contains(&self, t: f64, dt: f64) -> bool {
+        let eps = 1e-9 * dt;
+        t >= self.start - eps && (self.stop <= 0.0 || t <= self.stop + eps)
+    }
+}
+
 /// Schedule with its running state.
 #[derive(Debug, Clone)]
 struct Scheduler {
@@ -644,6 +670,7 @@ impl Cursor {
 #[derive(Debug)]
 pub struct TimeDump<S = MemorySink> {
     sampler: FieldSampler,
+    window: Window,
     scheduler: Scheduler,
     sink: S,
     cursor: Cursor,
@@ -673,6 +700,7 @@ impl<S: DumpSink> TimeDump<S> {
     pub fn with_sink(sampler: FieldSampler, sink: S) -> Self {
         Self {
             sampler,
+            window: Window::default(),
             scheduler: Scheduler::new(Schedule::Every(1)),
             sink,
             cursor: Cursor::default(),
@@ -683,6 +711,15 @@ impl<S: DumpSink> TimeDump<S> {
     /// Sets the schedule (default: every step).
     pub fn schedule(mut self, schedule: Schedule) -> Self {
         self.scheduler = Scheduler::new(schedule);
+        self
+    }
+
+    /// Records only states whose quantity time `t` ([`FieldSampler::time`])
+    /// satisfies `start ≤ t ≤ stop` \[s\]; `stop ≤ 0` means no upper limit
+    /// (the csx `StartTime` / `StopTime` convention). The schedule is
+    /// evaluated only inside the window. Default: no window.
+    pub fn window(mut self, start: f64, stop: f64) -> Self {
+        self.window = Window { start, stop };
         self
     }
 
@@ -707,7 +744,10 @@ impl<S: DumpSink> TimeDump<S> {
     }
 
     fn sample(&mut self, fields: &Fields<'_>, m: u64, dt: f64) {
-        if self.error.is_some() || !self.scheduler.due(m, dt) {
+        if self.error.is_some()
+            || !self.window.contains(self.sampler.time(m, dt), dt)
+            || !self.scheduler.due(m, dt)
+        {
             return;
         }
         let snap = Snapshot {
@@ -768,6 +808,7 @@ pub struct FreqDump {
     sampler: FieldSampler,
     freqs: Vec<f64>,
     interval: u64,
+    window: Window,
     acc: Vec<[Complex64; 3]>,
     samples: u64,
     dt: f64,
@@ -786,6 +827,7 @@ impl FreqDump {
             phasors: vec![Complex64::ZERO; freqs.len()],
             freqs,
             interval: 1,
+            window: Window::default(),
             acc: vec![[Complex64::ZERO; 3]; n],
             samples: 0,
             dt: 0.0,
@@ -797,6 +839,15 @@ impl FreqDump {
     /// 1). Default 1.
     pub fn interval(mut self, k: u64) -> Self {
         self.interval = k.max(1);
+        self
+    }
+
+    /// Accumulates only states whose quantity time `t`
+    /// ([`FieldSampler::time`]) satisfies `start ≤ t ≤ stop` \[s\];
+    /// `stop ≤ 0` means no upper limit (see [`TimeDump::window`]).
+    /// Default: no window.
+    pub fn window(mut self, start: f64, stop: f64) -> Self {
+        self.window = Window { start, stop };
         self
     }
 
@@ -875,7 +926,7 @@ impl FreqDump {
 
     fn sample(&mut self, fields: &Fields<'_>, m: u64, dt: f64) {
         self.dt = dt;
-        if !m.is_multiple_of(self.interval) {
+        if !m.is_multiple_of(self.interval) || !self.window.contains(self.sampler.time(m, dt), dt) {
             return;
         }
         let t0 = self.sampler.quantity.offset() * dt;
