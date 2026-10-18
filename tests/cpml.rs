@@ -161,18 +161,23 @@ fn normal_incidence_cfs() {
     assert!(db(r) < -60.0, "reflection {:.1} dB", db(r));
 }
 
+/// Homogeneous dielectric background, including the layer: `σ_max` is
+/// tuned to the layer's refractive index automatically, so the default
+/// layer is as good as in vacuum (−85.7 dB for ε_r = 4 and 12; the vacuum
+/// `σ_max`, i.e. `sigma_factor = n`, gives −80.5 / −73.4 dB).
 #[test]
 fn normal_incidence_dielectric_background() {
-    // ε_r = 4 everywhere, including the layer; σ_max scaled by 1/√ε_r.
-    let r = normal_reflection(&[DZ; 8], Cpml::cells(8).sigma_factor(0.5), 4.0);
-    eprintln!("normal incidence, eps_r = 4 background: {:.1} dB", db(r));
-    assert!(db(r) < -60.0, "reflection {:.1} dB", db(r));
-    let r = normal_reflection(&[DZ; 8], Cpml::cells(8), 4.0);
-    eprintln!(
-        "normal incidence, eps_r = 4, unscaled sigma: {:.1} dB",
-        db(r)
-    );
-    assert!(db(r) < -50.0, "reflection {:.1} dB", db(r));
+    for eps in [4.0f64, 12.0] {
+        let r = normal_reflection(&[DZ; 8], Cpml::cells(8), eps);
+        eprintln!(
+            "normal incidence, eps_r = {eps} background: {:.1} dB",
+            db(r)
+        );
+        assert!(db(r) < -80.0, "ε_r = {eps}: reflection {:.1} dB", db(r));
+        let v = normal_reflection(&[DZ; 8], Cpml::cells(8).sigma_factor(eps.sqrt()), eps);
+        eprintln!("  with the vacuum sigma_max: {:.1} dB", db(v));
+        assert!(db(v) > db(r) + 3.0, "{} {}", db(v), db(r));
+    }
 }
 
 /// 3D cubic box of `interior` cells of size `d` plus `pml` CPML cells (or

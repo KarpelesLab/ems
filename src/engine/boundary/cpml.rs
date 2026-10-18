@@ -154,11 +154,33 @@
 //! # Background medium
 //!
 //! The update is exact for any background `ε`, `μ`, `κ_e`, `σ_m` (see
-//! above). Only the *choice* of `σ_max` assumes vacuum (`η = Z0`): in a
-//! homogeneous dielectric of relative permittivity `ε_r` the attenuation per
-//! cell is `√ε_r` times larger, and Taflove & Hagness (ch. 7) recommend
-//! scaling the optimum by `1/√ε_r`; set
-//! [`Cpml::sigma_factor`](crate::Cpml::sigma_factor) accordingly.
+//! above): the stretching uses `ε0`, so it is a pure change of
+//! coordinates. Only the *choice* of `σ_max` depends on the medium: a wave
+//! of refractive index `n = √(ε_r·μ_r)` has the wavenumber `n·ω/c`, so the
+//! layer attenuates it by `exp(−n·Z0·∫σ dp)`, `n` times more per cell than
+//! in vacuum. The discretisation reflection is governed by the attenuation
+//! per cell, so the optimum `σ_max` of a medium is the vacuum optimum
+//! divided by `n` (in Taflove & Hagness's ch. 7 form, where `σ` is
+//! referred to the medium's own `ε`, this is the familiar
+//! `σ_opt ∝ 1/(η·Δ)` with the medium's `η`).
+//!
+//! [`CpmlBoundary::new`] therefore measures, per face, the mean refractive
+//! index of the layer, `n = √(ε̄_r·μ̄_r)`, from the engine's coefficients
+//! (`ε̄_r` the volume-weighted mean over the layer's tangential, non-PEC E
+//! edges, `μ̄_r` likewise over its tangential dual edges; values within
+//! 1e-6 of 1 are taken as exactly 1, so vacuum layers are unchanged), and
+//! uses `σ_max = sigma_factor · 0.8·(m + 1)/(n·Z0·Δ)`
+//! ([`CpmlBoundary::refractive_index`]). One `n` per face keeps the
+//! stretching a function of the normal coordinate alone, which is what
+//! makes the layer reflectionless at transverse material interfaces inside
+//! it (a substrate crossing the layer); for such mixed layers the mean is
+//! a compromise (the optimum is broad: a factor of 2 in `σ_max` costs
+//! about 5 dB). [`CpmlBoundary::with_grid`], without materials, assumes
+//! vacuum.
+//!
+//! Measured at normal incidence (8 cells, `m = 3`, homogeneous background
+//! including the layer): −83.6 dB in vacuum, −85.7 dB for `ε_r` = 4 and 12
+//! (−80.5 / −73.4 dB with the vacuum `σ_max`).
 //!
 //! # Parallel execution and cost
 //!
@@ -182,7 +204,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::axis::Axis;
-use crate::constants::{EPS0, Z0};
+use crate::constants::{EPS0, MU0, Z0};
+use crate::engine::Coefficients;
 use crate::engine::Engine;
 use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
@@ -210,10 +233,18 @@ pub struct CpmlCoefficients {
 
 impl CpmlCoefficients {
     /// Grading of `p` at depth `rho` for local cell size `delta` \[m\] and
-    /// time step `dt` \[s\] (see the [module docs](self)).
+    /// time step `dt` \[s\] (see the [module docs](self)), for a vacuum
+    /// layer.
     pub fn new(p: &Cpml, rho: f64, delta: f64, dt: f64) -> Self {
+        Self::in_medium(p, rho, delta, dt, 1.0)
+    }
+
+    /// Like [`new`](Self::new) for a layer of refractive index `n`
+    /// (`σ_max` divided by `n`, see
+    /// [Background medium](self#background-medium)).
+    pub fn in_medium(p: &Cpml, rho: f64, delta: f64, dt: f64, n: f64) -> Self {
         let g = rho.powf(p.grading_order);
-        let sigma = p.sigma_max(Z0, delta) * g;
+        let sigma = p.sigma_max(n * Z0, delta) * g;
         let kappa = 1.0 + (p.kappa_max - 1.0) * g;
         let alpha = p.alpha_max * (1.0 - rho);
         let b = (-(sigma / kappa + alpha) * dt / EPS0).exp();
@@ -450,6 +481,8 @@ fn row_graded(
 struct Layer {
     face: Face,
     params: Cpml,
+    /// Refractive index the grading is tuned for.
+    n: f64,
     /// The two E slabs and two H slabs.
     e: [Slab; 2],
     h: [Slab; 2],
@@ -530,9 +563,19 @@ impl SlabHooks for CpmlParts {
 
 impl CpmlBoundary {
     /// CPML layers for `engine` (its grid and time step), one per
-    /// `(face, parameters)` entry.
+    /// `(face, parameters)` entry, with `σ_max` tuned to the mean
+    /// refractive index of each layer's medium (see
+    /// [Background medium](self#background-medium)).
+    ///
+    /// # Errors
+    /// As [`with_grid`](Self::with_grid).
     pub fn new(engine: &Engine, layers: impl IntoIterator<Item = (Face, Cpml)>) -> Result<Self> {
-        Self::with_grid(engine.grid(), engine.dt(), layers)
+        let grid = engine.grid();
+        let co = engine.coefficients();
+        let dt = engine.dt();
+        Self::build(grid, dt, layers, |face, cells| {
+            layer_index(grid, &co, dt, face, cells)
+        })
     }
 
     /// CPML layers for a mesh `grid` and time step `dt` \[s\].
@@ -541,10 +584,20 @@ impl CpmlBoundary {
     /// [`Error::Invalid`] if parameters are invalid ([`Cpml::validate`]),
     /// a face is listed twice, a layer has more cells than the mesh, or two
     /// opposite layers overlap.
+    /// The layers are tuned for vacuum (no material information).
     pub fn with_grid(
         grid: &Grid,
         dt: f64,
         layers: impl IntoIterator<Item = (Face, Cpml)>,
+    ) -> Result<Self> {
+        Self::build(grid, dt, layers, |_, _| 1.0)
+    }
+
+    fn build(
+        grid: &Grid,
+        dt: f64,
+        layers: impl IntoIterator<Item = (Face, Cpml)>,
+        mut index: impl FnMut(Face, usize) -> f64,
     ) -> Result<Self> {
         if !(dt.is_finite() && dt > 0.0) {
             return Err(Error::Invalid(format!("CPML: invalid time step {dt}")));
@@ -566,7 +619,8 @@ impl CpmlBoundary {
                 )));
             }
             cells[face.index()] = params.cells;
-            out.push(Layer::new(grid, dt, face, params));
+            let n_face = index(face, params.cells);
+            out.push(Layer::new(grid, dt, face, params, n_face));
         }
         for p in Axis::ALL {
             let (lo, hi) = (cells[2 * p.index()], cells[2 * p.index() + 1]);
@@ -589,6 +643,13 @@ impl CpmlBoundary {
         self.layers.iter().map(|l| (l.face, &l.params))
     }
 
+    /// Refractive index the grading of `face` is tuned for (1 for vacuum
+    /// and for layers built with [`with_grid`](Self::with_grid)), or
+    /// `None` if `face` has no layer.
+    pub fn refractive_index(&self, face: Face) -> Option<f64> {
+        self.layer(face).map(|l| l.n)
+    }
+
     /// Grading at the E-side positions of `face`: the layer's mesh lines
     /// (outer face included, interface line excluded) in increasing index
     /// order, or `None` if `face` has no layer.
@@ -608,8 +669,73 @@ impl CpmlBoundary {
     }
 }
 
+/// Mean refractive index `√(ε̄_r·μ̄_r)` of the `cells`-cell layer on `face`
+/// (module docs, *Background medium*), from the update coefficients.
+fn layer_index(grid: &Grid, co: &Coefficients, dt: f64, face: Face, cells: usize) -> f64 {
+    let p = face.axis();
+    let n = grid.nodes();
+    let np = n[p.index()];
+    let inner = if face.is_max() { np - 1 - cells } else { cells };
+    // Lines of the layer (interface included) and its cells.
+    let lines = if face.is_max() {
+        inner..np
+    } else {
+        0..inner + 1
+    };
+    let cell_r = if face.is_max() {
+        inner..np - 1
+    } else {
+        0..inner
+    };
+    let (mut we, mut se, mut wh, mut sh) = (0.0, 0.0, 0.0, 0.0);
+    let (t1, t2) = p.others();
+    for comp in [t1, t2] {
+        let (ab, ac) = comp.others();
+        let (a, b, c) = (comp.index(), ab.index(), ac.index());
+        let (ca, cb) = (co.ca(comp), co.cb(comp));
+        let (da, db) = (co.da(comp), co.db(comp));
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                for k in 0..n[2] {
+                    let node = [i, j, k];
+                    let idx = grid.index(node);
+                    let along = node[p.index()];
+                    if lines.contains(&along) && node[a] + 1 < n[a] && cb[idx] != 0.0 {
+                        let area = grid.dual_delta(ab, node[b]) * grid.dual_delta(ac, node[c]);
+                        let l = grid.delta(comp, node[a]);
+                        let cap = dt * (1.0 + ca[idx] as f64) / (2.0 * cb[idx] as f64);
+                        let vol = area * l;
+                        we += vol;
+                        se += vol * cap * l / (EPS0 * area);
+                    }
+                    if cell_r.contains(&along)
+                        && node[b] + 1 < n[b]
+                        && node[c] + 1 < n[c]
+                        && db[idx] != 0.0
+                    {
+                        let area = grid.delta(ab, node[b]) * grid.delta(ac, node[c]);
+                        let l = grid.dual_delta(comp, node[a]);
+                        let ind = dt * (1.0 + da[idx] as f64) / (2.0 * db[idx] as f64);
+                        let vol = area * l;
+                        wh += vol;
+                        sh += vol * ind * l / (MU0 * area);
+                    }
+                }
+            }
+        }
+    }
+    let eps = if we > 0.0 { se / we } else { 1.0 };
+    let mu = if wh > 0.0 { sh / wh } else { 1.0 };
+    let n_r = (eps * mu).sqrt();
+    if (n_r - 1.0).abs() < 1e-6 || !n_r.is_finite() || n_r <= 0.0 {
+        1.0
+    } else {
+        n_r
+    }
+}
+
 impl Layer {
-    fn new(grid: &Grid, dt: f64, face: Face, params: Cpml) -> Self {
+    fn new(grid: &Grid, dt: f64, face: Face, params: Cpml, n_face: f64) -> Self {
         let p = face.axis();
         let n = grid.nodes();
         let np = n[p.index()];
@@ -641,11 +767,16 @@ impl Layer {
         };
         let e_coeffs: Vec<_> = e_idx
             .iter()
-            .map(|&k| CpmlCoefficients::new(&params, rho(k as f64), node_delta(k), dt))
+            .map(|&k| {
+                CpmlCoefficients::in_medium(&params, rho(k as f64), node_delta(k), dt, n_face)
+            })
             .collect();
         let h_coeffs: Vec<_> = h_idx
             .iter()
-            .map(|&k| CpmlCoefficients::new(&params, rho(k as f64 + 0.5), grid.delta(p, k), dt))
+            .map(|&k| {
+                let d = grid.delta(p, k);
+                CpmlCoefficients::in_medium(&params, rho(k as f64 + 0.5), d, dt, n_face)
+            })
             .collect();
         let range = |idx: &[usize]| {
             (
@@ -670,6 +801,7 @@ impl Layer {
         Self {
             face,
             params,
+            n: n_face,
             e: [e_slab(a1), e_slab(a2)],
             h: [h_slab(a1), h_slab(a2)],
             e_coeffs,
@@ -768,6 +900,41 @@ mod tests {
         let want = p.sigma_max(Z0, 2.5e-3) * (2.0f64 / 3.0).powi(3);
         assert!((e[1].sigma / want - 1.0).abs() < 1e-12);
         assert!((e[2].sigma / p.sigma_max(Z0, 3e-3) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn layer_refractive_index() {
+        use crate::engine::{CellMaterials, Material};
+        let g = Grid::uniform([12, 6, 6], [1e-3; 3]).unwrap();
+        let build = |m: Material| {
+            let mats = CellMaterials::new(&g, m);
+            let e = Engine::builder(g.clone())
+                .materials(mats)
+                .threads(1)
+                .build()
+                .unwrap();
+            let p = Cpml::cells(4);
+            CpmlBoundary::new(&e, [(Face::XMin, p), (Face::ZMax, p)]).unwrap()
+        };
+        let b = build(Material::VACUUM);
+        assert_eq!(b.refractive_index(Face::XMin), Some(1.0));
+        assert_eq!(b.refractive_index(Face::YMin), None);
+        let vac = CpmlBoundary::with_grid(&g, 1e-12, [(Face::XMin, Cpml::cells(4))]).unwrap();
+        assert_eq!(vac.refractive_index(Face::XMin), Some(1.0));
+        let b = build(Material::dielectric(4.0));
+        let n = b.refractive_index(Face::ZMax).unwrap();
+        assert!((n - 2.0).abs() < 1e-6, "{n}");
+        // σ_max is the vacuum optimum divided by n.
+        let e = b.e_profile(Face::ZMax).unwrap().last().unwrap();
+        let want = Cpml::cells(4).sigma_max(Z0, 1e-3) / n;
+        assert!((e.sigma / want - 1.0).abs() < 1e-12);
+        let m = Material {
+            eps_r: [2.0; 3],
+            mu_r: [3.0; 3],
+            ..Material::VACUUM
+        };
+        let n = build(m).refractive_index(Face::XMin).unwrap();
+        assert!((n - 6f64.sqrt()).abs() < 1e-6, "{n}");
     }
 
     #[test]

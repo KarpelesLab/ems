@@ -161,8 +161,12 @@ impl Mur {
 ///
 /// with `m` = `grading_order` and `σ_max = sigma_factor · 0.8·(m + 1)/(η·Δ)`,
 /// the near-optimal value for polynomial grading given in Taflove & Hagness,
-/// ch. 7, with `Δ` the local cell size normal to the layer and `η` the wave
-/// impedance. The defaults (`m = 3`, `κ_max = 1`, `α_max = 0`) give a
+/// ch. 7, with `Δ` the local cell size normal to the layer and
+/// `η = n·Z0`, `n` the mean refractive index of the layer's medium (the
+/// engine measures it per face, see
+/// [`CpmlBoundary`](crate::engine::boundary::cpml::CpmlBoundary)), so the
+/// default is near-optimal in dielectrics too; `sigma_factor` is relative
+/// to that optimum. The defaults (`m = 3`, `κ_max = 1`, `α_max = 0`) give a
 /// classic graded PML; `κ_max > 1` and `α_max > 0` enable the CFS terms.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cpml {
@@ -223,8 +227,9 @@ impl Cpml {
         self
     }
 
-    /// `σ_max = sigma_factor · 0.8·(m + 1)/(η·Δ)` \[S/m\] for wave impedance
-    /// `eta` \[Ω\] and cell size `delta` \[m\] normal to the layer.
+    /// `σ_max = sigma_factor · 0.8·(m + 1)/(η·Δ)` \[S/m\] for `eta` \[Ω\]
+    /// (`n·Z0` for a layer of refractive index `n`) and cell size `delta`
+    /// \[m\] normal to the layer.
     pub fn sigma_max(&self, eta: f64, delta: f64) -> f64 {
         self.sigma_factor * 0.8 * (self.grading_order + 1.0) / (eta * delta)
     }

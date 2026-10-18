@@ -51,15 +51,14 @@ fn measure(line: &Line, steps: u64, freqs: &[f64]) -> (f64, Vec<Complex64>) {
 }
 
 /// Line with a dielectric from `IFACE` to the end (into the far CPML,
-/// whose σ is scaled by `1/√ε_r` to keep the layer's attenuation). The far
-/// layer has 24 cells: with the default 8 its echo of the transmitted
-/// wave (≈ −58 dB in ε_r = 6) shows up as a ripple of ~1e-3 in |Γ(f)|,
-/// larger than the discretisation effects resolved here.
+/// whose `σ_max` the CPML tunes to the layer's refractive index). The far
+/// layer has 24 cells, so that its echo of the transmitted wave stays far
+/// below the discretisation effects resolved here (an 8-cell layer gives
+/// about −87 dB).
 fn half_space(m: Material, pol: Axis) -> Line {
     let cells = IFACE + 100 + 24;
     let mut l = Line::new(DZ, cells);
-    let eps = m.eps_r[pol.index()];
-    l.pml[1] = Cpml::cells(24).sigma_factor(1.0 / eps.sqrt());
+    l.pml[1] = Cpml::cells(24);
     l.pol = pol;
     l.layers.push((IFACE..cells, m));
     l.src = SRC;

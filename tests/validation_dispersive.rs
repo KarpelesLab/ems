@@ -162,7 +162,7 @@ struct Errors {
 fn half_space(m: &Medium, label: &str) -> Errors {
     let cells = IFACE + 100 + 24;
     let mut l = Line::new(DZ, cells);
-    l.pml[1] = Cpml::cells(24).sigma_factor(1.0 / m.eps_inf.sqrt());
+    l.pml[1] = Cpml::cells(24);
     l.src = SRC;
     l.probes = vec![PRB];
     let steps = 2400;

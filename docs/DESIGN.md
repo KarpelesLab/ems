@@ -407,8 +407,13 @@ In `tests/validation_waveguide.rs` (1 mm cells, 20 × 10 mm guide):
   - Occupies the **outermost `n` cells of the mesh**. This matches openEMS
     `PML_n` semantics, so XML models mesh identically.
   - `ems::mesh::check` warns if structure primitives intrude into the PML.
-  - Grading `m = 3` and `σ_max = 0.8·(m+1)/(η·Δ_local)`; κ_max and α_max are
-    configurable.
+  - Grading `m = 3` and `σ_max = 0.8·(m+1)/(n·Z0·Δ_local)`; κ_max and α_max
+    are configurable. `n = √(ε̄_r·μ̄_r)` is the mean refractive index of each
+    face's layer, measured from the engine coefficients (the stretching uses
+    `ε0`, so the attenuation per cell is `n` times the vacuum one; one `n`
+    per face keeps the stretch a function of the normal coordinate only).
+    8 cells at normal incidence: −83.6 dB in vacuum, −85.7 dB in ε_r = 4 or
+    12 (−80.5 / −73.4 dB with the vacuum `σ_max`).
   - The depth `ρ` is counted in cells (mesh index, half-integer for H), so on a
     graded PML mesh the per-cell attenuation `σ·Δ` keeps the uniform profile.
   - One operator (`engine::boundary::cpml::CpmlBoundary`) handles all CPML
