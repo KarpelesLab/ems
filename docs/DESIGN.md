@@ -293,8 +293,12 @@ ProbeBox, emitted into csx by the helper.
 `<BoundaryCond>` choices (including `PML_n`).
 
 - **PEC**: tangential E on the face is 0.
-- **PMC**: tangential H is 0, using the image condition in the outermost E update.
+- **PMC**: tangential H is 0. In the integral form this needs no operator:
+  the kernel updates the boundary-face tangential E with its half dual face,
+  and H outside the domain reads as zero (implemented, `FaceCondition::Pmc`).
 - **Mur 1st order**: one-way wave equation on the tangential E of the face.
+  The engine builds that face as PEC; the operator saves values in `pre_e` and
+  overwrites the face's tangential E in `post_e`.
 - **CPML** (Roden & Gedney 2000):
   - Occupies the **outermost `n` cells of the mesh**. This matches openEMS
     `PML_n` semantics, so XML models mesh identically.
@@ -318,7 +322,10 @@ ProbeBox, emitted into csx by the helper.
   results.
 
 ### 5.8 End criteria
-- Energy `W = ½ΣCu² + ½ΣLi²` is computed every K steps.
+- Energy is computed every K steps. The naive `W = ½ΣCu² + ½ΣLi²` (with u and
+  i half a step apart) ripples by tens of percent over an oscillation, so the
+  end criterion uses the staggered invariant `½ΣCu² + ½ΣL·i^{n−½}·i^{n+½}`,
+  or compares envelopes.
 - The run stops when the excitation is over and `W/W_max <` threshold, or at
   `max_timesteps`.
 - `Results` records the reason it stopped.
@@ -332,15 +339,26 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
                                LumpedElement/ProbeBox/DumpBox → operators; dt)
 ```
 
-- **Storage**: six `Vec<f32>` field arrays plus `f32` coefficient arrays.
+- **Storage**: six `Vec<f32>` field arrays plus twelve `f32` coefficient
+  arrays, all node-shaped.
   - Index is `(i·ny + j)·nz + k`; z is contiguous for autovectorisation.
-  - Memory: about 48 bytes/cell.
+  - Padding entries (e.g. `u_x` at `i = nx−1`) have zero coefficients and stay 0.
+  - Memory: about 72 bytes/cell. A material-ID lookup table would cut this to
+    about 28 B/cell; it is only worth doing if a benchmark shows a gain.
+- **Staggering**: after n steps, u is at `n·dt` and i at `(n−½)·dt`. A step runs
+  `pre_h → H kernel → post_h → pre_e → E kernel → post_e`.
 - **Precision**: `f32` fields and coefficients. `f64` for geometry, time, DFT
   accumulators and energy.
 - **Threads**: std only, no rayon (keeps the dependency footprint like csx's).
-  - A persistent worker pool (`std::thread::scope` + `Barrier`) splits x-slabs.
-    Each half-step costs one barrier; spawning per step would be too slow for
-    small models.
+  - A persistent worker pool (long-lived threads, joined on drop) splits
+    x-slabs. Each slab's components sit behind their own `RwLock`: the H update
+    writes `i` and reads `u` of its slab and the next one; the E update does the
+    reverse. Everything is safe Rust.
+  - Each half-step costs one barrier, or two when operators are registered.
+    Spawning per step would be too slow for small models.
+  - Subnormals are flushed in the kernel arithmetic (`+ 2⁻¹⁰² − 2⁻¹⁰²`).
+    Hardware flush-to-zero would need `unsafe`, and this way is still
+    deterministic.
   - Thread count is configurable and defaults to `available_parallelism()`.
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
