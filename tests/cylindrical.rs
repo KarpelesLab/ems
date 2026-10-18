@@ -1,0 +1,352 @@
+//! Cylindrical-coordinate engine (design §5.13): circular PEC cavity
+//! resonances against the Bessel-zero formulas, energy conservation and
+//! stability with an axis, thread-count determinism, and a coaxial line.
+
+use std::f64::consts::{PI, TAU};
+
+use ems::constants::{C0, Z0};
+use ems::engine::{
+    EdgeSource, Engine, FaceCondition, FaceConditions, Grid, Probe, ProbeQuantity, TimeStep,
+    boundary::MurBoundary,
+};
+use ems::{Axis, Face};
+
+/// Gaussian-modulated sine centred at `f0` with ~`bw` bandwidth (zero
+/// mean, so a soft E source leaves no net charge); returns the pulse and
+/// its duration.
+fn pulse(f0: f64, bw: f64) -> (impl Fn(f64) -> f64 + Send + 'static, f64) {
+    let tau = 1.0 / (PI * bw);
+    let t0 = 4.0 * tau;
+    let f = move |t: f64| {
+        let x = (t - t0) / tau;
+        (-x * x).exp() * (2.0 * PI * f0 * (t - t0)).sin()
+    };
+    (f, 2.0 * t0)
+}
+
+/// |DFT| at `f` of the Hann-windowed samples with `t >= t_start`.
+fn spectrum(times: &[f64], values: &[f64], t_start: f64, f: f64) -> f64 {
+    let first = times.iter().position(|&t| t >= t_start).unwrap();
+    let (t, v) = (&times[first..], &values[first..]);
+    let n = t.len() as f64;
+    let (mut re, mut im) = (0.0, 0.0);
+    for (q, (&tt, &x)) in t.iter().zip(v).enumerate() {
+        let w = 0.5 - 0.5 * (TAU * q as f64 / (n - 1.0)).cos();
+        let ph = -TAU * f * tt;
+        re += w * x * ph.cos();
+        im += w * x * ph.sin();
+    }
+    re.hypot(im)
+}
+
+/// Frequency of the spectral peak within `[lo, hi]`.
+fn peak(times: &[f64], values: &[f64], t_start: f64, lo: f64, hi: f64) -> f64 {
+    let s = |f: f64| spectrum(times, values, t_start, f);
+    let n = 200;
+    let step = (hi - lo) / n as f64;
+    let best = (0..=n)
+        .map(|q| (q, s(lo + q as f64 * step)))
+        .fold((0, f64::MIN), |a, b| if b.1 > a.1 { b } else { a })
+        .0;
+    let (mut a, mut b) = (
+        lo + (best as f64 - 1.0) * step,
+        lo + (best as f64 + 1.0) * step,
+    );
+    let g = (5f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let c = b - g * (b - a);
+        let d = a + g * (b - a);
+        if s(c) > s(d) {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    0.5 * (a + b)
+}
+
+fn lines(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    (0..=n)
+        .map(|i| lo + (hi - lo) * i as f64 / n as f64)
+        .collect()
+}
+
+/// Circular cavity of radius `A` and height `H` with an axis.
+const A: f64 = 10e-3;
+const H: f64 = 15e-3;
+
+fn cavity_grid(nr: usize, na: usize, nz: usize) -> Grid {
+    Grid::cylindrical([lines(0.0, A, nr), lines(0.0, TAU, na), lines(0.0, H, nz)]).unwrap()
+}
+
+/// The cavity driven by a short pulse on one edge of each component, with
+/// probes on a few edges of each component.
+struct Run {
+    engine: Engine,
+    probes: Vec<ems::engine::OperatorHandle<Probe>>,
+    t_off: f64,
+}
+
+fn cavity(threads: usize) -> Run {
+    let grid = cavity_grid(20, 24, 15);
+    let mut engine = Engine::builder(grid).threads(threads).build().unwrap();
+    let (p, t_off) = pulse(15e9, 12e9);
+    // An off-axis z edge (TM), a ρ and an α edge (TE), all asymmetric in α.
+    let src = EdgeSource::new(p)
+        .edge(Axis::Z, [9, 3, 4], 1.0)
+        .edge(Axis::X, [6, 7, 9], 1.0)
+        .edge(Axis::Y, [13, 17, 5], 1.0)
+        .edge(Axis::Z, [0, 0, 6], 1.0);
+    engine.add_operator(src);
+    let mut probes = Vec::new();
+    for (axis, node) in [
+        (Axis::Z, [7, 5, 3]),
+        (Axis::Z, [0, 0, 8]),
+        (Axis::X, [11, 2, 11]),
+        (Axis::Y, [4, 9, 6]),
+        (Axis::Y, [16, 20, 10]),
+    ] {
+        probes.push(engine.add_operator(Probe::voltage(axis, node)));
+    }
+    Run {
+        engine,
+        probes,
+        t_off,
+    }
+}
+
+/// Bessel zeros `j_mn` and `j'_mn`.
+const J01: f64 = 2.404_825_557_695_773;
+const J11: f64 = 3.831_705_970_207_512;
+const JP11: f64 = 1.841_183_781_340_659;
+const JP21: f64 = 3.054_236_928_227_14;
+const JP01: f64 = 3.831_705_970_207_512;
+
+fn mode(x: f64, p: u32) -> f64 {
+    C0 / TAU * ((x / A).powi(2) + (p as f64 * PI / H).powi(2)).sqrt()
+}
+
+#[test]
+fn circular_cavity_resonances() {
+    let mut r = cavity(0);
+    let dt = r.engine.dt();
+    let t_end = r.t_off + 4e-9;
+    let steps = (t_end / dt).ceil() as u64;
+    r.engine.run(steps);
+    // Tolerances: 0.5 %, except TE211, whose m = 2 azimuthal variation
+    // sees the discrete wavenumber (2/Δα)·sin(mΔα/2) of the 24 α cells
+    // (−1.1 % on m, −0.61 % on the frequency).
+    let expected = [
+        ("TM010", mode(J01, 0), 5e-3),
+        ("TE111", mode(JP11, 1), 5e-3),
+        ("TM011", mode(J01, 1), 5e-3),
+        ("TE211", mode(JP21, 1), 1e-2),
+        ("TM110", mode(J11, 0), 5e-3),
+        ("TE011", mode(JP01, 1), 5e-3),
+    ];
+    for (name, f, tol) in expected {
+        // Best-matching probe: the one with the strongest peak near f.
+        let (lo, hi) = (0.985 * f, 1.015 * f);
+        let mut best = (0.0, f64::NAN);
+        for h in &r.probes {
+            let pr = r.engine.operator(h);
+            let fp = peak(pr.times(), pr.values(), r.t_off, lo, hi);
+            let m = spectrum(pr.times(), pr.values(), r.t_off, fp);
+            if m > best.0 {
+                best = (m, fp);
+            }
+        }
+        let err = best.1 / f - 1.0;
+        println!(
+            "{name}: {:.4} GHz (analytic {:.4}), {:+.3} %",
+            best.1 / 1e9,
+            f / 1e9,
+            100.0 * err
+        );
+        assert!(err.abs() < tol, "{name}: {err:+e}");
+    }
+}
+
+#[test]
+fn energy_conserved_and_threads_agree() {
+    let mut a = cavity(1);
+    let mut b = cavity(3);
+    let n0 = (a.t_off / a.engine.dt()).ceil() as u64;
+    a.engine.run(n0);
+    b.engine.run(n0);
+    let w0 = a.engine.energy();
+    assert!(w0 > 0.0);
+    let mut worst = 0.0f64;
+    for _ in 0..10 {
+        a.engine.run(500);
+        b.engine.run(500);
+        let w = a.engine.energy();
+        worst = worst.max((w / w0 - 1.0).abs());
+    }
+    println!("energy drift {worst:e}");
+    assert!(worst < 1e-5, "{worst:e}");
+    for axis in Axis::ALL {
+        assert_eq!(a.engine.u_component(axis), b.engine.u_component(axis));
+        assert_eq!(a.engine.i_component(axis), b.engine.i_component(axis));
+    }
+    // The copies of the axis z edge are equal, α edges on the axis are 0.
+    let [_, na, nz] = a.engine.grid().nodes();
+    for k in 0..nz - 1 {
+        let v = a.engine.u(Axis::Z, [0, 0, k]);
+        for j in 0..na {
+            assert_eq!(a.engine.u(Axis::Z, [0, j, k]), v);
+            assert_eq!(a.engine.u(Axis::Y, [0, j, k]), 0.0);
+        }
+    }
+    // The closed azimuth: both copies of the α = 0 plane agree.
+    for i in 0..20 {
+        for k in 0..nz {
+            assert_eq!(
+                a.engine.u(Axis::X, [i, 0, k]),
+                a.engine.u(Axis::X, [i, na - 1, k])
+            );
+        }
+    }
+}
+
+#[test]
+fn stable_at_the_courant_limit() {
+    // Random initial fields on a coarse grid with an axis, run at the
+    // computed limit itself: the energy invariant stays put.
+    let grid = cavity_grid(6, 12, 4);
+    let mut e = Engine::builder(grid)
+        .timestep(TimeStep::Courant(1.0))
+        .threads(1)
+        .build()
+        .unwrap();
+    {
+        let mut seed: u32 = 12345;
+        let mut f = e.fields_mut();
+        let [nr, na, nz] = [7, 13, 5];
+        for axis in Axis::ALL {
+            for i in 0..nr {
+                for j in 0..na {
+                    for k in 0..nz {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let v = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+                        f.u.set(axis, [i, j, k], v);
+                    }
+                }
+            }
+        }
+    }
+    e.step();
+    let w0 = e.energy();
+    e.run(20_000);
+    let w = e.energy();
+    println!("dt {:e}, energy ratio {}", e.dt(), w / w0);
+    assert!((w / w0 - 1.0).abs() < 1e-4, "{}", w / w0);
+}
+
+#[test]
+fn coaxial_line_impedance() {
+    // Coax a = 1 mm, b = 3 mm along z, Mur at both ends, closed azimuth.
+    let (ra, rb) = (1e-3, 3e-3);
+    let nr = 10;
+    let nz = 120;
+    let dz = 0.5e-3;
+    let rho = lines(ra, rb, nr);
+    let grid = Grid::cylindrical([
+        rho.clone(),
+        lines(0.0, TAU, 8),
+        lines(0.0, nz as f64 * dz, nz),
+    ])
+    .unwrap();
+    let faces = FaceConditions::all(FaceCondition::Pec);
+    let mut e = Engine::builder(grid)
+        .faces(faces)
+        .threads(2)
+        .build()
+        .unwrap();
+    let mur = MurBoundary::with_faces(&e, &[(Face::ZMin, C0), (Face::ZMax, C0)]).unwrap();
+    e.add_operator(mur);
+    // TEM source: E_ρ ∝ 1/ρ on a ring at k = 5, line voltage 1.
+    let (p, _) = pulse(6e9, 5e9);
+    let mut src = EdgeSource::new(p);
+    for i in 0..nr {
+        let w = (rho[i + 1] - rho[i]) / (0.5 * (rho[i] + rho[i + 1]));
+        for j in 0..9 {
+            src = src.edge(Axis::X, [i, j, 5], w);
+        }
+    }
+    e.add_operator(src);
+    let k = 60;
+    let mut v = Probe::new(ProbeQuantity::Voltage);
+    for i in 0..nr {
+        v = v.entry(Axis::X, [i, 2, k], 1.0);
+    }
+    let mut cur = Probe::new(ProbeQuantity::Current);
+    for j in 0..9 {
+        cur = cur.entry(Axis::Y, [4, j, k], 1.0);
+    }
+    let (hv, hi) = (e.add_operator(v), e.add_operator(cur));
+    let ring = |k: usize| {
+        let mut p = Probe::new(ProbeQuantity::Voltage);
+        for i in 0..nr {
+            p = p.entry(Axis::X, [i, 2, k], 1.0);
+        }
+        p
+    };
+    let (h40, h80) = (e.add_operator(ring(40)), e.add_operator(ring(80)));
+    let steps = (3e-9 / e.dt()).ceil() as u64;
+    e.run(steps);
+    let (pv, pi) = (e.operator(&hv), e.operator(&hi));
+    // Discrete TEM impedance (midpoint rule for ∫dρ/ρ) and the analytic one.
+    let discrete: f64 = (0..nr)
+        .map(|i| (rho[i + 1] - rho[i]) / (0.5 * (rho[i] + rho[i + 1])))
+        .sum::<f64>()
+        * Z0
+        / TAU;
+    let analytic = Z0 / TAU * (rb / ra).ln();
+    for f in [3e9, 6e9, 9e9] {
+        // Plain DFT (both records decay to zero; a window would weigh V
+        // and I, half a cell and half a step apart, differently).
+        let z = dft(pv, f).hypot_ratio(dft(pi, f));
+        println!(
+            "{:.1} GHz: |Z| = {z:.3} Ω (discrete {discrete:.3}, analytic {analytic:.3})",
+            f / 1e9
+        );
+        assert!((z / discrete - 1.0).abs() < 2e-3, "{z} vs {discrete}");
+        assert!((z / analytic - 1.0).abs() < 1e-2, "{z} vs {analytic}");
+    }
+    // Phase velocity between k = 40 and k = 80 from the DFT phase: c up
+    // to the (small) dispersion of the mesh.
+    let (p40, p80) = (e.operator(&h40), e.operator(&h80));
+    for f in [3e9, 6e9, 9e9] {
+        let (a40, a80) = (phase(p40, f), phase(p80, f));
+        let dphi = (a40 - a80).rem_euclid(TAU);
+        let v = TAU * f * 40.0 * dz / dphi;
+        println!("{:.1} GHz: phase velocity {:.6} c", f / 1e9, v / C0);
+        assert!((v / C0 - 1.0).abs() < 2e-3, "{}", v / C0);
+    }
+}
+
+/// Plain DFT of a probe at `f`, as `(re, im)`.
+fn dft(p: &Probe, f: f64) -> Dft {
+    let (mut re, mut im) = (0.0, 0.0);
+    for (&t, &x) in p.times().iter().zip(p.values()) {
+        re += x * (TAU * f * t).cos();
+        im -= x * (TAU * f * t).sin();
+    }
+    Dft(re, im)
+}
+
+#[derive(Clone, Copy)]
+struct Dft(f64, f64);
+
+impl Dft {
+    fn hypot_ratio(self, o: Dft) -> f64 {
+        self.0.hypot(self.1) / o.0.hypot(o.1)
+    }
+}
+
+/// Phase of the DFT of a probe at `f`.
+fn phase(p: &Probe, f: f64) -> f64 {
+    let d = dft(p, f);
+    d.1.atan2(d.0)
+}

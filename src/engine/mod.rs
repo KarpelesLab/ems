@@ -138,6 +138,7 @@ pub mod bloch_wave;
 pub mod boundary;
 mod coeffs;
 pub mod conformal;
+pub mod cylindrical;
 pub mod dispersive;
 pub mod dump;
 pub mod edge_dft;
@@ -181,7 +182,7 @@ pub use edge_dft::{CellBox, EdgeDft};
 pub use edge_material::EdgeMaterials;
 pub use excite::{Amplitude, EdgeSource, SourceKind};
 pub use fields::{FieldArrays, Fields};
-pub use grid::Grid;
+pub use grid::{Coordinates, Grid};
 pub use lumped::{EdgeValues, LumpedBox, LumpedElement, Topology, fold_parallel};
 pub use material::{CellMaterials, Material};
 pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
@@ -270,7 +271,9 @@ impl EngineBuilder {
     /// face whose opposite face is not periodic.
     pub fn build(self) -> Result<Engine> {
         let grid = self.grid;
-        let periodic = Periodic::from_faces(&self.faces, grid.nodes())?;
+        let faces = cylindrical::effective_faces(&grid, &self.faces);
+        let periodic = Periodic::from_faces(&faces, grid.nodes())?;
+        let axis = cylindrical::AxisMerge::new(&grid);
         let dt = self.timestep.resolve(&grid)?;
         let coeffs = match &self.materials {
             Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
@@ -300,6 +303,7 @@ impl EngineBuilder {
             shared,
             ops: Vec::new(),
             periodic,
+            axis,
             pool,
         })
     }
@@ -366,6 +370,8 @@ pub struct Engine {
     ops: Vec<Registered>,
     /// Periodic face merge, run in the `post_e` gap.
     periodic: Option<Periodic>,
+    /// Axis merge of a cylindrical grid, run after the periodic merge.
+    axis: Option<cylindrical::AxisMerge>,
     pool: Option<Pool>,
 }
 
@@ -641,7 +647,9 @@ impl Engine {
             dt: self.dt,
             energy_first,
             gaps: Gaps {
-                a: mask.intersects(Hooks::PRE_H | Hooks::POST_E) || self.periodic.is_some(),
+                a: mask.intersects(Hooks::PRE_H | Hooks::POST_E)
+                    || self.periodic.is_some()
+                    || self.axis.is_some(),
                 b: mask.intersects(Hooks::POST_H | Hooks::PRE_E),
             },
         };
@@ -651,6 +659,7 @@ impl Engine {
             shared,
             ops,
             periodic,
+            axis,
             pool,
             ..
         } = self;
@@ -671,9 +680,14 @@ impl Engine {
             let mut f = shared.store.lock();
             // Periodic faces: merge the kernel result before the operators
             // see it, and fold in their corrections afterwards.
-            let periodic = periodic.as_ref().filter(|_| matches!(g, Gap::PostE(_)));
+            let post_e = matches!(g, Gap::PostE(_));
+            let periodic = periodic.as_ref().filter(|_| post_e);
+            let axis = axis.as_ref().filter(|_| post_e);
             if let Some(p) = periodic {
                 p.merge(&mut f, &co);
+            }
+            if let Some(a) = axis {
+                a.merge(&mut f, &co);
             }
             for &w in which {
                 for r in ops.iter_mut().filter(|r| r.hooks.contains(w)) {
@@ -685,8 +699,13 @@ impl Engine {
                     }
                 }
             }
-            if let Some(p) = periodic.filter(|_| post_e_ops) {
-                p.merge(&mut f, &co);
+            if post_e_ops {
+                if let Some(p) = periodic {
+                    p.merge(&mut f, &co);
+                }
+                if let Some(a) = axis {
+                    a.merge(&mut f, &co);
+                }
             }
         };
         pool::drive(pool.as_mut(), shared, &plan, &mut hook);

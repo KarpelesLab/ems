@@ -92,6 +92,9 @@ impl EdgeMaterials {
                 grid.cells()
             )));
         }
+        if grid.is_cylindrical() {
+            return Ok(Self::from_cells_cylindrical(grid, cells));
+        }
         let mut out = Self::vacuum(grid);
         let n = grid.nodes();
         for axis in Axis::ALL {
@@ -122,6 +125,88 @@ impl EdgeMaterials {
             }
         }
         Ok(out)
+    }
+
+    /// [`from_cells`](Self::from_cells) on a cylindrical grid: the same
+    /// combination rules with the cylindrical weights, i.e. the
+    /// quarter-cell areas `(Δα/2)·(ρ_out² − ρ_in²)/2` around a z edge (the
+    /// other quarter areas and the half-cell lengths along a dual edge only
+    /// enter as ratios, in which the Jacobian `ρ` cancels).
+    fn from_cells_cylindrical(grid: &Grid, cells: &CellMaterials) -> Self {
+        let mut out = Self::vacuum(grid);
+        let n = grid.nodes();
+        let r = grid.lines(Axis::X);
+        for axis in Axis::ALL {
+            let (ab, ac) = axis.others();
+            let (a, b, c) = (axis.index(), ab.index(), ac.index());
+            out.pec[a].copy_from_slice(cells.pec_mask(axis));
+            for i in 0..n[0] {
+                for j in 0..n[1] {
+                    for k in 0..n[2] {
+                        let p = [i, j, k];
+                        let idx = grid.index(p);
+                        if p[a] + 1 < n[a] {
+                            let (mut w, mut eps, mut kap) = (0.0, 0.0, 0.0);
+                            for cb in [p[b].wrapping_sub(1), p[b]] {
+                                if cb >= n[b] - 1 {
+                                    continue;
+                                }
+                                for cc in [p[c].wrapping_sub(1), p[c]] {
+                                    if cc >= n[c] - 1 {
+                                        continue;
+                                    }
+                                    let area = if axis == Axis::Z {
+                                        // b = ρ, c = α.
+                                        let (r_in, r_out) = if cb < p[0] {
+                                            (0.5 * (r[cb] + r[cb + 1]), r[p[0]])
+                                        } else {
+                                            (r[p[0]], 0.5 * (r[cb] + r[cb + 1]))
+                                        };
+                                        0.5 * grid.delta(ac, cc)
+                                            * 0.5
+                                            * (r_out * r_out - r_in * r_in)
+                                    } else {
+                                        0.25 * grid.delta(ab, cb) * grid.delta(ac, cc)
+                                    };
+                                    let mut cell = [0; 3];
+                                    cell[a] = p[a];
+                                    cell[b] = cb;
+                                    cell[c] = cc;
+                                    let m = cells.get(cell);
+                                    w += area;
+                                    eps += area * m.eps_r[a];
+                                    kap += area * m.kappa[a];
+                                }
+                            }
+                            if w > 0.0 {
+                                out.eps_r[a][idx] = eps / w;
+                                out.kappa[a][idx] = kap / w;
+                            }
+                        }
+                        if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
+                            // Series over the half cells along the dual edge.
+                            let (mut l, mut inv, mut sig) = (0.0, 0.0, 0.0);
+                            for ca in [p[a].wrapping_sub(1), p[a]] {
+                                if ca >= n[a] - 1 {
+                                    continue;
+                                }
+                                let mut cell = p;
+                                cell[a] = ca;
+                                let m = cells.get(cell);
+                                let half = 0.5 * grid.delta(axis, ca);
+                                l += half;
+                                inv += half / m.mu_r[a];
+                                sig += half * m.sigma_m[a] / (m.mu_r[a] * m.mu_r[a]);
+                            }
+                            let mu = l / inv;
+                            out.mu_r[a][idx] = mu;
+                            out.sigma_m[a][idx] = mu * mu * sig / l;
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Node counts of the grid these values belong to.

@@ -5,18 +5,51 @@
 //! at the primary-cell midpoints (Yee 1966; Taflove & Hagness,
 //! *Computational Electrodynamics*, 3rd ed., ch. 3 and the non-uniform-grid
 //! discussion there). At the outer boundary the dual cells are half cells.
+//!
+//! A grid is either Cartesian `(x, y, z)` or cylindrical `(ρ, α, z)`
+//! ([`Grid::cylindrical`], design §5.13). The cylindrical geometry
+//! (edge lengths, face areas) is in [`Grid::edge_length`],
+//! [`Grid::dual_edge_length`], [`Grid::dual_face_area`] and
+//! [`Grid::face_area`]; the [`Axis`] names `X`, `Y`, `Z` then stand for
+//! `ρ`, `α`, `z`.
+
+use std::sync::OnceLock;
 
 use crate::axis::Axis;
 use crate::{Error, Result};
 
-/// A validated rectilinear mesh in metres.
+/// The coordinate system of a [`Grid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Coordinates {
+    /// `(x, y, z)` in metres.
+    #[default]
+    Cartesian,
+    /// `(ρ, α, z)`: radius and height in metres, azimuth in radians
+    /// ([`Axis::X`] = ρ, [`Axis::Y`] = α, [`Axis::Z`] = z).
+    Cylindrical,
+}
+
+/// Relative tolerance on `α_max − α_min = 2π` for a closed azimuth.
+const CLOSED_TOL: f64 = 1e-6;
+
+/// A validated rectilinear mesh, Cartesian (metres) or cylindrical
+/// (`ρ`, `z` in metres, `α` in radians).
 ///
 /// Per-axis arrays such as [`nodes`](Self::nodes) are indexed by
-/// [`Axis::index`] (`[x, y, z]`). The grid has `n[a]` node lines along axis
-/// `a` (at least 2) and therefore `n[a] − 1` cells.
-#[derive(Debug, Clone, PartialEq)]
+/// [`Axis::index`] (`[x, y, z]`, or `[ρ, α, z]`). The grid has `n[a]` node
+/// lines along axis `a` (at least 2) and therefore `n[a] − 1` cells.
+#[derive(Debug, Clone)]
 pub struct Grid {
     lines: [Vec<f64>; 3],
+    coords: Coordinates,
+    /// Cached stability limit of a cylindrical grid (power iteration).
+    courant: OnceLock<f64>,
+}
+
+impl PartialEq for Grid {
+    fn eq(&self, other: &Self) -> bool {
+        self.lines == other.lines && self.coords == other.coords
+    }
 }
 
 impl Grid {
@@ -49,7 +82,175 @@ impl Grid {
         n[0].checked_mul(n[1])
             .and_then(|v| v.checked_mul(n[2]))
             .ok_or_else(|| Error::Invalid("grid node count overflows usize".into()))?;
-        Ok(Self { lines })
+        Ok(Self {
+            lines,
+            coords: Coordinates::Cartesian,
+            courant: OnceLock::new(),
+        })
+    }
+
+    /// Builds a cylindrical grid from the lines `[ρ, α, z]`: `ρ` and `z` in
+    /// metres, `α` in radians.
+    ///
+    /// Besides the checks of [`new`](Self::new), `ρ` must be non-negative
+    /// and the azimuth span `α_max − α_min` at most 2π. A first `ρ` line at
+    /// 0 is the axis ([`has_axis`](Self::has_axis)); an azimuth span of 2π
+    /// (to a relative 1e-6) closes the circle
+    /// ([`is_closed`](Self::is_closed)): the first and last `α` lines are
+    /// then the same half-plane, and the engine treats the α faces as
+    /// periodic.
+    ///
+    /// ```
+    /// use ems::engine::Grid;
+    /// use std::f64::consts::TAU;
+    ///
+    /// let g = Grid::cylindrical([
+    ///     vec![0.0, 1e-3, 2e-3],
+    ///     (0..=8).map(|j| j as f64 * TAU / 8.0).collect(),
+    ///     vec![0.0, 1e-3],
+    /// ])?;
+    /// assert!(g.has_axis() && g.is_closed());
+    /// # Ok::<(), ems::Error>(())
+    /// ```
+    pub fn cylindrical(lines: [Vec<f64>; 3]) -> Result<Self> {
+        let mut g = Self::new(lines)?;
+        if g.lines[0][0] < 0.0 {
+            return Err(Error::Invalid(format!(
+                "cylindrical grid: rho lines must be >= 0, got {}",
+                g.lines[0][0]
+            )));
+        }
+        let span = g.alpha_span();
+        if span > core::f64::consts::TAU * (1.0 + CLOSED_TOL) {
+            return Err(Error::Invalid(format!(
+                "cylindrical grid: alpha span {span} rad exceeds 2π"
+            )));
+        }
+        g.coords = Coordinates::Cylindrical;
+        Ok(g)
+    }
+
+    /// The coordinate system.
+    pub fn coordinates(&self) -> Coordinates {
+        self.coords
+    }
+
+    /// Whether the grid is cylindrical.
+    pub fn is_cylindrical(&self) -> bool {
+        self.coords == Coordinates::Cylindrical
+    }
+
+    /// Whether the grid is cylindrical with its first `ρ` line at 0 (the
+    /// z axis lies on the `ρ_min` face, see design §5.13).
+    pub fn has_axis(&self) -> bool {
+        self.is_cylindrical() && self.lines[0][0] == 0.0
+    }
+
+    /// Whether the grid is cylindrical and spans the full circle in `α`.
+    pub fn is_closed(&self) -> bool {
+        self.is_cylindrical()
+            && (self.alpha_span() - core::f64::consts::TAU).abs()
+                <= CLOSED_TOL * core::f64::consts::TAU
+    }
+
+    fn alpha_span(&self) -> f64 {
+        let a = &self.lines[1];
+        a[a.len() - 1] - a[0]
+    }
+
+    /// The cached cylindrical stability limit, computed by `f` once.
+    pub(crate) fn cached_courant(&self, f: impl FnOnce(&Self) -> f64) -> f64 {
+        *self.courant.get_or_init(|| f(self))
+    }
+
+    /// Radius of the dual line through cell `i` (`ρ_{i+½}`), or of node
+    /// `i` itself for the last node (cylindrical helper).
+    fn rho_dual(&self, i: usize) -> f64 {
+        let r = &self.lines[0];
+        if i + 1 < r.len() {
+            0.5 * (r[i] + r[i + 1])
+        } else {
+            r[i]
+        }
+    }
+
+    /// Physical length \[m\] of the primary edge along `axis` starting at
+    /// `node`: [`delta`](Self::delta), or `ρ_i·Δα_j` for an α edge of a
+    /// cylindrical grid (0 on the axis).
+    pub fn edge_length(&self, axis: Axis, node: [usize; 3]) -> f64 {
+        let d = self.delta(axis, node[axis.index()]);
+        if self.is_cylindrical() && axis == Axis::Y {
+            self.lines[0][node[0]] * d
+        } else {
+            d
+        }
+    }
+
+    /// Physical length \[m\] of the (in-domain part of the) dual edge along
+    /// `axis` through `node`: [`dual_delta`](Self::dual_delta), or
+    /// `ρ_{i+½}·Δα*_j` for an α dual edge of a cylindrical grid.
+    pub fn dual_edge_length(&self, axis: Axis, node: [usize; 3]) -> f64 {
+        let d = self.dual_delta(axis, node[axis.index()]);
+        if self.is_cylindrical() && axis == Axis::Y {
+            self.rho_dual(node[0]) * d
+        } else {
+            d
+        }
+    }
+
+    /// Area \[m²\] of the (in-domain part of the) dual face pierced by the
+    /// primary edge along `axis` starting at `node`: the product of the two
+    /// transverse [`dual_delta`](Self::dual_delta)s in Cartesian
+    /// coordinates; in cylindrical coordinates `ρ_{i+½}·Δα*·Δz*` (ρ edge),
+    /// `Δρ*·Δz*` (α edge) and the annular sector `Δα*·(ρ_hi² − ρ_lo²)/2`
+    /// (z edge, `ρ_lo`, `ρ_hi` the dual lines around node `i`, clamped to
+    /// the domain).
+    pub fn dual_face_area(&self, axis: Axis, node: [usize; 3]) -> f64 {
+        let (ab, ac) = axis.others();
+        let (db, dc) = (
+            self.dual_delta(ab, node[ab.index()]),
+            self.dual_delta(ac, node[ac.index()]),
+        );
+        if !self.is_cylindrical() {
+            return db * dc;
+        }
+        let i = node[0];
+        match axis {
+            // others() = (Y, Z): Δα*, Δz*.
+            Axis::X => self.rho_dual(i) * db * dc,
+            // others() = (Z, X): Δz*, Δρ*.
+            Axis::Y => db * dc,
+            // others() = (X, Y).
+            Axis::Z => {
+                let r = &self.lines[0];
+                let lo = if i > 0 { 0.5 * (r[i - 1] + r[i]) } else { r[i] };
+                let hi = self.rho_dual(i);
+                dc * 0.5 * (hi * hi - lo * lo)
+            }
+        }
+    }
+
+    /// Area \[m²\] of the primary face normal to `axis` whose lowest corner
+    /// is `node`: the product of the two transverse
+    /// [`delta`](Self::delta)s in Cartesian coordinates; in cylindrical
+    /// coordinates `ρ_i·Δα·Δz` (ρ face, 0 on the axis), `Δρ·Δz` (α face)
+    /// and the annular sector `Δα·(ρ_{i+1}² − ρ_i²)/2` (z face).
+    pub fn face_area(&self, axis: Axis, node: [usize; 3]) -> f64 {
+        let (ab, ac) = axis.others();
+        let (db, dc) = (
+            self.delta(ab, node[ab.index()]),
+            self.delta(ac, node[ac.index()]),
+        );
+        if !self.is_cylindrical() {
+            return db * dc;
+        }
+        let r = &self.lines[0];
+        let i = node[0];
+        match axis {
+            Axis::X => r[i] * db * dc,
+            Axis::Y => db * dc,
+            Axis::Z => dc * 0.5 * (r[i + 1] * r[i + 1] - r[i] * r[i]),
+        }
     }
 
     /// Uniform grid with `cells[a]` cells of size `cell_size[a]` (metres)

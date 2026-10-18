@@ -35,7 +35,10 @@
 //!
 //! After every E update the engine replaces both copies by that mean
 //! (in the serial `post_e` gap), so the two copies always hold the same value. A
-//! copy with `cb = 0` (PEC) makes the edge PEC. Edges on the intersection of
+//! copy with `cb = 0` (PEC) makes the edge PEC, unless both copies have
+//! `cb = 0`: the kernel then does not update the edge at all, and the
+//! values written by an operator (e.g. a Mur face crossing the periodic
+//! face) are kept (both copies set to their mean). Edges on the intersection of
 //! two periodic faces (four copies) are merged axis by axis with the
 //! accumulated weights, which gives the weighted mean over all four.
 //!
@@ -76,6 +79,20 @@ use crate::engine::run::{Stepper, drive};
 use crate::engine::{Engine, EngineBuilder, Grid, Progress, RunLimits, RunOutcome};
 use crate::fdtd::Face;
 use crate::{Error, Result};
+
+/// The merge weights of a pair of copies with `1/cb` weights `wl`, `wh`
+/// (infinite for `cb = 0`): `None` if exactly one side is PEC (the merged
+/// edge is PEC), equal weights if both are (the kernel does not update the
+/// edge at all; its values belong to an operator such as a Mur face that
+/// crosses the periodic face, so they are kept, averaged), else the
+/// weights themselves.
+fn pair_weights(wl: f64, wh: f64) -> Option<(f64, f64)> {
+    match (wl.is_infinite(), wh.is_infinite()) {
+        (true, true) => Some((1.0, 1.0)),
+        (false, false) => Some((wl, wh)),
+        _ => None,
+    }
+}
 
 /// The periodic axes of an engine and the face merge; built by the engine
 /// from its [`FaceConditions`].
@@ -178,14 +195,31 @@ impl Periodic {
     /// order, independent of the thread count.
     pub(crate) fn merge(&self, f: &mut Fields<'_>, co: &Coefficients) {
         self.pairs(co, |_, axis, lo, hi, wl, wh| {
-            let v = if wl.is_infinite() || wh.is_infinite() {
-                0.0
-            } else {
-                let (ul, uh) = (f.u.get(axis, lo) as f64, f.u.get(axis, hi) as f64);
-                ((wl * ul + wh * uh) / (wl + wh)) as f32
+            let v = match pair_weights(wl, wh) {
+                None => 0.0,
+                Some((wl, wh)) => {
+                    let (ul, uh) = (f.u.get(axis, lo) as f64, f.u.get(axis, hi) as f64);
+                    ((wl * ul + wh * uh) / (wl + wh)) as f32
+                }
             };
             f.u.set(axis, lo, v);
             f.u.set(axis, hi, v);
+        });
+    }
+
+    /// [`merge`](Self::merge) on `f64` arrays in field layout (`u[a]` the
+    /// E component `a`), for the stability estimate of
+    /// [`cylindrical`](crate::engine::cylindrical).
+    pub(crate) fn merge_f64(&self, u: &mut [Vec<f64>; 3], co: &Coefficients) {
+        self.pairs(co, |_, axis, lo, hi, wl, wh| {
+            let a = axis.index();
+            let (il, ih) = (self.index(lo), self.index(hi));
+            let v = match pair_weights(wl, wh) {
+                None => 0.0,
+                Some((wl, wh)) => (wl * u[a][il] + wh * u[a][ih]) / (wl + wh),
+            };
+            u[a][il] = v;
+            u[a][ih] = v;
         });
     }
 
@@ -204,9 +238,7 @@ impl Periodic {
     ) {
         self.pairs(co, |a, axis, lo, hi, wl, wh| {
             let (c, s) = phase[a];
-            let (vr, vi) = if wl.is_infinite() || wh.is_infinite() {
-                (0.0, 0.0)
-            } else {
+            let (vr, vi) = if let Some((wl, wh)) = pair_weights(wl, wh) {
                 let (lr, li) = (re.u.get(axis, lo) as f64, im.u.get(axis, lo) as f64);
                 let (hr, hi) = (re.u.get(axis, hi) as f64, im.u.get(axis, hi) as f64);
                 // u_hi·e^{jψ} = (hr·c − hi·s) + j(hr·s + hi·c).
@@ -215,6 +247,8 @@ impl Periodic {
                     (wl * lr + wh * (hr * c - hi * s)) / w,
                     (wl * li + wh * (hr * s + hi * c)) / w,
                 )
+            } else {
+                (0.0, 0.0)
             };
             re.u.set(axis, lo, vr as f32);
             im.u.set(axis, lo, vi as f32);

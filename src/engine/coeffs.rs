@@ -158,7 +158,14 @@ impl TimeStep {
 /// `dt_max = 1 / (c0·sqrt(Σ_a 1/Δ_a,min²))` (Courant–Friedrichs–Lewy, see
 /// Taflove & Hagness ch. 4). Using the smallest cell per axis and the vacuum
 /// speed of light is conservative for every material with ε_r, μ_r ≥ 1.
+///
+/// For a cylindrical grid ([`Grid::cylindrical`]) the limit is computed
+/// from the discrete operator itself (power iteration, see
+/// [`cylindrical`](super::cylindrical)), once per grid.
 pub fn courant_limit(grid: &Grid) -> f64 {
+    if grid.is_cylindrical() {
+        return grid.cached_courant(super::cylindrical::courant_limit);
+    }
     let s: f64 = grid.min_deltas().iter().map(|d| 1.0 / (d * d)).sum();
     1.0 / (C0 * s.sqrt())
 }
@@ -345,6 +352,8 @@ impl Coefficients {
         let len = grid.num_nodes();
         let mut data: [Vec<f32>; 12] = core::array::from_fn(|_| vec![0.0; len]);
         let co = &mut data;
+        let cyl = grid.is_cylindrical();
+        let faces = super::cylindrical::effective_faces(grid, faces);
         // Per axis `t`: whether its [low, high] face is PEC.
         let pec_face = Axis::ALL
             .map(|t| [false, true].map(|max| faces[Face::new(t, max)] == FaceCondition::Pec));
@@ -365,9 +374,16 @@ impl Coefficients {
                                 (p[t] == 0 && pec_face[t][0])
                                     || (p[t] == n[t] - 1 && pec_face[t][1])
                             });
-                            if !(on_pec_face || pec[idx]) {
-                                let geo = grid.dual_delta(ab, p[b]) * grid.dual_delta(ac, p[c])
-                                    / grid.delta(axis, p[a]);
+                            // Zero-length edges (α edges on the axis of a
+                            // cylindrical grid) do not exist.
+                            let degenerate = cyl && grid.edge_length(axis, p) == 0.0;
+                            if !(on_pec_face || pec[idx] || degenerate) {
+                                let geo = if cyl {
+                                    grid.dual_face_area(axis, p) / grid.edge_length(axis, p)
+                                } else {
+                                    grid.dual_delta(ab, p[b]) * grid.dual_delta(ac, p[c])
+                                        / grid.delta(axis, p[a])
+                                };
                                 let cap = EPS0 * eps[idx] * geo;
                                 let g = kap[idx] * geo;
                                 let den = cap + 0.5 * g * dt;
@@ -376,9 +392,18 @@ impl Coefficients {
                             }
                         }
                         // H dual edge along `axis` through p.
-                        if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
-                            let geo = grid.delta(ab, p[b]) * grid.delta(ac, p[c])
-                                / grid.dual_delta(axis, p[a]);
+                        // Zero-area faces (ρ faces on the axis) carry no
+                        // flux: their dual edge does not exist.
+                        if p[b] + 1 < n[b]
+                            && p[c] + 1 < n[c]
+                            && !(cyl && grid.face_area(axis, p) == 0.0)
+                        {
+                            let geo = if cyl {
+                                grid.face_area(axis, p) / grid.dual_edge_length(axis, p)
+                            } else {
+                                grid.delta(ab, p[b]) * grid.delta(ac, p[c])
+                                    / grid.dual_delta(axis, p[a])
+                            };
                             let l = MU0 * mu[idx] * geo;
                             let r = sig[idx] * geo;
                             let den = l + 0.5 * r * dt;
