@@ -105,7 +105,15 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///      The openEMS documentation describes field probes at a point; using
 ///      the centre of a box is this crate's choice (no averaging over the
 ///      box).
-///    * Waveguide probes: not supported yet (warning).
+///    * `WaveguideVoltage` / `WaveguideCurrent`: the mode-weighted
+///      integral of tangential E / H over the probe plane, with the mode
+///      function of the property attributes `ModeFunctionX/Y/Z` (1/m, over
+///      drawing-unit coordinates; see the
+///      [compile docs](crate::compile#waveguide-probes)), at the E / H
+///      times. They are reported as [`ProbeKind::Voltage`] /
+///      [`ProbeKind::Current`].
+///      [`RectWaveguidePort`](crate::port::RectWaveguidePort) writes such
+///      probes.
 ///
 ///    `FD_Samples` frequencies are available through
 ///    [`ProbeResult::spectrum`]; any other frequency through
