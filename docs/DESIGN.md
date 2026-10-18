@@ -479,6 +479,35 @@ they can be planned on the csx side.
 Anything solver-specific stays out of csx, so csx remains useful to other
 solvers and tools.
 
+### 8.1 Feedback for csx (found while integrating)
+
+Open items found by ems work against csx master `b949cf86`. These are reported
+here, not fixed in csx from this repo.
+
+1. **Release.** `discretize`, `fdtd` and `mesh` are not in the published 0.0.1.
+   ems builds through a `[patch.crates-io]` git pin until 0.0.2 ships.
+   release-plz's semver check fails on ems until then.
+2. **Gaussian docs.** `ExcitationSignal::Gaussian` and the crate docs say
+   "Gaussian-modulated sine", but the code (correctly, and matching ems) uses a
+   cosine carrier.
+3. **`endCriteria=0`.** `FdtdSettings::validate` rejects `end_criteria <= 0`,
+   but 0 is a valid "no end criteria" value.
+4. **Signal `f_max`.** The XML writer drops the `f_max` stored inside
+   Dirac/step/custom signals; only the `<FDTD f_max>` attribute survives.
+5. **No change tracking.** `ContinuousStructure` has no "needs update" flag, so
+   ems clones the model and calls `update()` on every compile.
+6. **Disabled excitations.** `discretize` does not appear to check
+   `Excitation::enabled`.
+7. **Dispersive materials.** These are silently reduced to their static
+   values; a discretisation warning would help.
+8. **Bare axis index.** `discretize::Edge::dir` is a `usize` rather than an
+   axis type.
+9. **Amplitude units.** Document explicitly that excitation amplitudes are field
+   values (V/m), not edge voltages.
+10. **Averaging σ_m.** csx combines magnetic σ arithmetically across the two half
+    cells, while μ is combined harmonically (in series). ems's per-cell path
+    combines σ_m in series. Worth deciding on one convention.
+
 ## 9. Validation strategy
 
 Tests check against physics, not openEMS output. Each test is small and fast
