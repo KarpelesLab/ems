@@ -381,7 +381,7 @@ fn boundaries_map_to_conditions_and_operators() {
     );
 
     let mut sim = Simulation::new(&model, &fdtd).unwrap();
-    let h = *sim.boundaries();
+    let h = sim.boundaries().clone();
     let e = sim.engine();
     let faces: Vec<Face> = e.operator(&h.cpml.unwrap()).layers().map(|l| l.0).collect();
     assert_eq!(faces, vec![Face::XMax, Face::ZMin]);

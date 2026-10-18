@@ -2,9 +2,13 @@
 //!
 //! PEC and PMC faces need no operator (see [`FaceCondition`](super::FaceCondition));
 //! absorbing faces are built as PEC and then taken over by one of these.
+//! [`abc`] holds absorbing sheets on interior mesh planes (csx
+//! `AbsorbingBC`).
 
+pub mod abc;
 pub mod cpml;
 pub mod mur;
 
+pub use abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 pub use cpml::{CpmlBoundary, CpmlCoefficients};
 pub use mur::MurBoundary;

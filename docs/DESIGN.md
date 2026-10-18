@@ -346,6 +346,21 @@ ProbeBox, emitted into csx by the helper.
     runs serially between the half-steps for now.
   - ψ arrays are stored only for the slabs; each ψ term handles one derivative
     direction, so edges and corners are correct.
+- **AbsorbingBC sheets** (csx `AbsorbingBC`, implemented,
+  `engine::boundary::abc::AbsorbingSheet`): the same first-order Mur update
+  on the tangential E of a rectangle on an interior mesh plane, against the
+  neighbour one node behind the outward normal (`NormalSignPositive`).
+  - One-way: waves travelling along the outward normal are absorbed (−58 dB
+    at normal incidence, the same as the Mur face on the same mesh). The
+    region behind the sheet still exists: the sheet drives it like a hard
+    source, so the transmitted wave continues there, and a wave arriving
+    from behind sees a hard wall and is reflected.
+  - `PhaseVelocity = 0` uses the local `c0/√(ε_r μ_r)` per edge (c0 in
+    vacuum, csx's documented meaning). `MUR_1ST_SA` and unknown types fall
+    back to plain first-order Mur with a warning.
+  - Each primitive must snap to a flat rectangle; volumes, lines and points
+    are ignored with a warning. Sheets are registered last, after dispersive
+    media and the Mur faces.
 - **Periodic/Bloch**: M3. Neighbour indexing goes through the boundary layer, so
   wrap-around fits without a rewrite.
 

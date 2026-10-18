@@ -32,7 +32,10 @@
 //!    listed in [`Compiled::mur`] / [`Compiled::pml`], from which
 //!    [`Compiled::build`] creates **one** [`MurBoundary`] covering all Mur
 //!    faces and **one** [`CpmlBoundary`] covering all PML faces.
-//! 6. **Time step and threads** from [`Fdtd`]: a time step override becomes
+//! 6. **Absorbing sheets.** csx `AbsorbingBC` primitives become
+//!    [`AbcSpec`]s ([`Compiled::abc`]), installed by [`Compiled::build`] as
+//!    one [`AbsorbingSheet`] each (see [Absorbing sheets](#absorbing-sheets)).
+//! 7. **Time step and threads** from [`Fdtd`]: a time step override becomes
 //!    [`TimeStep::Fixed`], otherwise [`TimeStep::Courant`] with the time
 //!    step factor; the thread count is used for both the discretisation and
 //!    the engine.
@@ -49,6 +52,23 @@
 //! (openEMS documentation) and the sampling rules are documented in
 //! [`dispersive`]; in short: `ω_p = 2π·f_plasma·√ε∞`,
 //! `ω_0 = 2π·f_Lor`, `γ = 1/τ` (0 for `τ = 0`), Debye `Δε`, `τ` as given.
+//!
+//! # Absorbing sheets
+//!
+//! Every primitive of an `AbsorbingBC` property is snapped to the mesh like
+//! a probe box (see below) and must then be flat along exactly one axis,
+//! the sheet normal; anything else (a volume, a line, a point) is ignored
+//! with a warning, as is a box that was not flat before snapping (it is
+//! still used, flattened by the snap, with a warning). `NormalSignPositive`
+//! gives the outward normal, i.e. the direction of the waves the sheet
+//! absorbs ([`AbcSheet::positive`]). `PhaseVelocity` > 0 is used as given;
+//! 0 (csx's "speed of light") selects the local medium velocity
+//! `c0/√(ε_r·μ_r)` per edge ([`SheetVelocity::Local`]), which is `c0` in
+//! vacuum; negative or non-finite values fall back to it with a warning.
+//! `AbsorbingBoundaryType` `MUR_1ST` is implemented; `MUR_1ST_SA` (the
+//! super-absorption variant) and unknown types use plain first-order Mur,
+//! with a warning. Behaviour and limitations of the sheet (one-way, hard
+//! wall for waves from behind) are in [`abc`](crate::engine::boundary::abc).
 //!
 //! Excitations and lumped elements of the model are discretised by csx as
 //! well, and ProbeBox / DumpBox primitives are snapped to the mesh
@@ -69,6 +89,7 @@
 pub mod dispersive;
 
 use crate::axis::Axis;
+use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
 use crate::engine::{
@@ -81,7 +102,7 @@ use crate::{Error, Result};
 use csx::discretize::{
     DiscretizeOptions, ExcitationField, LumpedEdge, MaterialGrid, SheetInfo, discretize,
 };
-use csx::properties::{DumpMode, DumpType, ProbeType};
+use csx::properties::{AbcType, DumpMode, DumpType, ProbeType};
 use csx::{CoordSystem, PropertyKind};
 
 /// Options of [`compile`].
@@ -224,6 +245,18 @@ pub struct ProbeSpec<T> {
     pub stop: [usize; 3],
 }
 
+/// An absorbing sheet from a csx `AbsorbingBC` primitive (see
+/// [Absorbing sheets](self#absorbing-sheets)).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbcSpec {
+    /// Property name.
+    pub name: String,
+    /// The sheet, in engine node indices.
+    pub sheet: AbcSheet,
+    /// Phase velocity \[m/s\]; `None`: local medium velocity.
+    pub phase_velocity: Option<f64>,
+}
+
 /// Engine inputs produced by [`compile`]; [`build`](Self::build) turns
 /// them into an [`Engine`].
 #[derive(Debug, Clone)]
@@ -247,6 +280,10 @@ pub struct Compiled {
     pub threads: usize,
     /// csx ↔ engine index conversion.
     pub node_map: NodeMap,
+    /// Absorbing sheets from csx `AbsorbingBC` properties (see
+    /// [Absorbing sheets](self#absorbing-sheets)); installed by
+    /// [`build`](Self::build), one [`AbsorbingSheet`] each.
+    pub abc: Vec<AbcSpec>,
     /// Dispersive poles per edge from csx `LorentzMaterial` /
     /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
     /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
@@ -259,7 +296,7 @@ pub struct Compiled {
 }
 
 /// The boundary operators created by [`Compiled::build`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BoundaryHandles {
     /// The Mur operator covering every Mur face, if any.
     pub mur: Option<OperatorHandle<MurBoundary>>,
@@ -268,13 +305,16 @@ pub struct BoundaryHandles {
     pub dispersive: Option<OperatorHandle<Dispersive>>,
     /// The CPML operator covering every PML face, if any.
     pub cpml: Option<OperatorHandle<CpmlBoundary>>,
+    /// One operator per [`Compiled::abc`] sheet, in the same order.
+    pub abc: Vec<OperatorHandle<AbsorbingSheet>>,
 }
 
 impl Compiled {
     /// Builds the engine (coefficients, threads) and registers the boundary
     /// operators, first the [`CpmlBoundary`], then the [`MurBoundary`],
     /// then the [`Dispersive`] medium (after the CPML, so that a medium
-    /// reaching into the PML is coupled implicitly with it).
+    /// reaching into the PML is coupled implicitly with it), then the
+    /// [`AbsorbingSheet`]s (last, so that they see the final interior E).
     ///
     /// # Errors
     /// Invalid time step or materials, or boundary operator setup errors
@@ -301,6 +341,15 @@ impl Compiled {
                 d.push_entry(e);
             }
             h.dispersive = Some(d.add_to(&mut engine)?);
+        }
+        for a in &self.abc {
+            let v = match a.phase_velocity {
+                Some(v) => SheetVelocity::Fixed(v),
+                None => SheetVelocity::Local(&self.materials),
+            };
+            let op = AbsorbingSheet::new(&engine, &a.sheet, v)
+                .map_err(|e| Error::Invalid(format!("AbsorbingBC {:?}: {e}", a.name)))?;
+            h.abc.push(engine.add_operator(op));
         }
         Ok((engine, h))
     }
@@ -358,9 +407,6 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
 fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
     for p in model.properties() {
         let what = match &p.kind {
-            PropertyKind::AbsorbingBC(_) => {
-                "AbsorbingBC sheets are not supported yet (M2); ignored"
-            }
             PropertyKind::Excitation(e) if !e.enabled => "disabled; ignored",
             PropertyKind::Excitation(e)
                 if !e.excitation_type.is_electric() && !e.excitation_type.is_magnetic() =>
@@ -420,7 +466,7 @@ fn probe_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> 
                 p.primitives.len()
             ));
         }
-        let (start, stop) = snap_primitive(&model.grid, prim, &p.name, warnings);
+        let (start, stop) = snap_primitive(&model.grid, prim, "probe/dump", &p.name, warnings);
         match &p.kind {
             PropertyKind::ProbeBox(pb) => probes.push(ProbeSpec {
                 name: p.name.clone(),
@@ -460,6 +506,7 @@ fn probe_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> 
 fn snap_primitive(
     grid: &csx::RectilinearGrid,
     prim: &csx::Primitive,
+    what: &str,
     name: &str,
     warnings: &mut Vec<String>,
 ) -> ([usize; 3], [usize; 3]) {
@@ -481,7 +528,7 @@ fn snap_primitive(
         }
         other => {
             warnings.push(format!(
-                "probe/dump {name:?}: {} primitive replaced by its bounding box",
+                "{what} {name:?}: {} primitive replaced by its bounding box",
                 other.type_name()
             ));
             let bb = prim.bounding_box(CoordSystem::Cartesian);
@@ -504,14 +551,91 @@ fn snap_primitive(
     let stop = [0, 1, 2].map(|d| snap(b.0[d], d));
     if outside {
         warnings.push(format!(
-            "probe/dump {name:?}: box extends outside the mesh; clamped to the mesh"
+            "{what} {name:?}: box extends outside the mesh; clamped to the mesh"
         ));
     } else if off {
         warnings.push(format!(
-            "probe/dump {name:?}: box corners snapped to the nearest mesh lines"
+            "{what} {name:?}: box corners snapped to the nearest mesh lines"
         ));
     }
     (start, stop)
+}
+
+/// Snaps the AbsorbingBC primitives of `model` to its grid (see
+/// [Absorbing sheets](self#absorbing-sheets)).
+fn abc_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> Vec<AbcSpec> {
+    let mut out = Vec::new();
+    for p in model.properties() {
+        let PropertyKind::AbsorbingBC(abc) = &p.kind else {
+            continue;
+        };
+        if p.primitives.is_empty() {
+            warnings.push(format!("AbsorbingBC {:?}: no primitive; ignored", p.name));
+            continue;
+        }
+        match abc.abc_type {
+            AbcType::Mur1st => {}
+            t => warnings.push(format!(
+                "AbsorbingBC {:?}: AbsorbingBoundaryType {} not implemented; \
+                 first-order Mur (MUR_1ST) used",
+                p.name,
+                t.name().map_or_else(|| t.id().to_string(), str::to_string)
+            )),
+        }
+        let v = abc.phase_velocity.value();
+        let phase_velocity = if v.is_finite() && v > 0.0 {
+            Some(v)
+        } else {
+            if v != 0.0 {
+                warnings.push(format!(
+                    "AbsorbingBC {:?}: PhaseVelocity {v} invalid; local medium velocity used",
+                    p.name
+                ));
+            }
+            None
+        };
+        for prim in &p.primitives {
+            let (a, b) = snap_primitive(&model.grid, prim, "AbsorbingBC", &p.name, warnings);
+            let start = [0, 1, 2].map(|d| a[d].min(b[d]));
+            let stop = [0, 1, 2].map(|d| a[d].max(b[d]));
+            let flat: Vec<usize> = (0..3).filter(|&d| start[d] == stop[d]).collect();
+            let &[d] = flat.as_slice() else {
+                let what = if flat.is_empty() {
+                    "a volume"
+                } else {
+                    "a line or point"
+                };
+                warnings.push(format!(
+                    "AbsorbingBC {:?}: primitive is {what} on the mesh, not a sheet; ignored",
+                    p.name
+                ));
+                continue;
+            };
+            let bb = prim.bounding_box(CoordSystem::Cartesian);
+            if bb.max.0[d] - bb.min.0[d] > 0.0 {
+                warnings.push(format!(
+                    "AbsorbingBC {:?}: primitive has a thickness along {}; flattened onto \
+                     mesh plane {}",
+                    p.name,
+                    ["x", "y", "z"][d],
+                    start[d]
+                ));
+            }
+            let normal = Axis::from_index(d).expect("axis in 0..3");
+            out.push(AbcSpec {
+                name: p.name.clone(),
+                sheet: AbcSheet {
+                    normal,
+                    plane: start[d],
+                    positive: abc.normal_sign_positive,
+                    start,
+                    stop,
+                },
+                phase_velocity,
+            });
+        }
+    }
+    out
 }
 
 /// Compiles `model` with solver settings `fdtd` into engine inputs; see
@@ -606,6 +730,7 @@ pub fn compile(
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
     let (probes, dumps) = probe_specs(model, &mut warnings);
+    let abc = abc_specs(model, &mut warnings);
     Ok(Compiled {
         grid,
         delta_unit: model.grid.delta_unit,
@@ -616,6 +741,7 @@ pub fn compile(
         timestep,
         threads: fdtd.get_threads().unwrap_or(0),
         node_map,
+        abc,
         dispersive,
         sources: ModelSources {
             excitations,
