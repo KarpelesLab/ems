@@ -73,6 +73,7 @@
 //! are no cross-thread reductions, so results are bit-identical for any
 //! thread count. [`Engine::energy`] sums in global index order.
 
+pub mod boundary;
 mod coeffs;
 mod excite;
 mod fields;
