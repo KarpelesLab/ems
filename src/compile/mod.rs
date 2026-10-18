@@ -424,22 +424,33 @@ impl Compiled {
     /// Invalid time step or materials, or boundary operator setup errors
     /// (e.g. a PML thicker than the mesh).
     pub fn build(&self) -> Result<(Engine, BoundaryHandles)> {
-        let mut engine = Engine::builder(self.grid.clone())
+        let mut engine = self.builder().build()?;
+        let h = self.add_boundary_operators(&mut engine)?;
+        Ok((engine, h))
+    }
+
+    /// The engine builder of [`build`](Self::build), before any operator.
+    pub(crate) fn builder(&self) -> crate::engine::EngineBuilder {
+        Engine::builder(self.grid.clone())
             .edge_materials(self.materials.clone())
             .faces(self.faces)
             .timestep(self.timestep)
             .threads(self.threads)
-            .build()?;
+    }
+
+    /// Registers the boundary operators of [`build`](Self::build) on
+    /// `engine`.
+    pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
         if let Some(c) = &self.conformal {
             h.conformal = Some(c.apply(&mut engine)?);
         }
         if !self.pml.is_empty() {
-            let op = CpmlBoundary::new(&engine, self.pml.iter().copied())?;
+            let op = CpmlBoundary::new(engine, self.pml.iter().copied())?;
             h.cpml = Some(engine.add_operator(op));
         }
         if !self.mur.is_empty() {
-            let op = MurBoundary::with_faces(&engine, &self.mur)?;
+            let op = MurBoundary::with_faces(engine, &self.mur)?;
             h.mur = Some(engine.add_operator(op));
         }
         if !self.dispersive.is_empty() {
@@ -447,25 +458,25 @@ impl Compiled {
             for &e in &self.dispersive {
                 d.push_entry(e);
             }
-            h.dispersive = Some(d.add_to(&mut engine)?);
+            h.dispersive = Some(d.add_to(engine)?);
         }
         if !self.sheets.is_empty() {
             let mut s = ConductingSheet::new(self.max_frequency);
             for &e in &self.sheets {
                 s.push(e);
             }
-            h.sheets = Some(s.add_to(&mut engine)?);
+            h.sheets = Some(s.add_to(engine)?);
         }
         for a in &self.abc {
             let v = match a.phase_velocity {
                 Some(v) => SheetVelocity::Fixed(v),
                 None => SheetVelocity::Local(&self.materials),
             };
-            let op = AbsorbingSheet::new(&engine, &a.sheet, v)
+            let op = AbsorbingSheet::new(engine, &a.sheet, v)
                 .map_err(|e| Error::Invalid(format!("AbsorbingBC {:?}: {e}", a.name)))?;
             h.abc.push(engine.add_operator(op));
         }
-        Ok((engine, h))
+        Ok(h)
     }
 }
 

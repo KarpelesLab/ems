@@ -3,23 +3,28 @@
 //! elements, probes and dumps mapped onto engine operators (design §4,
 //! §5.5).
 
+mod bloch;
 mod map;
 mod results;
 #[cfg(feature = "xml")]
 mod xml;
 
-pub use results::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results, SarResult};
+pub use results::{
+    DumpData, DumpResult, IncidentWave, ProbeKind, ProbeResult, ProbeValues, Results, SarResult,
+};
 
 use crate::Result;
 use crate::compile::{BoundaryHandles, CompileOptions, Compiled, ModelSources, NodeMap, compile};
+use crate::engine::boundary::periodic::{BlochCoupling, BlochStepper};
+use crate::engine::run::drive;
 use crate::engine::{
-    EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle, PlaneWave, Progress,
-    RunLimits, TimeDump,
+    BlochPair, EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle,
+    PeriodicPlaneWave, PlaneWave, Progress, RunLimits, RunOutcome, TimeDump, WavePart,
 };
 use crate::fdtd::Fdtd;
 use crate::nf2ff::{Nf2ffBox, Nf2ffHandle, Nf2ffResult};
 use crate::post::sar::SarVolume;
-use map::{DumpOp, Mapped, ProbeOp};
+use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 
 /// A compiled simulation: the [`Engine`] with the model's excitations,
 /// lumped elements, probes and dumps installed, plus the metadata needed to
@@ -144,6 +149,44 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///    [`Results::sar_dumps`] (not in [`Results::dumps`]) as
 ///    [`SarResult`]s; see [`post::sar`](crate::post::sar) for the
 ///    evaluation. Other dump types are not supported (warning).
+///
+/// # Bloch mode
+///
+/// Periodic structures at oblique incidence (design §5.6.2) run the
+/// sine–cosine method: two engines carry the real and imaginary parts of
+/// a Bloch-periodic complex field, coupled at the periodic faces with the
+/// phase shift `ψ = k_t·L` per period (see
+/// [`BlochPair`](crate::engine::BlochPair)). The mode is selected
+///
+/// * explicitly by [`Fdtd::bloch_wavevector`] (any transverse wavevector on
+///   the periodic axes, `[0; 3]` included), or
+/// * by an **oblique plane-wave excitation spanning a periodic cell**: its
+///   box covers every periodic axis and all but one other axis (the
+///   normal) completely, and its direction has a transverse part; then
+///   `k_t = (2π f_d/c)·k̂_t` with the design frequency `f_d`
+///   ([`Fdtd::bloch_frequency`], else the plane wave's dispersion-matching
+///   frequency, the centre of the waveform). With `k_t` fixed, each
+///   frequency `f` travels at its own angle, `sin θ = |k_t|·c/(2πf)`;
+///   frequencies below `|k_t|·c/(2π)` are evanescent.
+///
+/// The model is mapped onto both engines alike (materials, boundaries,
+/// lumped elements, probes, dumps); excitations (soft / hard sources and
+/// Thevenin sources) drive only the real engine. Plane waves spanning the
+/// cell become [`PeriodicPlaneWave`] sources injected through the box
+/// faces normal to the open axis (a face on the domain boundary gets no
+/// corrections, so the total-field region then reaches through the
+/// absorbing layer), driven on both engines with their part of the
+/// Bloch-phased incident field; other plane waves are ignored (warning).
+/// SAR dumps are not supported (warning), nor NF2FF boxes (error).
+///
+/// The results are complex: [`ProbeResult::imag`] holds the imaginary
+/// engine's samples and the probe DFTs combine both,
+/// `X(f) = DFT[x_re] + j·DFT[x_im]`; frequency-domain dumps hold the
+/// complex field, time-domain dumps the real part plus
+/// [`DumpResult::imag_snapshots`]. Each periodic plane wave's incident E on
+/// its entry plane ([`Results::incident`]) is the reference for
+/// reflection and transmission coefficients. The energy end criterion uses
+/// the energy of both engines.
 #[derive(Debug)]
 pub struct Simulation {
     engine: Engine,
@@ -154,6 +197,16 @@ pub struct Simulation {
     sources: ModelSources,
     mapped: Mapped,
     warnings: Vec<String>,
+    bloch: Option<Box<BlochState>>,
+}
+
+/// The second engine of a Bloch run and its coupling to the first.
+#[derive(Debug)]
+struct BlochState {
+    imag: Engine,
+    coupling: BlochCoupling,
+    mapped: Mapped,
+    k: [f64; 3],
 }
 
 impl Simulation {
@@ -185,7 +238,22 @@ impl Simulation {
         opts: &CompileOptions,
     ) -> Result<Self> {
         let compiled = compile(model, fdtd, opts)?;
-        let (mut engine, boundaries) = compiled.build()?;
+        let k = bloch::wavevector(fdtd, &compiled.sources.plane_waves, compiled.grid.nodes())?;
+        let (mut engine, boundaries, imag) = match k {
+            None => {
+                let (e, h) = compiled.build()?;
+                (e, h, None)
+            }
+            Some(k) => {
+                let psi = BlochPair::phase_for(&compiled.grid, k);
+                let (coupling, b) = BlochCoupling::new(compiled.builder(), psi)?;
+                let mut re = b.clone().build()?;
+                let mut im = b.build()?;
+                let h = compiled.add_boundary_operators(&mut re)?;
+                compiled.add_boundary_operators(&mut im)?;
+                (re, h, Some((im, coupling, k)))
+            }
+        };
         let mut warnings = compiled.warnings.clone();
         if let Some(w) = boundaries.conformal.as_ref().and_then(|r| r.warning()) {
             warnings.push(w);
@@ -193,18 +261,42 @@ impl Simulation {
         if opts.mesh_check {
             warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
         }
+        let part = |part| k.map(|k| BlochMap { part, k });
         let mut mapped = map::map_sources(
             &mut engine,
             &compiled.sources,
             &compiled.node_map,
             fdtd,
             &mut warnings,
+            part(WavePart::Real),
         )?;
         mapped.lumped_ids = mapped
             .lumped
             .iter()
             .map(|(n, _)| model.property_id(n).map_or(u32::MAX, |p| p.get()))
             .collect();
+        let bloch = match imag {
+            None => None,
+            Some((mut imag, coupling, k)) => {
+                // Same model, same order: the warnings are those of the
+                // real engine.
+                let mut ignored = Vec::new();
+                let mapped = map::map_sources(
+                    &mut imag,
+                    &compiled.sources,
+                    &compiled.node_map,
+                    fdtd,
+                    &mut ignored,
+                    part(WavePart::Imag),
+                )?;
+                Some(Box::new(BlochState {
+                    imag,
+                    coupling,
+                    mapped,
+                    k,
+                }))
+            }
+        };
         Ok(Self {
             engine,
             fdtd: fdtd.clone(),
@@ -214,6 +306,7 @@ impl Simulation {
             sources: compiled.sources,
             mapped,
             warnings,
+            bloch,
         })
     }
 
@@ -288,6 +381,35 @@ impl Simulation {
         Some(self.engine.operator(&h))
     }
 
+    /// The periodic-cell plane-wave operator (real part) of the csx
+    /// excitation `name` in a Bloch run.
+    pub fn periodic_plane_wave(&self, name: &str) -> Option<&PeriodicPlaneWave> {
+        let h = find(&self.mapped.periodic_waves, name)?;
+        Some(self.engine.operator(&h))
+    }
+
+    /// Whether this is a Bloch run (two engines, complex results; see the
+    /// [type docs](Self#bloch-mode)).
+    pub fn is_bloch(&self) -> bool {
+        self.bloch.is_some()
+    }
+
+    /// The Bloch wavevector \[rad/m\] of a Bloch run.
+    pub fn bloch_wavevector(&self) -> Option<[f64; 3]> {
+        self.bloch.as_ref().map(|b| b.k)
+    }
+
+    /// The Bloch phase shifts per period \[rad\] of a Bloch run.
+    pub fn bloch_phase(&self) -> Option<[f64; 3]> {
+        self.bloch.as_ref().map(|b| b.coupling.phase())
+    }
+
+    /// The engine of the imaginary part in a Bloch run ([`engine`](Self::engine)
+    /// carries the real part).
+    pub fn imag_engine(&self) -> Option<&Engine> {
+        self.bloch.as_ref().map(|b| &b.imag)
+    }
+
     /// The time-domain dump operator of the csx property `name`, for
     /// zero-copy access (e.g. [`TimeDump::write_vtr`]).
     pub fn time_dump(&self, name: &str) -> Option<&TimeDump> {
@@ -313,6 +435,13 @@ impl Simulation {
     /// # Errors
     /// See [`Nf2ff::with_faces`](crate::nf2ff::Nf2ff::with_faces).
     pub fn add_nf2ff(&mut self, b: &Nf2ffBox) -> Result<Nf2ffHandle> {
+        if self.bloch.is_some() {
+            return Err(crate::Error::Unsupported(
+                "NF2FF boxes in a Bloch run (periodic structures radiate Floquet modes, \
+                 not a far field)"
+                    .into(),
+            ));
+        }
         let k = map::dump_interval(&self.fdtd, self.engine.dt());
         let (op, mirrors) = b.build(self.engine.grid(), self.delta_unit, k)?;
         let n = self.engine.grid().nodes();
@@ -376,11 +505,7 @@ impl Simulation {
     /// # Errors
     /// See [`Engine::run_until`].
     pub fn run(&mut self) -> Result<Results> {
-        let limits = self.run_limits();
-        let outcome = self.engine.run_until(&limits)?;
-        let mut r = self.results();
-        r.outcome = Some(outcome);
-        Ok(r)
+        self.run_with(|_| core::ops::ControlFlow::Continue(()))
     }
 
     /// Runs like [`run`](Self::run), calling `progress` after every energy
@@ -394,36 +519,56 @@ impl Simulation {
         F: FnMut(&Progress) -> core::ops::ControlFlow<()>,
     {
         let limits = self.run_limits();
-        let outcome = self.engine.run_until_with(&limits, progress)?;
+        let outcome = self.run_engines(&limits, progress)?;
         let mut r = self.results();
         r.outcome = Some(outcome);
         Ok(r)
+    }
+
+    /// The run loop: the engine's, or that of both engines of a Bloch run
+    /// (energy summed over both).
+    fn run_engines<F>(&mut self, limits: &RunLimits, progress: F) -> Result<RunOutcome>
+    where
+        F: FnMut(&Progress) -> core::ops::ControlFlow<()>,
+    {
+        match &mut self.bloch {
+            None => self.engine.run_until_with(limits, progress),
+            Some(b) => {
+                let mut s = BlochStepper {
+                    re: &mut self.engine,
+                    im: &mut b.imag,
+                    coupling: &b.coupling,
+                };
+                drive(&mut s, limits, progress)
+            }
+        }
+    }
+
+    /// Advances `n` steps (both engines in a Bloch run), without end
+    /// criteria.
+    pub fn step(&mut self, n: u64) {
+        match &mut self.bloch {
+            None => self.engine.run(n),
+            Some(b) => {
+                for _ in 0..n {
+                    b.coupling.step(&mut self.engine, &mut b.imag, false);
+                }
+            }
+        }
     }
 
     /// A copy of everything recorded so far by the model's probes and
     /// dumps (no run outcome).
     pub fn results(&self) -> Results {
         let dt = self.engine.dt();
+        let imag = self.bloch.as_deref().map(|b| (&b.imag, &b.mapped));
         let probes = self
             .mapped
             .probes
             .iter()
-            .map(|p| {
-                let (times, values) = match p.op {
-                    ProbeOp::Scalar(h) => {
-                        let op = self.engine.operator(&h);
-                        (
-                            op.times(),
-                            results::ProbeValues::Scalar(op.values().to_vec()),
-                        )
-                    }
-                    ProbeOp::Field(h) => {
-                        let op = self.engine.operator(&h);
-                        let w = p.weight;
-                        let v = op.values().iter().map(|v| v.map(|x| x * w)).collect();
-                        (op.times(), results::ProbeValues::Vector(v))
-                    }
-                };
+            .enumerate()
+            .map(|(q, p)| {
+                let (times, values) = probe_series(&self.engine, p);
                 // Recording window (stop ≤ 0: no limit), with a small
                 // tolerance against rounding of the sample times.
                 let eps = 1e-9 * dt;
@@ -434,7 +579,7 @@ impl Simulation {
                     times.len()
                 }
                 .max(lo);
-                let values = match values {
+                let window = |v: results::ProbeValues| match v {
                     results::ProbeValues::Scalar(v) => {
                         results::ProbeValues::Scalar(v[lo..hi].to_vec())
                     }
@@ -442,6 +587,7 @@ impl Simulation {
                         results::ProbeValues::Vector(v[lo..hi].to_vec())
                     }
                 };
+                let imag = imag.map(|(e, m)| window(probe_series(e, &m.probes[q]).1));
                 ProbeResult {
                     name: p.name.clone(),
                     id: p.id,
@@ -450,7 +596,8 @@ impl Simulation {
                     frequencies: p.frequencies.clone(),
                     dt,
                     times: times[lo..hi].to_vec(),
-                    values,
+                    values: window(values),
+                    imag,
                 }
             })
             .collect();
@@ -459,8 +606,12 @@ impl Simulation {
             .lumped
             .iter()
             .zip(&self.mapped.lumped_ids)
-            .map(|((name, h), &id)| {
+            .enumerate()
+            .map(|(q, ((name, h), &id))| {
                 let op = self.engine.operator(h);
+                let imag = imag.map(|(e, m)| {
+                    results::ProbeValues::Scalar(e.operator(&m.lumped[q].1).current().to_vec())
+                });
                 ProbeResult {
                     name: name.clone(),
                     id,
@@ -470,6 +621,7 @@ impl Simulation {
                     dt,
                     times: op.current_times(),
                     values: results::ProbeValues::Scalar(op.current().to_vec()),
+                    imag,
                 }
             })
             .collect();
@@ -477,20 +629,39 @@ impl Simulation {
             .mapped
             .dumps
             .iter()
-            .map(|d| DumpResult {
-                name: d.name.clone(),
-                id: d.id,
-                file_type: d.file_type,
-                data: match d.op {
+            .enumerate()
+            .map(|(q, d)| {
+                let other = imag.map(|(e, m)| (e, m.dumps[q].op));
+                let (data, imag) = match d.op {
                     DumpOp::Time(h) => {
                         let op = self.engine.operator(&h);
-                        DumpData::Time {
+                        let imag = match other {
+                            Some((e, DumpOp::Time(hi))) => {
+                                Some(e.operator(&hi).sink().snapshots().to_vec())
+                            }
+                            _ => None,
+                        };
+                        let data = DumpData::Time {
                             sampler: op.sampler().clone(),
                             snapshots: op.sink().snapshots().to_vec(),
-                        }
+                        };
+                        (data, imag)
                     }
-                    DumpOp::Freq(h) => DumpData::Freq(self.engine.operator(&h).clone()),
-                },
+                    DumpOp::Freq(h) => {
+                        let mut f = self.engine.operator(&h).clone();
+                        if let Some((e, DumpOp::Freq(hi))) = other {
+                            f.add_imaginary(e.operator(&hi));
+                        }
+                        (DumpData::Freq(f), None)
+                    }
+                };
+                DumpResult {
+                    name: d.name.clone(),
+                    id: d.id,
+                    file_type: d.file_type,
+                    data,
+                    imag,
+                }
             })
             .collect();
         let sar = self
@@ -522,6 +693,20 @@ impl Simulation {
                 }
             })
             .collect();
+        let incident = self
+            .mapped
+            .periodic_waves
+            .iter()
+            .map(|(name, h)| {
+                let op = self.engine.operator(h);
+                IncidentWave {
+                    name: name.clone(),
+                    dt,
+                    k_t: op.spec().k_t,
+                    e: op.incident().to_vec(),
+                }
+            })
+            .collect();
         Results {
             outcome: None,
             dt,
@@ -529,6 +714,26 @@ impl Simulation {
             lumped,
             dumps,
             sar,
+            incident,
+        }
+    }
+}
+
+/// Sample times and values of a mapped probe on `engine`.
+fn probe_series(engine: &Engine, p: &map::ProbeEntry) -> (Vec<f64>, results::ProbeValues) {
+    match p.op {
+        ProbeOp::Scalar(h) => {
+            let op = engine.operator(&h);
+            (
+                op.times().to_vec(),
+                results::ProbeValues::Scalar(op.values().to_vec()),
+            )
+        }
+        ProbeOp::Field(h) => {
+            let op = engine.operator(&h);
+            let w = p.weight;
+            let v = op.values().iter().map(|v| v.map(|x| x * w)).collect();
+            (op.times().to_vec(), results::ProbeValues::Vector(v))
         }
     }
 }

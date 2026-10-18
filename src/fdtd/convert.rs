@@ -141,7 +141,7 @@ impl Fdtd {
     /// velocity; the first Mur face's is written. It has no periodic
     /// boundary either: [`Boundary::Periodic`] faces are written as PEC
     /// (use [`to_csx_checked`](Self::to_csx_checked) to get an error
-    /// instead).
+    /// instead), and the Bloch settings are not written.
     pub fn to_csx(&self) -> FdtdSettings {
         let excitation = self
             .waveform
@@ -194,7 +194,8 @@ impl Fdtd {
     /// file format cannot express.
     ///
     /// # Errors
-    /// [`Error::Unsupported`] if a face is [`Boundary::Periodic`].
+    /// [`Error::Unsupported`] if a face is [`Boundary::Periodic`] or Bloch
+    /// settings are present.
     pub fn to_csx_checked(&self) -> Result<FdtdSettings> {
         if let Some((face, _)) = self
             .boundaries
@@ -204,6 +205,11 @@ impl Fdtd {
             return Err(Error::Unsupported(format!(
                 "periodic boundary on {face}: the openEMS <FDTD> format has no periodic boundary"
             )));
+        }
+        if self.get_bloch_wavevector().is_some() || self.get_bloch_frequency().is_some() {
+            return Err(Error::Unsupported(
+                "Bloch settings: the openEMS <FDTD> format has no Bloch boundary".into(),
+            ));
         }
         Ok(self.to_csx())
     }

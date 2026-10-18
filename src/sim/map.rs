@@ -13,8 +13,8 @@ use crate::compile::{ModelSources, NodeMap};
 use crate::engine::port::loop_entries;
 use crate::engine::{
     DumpPosition, DumpQuantity, DumpRegion, EdgeDft, EdgeSource, EdgeValues, Engine, FieldProbe,
-    FieldSampler, FreqDump, LumpedElement, OperatorHandle, PlaneWave, Probe, ProbeQuantity,
-    Schedule, SourceKind, TimeDump, Topology,
+    FieldSampler, FreqDump, LumpedElement, OperatorHandle, PeriodicPlaneWave, PlaneWave, Probe,
+    ProbeQuantity, Schedule, SourceKind, TimeDump, Topology, WavePart,
 };
 use crate::fdtd::Fdtd;
 
@@ -74,6 +74,8 @@ pub(crate) struct Mapped {
     pub lumped_ids: Vec<u32>,
     pub sources: Vec<(String, OperatorHandle<EdgeSource>)>,
     pub plane_waves: Vec<(String, OperatorHandle<PlaneWave>)>,
+    /// Plane waves of a Bloch run (periodic-cell sources).
+    pub periodic_waves: Vec<(String, OperatorHandle<PeriodicPlaneWave>)>,
     pub probes: Vec<ProbeEntry>,
     pub dumps: Vec<DumpEntry>,
     pub sar: Vec<SarEntry>,
@@ -125,14 +127,26 @@ pub(crate) fn dump_interval(fdtd: &Fdtd, dt: f64) -> u64 {
     }
 }
 
+/// The engine of a Bloch run being mapped: which part of the complex field
+/// it carries, and the transverse wavevector.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BlochMap {
+    pub part: WavePart,
+    pub k: [f64; 3],
+}
+
 /// Registers the operators for `src` on `engine`; see the
-/// [`Simulation`](super::Simulation) docs for the semantics.
+/// [`Simulation`](super::Simulation) docs for the semantics. In a Bloch
+/// run (`bloch`), the imaginary engine gets no excitations (sources,
+/// Thevenin sources) other than its part of the plane waves, plane waves
+/// become [`PeriodicPlaneWave`]s, and SAR dumps are not supported.
 pub(crate) fn map_sources(
     engine: &mut Engine,
     src: &ModelSources,
     node_map: &NodeMap,
     fdtd: &Fdtd,
     warnings: &mut Vec<String>,
+    bloch: Option<BlochMap>,
 ) -> Result<Mapped> {
     let mut mapped = Mapped::default();
     let dt = engine.dt();
@@ -219,8 +233,13 @@ pub(crate) fn map_sources(
     let grid = engine.grid().clone();
     let mut soft_e = Vec::new();
     let mut others = Vec::new();
+    // The imaginary engine of a Bloch run is driven through the periodic
+    // faces only (and its part of the plane waves).
+    let imag = bloch.is_some_and(|b| b.part == WavePart::Imag);
     for (k, ex) in src.excitations.iter().enumerate() {
-        let Some(w) = waveform else { break };
+        let Some(w) = waveform.filter(|_| !imag) else {
+            break;
+        };
         let kind = match ex.excitation_type {
             ExcitationType::EFieldSoft => SourceKind::SoftE,
             ExcitationType::EFieldHard => SourceKind::HardE,
@@ -324,7 +343,29 @@ pub(crate) fn map_sources(
     for pw in &src.plane_waves {
         let Some(w) = waveform else { break };
         let (wf, delay) = (w.clone(), pw.delay);
-        match PlaneWave::new(engine, &pw.spec, move |t| wf.value(t - delay, dt)) {
+        let amplitude = move |t| wf.value(t - delay, dt);
+        if let Some(b) = bloch {
+            let spec = match super::bloch::periodic_spec(pw, fdtd, nodes, b.k) {
+                Ok(s) => s,
+                Err(w) => {
+                    warnings.push(w);
+                    continue;
+                }
+            };
+            if fdtd.get_bloch_wavevector().is_some()
+                && let Some(w) = super::bloch::direction_mismatch(pw, fdtd, &spec)
+            {
+                warnings.push(w);
+            }
+            match PeriodicPlaneWave::new(engine, &spec, b.part, amplitude) {
+                Ok(op) => mapped
+                    .periodic_waves
+                    .push((pw.name.clone(), engine.add_operator(op))),
+                Err(e) => warnings.push(format!("plane wave {:?}: {e}; ignored", pw.name)),
+            }
+            continue;
+        }
+        match PlaneWave::new(engine, &pw.spec, amplitude) {
             Ok(op) => mapped
                 .plane_waves
                 .push((pw.name.clone(), engine.add_operator(op))),
@@ -478,6 +519,13 @@ pub(crate) fn map_sources(
 
     // ---- SAR dumps (edge DFTs, evaluated by the results).
     for (spec, s) in src.sar.iter().enumerate() {
+        if bloch.is_some() {
+            warnings.push(format!(
+                "SAR dump {:?}: not supported in a Bloch run; ignored",
+                s.name
+            ));
+            continue;
+        }
         let op = EdgeDft::new(s.cells, s.frequencies.clone()).interval(k);
         mapped.sar.push(SarEntry {
             spec,

@@ -473,6 +473,8 @@ pub struct Fdtd {
     max_frequency: Option<f64>,
     max_time: Option<f64>,
     oversampling: Option<u32>,
+    bloch_wavevector: Option<[f64; 3]>,
+    bloch_frequency: Option<f64>,
 }
 
 impl Default for Fdtd {
@@ -488,6 +490,8 @@ impl Default for Fdtd {
             max_frequency: None,
             max_time: None,
             oversampling: None,
+            bloch_wavevector: None,
+            bloch_frequency: None,
         }
     }
 }
@@ -586,6 +590,44 @@ impl Fdtd {
     pub fn oversampling(mut self, n: u32) -> Self {
         self.oversampling = Some(n);
         self
+    }
+
+    /// Bloch (Floquet) boundaries with the fixed transverse wavevector `k`
+    /// \[rad/m\] (design §5.6.2): every axis with a non-zero component
+    /// must have [`Boundary::Periodic`] on both faces, and the phase shift
+    /// per period becomes `ψ = k·L`. The simulation then runs the
+    /// sine–cosine method (two engines, see
+    /// [`BlochPair`](crate::engine::BlochPair)) and reports complex results
+    /// (see the Bloch mode of [`Simulation`](crate::Simulation)). With a
+    /// fixed `k` each frequency `f` sees its own incidence angle,
+    /// `sin θ = |k|·c/(2πf)`.
+    ///
+    /// Without this setting, an oblique plane-wave excitation spanning a
+    /// periodic cell selects the Bloch mode, with `k` derived from its
+    /// direction at the [`bloch_frequency`](Fdtd::bloch_frequency).
+    /// `k = [0; 3]` forces the Bloch mode at normal incidence.
+    pub fn bloch_wavevector(mut self, k: [f64; 3]) -> Self {
+        self.bloch_wavevector = Some(k);
+        self
+    }
+
+    /// The design frequency \[Hz\] at which an oblique plane wave in a
+    /// periodic cell travels along its propagation direction (default: the
+    /// plane wave's dispersion-matching frequency, i.e. the centre of the
+    /// waveform); see [`bloch_wavevector`](Fdtd::bloch_wavevector).
+    pub fn bloch_frequency(mut self, f: f64) -> Self {
+        self.bloch_frequency = Some(f);
+        self
+    }
+
+    /// The explicit Bloch wavevector \[rad/m\], if set.
+    pub fn get_bloch_wavevector(&self) -> Option<[f64; 3]> {
+        self.bloch_wavevector
+    }
+
+    /// The Bloch design frequency \[Hz\], if set.
+    pub fn get_bloch_frequency(&self) -> Option<f64> {
+        self.bloch_frequency
     }
 
     /// The highest frequency of interest \[Hz\]: the explicit
@@ -734,6 +776,29 @@ impl Fdtd {
         }
         if self.oversampling == Some(0) {
             return Err(Error::Invalid("oversampling must be at least 1".into()));
+        }
+        if let Some(k) = self.bloch_wavevector {
+            for a in Axis::ALL {
+                let ka = k[a.index()];
+                if !ka.is_finite() {
+                    return Err(Error::Invalid(format!(
+                        "Bloch wavevector component {ka} along {a} must be finite"
+                    )));
+                }
+                if ka != 0.0 && !self.boundaries.is_periodic(a) {
+                    return Err(Error::Invalid(format!(
+                        "Bloch wavevector has a component along {a}, whose faces are not \
+                         periodic"
+                    )));
+                }
+            }
+        }
+        if let Some(f) = self.bloch_frequency
+            && !(f.is_finite() && f > 0.0)
+        {
+            return Err(Error::Invalid(format!(
+                "Bloch design frequency {f} must be finite and > 0"
+            )));
         }
         Ok(())
     }

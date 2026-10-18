@@ -185,67 +185,114 @@ impl Engine {
     /// # Errors
     /// [`Error::Invalid`] if `limits` fail [`RunLimits::validate`]; no step
     /// is run then.
-    pub fn run_until_with<F>(&mut self, limits: &RunLimits, mut progress: F) -> Result<RunOutcome>
+    pub fn run_until_with<F>(&mut self, limits: &RunLimits, progress: F) -> Result<RunOutcome>
     where
         F: FnMut(&Progress) -> ControlFlow<()>,
     {
-        limits.validate()?;
-        let interval = limits.check_interval();
-        let max = limits.max_timesteps;
-        let cells = self.grid.num_cells() as f64;
-        let start = Instant::now();
-        let (mut steps, mut w, mut w_max) = (0u64, 0.0f64, 0.0f64);
-        let reason = loop {
-            if steps >= max {
-                break StopReason::MaxTimesteps;
-            }
-            let n = self.step;
-            w = self.step_with_energy();
-            steps += 1;
-            w_max = w_max.max(w);
-            let ratio = if w_max > 0.0 { w / w_max } else { 1.0 };
-            let ratio_db = if ratio > 0.0 {
-                10.0 * ratio.log10()
-            } else {
-                f64::NEG_INFINITY
-            };
-            let t = n as f64 * self.dt;
-            let elapsed = start.elapsed();
-            let p = Progress {
-                timestep: n,
-                time: t,
-                steps,
-                energy: w,
-                max_energy: w_max,
-                energy_db: ratio_db,
-                elapsed,
-                mcells_per_s: cells * steps as f64 / elapsed.as_secs_f64().max(1e-9) / 1e6,
-            };
-            if progress(&p).is_break() {
-                break StopReason::Aborted;
-            }
-            if !w.is_finite() {
-                break StopReason::Diverged;
-            }
-            if let Some(c) = &limits.end_criteria
-                && limits.excitation_end.is_none_or(|end| t > end)
-                && w_max > 0.0
-                && ratio < c.energy_ratio
-            {
-                break StopReason::EnergyDecay { ratio_db };
-            }
-            let chunk = (interval - 1).min(max - steps);
-            self.run(chunk);
-            steps += chunk;
+        drive(self, limits, progress)
+    }
+}
+
+/// What [`drive`] steps: an [`Engine`], or the two engines of a Bloch
+/// pair.
+pub(crate) trait Stepper {
+    /// Steps run so far (`n`).
+    fn timestep(&self) -> u64;
+    /// Time step \[s\].
+    fn dt(&self) -> f64;
+    /// Time `n·dt` \[s\].
+    fn time(&self) -> f64;
+    /// Cells per step (for the throughput).
+    fn cells(&self) -> f64;
+    /// One step, returning the energy invariant of the state before it.
+    fn step_with_energy(&mut self) -> f64;
+    /// `n` steps without energy evaluation.
+    fn run(&mut self, n: u64);
+}
+
+impl Stepper for Engine {
+    fn timestep(&self) -> u64 {
+        self.step
+    }
+    fn dt(&self) -> f64 {
+        self.dt
+    }
+    fn time(&self) -> f64 {
+        Engine::time(self)
+    }
+    fn cells(&self) -> f64 {
+        self.grid.num_cells() as f64
+    }
+    fn step_with_energy(&mut self) -> f64 {
+        Engine::step_with_energy(self)
+    }
+    fn run(&mut self, n: u64) {
+        Engine::run(self, n);
+    }
+}
+
+/// The loop of [`Engine::run_until_with`] for any [`Stepper`].
+pub(crate) fn drive<S, F>(s: &mut S, limits: &RunLimits, mut progress: F) -> Result<RunOutcome>
+where
+    S: Stepper + ?Sized,
+    F: FnMut(&Progress) -> ControlFlow<()>,
+{
+    limits.validate()?;
+    let interval = limits.check_interval();
+    let max = limits.max_timesteps;
+    let cells = s.cells();
+    let start = Instant::now();
+    let (mut steps, mut w, mut w_max) = (0u64, 0.0f64, 0.0f64);
+    let reason = loop {
+        if steps >= max {
+            break StopReason::MaxTimesteps;
+        }
+        let n = s.timestep();
+        w = s.step_with_energy();
+        steps += 1;
+        w_max = w_max.max(w);
+        let ratio = if w_max > 0.0 { w / w_max } else { 1.0 };
+        let ratio_db = if ratio > 0.0 {
+            10.0 * ratio.log10()
+        } else {
+            f64::NEG_INFINITY
         };
-        Ok(RunOutcome {
-            reason,
+        let t = n as f64 * s.dt();
+        let elapsed = start.elapsed();
+        let p = Progress {
+            timestep: n,
+            time: t,
             steps,
-            timestep: self.step,
-            time: self.time(),
             energy: w,
             max_energy: w_max,
-            elapsed: start.elapsed(),
-        })
-    }
+            energy_db: ratio_db,
+            elapsed,
+            mcells_per_s: cells * steps as f64 / elapsed.as_secs_f64().max(1e-9) / 1e6,
+        };
+        if progress(&p).is_break() {
+            break StopReason::Aborted;
+        }
+        if !w.is_finite() {
+            break StopReason::Diverged;
+        }
+        if let Some(c) = &limits.end_criteria
+            && limits.excitation_end.is_none_or(|end| t > end)
+            && w_max > 0.0
+            && ratio < c.energy_ratio
+        {
+            break StopReason::EnergyDecay { ratio_db };
+        }
+        let chunk = (interval - 1).min(max - steps);
+        s.run(chunk);
+        steps += chunk;
+    };
+    Ok(RunOutcome {
+        reason,
+        steps,
+        timestep: s.timestep(),
+        time: s.time(),
+        energy: w,
+        max_energy: w_max,
+        elapsed: start.elapsed(),
+    })
 }

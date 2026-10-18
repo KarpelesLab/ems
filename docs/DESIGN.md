@@ -491,9 +491,8 @@ node `0`.
   bit for bit. The coupling is unitary, so `W_re + W_im` is conserved.
   Because the merge runs after all hooks of a step, `post_e` operators on
   the face planes see unmerged copies; keep them off the faces, and add
-  coefficient-changing operators to both engines. `Simulation` does not
-  use the pair yet: oblique incidence also needs a plane-wave source with
-  the matching `k_t`.
+  coefficient-changing operators to both engines. `Simulation` drives a
+  pair in its Bloch mode (§5.6.2).
 - **Validation** (`tests/periodic.rs`):
 
   | Check | Result |
@@ -506,6 +505,88 @@ node `0`.
   | Same, graded mesh (Δ₀ ≠ Δ_last), against the continuum | ≤ 0.21% |
   | Bloch cavity, ψ = π/2: resonances at k_x = ψ/a and (ψ − 2π)/a against Yee | ≤ 6e-8 |
   | Bloch closed box: complex energy drift over 5000 steps | 1e-6 |
+
+#### 5.6.2 Oblique incidence on periodic structures
+
+The high-level form of the Bloch pair: a plane wave at a fixed transverse
+wavevector `k_t` in a unit cell that is periodic along the transverse axes
+and open (CPML) along the normal `n`.
+
+- **Constant `k_t`.** The sine–cosine method fixes `k_t`, not the angle:
+  frequency `f` travels at `sin θ(f) = |k_t|·v/(2πf)`, and frequencies
+  below `f_c = |k_t|·v/(2π)` are evanescent. A user who wants angle `θ₀` at
+  `f_d` sets `k_t = (2π f_d/v) sin θ₀` and reads each frequency at its own
+  angle. Sweeping angles at one frequency takes one run per `k_t`.
+- **Settings.** `Fdtd::bloch_wavevector(k)` (explicit), or implicitly an
+  oblique csx `PlaneWave` excitation whose box spans the periodic cell (every
+  periodic axis and all but one other axis completely). Then
+  `k_t = (2π f_d/c)·k̂_t`, with `f_d` = `Fdtd::bloch_frequency` or else the
+  plane wave's dispersion-matching frequency (the waveform centre). Several
+  oblique plane waves must agree. An explicit `k_t` overrides the
+  direction, with a warning when they differ. The openEMS format has no
+  representation (`to_csx_checked` fails).
+- **Two engines in `Simulation`.**
+  - Both engines come from one `Compiled::builder()`, and both get
+    `add_boundary_operators`, the lumped elements, probes and dumps.
+  - Excitations and Thevenin sources drive the real engine only. The
+    imaginary engine is excited through the faces and by its part of the
+    plane wave.
+  - The run loop (`engine::run::drive`, shared with `Engine::run_until`)
+    steps both and merges, and the end criterion uses `W_re + W_im`.
+  - Probe results carry `imag`, and their DFTs return `DFT[re] + j·DFT[im]`.
+  - Frequency dumps are combined in place (`FreqDump::add_imaginary`).
+    Time dumps keep the imaginary snapshots separately.
+  - SAR dumps are skipped (warning) and NF2FF boxes refused.
+  - Without Bloch settings nothing changes: one engine, bit-identical to
+    before.
+- **Source** (`engine::PeriodicPlaneWave`).
+  - **Injection.** It is TF/SF on the two node planes `start`/`stop` of
+    the box along `n`. The corrections are those of §5.11, restricted to the
+    tangential E on the planes and the tangential H half a cell outside.
+    A plane on the domain boundary gets none.
+  - **Incident field.** It is `F̂(ζ, t)·e^{−j k_t·(r − r₀)}`. Every
+    transverse derivative becomes `−j k̃` with the discrete wavenumber
+    `k̃ = 2 sin(kΔ/2)/Δ` (exact for a uniform transverse mesh). That leaves
+    a complex 1-D problem for all six components, which is the 3-D Yee
+    scheme restricted to Bloch-phased fields.
+  - **Auxiliary grid.** It reuses the 3-D mesh lines along `n` and the
+    engine's `dt`, so the incident field is the discrete 3-D solution and
+    leaks only at rounding level.
+  - **Driving.** The auxiliary grid has a hard tangential-E source
+    (`p·a(t)`) two cells upstream, and a 64-cell CPML along `ζ` at the far
+    end. A plain matched-loss layer, the first attempt, reflected the
+    oblique waves back into the incident field. That cost 1e-2 in |R| near
+    cut-off and leaked −25 dB.
+  - **Two engines.** Each engine runs its own copy of the (cheap) auxiliary
+    grid and injects `Re` or `Im` of the phased field. The real engine's
+    copy records the complex incident E on the entry plane
+    (`Results::incident`), the reference for R and T.
+- **Validation** (`tests/bloch.rs`; 4 × 2-cell cell, 0.5 mm cells, slab
+  ε_r = 4 of 10 mm, 30° at 10 GHz, evaluated at 7–14 GHz, 45.6°–20.9°):
+
+  | Check | Result |
+  |---|---|
+  | TE slab: \|R\|, \|T\| against the exact discrete (Yee) slab response | ≤ 5e-5 |
+  | TM slab: same | ≤ 1.3e-4 |
+  | TE / TM slab against Fresnel at the per-frequency angle (≤ 12.5 GHz; above, mesh dispersion) | ≤ 6.7e-3 |
+  | Lossless slab: \|R\|² + \|T\|² − 1 | ≤ 3e-4 |
+  | Empty cell: leakage into the scattered-field region (±z, k_t along x, y, oblique) | −92 dB |
+  | Empty cell: \|T\| − 1 | ≤ 6e-5 |
+  | k_t = 0: pair against a plain periodic engine | bit-identical, imaginary part 0 |
+  | Normal incidence through `Simulation`: Bloch mode (k_t = 0) against the plain periodic TF/SF run | 6e-7 |
+  | TM slab through `Simulation` (k_t derived from the plane wave) against discrete / Fresnel | 1.3e-4 / 6.7e-3 |
+  | FSS (PEC patches, 3 mm period, TE 30°, below the first grating lobe): \|R\|² + \|T\|² − 1 | ≤ 3e-4 |
+  | 1 vs 3 threads (engine and `Simulation`) | bit-identical |
+
+  The exact discrete reference marches the 1-D recurrence of the
+  Bloch-phased Yee equations through the slab (tangential edges on the
+  slab faces carry the mean of the two cells).
+- **Limits.** The background at the injection planes must be homogeneous
+  and lossless. The phase reference is the first mesh line of every axis.
+  On graded transverse meshes `k̃` uses the mean spacing, so the incident
+  field is approximate. Measure R and T far enough from a patterned
+  surface for the evanescent Floquet orders to have decayed, and below the
+  first grating lobe if a single probe is to see only the specular order.
 
 ### 5.7 Waveforms
 `Waveform` is an enum: Gaussian, Sinusoid, Dirac, Step, and

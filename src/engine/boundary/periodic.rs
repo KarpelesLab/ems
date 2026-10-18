@@ -72,7 +72,8 @@
 use crate::axis::Axis;
 use crate::engine::coeffs::{Coefficients, FaceCondition, FaceConditions};
 use crate::engine::fields::Fields;
-use crate::engine::{Engine, EngineBuilder, Grid};
+use crate::engine::run::{Stepper, drive};
+use crate::engine::{Engine, EngineBuilder, Grid, Progress, RunLimits, RunOutcome};
 use crate::fdtd::Face;
 use crate::{Error, Result};
 
@@ -251,6 +252,11 @@ impl Periodic {
 /// invariants, which the Bloch-coupled scheme conserves (the `e^{−jψ}`
 /// coupling is unitary).
 ///
+/// [`Simulation`](crate::Simulation) drives such a pair itself when the
+/// settings ask for Bloch boundaries ([`Fdtd::bloch_wavevector`](crate::Fdtd::bloch_wavevector)
+/// or an oblique plane wave in a periodic cell, see the Bloch mode of
+/// [`Simulation`](crate::Simulation#bloch-mode)).
+///
 /// ```
 /// use ems::engine::boundary::periodic::BlochPair;
 /// use ems::engine::{Engine, FaceCondition, FaceConditions, Grid, Probe};
@@ -270,30 +276,37 @@ impl Periodic {
 pub struct BlochPair {
     re: Engine,
     im: Engine,
-    periodic: Periodic,
-    phase: [f64; 3],
-    trig: [(f64, f64); 3],
+    coupling: BlochCoupling,
 }
 
 impl core::fmt::Debug for BlochPair {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BlochPair")
-            .field("phase", &self.phase)
+            .field("phase", &self.coupling.phase)
             .field("re", &self.re)
             .field("im", &self.im)
             .finish_non_exhaustive()
     }
 }
 
-impl BlochPair {
-    /// Builds the two engines from `builder`; `phase[a]` is the phase shift
-    /// `ψ_a` per period \[rad\] of the periodic axis `a` (0 for the others).
+/// The face coupling of a Bloch pair: the periodic axes and the phase
+/// factors of the merge. Shared by [`BlochPair`] and the Bloch mode of
+/// [`Simulation`](crate::Simulation).
+#[derive(Debug, Clone)]
+pub(crate) struct BlochCoupling {
+    periodic: Periodic,
+    phase: [f64; 3],
+    trig: [(f64, f64); 3],
+}
+
+impl BlochCoupling {
+    /// Validates `phase` against the periodic faces of `builder` and
+    /// returns the coupling plus the builder for both engines (periodic
+    /// faces built as PMC, without the engines' own zero-phase merge).
     ///
     /// # Errors
-    /// [`Error::Invalid`] if no axis is periodic, a phase is not finite or
-    /// is non-zero on a non-periodic axis, and the errors of
-    /// [`EngineBuilder::build`](crate::engine::EngineBuilder::build).
-    pub fn new(builder: EngineBuilder, phase: [f64; 3]) -> Result<Self> {
+    /// See [`BlochPair::new`].
+    pub(crate) fn new(builder: EngineBuilder, phase: [f64; 3]) -> Result<(Self, EngineBuilder)> {
         let periodic =
             Periodic::from_faces(&builder.faces, builder.grid.nodes())?.ok_or_else(|| {
                 Error::Invalid("Bloch pair: no face pair is FaceCondition::Periodic".into())
@@ -312,15 +325,86 @@ impl BlochPair {
                 b.faces[face] = FaceCondition::Pmc;
             }
         }
-        let re = b.clone().build()?;
-        let im = b.build()?;
-        Ok(Self {
-            re,
-            im,
+        let coupling = Self {
             periodic,
             phase,
             trig: phase.map(|p| (p.cos(), p.sin())),
-        })
+        };
+        Ok((coupling, b))
+    }
+
+    /// The phase shifts per period \[rad\].
+    pub(crate) fn phase(&self) -> [f64; 3] {
+        self.phase
+    }
+
+    /// The Bloch merge of the face copies of `re` and `im`, after both
+    /// engines finished a step.
+    fn merge(&self, re: &Engine, im: &Engine) {
+        let co = re.coefficients();
+        let mut fr = re.shared.store.lock();
+        let mut fi = im.shared.store.lock();
+        self.periodic.merge_bloch(&mut fr, &mut fi, &co, &self.trig);
+    }
+
+    /// One step of both engines plus the merge; with `energy`, returns the
+    /// summed energy invariant of the state before the step (0 otherwise).
+    pub(crate) fn step(&self, re: &mut Engine, im: &mut Engine, energy: bool) -> f64 {
+        let w = if energy {
+            re.step_with_energy() + im.step_with_energy()
+        } else {
+            re.step();
+            im.step();
+            0.0
+        };
+        self.merge(re, im);
+        w
+    }
+}
+
+/// [`Stepper`] over the two engines of a Bloch pair.
+pub(crate) struct BlochStepper<'a> {
+    pub(crate) re: &'a mut Engine,
+    pub(crate) im: &'a mut Engine,
+    pub(crate) coupling: &'a BlochCoupling,
+}
+
+impl Stepper for BlochStepper<'_> {
+    fn timestep(&self) -> u64 {
+        self.re.timestep()
+    }
+    fn dt(&self) -> f64 {
+        self.re.dt()
+    }
+    fn time(&self) -> f64 {
+        self.re.time()
+    }
+    fn cells(&self) -> f64 {
+        2.0 * self.re.grid().num_cells() as f64
+    }
+    fn step_with_energy(&mut self) -> f64 {
+        self.coupling.step(self.re, self.im, true)
+    }
+    fn run(&mut self, n: u64) {
+        for _ in 0..n {
+            self.coupling.step(self.re, self.im, false);
+        }
+    }
+}
+
+impl BlochPair {
+    /// Builds the two engines from `builder`; `phase[a]` is the phase shift
+    /// `ψ_a` per period \[rad\] of the periodic axis `a` (0 for the others).
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] if no axis is periodic, a phase is not finite or
+    /// is non-zero on a non-periodic axis, and the errors of
+    /// [`EngineBuilder::build`](crate::engine::EngineBuilder::build).
+    pub fn new(builder: EngineBuilder, phase: [f64; 3]) -> Result<Self> {
+        let (coupling, b) = BlochCoupling::new(builder, phase)?;
+        let re = b.clone().build()?;
+        let im = b.build()?;
+        Ok(Self { re, im, coupling })
     }
 
     /// The phase shifts `ψ = k·L` per period for a transverse wavevector
@@ -335,7 +419,7 @@ impl BlochPair {
 
     /// The phase shifts per period \[rad\].
     pub fn phase(&self) -> [f64; 3] {
-        self.phase
+        self.coupling.phase
     }
 
     /// The engine of the real part.
@@ -358,14 +442,21 @@ impl BlochPair {
         &mut self.im
     }
 
+    /// Mutable access to both engines at once, `(real, imag)`.
+    pub fn engines_mut(&mut self) -> (&mut Engine, &mut Engine) {
+        (&mut self.re, &mut self.im)
+    }
+
     /// Advances both engines one step and applies the Bloch merge.
     pub fn step(&mut self) {
-        self.re.step();
-        self.im.step();
-        let co = self.re.coefficients();
-        let mut fr = self.re.shared.store.lock();
-        let mut fi = self.im.shared.store.lock();
-        self.periodic.merge_bloch(&mut fr, &mut fi, &co, &self.trig);
+        self.coupling.step(&mut self.re, &mut self.im, false);
+    }
+
+    /// Advances one step like [`step`](Self::step) and returns the energy
+    /// invariant of the state before it: the sum of both engines'
+    /// [`Engine::step_with_energy`].
+    pub fn step_with_energy(&mut self) -> f64 {
+        self.coupling.step(&mut self.re, &mut self.im, true)
     }
 
     /// Advances `n` steps.
@@ -373,6 +464,33 @@ impl BlochPair {
         for _ in 0..n {
             self.step();
         }
+    }
+
+    /// Runs both engines until the end criteria are met (with the energy
+    /// summed over both) or `limits.max_timesteps` steps have run; the
+    /// algorithm of [`Engine::run_until_with`].
+    ///
+    /// # Errors
+    /// See [`Engine::run_until_with`].
+    pub fn run_until(&mut self, limits: &RunLimits) -> Result<RunOutcome> {
+        self.run_until_with(limits, |_| core::ops::ControlFlow::Continue(()))
+    }
+
+    /// Like [`run_until`](Self::run_until), calling `progress` after every
+    /// energy check (see [`Engine::run_until_with`]).
+    ///
+    /// # Errors
+    /// See [`Engine::run_until_with`].
+    pub fn run_until_with<F>(&mut self, limits: &RunLimits, progress: F) -> Result<RunOutcome>
+    where
+        F: FnMut(&Progress) -> core::ops::ControlFlow<()>,
+    {
+        let mut s = BlochStepper {
+            re: &mut self.re,
+            im: &mut self.im,
+            coupling: &self.coupling,
+        };
+        drive(&mut s, limits, progress)
     }
 
     /// The energy invariant of the complex field \[J\]: the sum of both

@@ -35,6 +35,13 @@ pub enum ProbeValues {
 /// The recorded time series of one csx `ProbeBox`, restricted to its
 /// `StartTime`/`StopTime` window (a stop time `≤ 0` means "no limit") and
 /// multiplied by its weight.
+///
+/// In a Bloch run ([`Simulation`](crate::Simulation), Bloch mode) the
+/// probe value is complex: [`values`](Self::values) is the real part (the
+/// real engine), [`imag`](Self::imag) the imaginary part, and the DFTs
+/// ([`dft`](Self::dft), [`dft_vector`](Self::dft_vector),
+/// [`spectrum`](Self::spectrum)) return the spectrum of the complex series,
+/// `X(f) = DFT[x_re](f) + j·DFT[x_im](f)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbeResult {
     pub(crate) name: String,
@@ -45,6 +52,7 @@ pub struct ProbeResult {
     pub(crate) dt: f64,
     pub(crate) times: Vec<f64>,
     pub(crate) values: ProbeValues,
+    pub(crate) imag: Option<ProbeValues>,
 }
 
 impl ProbeResult {
@@ -106,8 +114,22 @@ impl ProbeResult {
         }
     }
 
+    /// The imaginary part of the recorded values in a Bloch run (`None`
+    /// otherwise); same kind and length as [`values`](Self::values).
+    pub fn imag(&self) -> Option<&ProbeValues> {
+        self.imag.as_ref()
+    }
+
     fn t0(&self) -> f64 {
         self.times.first().copied().unwrap_or(0.0)
+    }
+
+    /// `re + j·im` of two spectra.
+    fn combine(re: Vec<Complex64>, im: Vec<Complex64>) -> Vec<Complex64> {
+        re.into_iter()
+            .zip(im)
+            .map(|(r, i)| r + Complex64::I * i)
+            .collect()
     }
 
     /// DFT `X(f) = Σ x(t_n)·e^{−j2πf·t_n}·dt` of a voltage / current probe at
@@ -128,7 +150,11 @@ impl ProbeResult {
                 self.name
             )));
         }
-        Ok(dft(self.t0(), self.dt, v, freqs))
+        let re = dft(self.t0(), self.dt, v, freqs);
+        Ok(match &self.imag {
+            Some(ProbeValues::Scalar(im)) => Self::combine(re, dft(self.t0(), self.dt, im, freqs)),
+            _ => re,
+        })
     }
 
     /// DFT of each component of a field probe at `freqs` \[Hz\] (see
@@ -147,10 +173,14 @@ impl ProbeResult {
                 self.name
             )));
         }
+        let series = |v: &[[f64; 3]], c: usize| {
+            let x: Vec<f64> = v.iter().map(|s| s[c]).collect();
+            dft(self.t0(), self.dt, &x, freqs)
+        };
         let comp: Vec<Vec<Complex64>> = (0..3)
-            .map(|c| {
-                let x: Vec<f64> = v.iter().map(|s| s[c]).collect();
-                dft(self.t0(), self.dt, &x, freqs)
+            .map(|c| match &self.imag {
+                Some(ProbeValues::Vector(im)) => Self::combine(series(v, c), series(im, c)),
+                _ => series(v, c),
             })
             .collect();
         Ok((0..freqs.len())
@@ -182,12 +212,18 @@ pub enum DumpData {
 }
 
 /// One dump result, named after its csx property.
+///
+/// In a Bloch run a frequency-domain dump holds the complex Bloch field
+/// `F_re + j·F_im` (the two engines' DFTs combined), and a time-domain dump
+/// the real part, with the imaginary part's snapshots in
+/// [`imag_snapshots`](Self::imag_snapshots).
 #[derive(Debug, Clone)]
 pub struct DumpResult {
     pub(crate) name: String,
     pub(crate) id: u32,
     pub(crate) file_type: csx::properties::DumpFileType,
     pub(crate) data: DumpData,
+    pub(crate) imag: Option<Vec<Snapshot>>,
 }
 
 impl DumpResult {
@@ -229,6 +265,12 @@ impl DumpResult {
             DumpData::Time { snapshots, .. } => Some(snapshots),
             DumpData::Freq(_) => None,
         }
+    }
+
+    /// The imaginary part's snapshots of a time-domain dump in a Bloch run
+    /// (`None` otherwise), in the order of [`snapshots`](Self::snapshots).
+    pub fn imag_snapshots(&self) -> Option<&[Snapshot]> {
+        self.imag.as_deref()
     }
 
     /// The frequency-domain dump (`None` for a time-domain dump).
@@ -360,6 +402,62 @@ pub struct Results {
     pub(crate) lumped: Vec<ProbeResult>,
     pub(crate) dumps: Vec<DumpResult>,
     pub(crate) sar: Vec<SarResult>,
+    pub(crate) incident: Vec<IncidentWave>,
+}
+
+/// The incident wave of a plane-wave excitation in a Bloch run: the
+/// complex incident E on its entry plane at the phase reference (the
+/// first mesh line of every axis), per step at the E times `(n + 1)·dt`
+/// (see [`PeriodicPlaneWave::incident`](crate::engine::PeriodicPlaneWave::incident)).
+/// It is the reference for reflection and transmission: a field
+/// `F(r)` measured elsewhere relates to it through the Bloch phase
+/// `e^{−j k_t·(r − r_0)}` and the propagation along the normal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncidentWave {
+    pub(crate) name: String,
+    pub(crate) dt: f64,
+    pub(crate) k_t: [f64; 3],
+    pub(crate) e: Vec<[Complex64; 3]>,
+}
+
+impl IncidentWave {
+    /// csx property name of the excitation.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The transverse (Bloch) wavevector \[rad/m\].
+    pub fn wavevector(&self) -> [f64; 3] {
+        self.k_t
+    }
+
+    /// Sample times \[s\]: `(n + 1)·dt` for sample `n`.
+    pub fn times(&self) -> Vec<f64> {
+        (1..=self.e.len()).map(|n| n as f64 * self.dt).collect()
+    }
+
+    /// The complex incident E \[V/m\] per step.
+    pub fn values(&self) -> &[[Complex64; 3]] {
+        &self.e
+    }
+
+    /// Spectrum of each component of the complex series at `freqs` \[Hz\]
+    /// (the DFT of [`ProbeResult::dft`]).
+    pub fn dft(&self, freqs: &[f64]) -> Vec<[Complex64; 3]> {
+        let comp: Vec<Vec<Complex64>> = (0..3)
+            .map(|c| {
+                let re: Vec<f64> = self.e.iter().map(|v| v[c].re).collect();
+                let im: Vec<f64> = self.e.iter().map(|v| v[c].im).collect();
+                ProbeResult::combine(
+                    dft(self.dt, self.dt, &re, freqs),
+                    dft(self.dt, self.dt, &im, freqs),
+                )
+            })
+            .collect();
+        (0..freqs.len())
+            .map(|k| [comp[0][k], comp[1][k], comp[2][k]])
+            .collect()
+    }
 }
 
 impl Results {
@@ -434,5 +532,26 @@ impl Results {
     /// The SAR dump of the csx property named `name`.
     pub fn sar(&self, name: &str) -> Option<&SarResult> {
         self.sar.iter().find(|d| d.name == name)
+    }
+
+    /// Whether these are the results of a Bloch run (complex probes).
+    pub fn is_bloch(&self) -> bool {
+        self.probes
+            .iter()
+            .chain(&self.lumped)
+            .any(|p| p.imag.is_some())
+            || !self.incident.is_empty()
+    }
+
+    /// The incident waves of the plane-wave excitations of a Bloch run,
+    /// in model order (empty otherwise).
+    pub fn incident_waves(&self) -> &[IncidentWave] {
+        &self.incident
+    }
+
+    /// The incident wave of the plane-wave excitation named `name` in a
+    /// Bloch run.
+    pub fn incident(&self, name: &str) -> Option<&IncidentWave> {
+        self.incident.iter().find(|w| w.name == name)
     }
 }

@@ -134,6 +134,7 @@
 //! of steps (`f32` rounding of the fields), on uniform and graded meshes
 //! with dielectric fill.
 
+pub mod bloch_wave;
 pub mod boundary;
 mod coeffs;
 pub mod conformal;
@@ -153,7 +154,7 @@ mod pool;
 pub mod port;
 mod probe;
 mod rows;
-mod run;
+pub(crate) mod run;
 pub mod sheet;
 mod slab;
 pub mod wire;
@@ -162,6 +163,7 @@ use core::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub use bloch_wave::{PeriodicPlaneWave, PeriodicPlaneWaveSpec, WavePart};
 pub use boundary::periodic::BlochPair;
 pub use coeffs::{
     Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,

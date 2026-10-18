@@ -886,6 +886,18 @@ impl FreqDump {
             .collect()
     }
 
+    /// Adds `j·` the transform of `imag`, the same dump of the imaginary
+    /// engine of a Bloch pair, so that this dump holds the transform of
+    /// the complex field (`F_re + j·F_im`).
+    pub(crate) fn add_imaginary(&mut self, imag: &FreqDump) {
+        debug_assert_eq!(self.acc.len(), imag.acc.len());
+        for (a, b) in self.acc.iter_mut().zip(&imag.acc) {
+            for c in 0..3 {
+                a[c] += Complex64::I * b[c];
+            }
+        }
+    }
+
     /// Clears the accumulators (the next sampled state starts a new
     /// transform).
     pub fn reset(&mut self) {

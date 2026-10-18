@@ -30,7 +30,8 @@ pub use error::{Error, Result};
 pub use fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
 pub use post::Complex64;
 pub use sim::{
-    DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results, SarResult, Simulation,
+    DumpData, DumpResult, IncidentWave, ProbeKind, ProbeResult, ProbeValues, Results, SarResult,
+    Simulation,
 };
 pub use waveform::{ExpressionWaveform, Waveform};
 
