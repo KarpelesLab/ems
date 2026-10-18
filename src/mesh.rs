@@ -908,7 +908,12 @@ impl<'a> Ctx<'a> {
     fn check_grading(&self, r: &mut MeshReport) {
         let lim = self.opts.max_grading * (1.0 + 1e-9);
         for axis in Axis::ALL {
-            let d = self.grid.deltas(axis);
+            let mut d = self.grid.deltas(axis);
+            let n = d.len();
+            // Across a periodic boundary the last cell neighbours the first.
+            if self.fdtd.get_boundaries().is_periodic(axis) && n > 1 {
+                d.push(d[0]);
+            }
             let mut count = 0usize;
             let mut worst: Option<(usize, f64)> = None;
             for (i, w) in d.windows(2).enumerate() {
@@ -917,7 +922,7 @@ impl<'a> Ctx<'a> {
                     count += 1;
                     if worst.is_none_or(|x| q > x.1) {
                         // Report the larger of the two cells.
-                        worst = Some((if w[1] > w[0] { i + 1 } else { i }, q));
+                        worst = Some((if w[1] > w[0] { (i + 1) % n } else { i }, q));
                     }
                 }
             }
@@ -1333,6 +1338,28 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn grading_wraps_across_periodic_faces() {
+        let mut m = model(30, 1.0);
+        let mut x = vec![0.0, 0.5]; // first cell 0.5, last cell 1: ratio 2
+        x.extend((1..=30).map(f64::from));
+        m.grid.set_lines(0, x).unwrap();
+        // 0.5 → 1 inside the domain too; count the ratios.
+        let count = |f: &Fdtd| {
+            let r = check(&m, f).unwrap();
+            r.warnings()
+                .find(|i| i.message.contains("x neighbour"))
+                .map(|i| i.message.clone())
+        };
+        let open = count(&fdtd()).unwrap();
+        assert!(open.starts_with("1 x neighbour"), "{open}");
+        let periodic = fdtd()
+            .boundary(crate::Face::XMin, Boundary::Periodic)
+            .boundary(crate::Face::XMax, Boundary::Periodic);
+        let wrapped = count(&periodic).unwrap();
+        assert!(wrapped.starts_with("2 x neighbour"), "{wrapped}");
     }
 
     #[test]

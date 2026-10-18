@@ -396,8 +396,8 @@ In `tests/validation_waveguide.rs` (1 mm cells, 20 × 10 mm guide):
 - A short gives `|S11| = 1 ± 1e-3` with the right round-trip phase.
 
 ### 5.6 Boundaries
-`Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml)}` per face, mirroring the openEMS
-`<BoundaryCond>` choices (including `PML_n`).
+`Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
+openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
 
 - **PEC**: tangential E on the face is 0.
 - **PMC**: tangential H is 0. In the integral form this needs no operator:
@@ -439,8 +439,73 @@ In `tests/validation_waveguide.rs` (1 mm cells, 20 × 10 mm guide):
   - Each primitive must snap to a flat rectangle; volumes, lines and points
     are ignored with a warning. Sheets are registered last, after dispersive
     media and the Mur faces.
-- **Periodic/Bloch**: M3. Neighbour indexing goes through the boundary layer, so
-  wrap-around fits without a rewrite.
+- **Periodic and Bloch**: see §5.6.1 (implemented).
+
+#### 5.6.1 Periodic and Bloch boundaries
+
+`Boundary::Periodic` on both faces of an axis (`FaceCondition::Periodic` in
+the engine; one-sided use is rejected). The period is the domain length
+along the axis, first to last mesh line, so node `n − 1` is identified with
+node `0`.
+
+- **No kernel change.** The two outer node planes are two *copies* of one
+  plane. Each copy of a tangential E edge is updated by the unchanged
+  kernel over its half dual face, exactly as on a PMC face (out-of-domain H
+  reads as zero). The two half faces together are the full dual face. With
+  `w = 1/cb = C/dt + G/2` of each half, the update of the merged edge,
+  `(C₀ + C₁)(u' − u)/dt + (G₀ + G₁)(u' + u)/2 = ∮₀ i + ∮₁ i`, is exactly
+  the weighted mean `u' = (w₀u'₀ + w₁u'₁)/(w₀ + w₁)` of the two half
+  updates. The engine writes that mean to both copies after every E
+  update. A PEC copy (`cb = 0`) makes the edge PEC. Edges where two
+  periodic faces meet (four copies) are merged axis by axis with
+  accumulated weights.
+- **H copies** (dual edges normal to the face, half length each) need no
+  merge. Both integrate the same Faraday equation of one primary face,
+  `L_k di_k/dt = −∮u`, so `i_k/l_k` is the same H, and their sum is the full
+  dual-edge current the merged E edges see.
+- **Where it runs.** In the serial `post_e` gap (with x periodicity the two
+  copies sit in different slabs), before the operators' `post_e` hooks so
+  that probes, dumps and Mur faces see merged values. It runs once more
+  after those hooks when any exist, to fold in their corrections. A
+  correction proportional to `cb` (dispersive and lumped branch currents)
+  is combined exactly. Sources on a face plane should cover both copies.
+  CPML on the other faces runs in slab hooks before the merge and is
+  linear in the half-face quantities, so periodic plus CPML (an open
+  periodic structure) is exact.
+- **Energy.** The scheme is the Yee scheme on the toroidal grid. The
+  field sums count both copies, `C₀u² + C₁u² = (C₀ + C₁)u²`, so the
+  invariant `W` is conserved (closed periodic box: `|W/W₀ − 1| < 3e-6` over
+  10⁴ steps). Results are bit-identical for any thread count, and both
+  copies are bit-equal.
+- **Mesh check.** The neighbour-ratio check also compares the last cell
+  with the first.
+- **openEMS.** The XML format has no periodic boundary. `Fdtd::to_csx`
+  writes such faces as PEC, and `Fdtd::to_csx_checked` fails instead.
+- **Bloch / Floquet** (`engine::BlochPair`, engine level): the sine–cosine
+  method (Taflove & Hagness, ch. 13). Two real engines carry the real and
+  imaginary parts of a complex field with `F(x + L) = F(x)·e^{−jψ}`,
+  `ψ = k_t·L`. They are built from one `EngineBuilder` with the periodic
+  faces as PMC, each runs one step, and then the pair merges the copies
+  with the phase: `U = (w_lo u_lo + w_hi u_hi e^{jψ})/(w_lo + w_hi)`,
+  `u_lo = U`, `u_hi = U e^{−jψ}`. With `ψ = 0` this is the periodic merge
+  bit for bit. The coupling is unitary, so `W_re + W_im` is conserved.
+  Because the merge runs after all hooks of a step, `post_e` operators on
+  the face planes see unmerged copies; keep them off the faces, and add
+  coefficient-changing operators to both engines. `Simulation` does not
+  use the pair yet: oblique incidence also needs a plane-wave source with
+  the matching `k_t`.
+- **Validation** (`tests/periodic.rs`):
+
+  | Check | Result |
+  |---|---|
+  | Uniform sheet source, box periodic in x and y with CPML in z (graded mesh): spread across the plane | 1.6e-6 of peak |
+  | Same case against the 1-D line | 1.7e-6 of peak |
+  | Dielectric slab: \|Γ\| against the exact discrete line | 4e-5 |
+  | Inhomogeneous cell, one period against two periods | 1e-6 of peak |
+  | Periodic cavity resonances (k_x = 2πm/a) against the Yee dispersion relation | ≤ 5e-6 |
+  | Same, graded mesh (Δ₀ ≠ Δ_last), against the continuum | ≤ 0.21% |
+  | Bloch cavity, ψ = π/2: resonances at k_x = ψ/a and (ψ − 2π)/a against Yee | ≤ 6e-8 |
+  | Bloch closed box: complex energy drift over 5000 steps | 1e-6 |
 
 ### 5.7 Waveforms
 `Waveform` is an enum: Gaussian, Sinusoid, Dirac, Step, and

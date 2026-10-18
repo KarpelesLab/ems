@@ -438,6 +438,7 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
         faces[face] = match b {
             Boundary::Pec => FaceCondition::Pec,
             Boundary::Pmc => FaceCondition::Pmc,
+            Boundary::Periodic => FaceCondition::Periodic,
             Boundary::Mur(m) => {
                 mur.push((face, m.velocity()));
                 FaceCondition::Pec

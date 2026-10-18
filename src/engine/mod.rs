@@ -159,6 +159,7 @@ use core::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub use boundary::periodic::BlochPair;
 pub use coeffs::{
     Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,
     primary_edge_cg,
@@ -185,6 +186,7 @@ pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::axis::Axis;
 use crate::fdtd::Face;
 use crate::{Error, Result};
+use boundary::periodic::Periodic;
 use fields::{FieldStore, Layout, read, write};
 use pool::{Gap, Gaps, Plan, Pool, Shared};
 
@@ -252,8 +254,13 @@ impl EngineBuilder {
 
     /// Computes the time step and coefficients, allocates the fields and
     /// starts the worker threads.
+    ///
+    /// # Errors
+    /// Invalid time step or materials, or a [`FaceCondition::Periodic`]
+    /// face whose opposite face is not periodic.
     pub fn build(self) -> Result<Engine> {
         let grid = self.grid;
+        let periodic = Periodic::from_faces(&self.faces, grid.nodes())?;
         let dt = self.timestep.resolve(&grid)?;
         let coeffs = match &self.materials {
             Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
@@ -282,6 +289,7 @@ impl EngineBuilder {
             step: 0,
             shared,
             ops: Vec::new(),
+            periodic,
             pool,
         })
     }
@@ -346,6 +354,8 @@ pub struct Engine {
     step: u64,
     shared: Arc<Shared>,
     ops: Vec<Registered>,
+    /// Periodic face merge, run in the `post_e` gap.
+    periodic: Option<Periodic>,
     pool: Option<Pool>,
 }
 
@@ -621,7 +631,7 @@ impl Engine {
             dt: self.dt,
             energy_first,
             gaps: Gaps {
-                a: mask.intersects(Hooks::PRE_H | Hooks::POST_E),
+                a: mask.intersects(Hooks::PRE_H | Hooks::POST_E) || self.periodic.is_some(),
                 b: mask.intersects(Hooks::POST_H | Hooks::PRE_E),
             },
         };
@@ -630,9 +640,11 @@ impl Engine {
             dt,
             shared,
             ops,
+            periodic,
             pool,
             ..
         } = self;
+        let post_e_ops = mask.contains(Hooks::POST_E);
         let mut hook = |g: Gap| {
             let (t, which): (u64, &[Hooks]) = match g {
                 Gap::PreH(t) => (t, &[Hooks::PRE_H]),
@@ -647,6 +659,12 @@ impl Engine {
                 coefficients: &co,
             };
             let mut f = shared.store.lock();
+            // Periodic faces: merge the kernel result before the operators
+            // see it, and fold in their corrections afterwards.
+            let periodic = periodic.as_ref().filter(|_| matches!(g, Gap::PostE(_)));
+            if let Some(p) = periodic {
+                p.merge(&mut f, &co);
+            }
             for &w in which {
                 for r in ops.iter_mut().filter(|r| r.hooks.contains(w)) {
                     match w {
@@ -656,6 +674,9 @@ impl Engine {
                         _ => r.op.post_e(&mut f, &ctx),
                     }
                 }
+            }
+            if let Some(p) = periodic.filter(|_| post_e_ops) {
+                p.merge(&mut f, &co);
             }
         };
         pool::drive(pool.as_mut(), shared, &plan, &mut hook);

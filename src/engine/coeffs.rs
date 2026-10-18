@@ -29,6 +29,10 @@ use crate::{Error, Result};
 ///   the corresponding [`Operator`](super::Operator). An operator may also
 ///   tweak coefficients through [`Engine::coefficients_mut`](super::Engine::coefficients_mut)
 ///   before the first step.
+/// * **Periodic** → [`FaceCondition::Periodic`] on both faces of an axis:
+///   coefficients as for PMC (each face plane is one half of the periodic
+///   plane); the engine merges the two copies after every E update (see
+///   [`boundary::periodic`](super::boundary::periodic)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FaceCondition {
     /// Perfect electric conductor: tangential E forced to zero.
@@ -36,6 +40,10 @@ pub enum FaceCondition {
     Pec,
     /// Perfect magnetic conductor: tangential H on the face is zero.
     Pmc,
+    /// Periodic: the face is identified with the opposite face, which must
+    /// be periodic too ([`EngineBuilder::build`](super::EngineBuilder::build)
+    /// fails otherwise).
+    Periodic,
 }
 
 /// The [`FaceCondition`] of each of the six outer faces, indexed by

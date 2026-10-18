@@ -138,7 +138,10 @@ impl Fdtd {
     /// end-criteria check interval, the thread count and
     /// [`Waveform::Custom`] closures (written without `<Excitation>`) have
     /// no file representation. The file format has a single Mur phase
-    /// velocity; the first Mur face's is written.
+    /// velocity; the first Mur face's is written. It has no periodic
+    /// boundary either: [`Boundary::Periodic`] faces are written as PEC
+    /// (use [`to_csx_checked`](Self::to_csx_checked) to get an error
+    /// instead).
     pub fn to_csx(&self) -> FdtdSettings {
         let excitation = self
             .waveform
@@ -165,6 +168,7 @@ impl Fdtd {
                     CsxBoundary::Mur
                 }
                 Boundary::Pml(p) => CsxBoundary::Pml(u32::try_from(p.cells).unwrap_or(u32::MAX)),
+                Boundary::Periodic => CsxBoundary::Pec,
             };
         }
         FdtdSettings {
@@ -184,6 +188,24 @@ impl Fdtd {
             }),
             ..Default::default()
         }
+    }
+
+    /// [`to_csx`](Self::to_csx), failing instead of writing a boundary the
+    /// file format cannot express.
+    ///
+    /// # Errors
+    /// [`Error::Unsupported`] if a face is [`Boundary::Periodic`].
+    pub fn to_csx_checked(&self) -> Result<FdtdSettings> {
+        if let Some((face, _)) = self
+            .boundaries
+            .iter()
+            .find(|(_, b)| **b == Boundary::Periodic)
+        {
+            return Err(Error::Unsupported(format!(
+                "periodic boundary on {face}: the openEMS <FDTD> format has no periodic boundary"
+            )));
+        }
+        Ok(self.to_csx())
     }
 }
 
@@ -275,6 +297,18 @@ mod tests {
         assert_eq!(f.get_end_criteria().unwrap().energy_ratio, 1e-5);
         assert!(f.get_waveform().is_none());
         assert_eq!(*f.get_boundaries(), Boundaries::default());
+    }
+
+    #[test]
+    fn periodic_has_no_file_form() {
+        let f = Fdtd::new()
+            .boundary(Face::YMin, Boundary::Periodic)
+            .boundary(Face::YMax, Boundary::Periodic);
+        let e = f.to_csx_checked().unwrap_err().to_string();
+        assert!(e.contains("ymin"), "{e}");
+        let b = f.to_csx().boundary.unwrap();
+        assert_eq!(b.faces[2], CsxBoundary::Pec);
+        assert!(Fdtd::new().to_csx_checked().is_ok());
     }
 
     #[test]

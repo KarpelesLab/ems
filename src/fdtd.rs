@@ -271,6 +271,12 @@ pub enum Boundary {
     Mur(Mur),
     /// Convolutional PML.
     Pml(Cpml),
+    /// Periodic (zero phase shift): the face is identified with the
+    /// opposite face, which must be periodic too. The period is the domain
+    /// length along the axis (first to last mesh line). ems-only: the
+    /// openEMS file format has no periodic boundary (see
+    /// [`Fdtd::to_csx`]).
+    Periodic,
 }
 
 impl Boundary {
@@ -296,7 +302,7 @@ impl Boundary {
     /// Checks the boundary's parameters.
     pub fn validate(&self) -> Result<()> {
         match self {
-            Boundary::Pec | Boundary::Pmc => Ok(()),
+            Boundary::Pec | Boundary::Pmc | Boundary::Periodic => Ok(()),
             Boundary::Mur(m) => m.validate(),
             Boundary::Pml(p) => p.validate(),
         }
@@ -339,13 +345,26 @@ impl Boundaries {
         Face::ALL.into_iter().zip(self.0.iter())
     }
 
-    /// Checks every face's parameters.
+    /// Checks every face's parameters, and that periodic faces come in
+    /// opposite pairs.
     pub fn validate(&self) -> Result<()> {
         for (face, b) in self.iter() {
             b.validate()
                 .map_err(|e| Error::Invalid(format!("boundary {face}: {e}")))?;
+            if *b == Boundary::Periodic && self[face.opposite()] != Boundary::Periodic {
+                return Err(Error::Invalid(format!(
+                    "boundary {face}: periodic needs the opposite face {} periodic too",
+                    face.opposite()
+                )));
+            }
         }
         Ok(())
+    }
+
+    /// Whether the faces of `axis` are periodic.
+    pub fn is_periodic(&self, axis: Axis) -> bool {
+        self[Face::new(axis, false)] == Boundary::Periodic
+            && self[Face::new(axis, true)] == Boundary::Periodic
     }
 }
 
@@ -767,6 +786,23 @@ mod tests {
             Boundaries::from([Boundary::Pmc; 6]),
             Boundaries::all(Boundary::Pmc)
         );
+    }
+
+    #[test]
+    fn periodic_pairs() {
+        let b = Boundaries::all(Boundary::pml(8))
+            .with(Face::XMin, Boundary::Periodic)
+            .with(Face::XMax, Boundary::Periodic);
+        assert!(b.validate().is_ok());
+        assert!(b.is_periodic(Axis::X));
+        assert!(!b.is_periodic(Axis::Y));
+        let e = b
+            .with(Face::YMax, Boundary::Periodic)
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("ymax") && e.contains("ymin"), "{e}");
+        assert_eq!(Boundary::Periodic.cells(), 0);
     }
 
     #[test]
