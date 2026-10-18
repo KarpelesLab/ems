@@ -290,7 +290,7 @@ const MIN_CELLS_PER_THREAD: usize = 8192;
 
 /// The thread count an engine uses by default for a grid of `cells` cells:
 /// one thread per physical core available to the process, but at most one
-/// per [`MIN_CELLS_PER_THREAD`] cells (and at least 1).
+/// per 8192 grid cells (and at least 1).
 ///
 /// The kernels are memory-bound, so a second hardware thread on a core
 /// (SMT) adds no throughput, while every extra thread adds to the per-step
