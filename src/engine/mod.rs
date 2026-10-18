@@ -79,9 +79,11 @@ mod excite;
 mod fields;
 mod grid;
 mod kernel;
+pub mod lumped;
 mod material;
 mod operator;
 mod pool;
+pub mod port;
 mod probe;
 
 use core::marker::PhantomData;
@@ -95,8 +97,10 @@ pub use coeffs::{
 pub use excite::{Amplitude, EdgeSource};
 pub use fields::{FieldArrays, Fields};
 pub use grid::Grid;
+pub use lumped::{LumpedBox, LumpedElement, Topology, fold_parallel};
 pub use material::{CellMaterials, Material};
 pub use operator::{Operator, OperatorHandle, StepContext};
+pub use port::LumpedPort;
 pub use probe::{Probe, ProbeQuantity};
 
 use crate::axis::Axis;
