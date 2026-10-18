@@ -1,0 +1,787 @@
+//! Solver settings: the equivalent of the openEMS `<FDTD>` section.
+//!
+//! [`Fdtd`] collects everything that is not part of the model itself: the
+//! excitation [`Waveform`], the [`Boundaries`] of the six domain faces, the
+//! [`EndCriteria`], the timestep count and the time-step choice. This module
+//! only holds data and validates it; the engine interprets it.
+
+use crate::axis::Axis;
+use crate::error::{Error, Result};
+use crate::waveform::Waveform;
+use core::fmt;
+use core::ops::{Index, IndexMut};
+
+/// One of the six faces of the computational domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Face {
+    /// Face at the lowest x mesh line.
+    XMin,
+    /// Face at the highest x mesh line.
+    XMax,
+    /// Face at the lowest y mesh line.
+    YMin,
+    /// Face at the highest y mesh line.
+    YMax,
+    /// Face at the lowest z mesh line.
+    ZMin,
+    /// Face at the highest z mesh line.
+    ZMax,
+}
+
+impl Face {
+    /// All faces in index order (the order of the openEMS `<BoundaryCond>`
+    /// attributes: xmin, xmax, ymin, ymax, zmin, zmax).
+    pub const ALL: [Face; 6] = [
+        Face::XMin,
+        Face::XMax,
+        Face::YMin,
+        Face::YMax,
+        Face::ZMin,
+        Face::ZMax,
+    ];
+
+    /// Index in `0..6`: `2·axis + (1 if max side)`.
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The face with index `i` (see [`Face::index`]).
+    pub const fn from_index(i: usize) -> Option<Face> {
+        if i < 6 { Some(Face::ALL[i]) } else { None }
+    }
+
+    /// The face of `axis` on the max (`true`) or min (`false`) side.
+    pub const fn new(axis: Axis, max: bool) -> Face {
+        Face::ALL[2 * axis.index() + max as usize]
+    }
+
+    /// The axis normal to the face.
+    pub const fn axis(self) -> Axis {
+        match self {
+            Face::XMin | Face::XMax => Axis::X,
+            Face::YMin | Face::YMax => Axis::Y,
+            Face::ZMin | Face::ZMax => Axis::Z,
+        }
+    }
+
+    /// `true` for the faces at the highest mesh line of their axis.
+    pub const fn is_max(self) -> bool {
+        self.index() % 2 == 1
+    }
+
+    /// The face on the other side of the domain.
+    pub const fn opposite(self) -> Face {
+        Face::new(self.axis(), !self.is_max())
+    }
+
+    /// Lower-case name, as in openEMS XML attributes: `"xmin"`, `"xmax"`, ….
+    pub const fn name(self) -> &'static str {
+        match self {
+            Face::XMin => "xmin",
+            Face::XMax => "xmax",
+            Face::YMin => "ymin",
+            Face::YMax => "ymax",
+            Face::ZMin => "zmin",
+            Face::ZMax => "zmax",
+        }
+    }
+}
+
+impl fmt::Display for Face {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// First-order Mur absorbing boundary (G. Mur, "Absorbing boundary
+/// conditions for the finite-difference approximation of the time-domain
+/// electromagnetic-field equations", IEEE Trans. EMC 23(4), 1981).
+///
+/// The one-way wave equation is applied to the tangential E field of the
+/// face, tuned for waves leaving at normal incidence with the given phase
+/// velocity.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Mur {
+    /// Phase velocity the boundary is tuned for \[m/s\]; `None` means the
+    /// vacuum speed of light [`C0`](crate::constants::C0).
+    pub phase_velocity: Option<f64>,
+}
+
+impl Mur {
+    /// Mur boundary tuned for `c0`.
+    pub const fn new() -> Self {
+        Mur {
+            phase_velocity: None,
+        }
+    }
+
+    /// Mur boundary tuned for phase velocity `v` \[m/s\].
+    pub const fn with_phase_velocity(v: f64) -> Self {
+        Mur {
+            phase_velocity: Some(v),
+        }
+    }
+
+    /// The effective phase velocity \[m/s\].
+    pub fn velocity(&self) -> f64 {
+        self.phase_velocity.unwrap_or(crate::constants::C0)
+    }
+
+    /// Checks that the phase velocity (if set) is finite and positive.
+    pub fn validate(&self) -> Result<()> {
+        match self.phase_velocity {
+            Some(v) if !(v.is_finite() && v > 0.0) => Err(Error::Invalid(format!(
+                "Mur boundary: phase velocity {v} must be finite and > 0"
+            ))),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Convolutional perfectly matched layer (CPML) parameters.
+///
+/// Formulation of J. A. Roden and S. D. Gedney, "Convolutional PML (CPML):
+/// An efficient FDTD implementation of the CFS-PML for arbitrary media",
+/// Microwave and Optical Technology Letters 27(5), 2000; see also Taflove &
+/// Hagness, *Computational Electrodynamics*, 3rd ed., ch. 7.
+///
+/// The layer occupies the outermost `cells` cells of the mesh
+/// at the face (openEMS `PML_n` semantics). With `ρ ∈ [0, 1]` the normalised
+/// depth into the layer, the stretching parameters are graded as
+///
+/// ```text
+/// σ(ρ) = σ_max·ρ^m,   κ(ρ) = 1 + (κ_max − 1)·ρ^m,   α(ρ) = α_max·(1 − ρ)
+/// ```
+///
+/// with `m` = `grading_order` and `σ_max = sigma_factor · 0.8·(m + 1)/(η·Δ)`,
+/// the near-optimal value for polynomial grading given in Taflove & Hagness,
+/// ch. 7, with `Δ` the local cell size normal to the layer and `η` the wave
+/// impedance. The defaults (`m = 3`, `κ_max = 1`, `α_max = 0`) give a
+/// classic graded PML; `κ_max > 1` and `α_max > 0` enable the CFS terms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Cpml {
+    /// Number of mesh cells the layer occupies (default 8).
+    pub cells: usize,
+    /// Polynomial grading order `m` (default 3).
+    pub grading_order: f64,
+    /// Multiplier on the optimal `σ_max` (default 1).
+    pub sigma_factor: f64,
+    /// Maximum coordinate stretching `κ_max ≥ 1` (default 1).
+    pub kappa_max: f64,
+    /// Maximum complex-frequency shift `α_max ≥ 0` \[S/m\] (default 0).
+    pub alpha_max: f64,
+}
+
+impl Default for Cpml {
+    fn default() -> Self {
+        Cpml {
+            cells: 8,
+            grading_order: 3.0,
+            sigma_factor: 1.0,
+            kappa_max: 1.0,
+            alpha_max: 0.0,
+        }
+    }
+}
+
+impl Cpml {
+    /// Default CPML with `n` cells.
+    pub fn cells(n: usize) -> Self {
+        Cpml {
+            cells: n,
+            ..Cpml::default()
+        }
+    }
+
+    /// Sets the polynomial grading order `m`.
+    pub fn grading_order(mut self, m: f64) -> Self {
+        self.grading_order = m;
+        self
+    }
+
+    /// Sets the multiplier on the optimal `σ_max`.
+    pub fn sigma_factor(mut self, k: f64) -> Self {
+        self.sigma_factor = k;
+        self
+    }
+
+    /// Sets `κ_max`.
+    pub fn kappa_max(mut self, k: f64) -> Self {
+        self.kappa_max = k;
+        self
+    }
+
+    /// Sets `α_max` \[S/m\].
+    pub fn alpha_max(mut self, a: f64) -> Self {
+        self.alpha_max = a;
+        self
+    }
+
+    /// `σ_max = sigma_factor · 0.8·(m + 1)/(η·Δ)` \[S/m\] for wave impedance
+    /// `eta` \[Ω\] and cell size `delta` \[m\] normal to the layer.
+    pub fn sigma_max(&self, eta: f64, delta: f64) -> f64 {
+        self.sigma_factor * 0.8 * (self.grading_order + 1.0) / (eta * delta)
+    }
+
+    /// Checks the parameters: `cells ≥ 1`, finite `m ≥ 0`, `sigma_factor ≥ 0`,
+    /// `κ_max ≥ 1`, `α_max ≥ 0`.
+    pub fn validate(&self) -> Result<()> {
+        let bad = |what: &str, v: f64, req: &str| {
+            Err(Error::Invalid(format!("CPML: {what} = {v} must be {req}")))
+        };
+        if self.cells == 0 {
+            return Err(Error::Invalid("CPML: needs at least one cell".into()));
+        }
+        if !(self.grading_order.is_finite() && self.grading_order >= 0.0) {
+            return bad("grading order", self.grading_order, "finite and >= 0");
+        }
+        if !(self.sigma_factor.is_finite() && self.sigma_factor >= 0.0) {
+            return bad("sigma factor", self.sigma_factor, "finite and >= 0");
+        }
+        if !(self.kappa_max.is_finite() && self.kappa_max >= 1.0) {
+            return bad("kappa_max", self.kappa_max, "finite and >= 1");
+        }
+        if !(self.alpha_max.is_finite() && self.alpha_max >= 0.0) {
+            return bad("alpha_max", self.alpha_max, "finite and >= 0");
+        }
+        Ok(())
+    }
+}
+
+/// Boundary condition of one domain face.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Boundary {
+    /// Perfect electric conductor: tangential E is zero on the face.
+    #[default]
+    Pec,
+    /// Perfect magnetic conductor: tangential H is zero on the face.
+    Pmc,
+    /// First-order Mur absorbing boundary.
+    Mur(Mur),
+    /// Convolutional PML.
+    Pml(Cpml),
+}
+
+impl Boundary {
+    /// Mur boundary tuned for `c0`.
+    pub const fn mur() -> Self {
+        Boundary::Mur(Mur::new())
+    }
+
+    /// Default CPML with `n` cells.
+    pub fn pml(n: usize) -> Self {
+        Boundary::Pml(Cpml::cells(n))
+    }
+
+    /// Number of mesh cells the boundary occupies inside the domain
+    /// (the PML thickness; 0 for the other kinds).
+    pub fn cells(&self) -> usize {
+        match self {
+            Boundary::Pml(p) => p.cells,
+            _ => 0,
+        }
+    }
+
+    /// Checks the boundary's parameters.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Boundary::Pec | Boundary::Pmc => Ok(()),
+            Boundary::Mur(m) => m.validate(),
+            Boundary::Pml(p) => p.validate(),
+        }
+    }
+}
+
+/// Boundary conditions of all six faces (default: all PEC).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Boundaries([Boundary; 6]);
+
+impl Boundaries {
+    /// The same boundary on every face.
+    pub fn all(b: Boundary) -> Self {
+        Boundaries([b; 6])
+    }
+
+    /// Builder: sets the boundary of `face`.
+    pub fn with(mut self, face: Face, b: Boundary) -> Self {
+        self.0[face.index()] = b;
+        self
+    }
+
+    /// Sets the boundary of `face`.
+    pub fn set(&mut self, face: Face, b: Boundary) {
+        self.0[face.index()] = b;
+    }
+
+    /// The boundary of `face`.
+    pub fn get(&self, face: Face) -> &Boundary {
+        &self.0[face.index()]
+    }
+
+    /// The boundaries in [`Face::ALL`] order.
+    pub fn as_array(&self) -> &[Boundary; 6] {
+        &self.0
+    }
+
+    /// Iterates over `(face, boundary)` pairs in [`Face::ALL`] order.
+    pub fn iter(&self) -> impl Iterator<Item = (Face, &Boundary)> {
+        Face::ALL.into_iter().zip(self.0.iter())
+    }
+
+    /// Checks every face's parameters.
+    pub fn validate(&self) -> Result<()> {
+        for (face, b) in self.iter() {
+            b.validate()
+                .map_err(|e| Error::Invalid(format!("boundary {face}: {e}")))?;
+        }
+        Ok(())
+    }
+}
+
+impl From<[Boundary; 6]> for Boundaries {
+    fn from(b: [Boundary; 6]) -> Self {
+        Boundaries(b)
+    }
+}
+
+impl Index<Face> for Boundaries {
+    type Output = Boundary;
+    fn index(&self, face: Face) -> &Boundary {
+        &self.0[face.index()]
+    }
+}
+
+impl IndexMut<Face> for Boundaries {
+    fn index_mut(&mut self, face: Face) -> &mut Boundary {
+        &mut self.0[face.index()]
+    }
+}
+
+/// When to stop a simulation before the maximum timestep count: once the
+/// excitation is over and the total field energy has decayed below
+/// `energy_ratio` times its maximum.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EndCriteria {
+    /// Threshold as a linear energy ratio `W/W_max` in `(0, 1]`.
+    pub energy_ratio: f64,
+    /// Number of timesteps between energy evaluations (default 50).
+    pub check_interval: u64,
+}
+
+impl EndCriteria {
+    /// Default `check_interval`.
+    pub const DEFAULT_CHECK_INTERVAL: u64 = 50;
+
+    /// Stop when the energy is `db` decibels below its maximum, e.g.
+    /// `-40.0` for a ratio of 1e-4 (energy is a power quantity:
+    /// `ratio = 10^(db/10)`).
+    pub fn energy_decay_db(db: f64) -> Self {
+        EndCriteria::energy_ratio(10f64.powf(db / 10.0))
+    }
+
+    /// Stop when `W/W_max < ratio`.
+    pub fn energy_ratio(ratio: f64) -> Self {
+        EndCriteria {
+            energy_ratio: ratio,
+            check_interval: Self::DEFAULT_CHECK_INTERVAL,
+        }
+    }
+
+    /// Builder: sets the number of timesteps between energy evaluations.
+    pub fn check_interval(mut self, steps: u64) -> Self {
+        self.check_interval = steps;
+        self
+    }
+
+    /// The threshold in decibels, `10·log10(energy_ratio)`.
+    pub fn decay_db(&self) -> f64 {
+        10.0 * self.energy_ratio.log10()
+    }
+
+    /// Checks that the ratio is in `(0, 1]` and the interval is at least 1.
+    pub fn validate(&self) -> Result<()> {
+        let r = self.energy_ratio;
+        if !(r > 0.0 && r <= 1.0) {
+            return Err(Error::Invalid(format!(
+                "end criteria: energy ratio {r} must be in (0, 1]"
+            )));
+        }
+        if self.check_interval == 0 {
+            return Err(Error::Invalid(
+                "end criteria: check interval must be at least 1 step".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// FDTD solver settings (the openEMS `<FDTD>` section).
+///
+/// Built with chained setters; read back with the `get_*` getters (the plain
+/// names are taken by the setters, as in [`std::process::Command`]).
+///
+/// ```
+/// use ems::prelude::*;
+/// let fdtd = Fdtd::new()
+///     .waveform(Waveform::gaussian(2e9, 1e9))
+///     .boundaries(Boundaries::all(Boundary::Pml(Cpml::cells(8))))
+///     .end_criteria(EndCriteria::energy_decay_db(-40.0))
+///     .max_timesteps(200_000);
+/// fdtd.validate()?;
+/// assert_eq!(fdtd.get_max_timesteps(), 200_000);
+/// # Ok::<(), ems::Error>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct Fdtd {
+    waveform: Option<Waveform>,
+    boundaries: Boundaries,
+    end_criteria: Option<EndCriteria>,
+    max_timesteps: u64,
+    timestep_factor: f64,
+    timestep: Option<f64>,
+    threads: Option<usize>,
+}
+
+impl Default for Fdtd {
+    fn default() -> Self {
+        Fdtd {
+            waveform: None,
+            boundaries: Boundaries::default(),
+            end_criteria: None,
+            max_timesteps: Self::DEFAULT_MAX_TIMESTEPS,
+            timestep_factor: Self::DEFAULT_TIMESTEP_FACTOR,
+            timestep: None,
+            threads: None,
+        }
+    }
+}
+
+impl Fdtd {
+    /// Default [`max_timesteps`](Fdtd::max_timesteps).
+    pub const DEFAULT_MAX_TIMESTEPS: u64 = 1_000_000;
+    /// Default [`timestep_factor`](Fdtd::timestep_factor) (Courant number
+    /// safety factor).
+    pub const DEFAULT_TIMESTEP_FACTOR: f64 = 0.99;
+
+    /// Default settings: no waveform, all-PEC boundaries, no end criteria,
+    /// [`DEFAULT_MAX_TIMESTEPS`](Fdtd::DEFAULT_MAX_TIMESTEPS) steps, time
+    /// step factor [`DEFAULT_TIMESTEP_FACTOR`](Fdtd::DEFAULT_TIMESTEP_FACTOR),
+    /// automatic time step and thread count.
+    pub fn new() -> Self {
+        Fdtd::default()
+    }
+
+    /// Sets the excitation waveform shared by all excitations of the model.
+    pub fn waveform(mut self, w: Waveform) -> Self {
+        self.waveform = Some(w);
+        self
+    }
+
+    /// Sets the boundary conditions of all faces.
+    pub fn boundaries(mut self, b: Boundaries) -> Self {
+        self.boundaries = b;
+        self
+    }
+
+    /// Sets the boundary condition of one face.
+    pub fn boundary(mut self, face: Face, b: Boundary) -> Self {
+        self.boundaries.set(face, b);
+        self
+    }
+
+    /// Enables early termination by energy decay. Without end criteria the
+    /// simulation runs for [`max_timesteps`](Fdtd::max_timesteps).
+    pub fn end_criteria(mut self, e: EndCriteria) -> Self {
+        self.end_criteria = Some(e);
+        self
+    }
+
+    /// Removes the end criteria (run to the maximum timestep count).
+    pub fn no_end_criteria(mut self) -> Self {
+        self.end_criteria = None;
+        self
+    }
+
+    /// Sets the maximum number of timesteps (≥ 1).
+    pub fn max_timesteps(mut self, n: u64) -> Self {
+        self.max_timesteps = n;
+        self
+    }
+
+    /// Sets the Courant safety factor `S ∈ (0, 1]`: the automatic time step
+    /// is `S` times the Courant–Friedrichs–Lewy limit of the mesh.
+    pub fn timestep_factor(mut self, s: f64) -> Self {
+        self.timestep_factor = s;
+        self
+    }
+
+    /// Overrides the automatic time step with `dt` \[s\]. It must still
+    /// satisfy the stability limit of the mesh (checked when compiling).
+    pub fn timestep(mut self, dt: f64) -> Self {
+        self.timestep = Some(dt);
+        self
+    }
+
+    /// Sets the number of worker threads (≥ 1).
+    pub fn threads(mut self, n: usize) -> Self {
+        self.threads = Some(n);
+        self
+    }
+
+    /// The excitation waveform, if set.
+    pub fn get_waveform(&self) -> Option<&Waveform> {
+        self.waveform.as_ref()
+    }
+
+    /// The boundary conditions.
+    pub fn get_boundaries(&self) -> &Boundaries {
+        &self.boundaries
+    }
+
+    /// Mutable access to the boundary conditions.
+    pub fn boundaries_mut(&mut self) -> &mut Boundaries {
+        &mut self.boundaries
+    }
+
+    /// The end criteria, if any.
+    pub fn get_end_criteria(&self) -> Option<&EndCriteria> {
+        self.end_criteria.as_ref()
+    }
+
+    /// The maximum number of timesteps.
+    pub fn get_max_timesteps(&self) -> u64 {
+        self.max_timesteps
+    }
+
+    /// The Courant safety factor `S`.
+    pub fn get_timestep_factor(&self) -> f64 {
+        self.timestep_factor
+    }
+
+    /// The time step override \[s\], if any.
+    pub fn get_timestep(&self) -> Option<f64> {
+        self.timestep
+    }
+
+    /// The configured thread count; `None` means
+    /// [`std::thread::available_parallelism`].
+    pub fn get_threads(&self) -> Option<usize> {
+        self.threads
+    }
+
+    /// The thread count to use: the configured one, else
+    /// [`std::thread::available_parallelism`] (1 if unknown).
+    pub fn resolved_threads(&self) -> usize {
+        self.threads.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        })
+    }
+
+    /// Checks all settings that can be checked without the mesh.
+    ///
+    /// A missing waveform is not an error here: whether one is needed
+    /// depends on the model's excitations, which the compile step checks.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(w) = &self.waveform {
+            w.validate()?;
+        }
+        self.boundaries.validate()?;
+        if let Some(e) = &self.end_criteria {
+            e.validate()?;
+        }
+        if self.max_timesteps == 0 {
+            return Err(Error::Invalid("max_timesteps must be at least 1".into()));
+        }
+        let s = self.timestep_factor;
+        if !(s > 0.0 && s <= 1.0) {
+            return Err(Error::Invalid(format!(
+                "timestep factor {s} must be in (0, 1]"
+            )));
+        }
+        if let Some(dt) = self.timestep
+            && !(dt.is_finite() && dt > 0.0)
+        {
+            return Err(Error::Invalid(format!(
+                "timestep {dt} must be finite and > 0"
+            )));
+        }
+        if self.threads == Some(0) {
+            return Err(Error::Invalid("thread count must be at least 1".into()));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::{C0, Z0};
+
+    #[test]
+    fn face_helpers() {
+        for (i, f) in Face::ALL.into_iter().enumerate() {
+            assert_eq!(f.index(), i);
+            assert_eq!(Face::from_index(i), Some(f));
+            assert_eq!(Face::new(f.axis(), f.is_max()), f);
+            assert_eq!(f.opposite().opposite(), f);
+            assert_ne!(f.opposite(), f);
+            assert_eq!(f.opposite().axis(), f.axis());
+        }
+        assert_eq!(Face::from_index(6), None);
+        assert_eq!(Face::new(Axis::Y, true), Face::YMax);
+        assert_eq!(Face::ZMin.axis(), Axis::Z);
+        assert!(!Face::XMin.is_max());
+        assert_eq!(Face::XMax.to_string(), "xmax");
+    }
+
+    #[test]
+    fn boundaries() {
+        let b = Boundaries::default();
+        assert!(b.iter().all(|(_, b)| *b == Boundary::Pec));
+        let b = Boundaries::all(Boundary::pml(8))
+            .with(Face::ZMin, Boundary::Pec)
+            .with(Face::XMax, Boundary::mur());
+        assert_eq!(*b.get(Face::ZMin), Boundary::Pec);
+        assert_eq!(b[Face::XMax], Boundary::Mur(Mur::new()));
+        assert_eq!(b[Face::YMin], Boundary::Pml(Cpml::default()));
+        assert_eq!(b[Face::YMin].cells(), 8);
+        assert_eq!(b[Face::ZMin].cells(), 0);
+        let mut b2 = b;
+        b2[Face::ZMin] = Boundary::Pmc;
+        b2.set(Face::ZMax, Boundary::Pmc);
+        assert_eq!(b2.as_array()[4], Boundary::Pmc);
+        assert_eq!(b2.as_array()[5], Boundary::Pmc);
+        assert!(b.validate().is_ok());
+        let bad = b.with(Face::YMax, Boundary::pml(0));
+        let e = bad.validate().unwrap_err().to_string();
+        assert!(e.contains("ymax"), "{e}");
+        assert_eq!(
+            Boundaries::from([Boundary::Pmc; 6]),
+            Boundaries::all(Boundary::Pmc)
+        );
+    }
+
+    #[test]
+    fn cpml() {
+        let p = Cpml::cells(10)
+            .grading_order(4.0)
+            .sigma_factor(0.5)
+            .kappa_max(5.0)
+            .alpha_max(0.05);
+        assert_eq!(p.cells, 10);
+        assert_eq!(p.grading_order, 4.0);
+        assert!(p.validate().is_ok());
+        let d = Cpml::default();
+        assert_eq!((d.cells, d.grading_order, d.sigma_factor), (8, 3.0, 1.0));
+        assert_eq!((d.kappa_max, d.alpha_max), (1.0, 0.0));
+        let s = d.sigma_max(Z0, 1e-3);
+        assert!((s - 0.8 * 4.0 / (Z0 * 1e-3)).abs() < 1e-9 * s);
+        assert!((p.sigma_max(Z0, 1e-3) - 0.5 * 0.8 * 5.0 / (Z0 * 1e-3)).abs() < 1e-9);
+        assert!(Cpml::cells(0).validate().is_err());
+        assert!(d.kappa_max(0.5).validate().is_err());
+        assert!(d.alpha_max(-1.0).validate().is_err());
+        assert!(d.sigma_factor(f64::NAN).validate().is_err());
+        assert!(d.grading_order(-1.0).validate().is_err());
+    }
+
+    #[test]
+    fn mur() {
+        assert_eq!(Mur::new().velocity(), C0);
+        assert_eq!(Mur::with_phase_velocity(1e8).velocity(), 1e8);
+        assert!(Mur::new().validate().is_ok());
+        assert!(Mur::with_phase_velocity(0.0).validate().is_err());
+        assert!(
+            Boundary::Mur(Mur::with_phase_velocity(f64::INFINITY))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn end_criteria() {
+        let e = EndCriteria::energy_decay_db(-40.0);
+        assert!((e.energy_ratio - 1e-4).abs() < 1e-18);
+        assert!((e.decay_db() + 40.0).abs() < 1e-12);
+        assert_eq!(e.check_interval, EndCriteria::DEFAULT_CHECK_INTERVAL);
+        let e = EndCriteria::energy_ratio(1e-5).check_interval(10);
+        assert_eq!(e.check_interval, 10);
+        assert!(e.validate().is_ok());
+        assert!(e.check_interval(0).validate().is_err());
+        assert!(EndCriteria::energy_ratio(0.0).validate().is_err());
+        assert!(EndCriteria::energy_ratio(1.5).validate().is_err());
+        assert!(EndCriteria::energy_ratio(f64::NAN).validate().is_err());
+        assert!(EndCriteria::energy_decay_db(0.0).validate().is_ok());
+    }
+
+    #[test]
+    fn fdtd_builder_and_getters() {
+        let f = Fdtd::new();
+        assert!(f.get_waveform().is_none());
+        assert_eq!(*f.get_boundaries(), Boundaries::default());
+        assert!(f.get_end_criteria().is_none());
+        assert_eq!(f.get_max_timesteps(), Fdtd::DEFAULT_MAX_TIMESTEPS);
+        assert_eq!(f.get_timestep_factor(), 0.99);
+        assert_eq!(f.get_timestep(), None);
+        assert_eq!(f.get_threads(), None);
+        assert!(f.resolved_threads() >= 1);
+        assert!(f.validate().is_ok());
+
+        let mut f = Fdtd::new()
+            .waveform(Waveform::gaussian(1e9, 0.5e9))
+            .boundaries(Boundaries::all(Boundary::pml(8)))
+            .boundary(Face::ZMin, Boundary::Pec)
+            .end_criteria(EndCriteria::energy_decay_db(-50.0))
+            .max_timesteps(1234)
+            .timestep_factor(0.5)
+            .timestep(1e-12)
+            .threads(3);
+        assert!(f.validate().is_ok());
+        assert!(matches!(
+            f.get_waveform(),
+            Some(Waveform::Gaussian { f0: 1e9, .. })
+        ));
+        assert_eq!(f.get_boundaries()[Face::ZMin], Boundary::Pec);
+        assert_eq!(f.get_boundaries()[Face::ZMax], Boundary::pml(8));
+        assert!(f.get_end_criteria().is_some());
+        assert_eq!(f.get_max_timesteps(), 1234);
+        assert_eq!(f.get_timestep_factor(), 0.5);
+        assert_eq!(f.get_timestep(), Some(1e-12));
+        assert_eq!((f.get_threads(), f.resolved_threads()), (Some(3), 3));
+        f.boundaries_mut()[Face::XMin] = Boundary::Pmc;
+        assert_eq!(f.get_boundaries()[Face::XMin], Boundary::Pmc);
+        assert!(f.clone().no_end_criteria().get_end_criteria().is_none());
+    }
+
+    #[test]
+    fn fdtd_validation() {
+        let ok = Fdtd::new();
+        assert!(
+            ok.clone()
+                .waveform(Waveform::gaussian(1e9, 0.0))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            ok.clone()
+                .boundary(Face::XMin, Boundary::pml(0))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            ok.clone()
+                .end_criteria(EndCriteria::energy_ratio(-1.0))
+                .validate()
+                .is_err()
+        );
+        assert!(ok.clone().max_timesteps(0).validate().is_err());
+        assert!(ok.clone().timestep_factor(0.0).validate().is_err());
+        assert!(ok.clone().timestep_factor(1.01).validate().is_err());
+        assert!(ok.clone().timestep_factor(f64::NAN).validate().is_err());
+        assert!(ok.clone().timestep_factor(1.0).validate().is_ok());
+        assert!(ok.clone().timestep(0.0).validate().is_err());
+        assert!(ok.clone().timestep(f64::INFINITY).validate().is_err());
+        assert!(ok.clone().threads(0).validate().is_err());
+    }
+}
