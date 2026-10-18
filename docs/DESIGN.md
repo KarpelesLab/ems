@@ -588,6 +588,22 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
+### Status (2026-10-18)
+
+| Step | State |
+|---|---|
+| 1–8 | done |
+| 9 | examples (cavity, microstrip, patch antenna, dipole, run_xml) and README done; benchmarks need an idle machine for meaningful numbers; `hdf5` not started |
+
+Pulled forward from M2:
+- Dispersive media (Drude/Lorentz/Debye, electric and magnetic) via ADE.
+- Second-order lumped-port reference plane.
+
+Remaining M1 items:
+- csx 0.0.2 release, so the git pin can go.
+- An idle-machine benchmark.
+- The optional `hdf5` feature.
+
 ## 11. Open questions for review
 
 1. **Who types the `<FDTD>` section?** *Decided:* csx types it
