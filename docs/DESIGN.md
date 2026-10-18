@@ -475,8 +475,13 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
   arrays, all node-shaped.
   - Index is `(i·ny + j)·nz + k`; z is contiguous for autovectorisation.
   - Padding entries (e.g. `u_x` at `i = nx−1`) have zero coefficients and stay 0.
-  - Memory: about 72 bytes/cell. A material-ID lookup table would cut this to
-    about 28 B/cell; it is only worth doing if a benchmark shows a gain.
+  - Memory: about 72 bytes/cell. Large grids are memory-bandwidth bound
+    (~120 B moved per cell and step, at the ~70 GB/s DRAM limit of the
+    development machine), so the kernels read the coefficients through a
+    row-deduplicated view (`engine::rows`): an array whose z-rows are mostly
+    bitwise repeats (`ca`, `da` = 1 in lossless media; `cb`, `db` on uniformly
+    meshed regions) is read from a small cached pool of distinct rows. The
+    values are the same, so results are bit-identical.
 - **Staggering**: after n steps, u is at `n·dt` and i at `(n−½)·dt`. A step runs
   `pre_h → H kernel → post_h → pre_e → E kernel → post_e`.
 - **Precision**: `f32` fields and coefficients. `f64` for geometry, time, DFT

@@ -16,6 +16,7 @@ use std::thread::JoinHandle;
 use super::coeffs::Coefficients;
 use super::fields::{FieldStore, read, write};
 use super::kernel::{energy_h_slab, update_e_slab, update_h_slab};
+use super::rows::KernelCoeffs;
 use super::slab::{SlabContext, SlabHooks, SlabMut, SlabRef};
 
 /// The slab hooks of all registered operators, in registration order.
@@ -33,6 +34,11 @@ impl core::fmt::Debug for SlabOps {
 pub(crate) struct Shared {
     pub(crate) store: FieldStore,
     pub(crate) coeffs: RwLock<Coefficients>,
+    /// Kernel view of `coeffs`; stale while `kernel_stale` is set.
+    kernel: RwLock<KernelCoeffs>,
+    /// Set when `coeffs` may have been modified since `kernel` was built.
+    kernel_stale: AtomicBool,
+    threads: usize,
     /// Zero plane (`ny·nz`) for out-of-domain neighbours.
     pub(crate) zero: Vec<f32>,
     /// Slab hooks; written only while the workers are idle.
@@ -91,9 +97,13 @@ impl Shared {
     pub(crate) fn new(store: FieldStore, coeffs: Coefficients, threads: usize) -> Self {
         let zero = vec![0.0; store.layout.plane];
         let plane_energy = (0..store.layout.n[0]).map(|_| AtomicU64::new(0)).collect();
+        let kernel = KernelCoeffs::new(&coeffs, threads);
         Self {
             store,
             coeffs: RwLock::new(coeffs),
+            kernel: RwLock::new(kernel),
+            kernel_stale: AtomicBool::new(false),
+            threads,
             zero,
             slab_ops: RwLock::new(SlabOps::default()),
             plane_energy,
@@ -105,6 +115,20 @@ impl Shared {
             energy_first: AtomicBool::new(false),
             gap_a: AtomicBool::new(false),
             gap_b: AtomicBool::new(false),
+        }
+    }
+
+    /// Marks the kernel view stale (call when handing out mutable access
+    /// to `coeffs`).
+    pub(crate) fn coeffs_changed(&self) {
+        self.kernel_stale.store(true, Ordering::Relaxed);
+    }
+
+    /// Rebuilds the kernel view if stale (workers idle).
+    pub(crate) fn refresh_kernel(&self) {
+        if self.kernel_stale.swap(false, Ordering::Relaxed) {
+            let k = KernelCoeffs::new(&read(&self.coeffs), self.threads);
+            *write(&self.kernel) = k;
         }
     }
 
@@ -135,12 +159,14 @@ impl Shared {
     /// the slab hooks).
     fn h(&self, s: usize, energy: bool, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
+        let kc = read(&self.kernel);
+        let rows = kc.view(&co);
         if energy {
-            energy_h_slab::<true>(&self.store, &co, s, &mut |gi, w| {
+            energy_h_slab::<true>(&self.store, &rows, s, &mut |gi, w| {
                 self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
             });
         } else {
-            update_h_slab(&self.store, &co, s);
+            update_h_slab(&self.store, &rows, s);
         }
         if ops.0.is_empty() {
             return;
@@ -175,7 +201,7 @@ impl Shared {
     /// E half-step of slab `s` (kernel, then the slab hooks).
     fn e(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
-        update_e_slab(&self.store, &co, &self.zero, s);
+        update_e_slab(&self.store, &read(&self.kernel).view(&co), &self.zero, s);
         if ops.0.is_empty() {
             return;
         }
@@ -224,10 +250,13 @@ impl Shared {
     /// The energy invariant of the current state without changing it
     /// (calling thread only; the workers must be idle).
     pub(crate) fn current_energy(&self, dt: f64) -> f64 {
+        self.refresh_kernel();
         let co = read(&self.coeffs);
+        let kc = read(&self.kernel);
+        let rows = kc.view(&co);
         let mut planes = vec![0.0f64; self.store.layout.n[0]];
         for s in 0..self.store.layout.slabs() {
-            energy_h_slab::<false>(&self.store, &co, s, &mut |gi, w| planes[gi] = w);
+            energy_h_slab::<false>(&self.store, &rows, s, &mut |gi, w| planes[gi] = w);
         }
         0.25 * dt * planes.iter().sum::<f64>()
     }
@@ -354,6 +383,7 @@ pub(crate) fn drive(
     if plan.steps == 0 {
         return;
     }
+    sh.refresh_kernel();
     let threaded = pool.is_some();
     let wait = || {
         if threaded {

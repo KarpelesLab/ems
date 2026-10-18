@@ -11,8 +11,8 @@
 //! the low faces) read from a zero plane; high-side neighbours are padding
 //! entries that are always zero. See the engine module docs for the layout.
 
-use super::coeffs::Coefficients;
 use super::fields::{Block, FieldStore, read, write};
+use super::rows::CoeffRows;
 
 /// Rounds subnormal results to zero (`|x| ≲ 2^-126`), keeping normal
 /// values (absolute error ≤ 2^-126).
@@ -98,13 +98,14 @@ fn hrow<const ENERGY: bool, const COMMIT: bool>(
     }
 }
 
-/// `Σ (1 + ca)/cb · u²` over equal-length slices, skipping `cb = 0`
-/// (PEC and padding edges). Fixed summation order.
+/// Adds `(1 + ca)/cb · u²` of one row to the plane accumulators,
+/// skipping `cb = 0` (PEC and padding edges). Entry `k` of the row has
+/// in-plane index `r + k` and goes to accumulator `(r + k) & 3`, so a plane
+/// fed row by row in order sums in a fixed order.
 #[allow(clippy::needless_range_loop)]
-fn e_energy(u: &[f32], ca: &[f32], cb: &[f32]) -> f64 {
+fn e_energy_row(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f32], cb: &[f32]) {
     let n = u.len();
     let (ca, cb) = (&ca[..n], &cb[..n]);
-    let mut acc = [0.0f64; 4];
     for k in 0..n {
         let w = if cb[k] != 0.0 {
             let x = u[k] as f64;
@@ -112,9 +113,8 @@ fn e_energy(u: &[f32], ca: &[f32], cb: &[f32]) -> f64 {
         } else {
             0.0
         };
-        acc[k & 3] += w;
+        acc[(r + k) & 3] += w;
     }
-    (acc[0] + acc[1]) + (acc[2] + acc[3])
 }
 
 /// `u = ca·u + cb·((a − b) − (c − d))` over equal-length slices.
@@ -134,7 +134,7 @@ fn plane(v: &[f32], local: usize, p: usize) -> &[f32] {
 
 /// Faraday update of all H dual edges in the x-planes of slab `s`:
 /// `i ← da·i − db·∮u` around the primary face each dual edge pierces.
-pub(crate) fn update_h_slab(store: &FieldStore, co: &Coefficients, s: usize) {
+pub(crate) fn update_h_slab(store: &FieldStore, co: &CoeffRows<'_>, s: usize) {
     h_slab::<false, true>(store, co, s, &mut |_, _| {});
 }
 
@@ -151,7 +151,7 @@ pub(crate) fn update_h_slab(store: &FieldStore, co: &Coefficients, s: usize) {
 /// the currents are left unchanged (read-only evaluation of `i^{n+½}`).
 pub(crate) fn energy_h_slab<const COMMIT: bool>(
     store: &FieldStore,
-    co: &Coefficients,
+    co: &CoeffRows<'_>,
     s: usize,
     sink: &mut dyn FnMut(usize, f64),
 ) {
@@ -160,7 +160,7 @@ pub(crate) fn energy_h_slab<const COMMIT: bool>(
 
 fn h_slab<const ENERGY: bool, const COMMIT: bool>(
     store: &FieldStore,
-    co: &Coefficients,
+    co: &CoeffRows<'_>,
     s: usize,
     sink: &mut dyn FnMut(usize, f64),
 ) {
@@ -174,7 +174,6 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
     let [ix, iy, iz] = &mut *iw;
     for gi in p0..p1 {
         let l = gi - p0;
-        let g = gi * p..(gi + 1) * p;
         let (ux, uy, uz) = (
             plane(&uo[0], l, p),
             plane(&uo[1], l, p),
@@ -185,14 +184,13 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
         let iz = &mut iz[l * p..(l + 1) * p];
         let mut wh = 0.0f64;
         // x: curl_x = (uz[j+1] − uz[j]) − (uy[k+1] − uy[k]).
-        let (da, db) = (&co.data[6][g.clone()], &co.data[9][g.clone()]);
         let m = nz - 1;
         for j in 0..ny - 1 {
             let r = j * nz;
             wh += hrow::<ENERGY, COMMIT>(
                 &mut ix[r..r + m],
-                &da[r..],
-                &db[r..],
+                co.row(6, gi, j),
+                co.row(9, gi, j),
                 &uz[r + nz..],
                 &uz[r..],
                 &uy[r + 1..],
@@ -209,13 +207,12 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
             let ln = if gi + 1 < p1 { l + 1 } else { 0 };
             let (uyn, uzn) = (plane(&next[1], ln, p), plane(&next[2], ln, p));
             // y: curl_y = (ux[k+1] − ux[k]) − (uz[i+1] − uz[i]).
-            let (da, db) = (&co.data[7][g.clone()], &co.data[10][g.clone()]);
             for j in 0..ny {
                 let r = j * nz;
                 wh += hrow::<ENERGY, COMMIT>(
                     &mut iy[r..r + m],
-                    &da[r..],
-                    &db[r..],
+                    co.row(7, gi, j),
+                    co.row(10, gi, j),
                     &ux[r + 1..],
                     &ux[r..],
                     &uzn[r..],
@@ -223,13 +220,12 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
                 );
             }
             // z: curl_z = (uy[i+1] − uy[i]) − (ux[j+1] − ux[j]).
-            let (da, db) = (&co.data[8][g.clone()], &co.data[11][g.clone()]);
             for j in 0..ny - 1 {
                 let r = j * nz;
                 wh += hrow::<ENERGY, COMMIT>(
                     &mut iz[r..r + nz],
-                    &da[r..],
-                    &db[r..],
+                    co.row(8, gi, j),
+                    co.row(11, gi, j),
                     &uyn[r..],
                     &uy[r..],
                     &ux[r + nz..],
@@ -240,7 +236,13 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
         if ENERGY {
             let mut we = 0.0f64;
             for (a, uc) in [ux, uy, uz].into_iter().enumerate() {
-                we += e_energy(uc, &co.data[a][g.clone()], &co.data[3 + a][g.clone()]);
+                let mut acc = [0.0f64; 4];
+                for j in 0..ny {
+                    let r = j * nz;
+                    let (ca, cb) = (co.row(a, gi, j), co.row(3 + a, gi, j));
+                    e_energy_row(&mut acc, r, &uc[r..r + nz], ca, cb);
+                }
+                we += (acc[0] + acc[1]) + (acc[2] + acc[3]);
             }
             sink(gi, we + wh);
         }
@@ -249,7 +251,7 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
 
 /// Ampère update of all E edges in the x-planes of slab `s`:
 /// `u ← ca·u + cb·∮i` around the dual face each primary edge pierces.
-pub(crate) fn update_e_slab(store: &FieldStore, co: &Coefficients, zero: &[f32], s: usize) {
+pub(crate) fn update_e_slab(store: &FieldStore, co: &CoeffRows<'_>, zero: &[f32], s: usize) {
     let lay = &store.layout;
     let [nx, ny, nz] = lay.n;
     let p = lay.plane;
@@ -265,7 +267,6 @@ pub(crate) fn update_e_slab(store: &FieldStore, co: &Coefficients, zero: &[f32],
     let z1 = &zero[..1];
     for gi in p0..p1 {
         let l = gi - p0;
-        let g = gi * p..(gi + 1) * p;
         let (ix, iy, iz) = (
             plane(&io[0], l, p),
             plane(&io[1], l, p),
@@ -285,23 +286,15 @@ pub(crate) fn update_e_slab(store: &FieldStore, co: &Coefficients, zero: &[f32],
         let uz = &mut uz[l * p..(l + 1) * p];
         // x: curl_x = (iz[j] − iz[j−1]) − (iy[k] − iy[k−1]).
         if gi + 1 < nx {
-            let (ca, cb) = (&co.data[0][g.clone()], &co.data[3][g.clone()]);
             for j in 0..ny {
                 let r = j * nz;
+                let (ca, cb) = (co.row(0, gi, j), co.row(3, gi, j));
                 let izm = if j == 0 { &zero[..nz] } else { &iz[r - nz..r] };
-                e_row(
-                    &mut ux[r..r + 1],
-                    &ca[r..],
-                    &cb[r..],
-                    &iz[r..],
-                    izm,
-                    &iy[r..],
-                    z1,
-                );
+                e_row(&mut ux[r..r + 1], ca, cb, &iz[r..], izm, &iy[r..], z1);
                 e_row(
                     &mut ux[r + 1..r + nz],
-                    &ca[r + 1..],
-                    &cb[r + 1..],
+                    &ca[1..],
+                    &cb[1..],
                     &iz[r + 1..],
                     &izm[1..],
                     &iy[r + 1..],
@@ -310,22 +303,14 @@ pub(crate) fn update_e_slab(store: &FieldStore, co: &Coefficients, zero: &[f32],
             }
         }
         // y: curl_y = (ix[k] − ix[k−1]) − (iz[i] − iz[i−1]).
-        let (ca, cb) = (&co.data[1][g.clone()], &co.data[4][g.clone()]);
         for j in 0..ny - 1 {
             let r = j * nz;
-            e_row(
-                &mut uy[r..r + 1],
-                &ca[r..],
-                &cb[r..],
-                &ix[r..],
-                z1,
-                &iz[r..],
-                &izp[r..],
-            );
+            let (ca, cb) = (co.row(1, gi, j), co.row(4, gi, j));
+            e_row(&mut uy[r..r + 1], ca, cb, &ix[r..], z1, &iz[r..], &izp[r..]);
             e_row(
                 &mut uy[r + 1..r + nz],
-                &ca[r + 1..],
-                &cb[r + 1..],
+                &ca[1..],
+                &cb[1..],
                 &ix[r + 1..],
                 &ix[r..],
                 &iz[r + 1..],
@@ -333,15 +318,14 @@ pub(crate) fn update_e_slab(store: &FieldStore, co: &Coefficients, zero: &[f32],
             );
         }
         // z: curl_z = (iy[i] − iy[i−1]) − (ix[j] − ix[j−1]).
-        let (ca, cb) = (&co.data[2][g.clone()], &co.data[5][g]);
         let m = nz - 1;
         for j in 0..ny {
             let r = j * nz;
             let ixm = if j == 0 { &zero[..nz] } else { &ix[r - nz..r] };
             e_row(
                 &mut uz[r..r + m],
-                &ca[r..],
-                &cb[r..],
+                co.row(2, gi, j),
+                co.row(5, gi, j),
                 &iy[r..],
                 &iyp[r..],
                 &ix[r..],

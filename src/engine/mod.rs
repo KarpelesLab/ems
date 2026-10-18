@@ -149,6 +149,7 @@ mod operator;
 mod pool;
 pub mod port;
 mod probe;
+mod rows;
 mod run;
 mod slab;
 
@@ -415,6 +416,7 @@ impl Engine {
     /// Mutable access to the update coefficients, for boundary and
     /// lumped-element setup between steps.
     pub fn coefficients_mut(&mut self) -> impl core::ops::DerefMut<Target = Coefficients> + '_ {
+        self.shared.coeffs_changed();
         write(&self.shared.coeffs)
     }
 
