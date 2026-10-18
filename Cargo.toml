@@ -22,3 +22,8 @@ csx = { version = "0.0.1", default-features = false }
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+# Temporary: build against csx master until csx 0.0.2 (with `fdtd` and
+# `discretize`) is on crates.io. Patches are ignored by `cargo publish`.
+[patch.crates-io]
+csx = { git = "https://github.com/KarpelesLab/csx", rev = "b949cf86" }
