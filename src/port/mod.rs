@@ -1,6 +1,10 @@
 //! Port helpers that **emit csx properties** into a model (design §2):
 //! the ports round-trip through openEMS XML and run unchanged from XML.
 //!
+//! * [`LumpedPort`]: a resistive port between two terminals.
+//! * [`MslPort`]: a microstrip-line port, with the line's propagation
+//!   constant and impedance extracted from its probes ([`MslPortResult`]).
+//!
 //! Not to be confused with the engine-level
 //! [`engine::LumpedPort`](crate::engine::LumpedPort), an operator installed
 //! directly on an [`Engine`](crate::Engine); [`LumpedPort`] here builds the
@@ -10,6 +14,10 @@
 //! * [`LumpedPort`]: a resistor with a Thevenin source and V/I probes.
 //! * [`RectWaveguidePort`]: a TE_mn mode excitation and mode-matching
 //!   V/I probes in a rectangular waveguide.
+
+pub mod msl;
+
+pub use msl::{MslPort, MslPortProperties, MslPortResult};
 
 use csx::primitives::BoxShape;
 use csx::properties::{Excitation, LumpedElement, ProbeBox, ProbeType};

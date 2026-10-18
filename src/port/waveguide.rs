@@ -377,7 +377,7 @@ impl RectWaveguidePort {
     /// Frequency-domain analysis at `freqs` \[Hz\]: `V(f)` and `I(f)` are
     /// the DFTs of the port's mode probes (each with its exact sample
     /// times, [`ProbeResult::dft`](crate::ProbeResult::dft)) and the
-    /// reference impedance is `Z_TE(f)` ([`PortResult::with_z_refs`]).
+    /// reference impedance is `Z_TE(f)` ([`PortResult::new_per_frequency`]).
     /// `S11 = b/a` then compares the waves travelling away from and
     /// towards the structure at the reference plane.
     ///
@@ -411,7 +411,7 @@ impl RectWaveguidePort {
         };
         let v = get(&p.voltage.0)?.dft(freqs)?;
         let i = get(&p.current.0)?.dft(freqs)?;
-        PortResult::with_z_refs(freqs.to_vec(), v, i, z)
+        PortResult::new_per_frequency(freqs.to_vec(), v, i, z)
     }
 }
 

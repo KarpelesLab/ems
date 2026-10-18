@@ -72,6 +72,18 @@ impl Complex64 {
         Complex64::from_polar(self.re.exp(), self.im)
     }
 
+    /// Principal square root (`Re ≥ 0`; branch cut along the negative real
+    /// axis).
+    pub fn sqrt(self) -> Self {
+        let (r, t) = self.to_polar();
+        Complex64::from_polar(r.sqrt(), 0.5 * t)
+    }
+
+    /// Principal natural logarithm `ln|z| + j·arg z` (`arg` in `[−π, π]`).
+    pub fn ln(self) -> Self {
+        Complex64::new(self.norm().ln(), self.arg())
+    }
+
     /// Reciprocal `1/z`.
     pub fn inv(self) -> Self {
         Complex64::ONE / self
@@ -361,5 +373,27 @@ mod tests {
         assert_eq!(Complex64::default(), Complex64::ZERO);
         assert!(Complex64::ONE.is_finite());
         assert!(Complex64::new(f64::NAN, 0.0).is_nan());
+    }
+
+    #[test]
+    fn sqrt_and_ln() {
+        for z in [
+            Complex64::new(3.0, -4.0),
+            Complex64::new(-2.0, 0.5),
+            Complex64::new(-2.0, -0.5),
+            Complex64::new(0.0, 1.0),
+        ] {
+            let r = z.sqrt();
+            assert!(close(r * r, z), "{z}");
+            assert!(r.re >= 0.0);
+            assert!(close(z.ln().exp(), z), "{z}");
+        }
+        assert!(close(
+            Complex64::new(-4.0, 0.0).sqrt(),
+            Complex64::new(0.0, 2.0)
+        ));
+        assert!(close(Complex64::new(E, 0.0).ln(), Complex64::ONE));
+        assert!(close(Complex64::I.ln(), Complex64::new(0.0, FRAC_PI_2)));
+        assert!((Complex64::new(-1.0, 0.0).ln().im - PI).abs() < 1e-15);
     }
 }

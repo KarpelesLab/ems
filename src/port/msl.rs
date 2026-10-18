@@ -1,0 +1,809 @@
+//! Microstrip-line (MSL) port: a section of strip line with voltage and
+//! current probes from which the line's propagation constant and
+//! characteristic impedance are extracted, and the forward and backward
+//! waves are computed at a chosen reference plane.
+//!
+//! # Line model
+//!
+//! Along the propagation coordinate `s` (metres from the feed plane,
+//! increasing into the structure) the quasi-TEM mode of a uniform line is
+//!
+//! ```text
+//! V(s) = A·e^{−γs} + B·e^{γs},   I(s) = (A·e^{−γs} − B·e^{γs}) / Z_L
+//! ```
+//!
+//! with `γ = α + jβ` and line impedance `Z_L` (Pozar, *Microwave
+//! Engineering*, §2.1). The port records three voltages `V1, V2, V3` at
+//! equally spaced mesh lines `s2 − d, s2, s2 + d`, and the currents `Ia`,
+//! `Ib` on the dual planes halfway between them (where the Yee scheme
+//! measures the H loop around the strip). From the expressions above,
+//! for any `A`, `B`:
+//!
+//! ```text
+//! V1 + V3 = 2·cosh(γd)·V2              ⇒  sinh²(γd/2) = (V1 + V3 − 2·V2) / (4·V2)
+//! V3 − V1 = −2·sinh(γd/2)·Z_L·(Ia + Ib) ⇒  Z_L = −(V3 − V1) / (2·sinh(γd/2)·(Ia + Ib))
+//! I(s2)   = (Ia + Ib) / (2·cosh(γd/2))
+//! ```
+//!
+//! The root is chosen with `β ≥ 0` (`βd < π` is assumed, i.e. more than two
+//! cells per guided wavelength). The waves at `s2` are
+//! `A' = (V2 + Z_L·I(s2))/2`, `B' = (V2 − Z_L·I(s2))/2`, and at the
+//! reference plane `s_ref` they are `A'·e^{−γ(s_ref − s2)}` and
+//! `B'·e^{γ(s_ref − s2)}`; [`MslPort::analyze`] reports the voltage and
+//! current there as a [`PortResult`].
+//!
+//! The relations are exact for any spatially exponential mode sampled at
+//! these positions, so they also hold for the discrete line of the Yee
+//! scheme on a uniform mesh section (whose `γ` includes the numerical
+//! dispersion and whose `Z_L` is the discrete wave impedance): the
+//! extraction introduces no discretisation error of its own. This is why
+//! the three voltage lines must be **equally spaced**. `β` comes from a
+//! second difference of the voltages, so the f32 round-off of the fields
+//! limits its relative accuracy to roughly `1e-8/(βd)²` at low frequencies.
+//!
+//! The fields launched by the feed that are not the line mode (radiation
+//! and surface waves of an open structure, below-cutoff modes of a shielded
+//! one) and the near fields of the structure must have decayed at the
+//! probes. They decay slowly: in the microstrip validation (`h` = 0.8 mm,
+//! `w/h` ≈ 2) probes 5·h past the feed read ε_eff 5 % high, at ≈ 11·h
+//! within 1 %. Keep **about ten substrate heights** between the feed and
+//! the middle of the port. Near frequencies where `V2` vanishes (a
+//! standing-wave node at the middle probe) the extraction is
+//! ill-conditioned.
+
+use std::ops::Deref;
+
+use csx::primitives::BoxShape;
+use csx::properties::{Excitation, LumpedElement, ProbeBox, ProbeType};
+use csx::{ContinuousStructure, Primitive, Property, PropertyId, Scalar};
+
+use crate::axis::Axis;
+use crate::constants::C0;
+use crate::post::{Complex64, PortResult};
+use crate::sim::Results;
+use crate::{Error, Result};
+
+/// The csx property names and ids of an added [`MslPort`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MslPortProperties {
+    /// The strip metal (the given property, or `port_metal_<n>`).
+    pub metal: (String, PropertyId),
+    /// The feed resistor, if any: `port_resist_<n>`.
+    pub element: Option<(String, PropertyId)>,
+    /// The `Excitation` (if excited): `port_excite_<n>`.
+    pub excitation: Option<(String, PropertyId)>,
+    /// The voltage `ProbeBox`es `port_ut<n>A`, `B`, `C`, in propagation
+    /// order.
+    pub voltages: [(String, PropertyId); 3],
+    /// The current `ProbeBox`es `port_it<n>A`, `B`, in propagation order.
+    pub currents: [(String, PropertyId); 2],
+}
+
+/// Probe layout chosen by [`MslPort::add_to`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Layout {
+    /// Voltage probe positions along the propagation axis (drawing units),
+    /// in propagation order.
+    v_pos: [f64; 3],
+    /// Their spacing \[m\].
+    spacing: f64,
+    /// Middle voltage probe and reference plane, in metres from the feed
+    /// along the propagation direction.
+    s_mid: f64,
+    s_ref: f64,
+}
+
+/// A microstrip-line port written into a csx model: the strip over the
+/// port length, an optional feed (excitation and/or resistor) at its start,
+/// and three voltage and two current `ProbeBox`es; see the
+/// [module documentation](self) for the analysis.
+///
+/// ```
+/// use csx::ContinuousStructure;
+/// use ems::port::MslPort;
+/// use ems::Axis;
+///
+/// let mut model = ContinuousStructure::new();
+/// model.grid.delta_unit = 1e-3;
+/// model.grid.set_lines(0, (0..=20).map(f64::from))?;
+/// model.grid.set_lines(1, (-5..=5).map(f64::from))?;
+/// model.grid.set_lines(2, (0..=6).map(f64::from))?;
+/// // Strip 2 mm wide, 1 mm above the ground (z = 0), from x = 0 to 10.
+/// let port = MslPort::new(1, [0.0, -1.0, 0.0], [10.0, 1.0, 1.0], Axis::X, Axis::Z)
+///     .excite(1.0)
+///     .add_to(&mut model)?;
+/// let p = port.properties().unwrap();
+/// assert_eq!(p.voltages[1].0, "port_ut1B");
+/// assert_eq!(port.probe_positions(), Some([4.0, 5.0, 6.0]));
+/// # Ok::<(), ems::Error>(())
+/// ```
+///
+/// # Geometry
+///
+/// * `start` and `stop` are opposite corners of the port box (drawing
+///   units). Along the **propagation axis** `dir` the port runs from the
+///   feed plane `start[dir]` to `stop[dir]`; the wave enters the
+///   structure in that direction (`stop[dir] < start[dir]` points it
+///   towards `−dir`).
+/// * Along the **height axis** `height`, the ground is at `start[height]`
+///   and the strip at `stop[height]` (either order). The ground itself is
+///   not written: it is part of the model (a metal plane or a PEC
+///   boundary).
+/// * The remaining axis spans the strip width.
+///
+/// # Written properties
+///
+/// * The strip: a zero-thickness box over the port length and width in
+///   the given metal property ([`metal`](Self::metal)) or in a new metal
+///   `port_metal_<n>`.
+/// * With [`feed_resistance`](Self::feed_resistance), a `LumpedElement`
+///   resistor `port_resist_<n>` from the strip to the ground across the
+///   strip width at the feed plane (a matched source or termination).
+/// * With [`excite`](Self::excite), an E-field excitation `port_excite_<n>`
+///   on the same box, directed from the strip to the ground with
+///   `amplitude / h` V/m (`h` the strip height in metres). Over a feed
+///   resistor it is a Thevenin source of `amplitude` volts (like
+///   [`LumpedPort`](super::LumpedPort)); without one it is a soft source
+///   that launches waves in both directions.
+/// * Voltages `port_ut<n>A/B/C`: strip-to-ground lines (`V = V_strip −
+///   V_ground`) at the three equally spaced mesh lines, past the feed and
+///   not beyond `stop[dir]`, whose middle is nearest the middle of the
+///   port, at the width-axis mesh line nearest the strip centre.
+/// * Currents `port_it<n>A/B`: H loops around the strip (the width-axis
+///   mesh lines within the strip, in its plane) on the dual planes between
+///   those lines, counted positive along the propagation direction.
+///
+/// # Mesh requirements
+///
+/// The model must be meshed **before** [`add_to`](Self::add_to): the feed
+/// plane and the ground and strip heights must be mesh lines
+/// ([`mesh_lines`](Self::mesh_lines) lists them), at least one width-axis
+/// line must lie within the strip, and the port must contain three equally
+/// spaced mesh lines past the feed. `add_to` fails otherwise.
+///
+/// The strip edges need not be mesh lines. A zero-thickness strip whose
+/// edges are mesh lines behaves as if it were wider (the field singularity
+/// at the edge is smeared over the adjacent cells): with lines at the edges,
+/// the line impedance comes out several percent low. The usual remedy is
+/// the "thirds rule": the mesh lines nearest each edge at one third of a
+/// cell inside the strip and two thirds outside.
+///
+/// # Reference plane
+///
+/// The waves are reported at `stop[dir]` (the end of the port towards the
+/// structure), moved by [`reference_shift`](Self::reference_shift) along
+/// the propagation direction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MslPort {
+    number: u32,
+    start: [f64; 3],
+    stop: [f64; 3],
+    dir: Axis,
+    height: Axis,
+    metal: Option<PropertyId>,
+    feed_r: Option<f64>,
+    amplitude: Option<f64>,
+    delay: f64,
+    priority: i32,
+    shift: f64,
+    props: Option<MslPortProperties>,
+    layout: Option<Layout>,
+}
+
+impl MslPort {
+    /// Port number `number` over the box `start`–`stop` (drawing units),
+    /// propagating along `dir`, with the strip above the ground along
+    /// `height` (see [Geometry](#geometry)).
+    pub fn new(number: u32, start: [f64; 3], stop: [f64; 3], dir: Axis, height: Axis) -> Self {
+        Self {
+            number,
+            start,
+            stop,
+            dir,
+            height,
+            metal: None,
+            feed_r: None,
+            amplitude: None,
+            delay: 0.0,
+            priority: 0,
+            shift: 0.0,
+            props: None,
+            layout: None,
+        }
+    }
+
+    /// Draws the strip in the existing metal property `id` instead of a
+    /// new `port_metal_<n>`.
+    pub fn metal(mut self, id: PropertyId) -> Self {
+        self.metal = Some(id);
+        self
+    }
+
+    /// Adds a feed resistor of `r` \[Ω\] at the feed plane; `r = 0` removes
+    /// it (the default).
+    pub fn feed_resistance(mut self, r: f64) -> Self {
+        self.feed_r = (r != 0.0).then_some(r);
+        self
+    }
+
+    /// Excites the port with `amplitude` \[V\] times the simulation
+    /// waveform (see [Written properties](#written-properties)).
+    pub fn excite(mut self, amplitude: f64) -> Self {
+        self.amplitude = Some(amplitude);
+        self
+    }
+
+    /// Delay of the excitation \[s\] (default 0).
+    pub fn delay(mut self, delay: f64) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    /// Priority of the port's primitives (default 0).
+    pub fn priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Moves the reference plane by `shift` (drawing units) from
+    /// `stop[dir]` along the propagation direction (positive: further into
+    /// the structure). Default 0.
+    pub fn reference_shift(mut self, shift: f64) -> Self {
+        self.shift = shift;
+        self
+    }
+
+    /// Port number.
+    pub fn number(&self) -> u32 {
+        self.number
+    }
+
+    /// Whether the port is excited.
+    pub fn is_excited(&self) -> bool {
+        self.amplitude.is_some()
+    }
+
+    /// The properties written by [`add_to`](Self::add_to) (`None` before).
+    pub fn properties(&self) -> Option<&MslPortProperties> {
+        self.props.as_ref()
+    }
+
+    /// The positions of the three voltage probes along the propagation
+    /// axis (drawing units, propagation order), once added.
+    pub fn probe_positions(&self) -> Option<[f64; 3]> {
+        self.layout.map(|l| l.v_pos)
+    }
+
+    /// The coordinates (drawing units, per axis index) that must be mesh
+    /// lines: the feed plane and `stop[dir]`, and the ground and strip
+    /// heights. The port also needs three equally spaced lines between
+    /// `start[dir]` and `stop[dir]` and at least one line within the strip
+    /// width (see [Mesh requirements](#mesh-requirements)).
+    pub fn mesh_lines(&self) -> [Vec<f64>; 3] {
+        let mut out: [Vec<f64>; 3] = Default::default();
+        for d in [self.dir.index(), self.height.index()] {
+            out[d] = vec![self.start[d], self.stop[d]];
+            out[d].sort_by(f64::total_cmp);
+            out[d].dedup();
+        }
+        out
+    }
+
+    fn width_axis(&self) -> Result<Axis> {
+        if self.dir == self.height {
+            return Err(Error::Invalid(format!(
+                "MSL port {}: propagation and height axes are both {}",
+                self.number, self.dir
+            )));
+        }
+        Ok(Axis::ALL
+            .into_iter()
+            .find(|&a| a != self.dir && a != self.height)
+            .expect("three axes"))
+    }
+
+    /// Writes the port's properties into `model` and returns the port with
+    /// their names and ids.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for equal propagation and height axes, a zero
+    /// length or height, a negative width, non-finite values, a
+    /// non-positive feed resistance, a port already added, a property name
+    /// already present in the model, an unknown metal property, or a mesh
+    /// that does not meet the [requirements](#mesh-requirements).
+    pub fn add_to(mut self, model: &mut ContinuousStructure) -> Result<Self> {
+        let n = self.number;
+        if self.props.is_some() {
+            return Err(Error::Invalid(format!("MSL port {n} was already added")));
+        }
+        let w_axis = self.width_axis()?;
+        if self.start.iter().chain(&self.stop).any(|v| !v.is_finite())
+            || !self.delay.is_finite()
+            || !self.shift.is_finite()
+            || self.amplitude.is_some_and(|a| !a.is_finite())
+        {
+            return Err(Error::Invalid(format!(
+                "MSL port {n}: values must be finite"
+            )));
+        }
+        if let Some(r) = self.feed_r
+            && !(r.is_finite() && r > 0.0)
+        {
+            return Err(Error::Invalid(format!(
+                "MSL port {n}: feed resistance {r} must be finite and > 0"
+            )));
+        }
+        let (p, h, w) = (self.dir.index(), self.height.index(), w_axis.index());
+        let du = model.grid.delta_unit;
+        let (feed, end) = (self.start[p], self.stop[p]);
+        if end == feed {
+            return Err(Error::Invalid(format!(
+                "MSL port {n} has zero length along {}",
+                self.dir
+            )));
+        }
+        let (h_gnd, h_strip) = (self.start[h], self.stop[h]);
+        if h_gnd == h_strip {
+            return Err(Error::Invalid(format!(
+                "MSL port {n} has zero height along {}",
+                self.height
+            )));
+        }
+        let (w_lo, w_hi) = (
+            self.start[w].min(self.stop[w]),
+            self.start[w].max(self.stop[w]),
+        );
+
+        // Mesh checks.
+        for (axis, x, what) in [
+            (self.dir, feed, "feed plane"),
+            (self.height, h_gnd, "ground"),
+            (self.height, h_strip, "strip height"),
+        ] {
+            if line_index(model.grid.lines(axis.index()), x).is_none() {
+                return Err(Error::Invalid(format!(
+                    "MSL port {n}: the {what} {axis} = {x} is not a mesh line \
+                     (mesh the model first; see MslPort::mesh_lines)"
+                )));
+            }
+        }
+        let layout =
+            choose_probes(model.grid.lines(p), feed, end, self.shift, du).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "MSL port {n}: needs three equally spaced mesh lines along {} \
+                     past the feed at {feed} and not beyond {end}",
+                    self.dir
+                ))
+            })?;
+        // The width-axis lines within the strip (edges within tolerance),
+        // and the one nearest its centre.
+        let in_strip: Vec<f64> = model
+            .grid
+            .lines(w)
+            .iter()
+            .copied()
+            .filter(|&x| {
+                (w_lo..=w_hi).contains(&x)
+                    || line_index(&[x], w_lo).is_some()
+                    || line_index(&[x], w_hi).is_some()
+            })
+            .collect();
+        let (Some(&s_lo), Some(&s_hi)) = (in_strip.first(), in_strip.last()) else {
+            return Err(Error::Invalid(format!(
+                "MSL port {n}: no {w_axis} mesh line within the strip {w_lo} ..= {w_hi}"
+            )));
+        };
+        let w_mid = 0.5 * (w_lo + w_hi);
+        let w_c = in_strip
+            .iter()
+            .copied()
+            .min_by(|x, y| (x - w_mid).abs().total_cmp(&(y - w_mid).abs()))
+            .expect("non-empty");
+
+        // Names.
+        let names = [
+            format!("port_metal_{n}"),
+            format!("port_resist_{n}"),
+            format!("port_excite_{n}"),
+            format!("port_ut{n}A"),
+            format!("port_ut{n}B"),
+            format!("port_ut{n}C"),
+            format!("port_it{n}A"),
+            format!("port_it{n}B"),
+        ];
+        let used = |i: usize| match i {
+            0 => self.metal.is_none(),
+            1 => self.feed_r.is_some(),
+            2 => self.amplitude.is_some(),
+            _ => true,
+        };
+        if let Some(dup) = names
+            .iter()
+            .enumerate()
+            .find(|&(i, s)| used(i) && model.property_by_name(s).is_some())
+        {
+            return Err(Error::Invalid(format!(
+                "the model already has a property named {:?}",
+                dup.1
+            )));
+        }
+        let metal = match self.metal {
+            Some(id) => {
+                let prop = model.property(id).ok_or_else(|| {
+                    Error::Invalid(format!("MSL port {n}: no metal property {id}"))
+                })?;
+                (prop.name.clone(), id)
+            }
+            None => {
+                let id = model.add_property(Property::metal(names[0].clone()));
+                (names[0].clone(), id)
+            }
+        };
+
+        let csx_axis = |a: usize| csx::Axis::from_index(a).expect("axis index in 0..3");
+        let prim = |s: [f64; 3], t: [f64; 3]| {
+            Primitive::new(BoxShape::new(s, t)).with_priority(self.priority)
+        };
+        let point = |xp: f64, xw: f64, xh: f64| {
+            let mut v = [0.0; 3];
+            v[p] = xp;
+            v[w] = xw;
+            v[h] = xh;
+            v
+        };
+
+        // Strip.
+        model.add_primitive(
+            metal.1,
+            prim(point(feed, w_lo, h_strip), point(end, w_hi, h_strip)),
+        )?;
+
+        // Feed: from the strip (+) to the ground.
+        let (f0, f1) = (point(feed, w_lo, h_strip), point(feed, w_hi, h_gnd));
+        let element = match self.feed_r {
+            Some(r) => {
+                let el = LumpedElement::resistor(csx_axis(h), r);
+                let id = model.add_property(Property::lumped_element(names[1].clone(), el));
+                model.add_primitive(id, prim(f0, f1))?;
+                Some((names[1].clone(), id))
+            }
+            None => None,
+        };
+        let excitation = match self.amplitude {
+            Some(amp) => {
+                let height = (h_strip - h_gnd).abs() * du;
+                let mut v = [0.0; 3];
+                v[h] = (h_gnd - h_strip).signum() * amp / height;
+                let mut ex = Excitation::new(v).with_number(n);
+                ex.delay = Scalar::new(self.delay);
+                let id = model.add_property(Property::excitation(names[2].clone(), ex));
+                model.add_primitive(id, prim(f0, f1))?;
+                Some((names[2].clone(), id))
+            }
+            None => None,
+        };
+
+        // Probes.
+        let voltages = [0, 1, 2].map(|k| {
+            let mut pb = ProbeBox::new(ProbeType::Voltage);
+            pb.number = n;
+            let id = model.add_property(Property::probe(names[3 + k].clone(), pb));
+            (names[3 + k].clone(), id)
+        });
+        for (k, (_, id)) in voltages.iter().enumerate() {
+            let x = layout.v_pos[k];
+            model.add_primitive(*id, prim(point(x, w_c, h_strip), point(x, w_c, h_gnd)))?;
+        }
+        let currents = [0, 1].map(|k| {
+            let mut pb = ProbeBox::new(ProbeType::Current).with_norm_dir(csx_axis(p));
+            pb.number = n;
+            let id = model.add_property(Property::probe(names[6 + k].clone(), pb));
+            (names[6 + k].clone(), id)
+        });
+        for (k, (_, id)) in currents.iter().enumerate() {
+            let (a, b) = (layout.v_pos[k], layout.v_pos[k + 1]);
+            model.add_primitive(*id, prim(point(a, s_lo, h_strip), point(b, s_hi, h_strip)))?;
+        }
+        self.props = Some(MslPortProperties {
+            metal,
+            element,
+            excitation,
+            voltages,
+            currents,
+        });
+        self.layout = Some(layout);
+        Ok(self)
+    }
+
+    /// Frequency-domain analysis at `freqs` \[Hz\] with the extracted line
+    /// impedance `Z_L(f)` as reference impedance.
+    ///
+    /// # Errors
+    /// See [`analyze_with`](Self::analyze_with); also [`Error::Invalid`]
+    /// if `Re Z_L` is not positive at some frequency (typically outside the
+    /// excited band).
+    pub fn analyze(&self, results: &Results, freqs: &[f64]) -> Result<MslPortResult> {
+        let line = self.line(results, freqs)?;
+        let port = PortResult::new_per_frequency(
+            freqs.to_vec(),
+            line.v.clone(),
+            line.i.clone(),
+            line.z_line.clone(),
+        )
+        .map_err(|e| {
+            Error::Invalid(format!(
+                "MSL port {}: unusable line impedance ({e}); is every frequency inside \
+                 the excited band?",
+                self.number
+            ))
+        })?;
+        Ok(line.finish(port))
+    }
+
+    /// Frequency-domain analysis with the reference impedance `z_ref`.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] if the port was not added, a probe is missing
+    /// from `results` or has no samples, or `z_ref` is invalid.
+    pub fn analyze_with(
+        &self,
+        results: &Results,
+        freqs: &[f64],
+        z_ref: Complex64,
+    ) -> Result<MslPortResult> {
+        let line = self.line(results, freqs)?;
+        let port = PortResult::new(freqs.to_vec(), line.v.clone(), line.i.clone(), z_ref)?;
+        Ok(line.finish(port))
+    }
+
+    fn line(&self, results: &Results, freqs: &[f64]) -> Result<Line> {
+        let (Some(p), Some(l)) = (&self.props, &self.layout) else {
+            return Err(Error::Invalid(format!(
+                "MSL port {} was not added",
+                self.number
+            )));
+        };
+        let get = |name: &str| {
+            results
+                .probe(name)
+                .ok_or_else(|| Error::Invalid(format!("no probe {name:?} in the results")))?
+                .dft(freqs)
+        };
+        let [v1, v2, v3] = [0, 1, 2].map(|k| get(&p.voltages[k].0));
+        let [ia, ib] = [0, 1].map(|k| get(&p.currents[k].0));
+        let (v1, v2, v3, ia, ib) = (v1?, v2?, v3?, ia?, ib?);
+        let n = freqs.len();
+        let mut out = Line {
+            gamma: Vec::with_capacity(n),
+            z_line: Vec::with_capacity(n),
+            v: Vec::with_capacity(n),
+            i: Vec::with_capacity(n),
+        };
+        let delta = l.s_ref - l.s_mid;
+        for k in 0..n {
+            let (g, z, v, i) = extract([v1[k], v2[k], v3[k]], [ia[k], ib[k]], l.spacing, delta);
+            out.gamma.push(g);
+            out.z_line.push(z);
+            out.v.push(v);
+            out.i.push(i);
+        }
+        Ok(out)
+    }
+}
+
+/// Intermediate result of [`MslPort::line`].
+struct Line {
+    gamma: Vec<Complex64>,
+    z_line: Vec<Complex64>,
+    v: Vec<Complex64>,
+    i: Vec<Complex64>,
+}
+
+impl Line {
+    fn finish(self, port: PortResult) -> MslPortResult {
+        MslPortResult {
+            port,
+            gamma: self.gamma,
+            z_line: self.z_line,
+        }
+    }
+}
+
+/// The line quantities from three voltages `v` at spacing `d` \[m\] and two
+/// midpoint currents `i` (see the [module documentation](self)):
+/// `(γ, Z_L, V, I)` with `V`, `I` at `delta` metres past the middle probe.
+fn extract(
+    v: [Complex64; 3],
+    i: [Complex64; 2],
+    d: f64,
+    delta: f64,
+) -> (Complex64, Complex64, Complex64, Complex64) {
+    let sh2 = (v[0] + v[2] - v[1] * 2.0) / (v[1] * 4.0);
+    let mut sh = sh2.sqrt();
+    // x = γd/2 = asinh(sh), on the branch with β ≥ 0 (asinh is odd).
+    let mut x = (sh + (sh * sh + 1.0).sqrt()).ln();
+    if x.im < 0.0 {
+        x = -x;
+        sh = -sh;
+    }
+    let gamma = x * (2.0 / d);
+    let ch = (x.exp() + (-x).exp()) * 0.5;
+    let isum = i[0] + i[1];
+    let z = -(v[2] - v[0]) / (sh * isum * 2.0);
+    let i_mid = isum / (ch * 2.0);
+    let a = (v[1] + z * i_mid) * 0.5 * (-gamma * delta).exp();
+    let b = (v[1] - z * i_mid) * 0.5 * (gamma * delta).exp();
+    (gamma, z, a + b, (a - b) / z)
+}
+
+/// Index of the mesh line within a relative tolerance of `x`.
+fn line_index(lines: &[f64], x: f64) -> Option<usize> {
+    let (k, &l) = lines
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))?;
+    let cell = [k.checked_sub(1), Some(k + 1)]
+        .into_iter()
+        .flatten()
+        .filter_map(|j| lines.get(j))
+        .map(|&o| (o - l).abs())
+        .fold(f64::INFINITY, f64::min);
+    let tol = if cell.is_finite() {
+        1e-6 * cell
+    } else {
+        1e-9 * (1.0 + x.abs())
+    };
+    ((l - x).abs() <= tol).then_some(k)
+}
+
+/// Picks three equally spaced consecutive lines past `feed`, not beyond
+/// `end`, with the middle one nearest the middle of the port.
+fn choose_probes(lines: &[f64], feed: f64, end: f64, shift: f64, du: f64) -> Option<Layout> {
+    let sign = (end - feed).signum();
+    // Propagation coordinate (drawing units) of a line.
+    let s = |x: f64| (x - feed) * sign;
+    let len = s(end);
+    let tol = 1e-6 * len;
+    let mut cand: Vec<f64> = lines
+        .iter()
+        .copied()
+        .filter(|&x| s(x) > tol && s(x) <= len + tol)
+        .collect();
+    if sign < 0.0 {
+        cand.reverse();
+    }
+    let mid = 0.5 * len;
+    cand.windows(3)
+        .filter(|t| {
+            let (d1, d2) = (s(t[1]) - s(t[0]), s(t[2]) - s(t[1]));
+            (d1 - d2).abs() <= 1e-6 * d1.max(d2)
+        })
+        .min_by(|a, b| (s(a[1]) - mid).abs().total_cmp(&(s(b[1]) - mid).abs()))
+        .map(|t| Layout {
+            v_pos: [t[0], t[1], t[2]],
+            spacing: 0.5 * (s(t[2]) - s(t[0])) * du,
+            s_mid: s(t[1]) * du,
+            s_ref: (len + shift) * du,
+        })
+}
+
+/// The analysis of an [`MslPort`]: the [`PortResult`] at the reference
+/// plane (also reachable through `Deref`, so it can be passed to
+/// [`s_param`](crate::post::s_param) directly) plus the extracted line
+/// parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MslPortResult {
+    port: PortResult,
+    gamma: Vec<Complex64>,
+    z_line: Vec<Complex64>,
+}
+
+impl MslPortResult {
+    /// Voltage and current at the reference plane.
+    pub fn port(&self) -> &PortResult {
+        &self.port
+    }
+
+    /// Converts into the [`PortResult`].
+    pub fn into_port(self) -> PortResult {
+        self.port
+    }
+
+    /// Propagation constant `γ = α + jβ` \[1/m\] per frequency.
+    pub fn gamma(&self) -> &[Complex64] {
+        &self.gamma
+    }
+
+    /// Phase constant `β` \[rad/m\] per frequency.
+    pub fn beta(&self) -> Vec<f64> {
+        self.gamma.iter().map(|g| g.im).collect()
+    }
+
+    /// Attenuation constant `α` \[Np/m\] per frequency.
+    pub fn alpha(&self) -> Vec<f64> {
+        self.gamma.iter().map(|g| g.re).collect()
+    }
+
+    /// Effective permittivity `(c0·β/ω)²` per frequency (it includes the
+    /// numerical dispersion of the mesh).
+    pub fn eps_eff(&self) -> Vec<f64> {
+        self.port
+            .freqs()
+            .iter()
+            .zip(&self.gamma)
+            .map(|(&f, g)| (C0 * g.im / (std::f64::consts::TAU * f)).powi(2))
+            .collect()
+    }
+
+    /// Extracted line (characteristic) impedance `Z_L` \[Ω\] per frequency.
+    pub fn z_line(&self) -> &[Complex64] {
+        &self.z_line
+    }
+}
+
+impl Deref for MslPortResult {
+    type Target = PortResult;
+
+    fn deref(&self) -> &PortResult {
+        &self.port
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c(re: f64, im: f64) -> Complex64 {
+        Complex64::new(re, im)
+    }
+
+    /// A lossy line with forward and backward waves is recovered exactly.
+    #[test]
+    fn extraction_is_exact_for_exponential_modes() {
+        let gamma = c(0.3, 50.0);
+        let z = c(48.0, -2.0);
+        let (a, b) = (c(1.0, 0.2), c(-0.3, 0.1));
+        let (d, s2) = (1e-3, 7e-3);
+        let v = |s: f64| a * (-gamma * s).exp() + b * (gamma * s).exp();
+        let i = |s: f64| (a * (-gamma * s).exp() - b * (gamma * s).exp()) / z;
+        let (gx, zx, vx, ix) = extract(
+            [v(s2 - d), v(s2), v(s2 + d)],
+            [i(s2 - 0.5 * d), i(s2 + 0.5 * d)],
+            d,
+            3e-3,
+        );
+        assert!((gx - gamma).norm() < 1e-9 * gamma.norm(), "{gx}");
+        assert!((zx - z).norm() < 1e-9 * z.norm(), "{zx}");
+        assert!((vx - v(s2 + 3e-3)).norm() < 1e-9);
+        assert!((ix - i(s2 + 3e-3)).norm() < 1e-11);
+    }
+
+    #[test]
+    fn probe_choice() {
+        let lines: Vec<f64> = (0..=10).map(f64::from).collect();
+        let l = choose_probes(&lines, 0.0, 10.0, 0.0, 1e-3).unwrap();
+        assert_eq!(l.v_pos, [4.0, 5.0, 6.0]);
+        assert!((l.spacing - 1e-3).abs() < 1e-15);
+        assert!((l.s_mid - 5e-3).abs() < 1e-15 && (l.s_ref - 10e-3).abs() < 1e-15);
+        // Reversed port.
+        let l = choose_probes(&lines, 10.0, 2.0, 1.0, 1e-3).unwrap();
+        assert_eq!(l.v_pos, [7.0, 6.0, 5.0]);
+        assert!((l.s_mid - 4e-3).abs() < 1e-15 && (l.s_ref - 9e-3).abs() < 1e-15);
+        // Graded mesh: only one equally spaced triple.
+        let lines = [0.0, 1.0, 3.0, 4.0, 5.0, 7.0, 10.0];
+        let l = choose_probes(&lines, 0.0, 10.0, 0.0, 1.0).unwrap();
+        assert_eq!(l.v_pos, [3.0, 4.0, 5.0]);
+        let lines = [0.0, 1.0, 3.0, 6.0, 10.0];
+        assert!(choose_probes(&lines, 0.0, 10.0, 0.0, 1.0).is_none());
+        // The feed line itself is excluded.
+        assert!(choose_probes(&[0.0, 1.0, 2.0], 0.0, 2.0, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn mesh_snapping() {
+        let lines = [0.0, 0.5, 1.0];
+        assert_eq!(line_index(&lines, 0.5 + 1e-9), Some(1));
+        assert_eq!(line_index(&lines, 0.51), None);
+        assert_eq!(line_index(&[], 0.0), None);
+    }
+}

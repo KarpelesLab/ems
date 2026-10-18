@@ -1,30 +1,28 @@
-//! A 50 Ω-ish microstrip line on an FR4-like substrate between two lumped
-//! ports: S11/S21 and the line impedance and effective permittivity
-//! extracted from them, versus the closed-form Hammerstad formulas.
+//! A 50 Ω-ish microstrip line on an FR4-like substrate between two
+//! microstrip ports ([`MslPort`]): S11/S21 and the line impedance and
+//! effective permittivity extracted by the ports, versus the closed-form
+//! Hammerstad formulas.
 //!
 //! ```text
 //! cargo run --release --example microstrip
 //! ```
 //!
-//! Geometry (mm): substrate `ε_r = 4.3`, `h = 0.8`; strip `w = 1.5`,
-//! `l = 40` from `x = −20` to `x = 20`; ground plane on the `z = 0` PEC
-//! boundary; 8-cell CPML on all other faces. Each end has a 50 Ω lumped
-//! port from the ground to the strip across the full strip width
-//! ([`LumpedPort`]); port 1 is excited.
+//! Geometry (mm): substrate `ε_r = 4.3`, `h = 0.8`; strip `w = 1.5` from
+//! `x = −30` to `x = 30`, running into the 8-cell CPML at both ends; ground
+//! plane on the `z = 0` PEC boundary. Port 1 (excited, with a 50 Ω feed
+//! resistor) is fed at `x = −25` and has its reference plane at `x = −10`;
+//! port 2 is its mirror image. The mesh uses the thirds rule at the strip
+//! edges (csx [`MeshOptions::with_thirds`]) and uniform 0.5 mm cells along
+//! the line, as the ports require.
 //!
-//! From the two-port S-parameters of a uniform line with reference
-//! impedance `Z_ref` (Pozar, *Microwave Engineering*, §4.4 conversions):
-//!
-//! ```text
-//! Z0 = Z_ref · sqrt(((1 + S11)² − S21²) / ((1 − S11)² − S21²))
-//! Γ  = (Z0 − Z_ref)/(Z0 + Z_ref),   T = e^{−γl} = (S11 + S21 − Γ)/(1 − (S11 + S21)·Γ)
-//! ε_eff = (c0·β/ω)²,   β = −unwrap(arg T)/l
-//! ```
+//! Each port extracts the propagation constant `γ` and the line impedance
+//! `Z_L` from its probes ([`MslPortResult`]); with `Z_L` as reference
+//! impedance a uniform matched line gives `S11 ≈ 0` and `S21 = e^{−γL}`
+//! (`L` = 20 mm between the reference planes).
 //!
 //! The reference is the quasi-static closed form for a zero-thickness strip
 //! (E. O. Hammerstad, "Equations for microstrip circuit design", 1975; as
-//! given in Pozar, §3.8). The extraction includes the parasitics of the
-//! lumped ports, so a few percent of difference are expected.
+//! given in Pozar, *Microwave Engineering*, §3.8).
 
 use std::f64::consts::PI;
 
@@ -32,18 +30,16 @@ use csx::mesh::{MeshBuilder, MeshOptions};
 use csx::primitives::BoxShape;
 use csx::properties::Material;
 use csx::{ContinuousStructure, Primitive, Property, TypeMask};
+use ems::port::{MslPort, MslPortResult};
 use ems::post::s_param;
 use ems::prelude::*;
 
 const EPS_R: f64 = 4.3;
 const H: f64 = 0.8;
 const W: f64 = 1.5;
-const LEN: f64 = 40.0;
-
-fn csqrt(z: Complex64) -> Complex64 {
-    let (r, t) = z.to_polar();
-    Complex64::from_polar(r.sqrt(), 0.5 * t)
-}
+const X: f64 = 30.0;
+/// Distance between the reference planes \[mm\].
+const LEN: f64 = 20.0;
 
 /// Hammerstad / Pozar closed form: (ε_eff, Z0).
 fn hammerstad(eps_r: f64, w: f64, h: f64) -> (f64, f64) {
@@ -63,52 +59,52 @@ fn main() -> Result<()> {
     let sub = model.add_property(Property::material("FR4", Material::new(EPS_R, 0.0)));
     model.add_primitive(
         sub,
-        Primitive::new(BoxShape::new([-25.0, -10.0, 0.0], [25.0, 10.0, H])),
+        Primitive::new(BoxShape::new([-X, -15.0, 0.0], [X, 15.0, H])),
     )?;
     let cu = model.add_property(Property::metal("copper"));
     model.add_primitive(
         cu,
-        Primitive::new(BoxShape::new(
-            [-LEN / 2.0, -W / 2.0, H],
-            [LEN / 2.0, W / 2.0, H],
-        ))
-        .with_priority(10),
+        Primitive::new(BoxShape::new([-X, -W / 2.0, H], [X, W / 2.0, H])).with_priority(10),
     )?;
-    model.add_primitive(
-        cu,
-        Primitive::new(BoxShape::new([-25.0, -10.0, 0.0], [25.0, 10.0, 0.0])).with_priority(10),
-    )?;
-    let p1 = LumpedPort::new(
-        1,
-        50.0,
-        [-LEN / 2.0, -W / 2.0, 0.0],
-        [-LEN / 2.0, W / 2.0, H],
-        Axis::Z,
-    )
-    .excite(1.0)
-    .add_to(&mut model)?;
-    let p2 = LumpedPort::new(
-        2,
-        50.0,
-        [LEN / 2.0, -W / 2.0, 0.0],
-        [LEN / 2.0, W / 2.0, H],
-        Axis::Z,
-    )
-    .add_to(&mut model)?;
 
-    // Mesh: 1 mm maximum (λ/20 in the substrate at 8 GHz), 0.25 mm across
-    // the strip, 4 cells through the substrate, air margin for the PML.
-    MeshBuilder::new(
-        MeshOptions::new(1.0)
-            .with_ratio(1.4)
-            .with_mask(TypeMask::PHYSICAL),
+    let p1 = MslPort::new(
+        1,
+        [-25.0, -W / 2.0, 0.0],
+        [-LEN / 2.0, W / 2.0, H],
+        Axis::X,
+        Axis::Z,
     )
-    .with_lines(0, [-37.0, 37.0])
-    .with_lines(1, (0..=6).map(|i| -W / 2.0 + 0.25 * i as f64))
-    .with_lines(1, [-22.0, 22.0])
-    .with_lines(2, (0..=4).map(|i| H * i as f64 / 4.0))
-    .with_lines(2, [20.0])
-    .apply(&mut model)?;
+    .metal(cu)
+    .feed_resistance(50.0)
+    .excite(1.0);
+    let p2 = MslPort::new(
+        2,
+        [25.0, -W / 2.0, 0.0],
+        [LEN / 2.0, W / 2.0, H],
+        Axis::X,
+        Axis::Z,
+    )
+    .metal(cu);
+
+    // Mesh (before adding the ports): 0.5 mm along the line, the thirds
+    // rule with 0.25 mm across the strip edges (not along x, where the
+    // strip ends with the substrate), 4 cells through the substrate, up to
+    // 0.8 mm (y) and 1 mm (z) elsewhere, 12 mm of air above.
+    let mut opts = MeshOptions::new(1.0)
+        .with_max_res([0.5, 0.8, 1.0])
+        .with_ratio(1.4)
+        .with_thirds([f64::NAN, 0.25, f64::NAN])
+        .with_mask(TypeMask::PHYSICAL);
+    opts.margin = [[0.0, 0.0], [0.0, 0.0], [0.0, 12.0]];
+    let mut mesher = MeshBuilder::new(opts).with_lines(2, (0..=4).map(|i| H * i as f64 / 4.0));
+    for p in [&p1, &p2] {
+        for (axis, lines) in p.mesh_lines().into_iter().enumerate() {
+            mesher = mesher.with_lines(axis, lines);
+        }
+    }
+    mesher.apply(&mut model)?;
+    let p1 = p1.add_to(&mut model)?;
+    let p2 = p2.add_to(&mut model)?;
 
     let fdtd = Fdtd::new()
         .waveform(Waveform::gaussian(4e9, 4e9))
@@ -138,62 +134,39 @@ fn main() -> Result<()> {
     );
 
     let freqs: Vec<f64> = (1..=36).map(|k| k as f64 * 0.2e9).collect();
-    let r1 = p1.analyze(&res, &freqs)?;
+    let r1: MslPortResult = p1.analyze(&res, &freqs)?;
     let r2 = p2.analyze(&res, &freqs)?;
     let s11 = r1.s11();
     let s21 = s_param(&r2, &r1);
+    let (beta, eps_eff) = (r1.beta(), r1.eps_eff());
     let (e_ham, z_ham) = hammerstad(EPS_R, W, H);
-    let z_ref = 50.0;
-    let len = LEN * 1e-3;
 
     println!("Hammerstad: Z0 = {z_ham:.2} Ω, eps_eff = {e_ham:.3}");
-    println!(" f [GHz]  |S11| [dB]  |S21| [dB]   Z0 [Ω]   eps_eff");
-    let mut phase_prev = 0.0;
-    let mut unwrapped = 0.0;
+    println!(" f [GHz]  |S11| [dB]  |S21| [dB]  ∠S21 + βL [deg]   Z_L [Ω]   eps_eff");
     let (mut z_sum, mut e_sum, mut cnt) = (0.0, 0.0, 0);
     for (k, &f) in freqs.iter().enumerate() {
-        let (s, t) = (s11[k], s21[k]);
-        let one = Complex64::new(1.0, 0.0);
-        let num = (one + s) * (one + s) - t * t;
-        let den = (one - s) * (one - s) - t * t;
-        let mut z0 = csqrt(num / den) * z_ref;
-        if z0.re < 0.0 {
-            z0 = -z0;
-        }
-        let g = (z0 - z_ref) / (z0 + z_ref);
-        let tr = (s + t - g) / (one - (s + t) * g);
-        // Unwrap the transmission phase from low frequency upwards.
-        let ph = tr.arg();
-        let mut d = ph - phase_prev;
-        while d > PI {
-            d -= 2.0 * PI;
-        }
-        while d < -PI {
-            d += 2.0 * PI;
-        }
-        unwrapped += d;
-        phase_prev = ph;
-        let beta = -unwrapped / len;
-        let eps_eff = (C0 * beta / (2.0 * PI * f)).powi(2);
+        let z = r1.z_line()[k];
         if k % 4 == 3 {
+            let dphi = (s21[k] * Complex64::cis(beta[k] * LEN * 1e-3)).arg();
             println!(
-                "{:>7.2}  {:>10.2}  {:>10.2}  {:>7.2}  {:>8.3}",
+                "{:>7.2}  {:>10.2}  {:>10.3}  {:>15.3}  {:>8.2}  {:>8.3}",
                 f / 1e9,
-                20.0 * s.norm().log10(),
-                20.0 * t.norm().log10(),
-                z0.norm(),
-                eps_eff
+                20.0 * s11[k].norm().log10(),
+                20.0 * s21[k].norm().log10(),
+                dphi.to_degrees(),
+                z.re,
+                eps_eff[k]
             );
         }
-        if (1e9..=6e9).contains(&f) {
-            z_sum += z0.norm();
-            e_sum += eps_eff;
+        if (1e9..=3e9).contains(&f) {
+            z_sum += z.re;
+            e_sum += eps_eff[k];
             cnt += 1;
         }
     }
     let (z_avg, e_avg) = (z_sum / cnt as f64, e_sum / cnt as f64);
     println!(
-        "1-6 GHz average: Z0 = {z_avg:.2} Ω ({:+.1} % vs Hammerstad), eps_eff = {e_avg:.3} ({:+.1} %)",
+        "1-3 GHz average: Z_L = {z_avg:.2} Ω ({:+.1} % vs Hammerstad), eps_eff = {e_avg:.3} ({:+.1} %)",
         (z_avg / z_ham - 1.0) * 100.0,
         (e_avg / e_ham - 1.0) * 100.0
     );

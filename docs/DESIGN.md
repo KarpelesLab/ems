@@ -320,7 +320,45 @@ ProbeBox, emitted into csx by the helper.
   `Z·e^{jK/2}`, `|S11| = tan(K/4)` with the loop current
   (`tests/validation_port.rs`).
 - Power waves with reference `Z_ref` (Pozar) give `S_ij`, `Z_in`, and
-  accepted/incident power.
+  accepted/incident power. `Z_ref` may vary with frequency
+  (`PortResult::new_per_frequency`), for transmission-line ports whose
+  reference is the extracted line impedance.
+
+**Microstrip port** (`ems::port::MslPort`, M2): a csx-emitting helper
+like `LumpedPort`. It writes the strip over the port length, an optional
+feed at the start (a soft E excitation from strip to ground, optionally
+over a feed resistor, which makes it a Thevenin source), three voltage
+probes at equally spaced mesh lines and two current probes (H loops around
+the strip) on the dual planes between them. With the line written as
+`V(s) = A·e^{−γs} + B·e^{γs}`, `I(s) = (A·e^{−γs} − B·e^{γs})/Z_L`
+(propagation coordinate `s`, spacing `d`):
+
+```text
+sinh²(γd/2) = (V1 + V3 − 2·V2) / (4·V2)
+Z_L         = −(V3 − V1) / (2·sinh(γd/2)·(Ia + Ib))
+I(s2)       = (Ia + Ib) / (2·cosh(γd/2))
+```
+
+then `A`, `B` at the middle probe are moved to the reference plane with
+`e^{∓γΔs}`. These relations are exact for any exponential mode sampled at
+those points, so on a uniform mesh section they reproduce the discrete Yee
+line exactly (its `γ` includes the numerical dispersion, its `Z_L` is the
+discrete wave impedance): `tests/validation_msl.rs` recovers `Z = η·h/w`
+and the 1-D Yee wavenumber of a PMC-walled parallel-plate line to the f32
+round-off of the fields (which enters `β` as `~1e-8/(βd)²`). Design
+choices and limits:
+- The mesh must exist before `add_to` (probe positions are mesh lines);
+  three **equally spaced** lines are required (non-uniform spacing breaks
+  the exactness), and `add_to` fails otherwise.
+- Strip edges need not be mesh lines. With lines on the edges a
+  zero-thickness strip acts wider (Z ≈ −8 % for w/h ≈ 2 at w/6 cells); with
+  the thirds rule the microstrip test is within 0.7 % (Z) and 0.1 %
+  (ε_eff) of Hammerstad.
+- The feed's near field (radiation and surface waves in an open structure,
+  below-cutoff box modes in a shielded one) decays slowly: probes 5·h from
+  the feed read ε_eff 5 % high, at ≈ 11·h within 1 %. The port should be
+  long (≥ 10 substrate heights between feed and probes).
+- `β` is ill-conditioned where `V2` has a standing-wave node.
 
 **Waveguide ports** (`ems::port::RectWaveguidePort`, TE_mn of a rectangular
 guide). The helper emits only csx properties, so the port round-trips
