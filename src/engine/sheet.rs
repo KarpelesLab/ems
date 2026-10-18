@@ -120,11 +120,34 @@
 //! count. Sheet edges inside a CPML lose the CPML correction (the compile
 //! step warns about it).
 //!
-//! [`Operator::energy`] reports the energy of the ladder and the
-//! correction of the face capacitances to the field invariant
-//! (`½·Σ C_k·u_k² − ½·C·u+² + ½·Σ L_k·h_k²`); with the H look-ahead of
-//! [`Engine::energy`](super::Engine::energy) not seeing the correction,
-//! the total is close to, but not exactly, the conserved quantity.
+//! # Energy
+//!
+//! The coupled scheme conserves (lossless ladder) or dissipates
+//!
+//! ```text
+//! W^n = ½·Σ C·u² (other edges) + Σ_sheet edges (½·Σ_k C_k·u_k² + ½·Σ_k L_k·h_k²)
+//!       + ½·Σ L·i^{n−½}·i^{n+½}
+//! ```
+//!
+//! with the face capacitances `C_k` including the split edge capacitance
+//! and `i^{n+½}` the H currents *after* the `post_h` correction. The
+//! engine's field sum ([`Engine::energy`](super::Engine::energy),
+//! [`Engine::step_with_energy`](super::Engine::step_with_energy)) uses
+//! `C·u+²` on the sheet edge and the H kernel result `i*^{n+½}` before the
+//! correction `i^{n+½} = i*^{n+½} + corr·(u− − u+)^n`. [`Operator::energy`]
+//! therefore reports
+//!
+//! ```text
+//! Σ_k ½·C_k·u_k² − ½·C·u+² + Σ_k ½·L_k·h_k²  +  Σ_c ½·L_c·corr_c·i_c^{n−½}·(u− − u+)^n
+//! ```
+//!
+//! (the last sum over the corrected dual edges, evaluated at the end of
+//! `post_e`, when the arrays hold `i^{n−½}` and `u^n` of the next step), so
+//! the engine total is the invariant above: exactly conserved for a
+//! lossless ladder up to `f32` rounding, non-increasing otherwise. Before
+//! the first step the last term is taken as 0. Operators that change the
+//! sheet edges' `u` or the corrected `i` after this one are not accounted
+//! for.
 
 use super::Engine;
 use super::fields::Fields;
@@ -280,6 +303,9 @@ struct Coupling {
     w_dn: f64,
     /// H correction factor: `i += corr·(u− − u+)`.
     corr: f64,
+    /// Energy-invariant correction factor `½·L·corr` of this dual edge
+    /// (`L = dt·(1 + da)/(2·db)`, as in the engine's energy sum).
+    ecorr: f64,
 }
 
 /// One installed sheet edge.
@@ -335,6 +361,9 @@ pub struct ConductingSheet {
     a: Vec<f64>,
     h: Vec<f64>,
     scratch: Vec<f64>,
+    /// `Σ ½·L·corr·i^{n−½}·(u− − u+)^n` of the last `post_e` (module docs,
+    /// *Energy*).
+    w_corr: f64,
 }
 
 impl ConductingSheet {
@@ -558,13 +587,21 @@ impl ConductingSheet {
                 } else {
                     (1.0, 0.0)
                 };
-                let db = co.db(ax)[grid.index(m)] as f64;
+                let mi = grid.index(m);
+                let (da, db) = (co.da(ax)[mi] as f64, co.db(ax)[mi] as f64);
+                let corr = -db * s * w_dn;
+                let ecorr = if db == 0.0 {
+                    0.0
+                } else {
+                    0.5 * dt * (1.0 + da) / (2.0 * db) * corr
+                };
                 self.couplings.push(Coupling {
                     axis: ax,
                     node: m,
                     w_up: s * w_up,
                     w_dn: s * w_dn,
-                    corr: -db * s * w_dn,
+                    corr,
+                    ecorr,
                 });
             }
             self.edges.push(EdgeState {
@@ -624,12 +661,14 @@ impl Operator for ConductingSheet {
 
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         let x = &mut self.scratch;
+        let mut w_corr = 0.0;
         for e in &self.edges {
-            let (mut s_up, mut s_dn) = (0.0, 0.0);
+            let (mut s_up, mut s_dn, mut s_e) = (0.0, 0.0, 0.0);
             for c in &self.couplings[e.c0..e.c0 + e.nc] {
                 let i = f.i.get(c.axis, c.node) as f64;
                 s_up += c.w_up * i;
                 s_dn += c.w_dn * i;
+                s_e += c.ecorr * i;
             }
             let (n0, nn, l0) = (e.n0, e.nn, e.l0);
             let u = &mut self.u[n0..n0 + nn];
@@ -667,8 +706,11 @@ impl Operator for ConductingSheet {
             for k in 0..nn {
                 u[k] = 2.0 * x[k] - u[k];
             }
-            f.u.set(e.axis, e.node, flush(u[0] as f32));
+            let up = flush(u[0] as f32);
+            f.u.set(e.axis, e.node, up);
+            w_corr += s_e * (u[nn - 1] - up as f64);
         }
+        self.w_corr = w_corr;
     }
 
     fn energy(&self) -> f64 {
@@ -684,7 +726,7 @@ impl Operator for ConductingSheet {
                 w += 0.5 * l * self.h[l0 + j] * self.h[l0 + j];
             }
         }
-        w
+        w + self.w_corr
     }
 }
 

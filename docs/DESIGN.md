@@ -494,7 +494,12 @@ edges. The weights are the same in Ampère's and Faraday's laws, which keeps
 the symmetric (energy-conserving) structure of the Yee scheme. The ladder
 is integrated trapezoidally at `(n + ½)·dt`, coupled implicitly with the
 face voltages (one prefactored tridiagonal solve per edge and step): no
-extra stability limit, passive for any `σ`, `t`.
+extra stability limit, passive for any `σ`, `t`. The operator's energy is
+the ladder energy, minus the edge capacitor the engine already counts,
+plus the term `½·L·corr·i^{n−½}·(u− − u+)^n` of the H correction the
+engine's look-ahead does not see; with it the engine energy is the exact
+invariant (drift 2.8e-7 over 2000 steps for a lossless sheet in a 3-D
+cavity, against 1.4e-3 without the correction term).
 
 **Compile mapping.** The sheet normal comes from the property's planar
 primitives; edges of line, curve or volume primitives (no normal) fall back

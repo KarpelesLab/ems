@@ -250,6 +250,84 @@ fn sheet_in_cavity_is_passive_and_deterministic() {
     }
 }
 
+/// The sheet cavity of [`sheet_in_cavity_is_passive_and_deterministic`]
+/// with a nearly lossless sheet (σ = 1e-9 S/m): the engine energy, which
+/// includes the ladder energy and the H-correction term of the operator,
+/// is conserved per step to ~1e-6; `step_with_energy` gives the same value
+/// as `energy()`; with a lossy sheet every single step is non-increasing,
+/// and an energy end criterion stops the run on `EnergyDecay`.
+#[test]
+fn sheet_energy_invariant() {
+    use ems::EndCriteria;
+    use ems::engine::{Engine, Grid, RunLimits, StopReason};
+    let build = |sigma: f64, t: f64| {
+        let g = Grid::new([
+            linspace(0.0, 10e-3, 11),
+            (0..=12).map(|i| 1e-3 * (i as f64).powf(1.1)).collect(),
+            linspace(0.0, 9e-3, 10),
+        ])
+        .unwrap();
+        let mut e = Engine::builder(g).threads(2).build().unwrap();
+        let mut s = ConductingSheet::new(Some(20e9));
+        s.add_rect(Axis::Z, 4, [2, 3, 0], [8, 9, 0], sigma, t);
+        s.add_to(&mut e).unwrap();
+        {
+            let mut f = e.fields_mut();
+            f.u.set(Axis::Y, [3, 4, 2], 1.0);
+            f.u.set(Axis::X, [5, 6, 6], -0.7);
+            f.u.set(Axis::Z, [4, 5, 3], 0.4);
+        }
+        e.run(3);
+        e
+    };
+    // Nearly lossless: conserved.
+    let mut e = build(1e-9, 1e-6);
+    let w0 = e.energy();
+    let (mut lo, mut hi) = (w0, w0);
+    for _ in 0..2000 {
+        let w = e.energy();
+        let ws = e.step_with_energy();
+        assert_eq!(w.to_bits(), ws.to_bits(), "{w} vs {ws}");
+        lo = lo.min(w);
+        hi = hi.max(w);
+    }
+    let drift = (hi - lo) / w0;
+    eprintln!("nearly lossless sheet, 2000 steps: energy drift {drift:.2e}");
+    assert!(drift < 1e-5, "{drift}");
+    // Lossy: monotone step by step.
+    for (sigma, t) in [(1e4, 1e-6), (5.8e7, 35e-6)] {
+        let mut e = build(sigma, t);
+        let mut w = e.energy();
+        for _ in 0..1000 {
+            e.step();
+            let wn = e.energy();
+            assert!(
+                wn <= w * (1.0 + 1e-6) + 1e-12 * w0,
+                "{sigma} {t}: {wn} > {w}"
+            );
+            w = wn;
+        }
+    }
+    // Part of the cavity modes do not touch the sheet, so the energy
+    // settles about 5 dB down; a −4 dB criterion must fire, and at the
+    // reported level.
+    let mut e = build(1e4, 1e-6);
+    let w_start = e.energy();
+    let lim = RunLimits::new(20_000).end_criteria(EndCriteria::energy_decay_db(-4.0));
+    let out = e.run_until(&lim).unwrap();
+    let db = 10.0 * (e.energy() / w_start).log10();
+    eprintln!(
+        "lossy sheet run: {:?} after {} steps ({db:.2} dB)",
+        out.reason, out.steps
+    );
+    match out.reason {
+        StopReason::EnergyDecay { ratio_db } => {
+            assert!(ratio_db <= -4.0 && db < -3.5, "{ratio_db} {db}")
+        }
+        r => panic!("{r:?}"),
+    }
+}
+
 /// The same thick-ish sheet as [`thick_sheet_transmission`], built as a
 /// csx model (`ConductingSheet` box on a mesh plane) and compiled: the
 /// compile step finds the sheet normal and installs the operator.
