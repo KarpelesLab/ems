@@ -401,6 +401,7 @@ impl Simulation {
             .map(|d| DumpResult {
                 name: d.name.clone(),
                 id: d.id,
+                file_type: d.file_type,
                 data: match d.op {
                     DumpOp::Time(h) => {
                         let op = self.engine.operator(&h);

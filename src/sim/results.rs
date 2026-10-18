@@ -184,6 +184,7 @@ pub enum DumpData {
 pub struct DumpResult {
     pub(crate) name: String,
     pub(crate) id: u32,
+    pub(crate) file_type: csx::properties::DumpFileType,
     pub(crate) data: DumpData,
 }
 
@@ -197,6 +198,14 @@ impl DumpResult {
     /// [`csx::PropertyId::get`]).
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// The file type the DumpBox asks for (`FileType`: VTK or HDF5). The
+    /// writers here do not look at it; it tells a runner which one to use
+    /// ([`write_vtr`](Self::write_vtr) or, with feature `hdf5`,
+    /// [`write_h5`](Self::write_h5)).
+    pub fn file_type(&self) -> csx::properties::DumpFileType {
+        self.file_type
     }
 
     /// The data.
@@ -246,6 +255,17 @@ impl DumpResult {
             }
             DumpData::Freq(f) => f.write_vtr(dir, basename),
         }
+    }
+
+    /// Writes the dump as one HDF5 file at `path` in the ems layout of
+    /// [`io::h5`](crate::io::h5), uncompressed (use
+    /// [`io::h5::write_dump`](crate::io::h5::write_dump) for options).
+    ///
+    /// # Errors
+    /// I/O and encoding errors.
+    #[cfg(feature = "hdf5")]
+    pub fn write_h5(&self, path: impl AsRef<Path>) -> Result<()> {
+        crate::io::h5::write_dump(path, self, &crate::io::h5::H5Options::default())
     }
 }
 

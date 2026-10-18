@@ -483,20 +483,46 @@ src/
     dump.rs       DumpBox operators
   port/           LumpedPort (M1), MslPort / WaveguidePort (M2): emit csx props + analyze
   post/           dft, complex (in-tree), sparams, impedance; nf2ff in M3
-  io/             vtr, csv; hdf5 (feature); openEMS <FDTD> section ↔ Fdtd (feature "xml")
+  io/             vtr, csv; h5 (feature "hdf5"); openEMS <FDTD> section ↔ Fdtd (feature "xml")
 tests/            analytic validation (§9)
 benches/          Mcells/s (in-tree harness, no criterion)
 examples/         rectangular cavity, dipole, microstrip line, patch antenna, run-xml
 ```
 
 **Dependencies**
-- Runtime: `csx` only.
+- Runtime: `csx` only by default.
 - Features:
   - `xml` (default): enables `csx/xml` and the `<FDTD>` mapping.
-  - `hdf5` (off by default): pulls in a C library.
+  - `hdf5` (off by default): adds `hdf5rs` (pure Rust, MIT, no C library,
+    no `unsafe`; KarpelesLab). `hdf5-deflate` also enables its gzip
+    filter (via `compcol`).
 - No `rayon`, `thiserror`, or `num-complex`; a small in-tree `Complex64` covers
   the need.
 - Dev: none required; `approx`-style helpers live in-tree.
+
+### 7.1 HDF5 output (feature `hdf5`)
+
+`ems::io::h5` writes dumps (one file each) and probe series (one file, a
+group per probe) in an **ems-native layout**, versioned by the root
+attributes `format` (`"ems-dump"` / `"ems-probes"`) and `version` (1). The
+module docs hold the full description; in short:
+
+- `/mesh/{x,y,z}`: sample coordinates in metres.
+- Time dumps: `/step`, `/time` and `/E` or `/H` as f32
+  `[nt, nx, ny, nz, 3]`.
+- Frequency dumps: `/frequency` and `/E` or `/H` as complex f64
+  `[nf, nx, ny, nz, 3]`, stored as the compound `{r, i}` that h5py reads as
+  `complex128`.
+- Arrays are row-major in the engine's own order (z fastest), so nothing is
+  reordered. Field datasets are chunked one snapshot or frequency per chunk,
+  optionally deflate-compressed.
+
+`DumpResult::file_type()` carries the DumpBox `FileType`; `run_xml` writes
+`.h5` for HDF5 dumps when the feature is on, and `.vtr` with a warning when
+it is off. The openEMS HDF5 layout (group names, attributes, axis order) is
+not implemented: it needs reference files from a real openEMS run, and
+openEMS's GPL reader scripts may not be consulted (§1). Files written by the
+tests were checked by hand with h5py 3.16.
 
 ## 8. What ems needs from csx
 
@@ -647,4 +673,5 @@ bandwidth at about 50 GB/s, well below what the machine can sustain. The
    exception for the kernel if benchmarks justify it?
 5. **openEMS output-file compatibility.** M2 as proposed, or do you need
    existing Python/Matlab post-processing to read our files sooner?
-6. **HDF5.** Needed in M1? (It would be the only non-Rust dependency.)
+6. **HDF5.** *Decided:* optional `hdf5` feature on the pure-Rust `hdf5rs`
+   crate (no C dependency), ems-native layout; openEMS layout later (§7.1).

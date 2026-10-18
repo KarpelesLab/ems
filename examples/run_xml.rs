@@ -9,6 +9,11 @@
 //! `t` plus the value or the `x`, `y`, `z` field components) and every dump
 //! as VTK `.vtr` files with a `.pvd` index (`DIR/<dump>_*.vtr`). `DIR`
 //! defaults to `<model>_results` next to the model file.
+//!
+//! With the `hdf5` feature (`--features hdf5`), dumps whose DumpBox asks for
+//! HDF5 (`FileType="1"`) are written as `DIR/<dump>.h5` instead (ems layout,
+//! see `ems::io::h5`), and all probes also go to `DIR/probes.h5`. Without
+//! it, such dumps fall back to `.vtr` with a warning.
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -158,8 +163,28 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("wrote {}", path.display());
     }
+    #[cfg(feature = "hdf5")]
+    {
+        let path = out.join("probes.h5");
+        ems::io::h5::write_probes(&path, res.probes().iter().chain(res.lumped_currents()))?;
+        println!("wrote {}", path.display());
+    }
     for d in res.dumps() {
         let base = file_stem(d.name());
+        if d.file_type() == csx::properties::DumpFileType::Hdf5 {
+            #[cfg(feature = "hdf5")]
+            {
+                let path = out.join(format!("{base}.h5"));
+                d.write_h5(&path)?;
+                println!("wrote {}", path.display());
+                continue;
+            }
+            #[cfg(not(feature = "hdf5"))]
+            println!(
+                "  ! dump {:?} asks for HDF5 but run_xml was built without the `hdf5` feature; writing .vtr",
+                d.name()
+            );
+        }
         d.write_vtr(&out, &base)?;
         println!("wrote {}/{base}_*.vtr", out.display());
     }

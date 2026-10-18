@@ -86,6 +86,8 @@ It prints warnings, progress and the outcome, and writes every probe as
 | feature | default | description |
 |---|---|---|
 | `xml` | yes | run openEMS XML files (via `csx/xml`) |
+| `hdf5` | no | write field dumps and probes as HDF5 (`ems::io::h5`, ems-native layout), via the pure-Rust [`hdf5rs`](https://crates.io/crates/hdf5rs) |
+| `hdf5-deflate` | no | `hdf5` plus gzip compression of field datasets |
 
 ## Documentation
 

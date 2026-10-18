@@ -55,6 +55,7 @@ pub(crate) enum DumpOp {
 pub(crate) struct DumpEntry {
     pub name: String,
     pub id: u32,
+    pub file_type: csx::properties::DumpFileType,
     pub op: DumpOp,
 }
 
@@ -426,6 +427,7 @@ pub(crate) fn map_sources(
         mapped.dumps.push(DumpEntry {
             name: d.name.clone(),
             id: d.id,
+            file_type: s.file_type,
             op,
         });
     }

@@ -15,9 +15,15 @@ categories = ["science", "simulation", "mathematics"]
 default = ["xml"]
 ## Run openEMS XML files (enables the CSXCAD/openEMS XML support of `csx`).
 xml = ["csx/xml"]
+## Write field dumps and probes as HDF5 files (`ems::io::h5`), via the
+## pure-Rust `hdf5rs` crate.
+hdf5 = ["dep:hdf5rs"]
+## Enable gzip (deflate) compression of HDF5 datasets.
+hdf5-deflate = ["hdf5", "hdf5rs/deflate"]
 
 [dependencies]
 csx = { version = "0.0.2", default-features = false }
+hdf5rs = { version = "0.0.1", default-features = false, optional = true }
 
 [[example]]
 name = "run_xml"
