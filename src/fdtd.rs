@@ -4,12 +4,18 @@
 //! excitation [`Waveform`], the [`Boundaries`] of the six domain faces, the
 //! [`EndCriteria`], the timestep count and the time-step choice. This module
 //! only holds data and validates it; the engine interprets it.
+//!
+//! The file-level openEMS `<FDTD>` element is typed by csx
+//! ([`csx::fdtd::FdtdSettings`]); [`Fdtd::from_csx`] and [`Fdtd::to_csx`]
+//! convert between the two (see [`Fdtd::from_csx`] for the mapping).
 
 use crate::axis::Axis;
 use crate::error::{Error, Result};
 use crate::waveform::Waveform;
 use core::fmt;
 use core::ops::{Index, IndexMut};
+
+mod convert;
 
 /// One of the six faces of the computational domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -440,6 +446,9 @@ pub struct Fdtd {
     timestep_factor: f64,
     timestep: Option<f64>,
     threads: Option<usize>,
+    max_frequency: Option<f64>,
+    max_time: Option<f64>,
+    oversampling: Option<u32>,
 }
 
 impl Default for Fdtd {
@@ -452,6 +461,9 @@ impl Default for Fdtd {
             timestep_factor: Self::DEFAULT_TIMESTEP_FACTOR,
             timestep: None,
             threads: None,
+            max_frequency: None,
+            max_time: None,
+            oversampling: None,
         }
     }
 }
@@ -526,6 +538,76 @@ impl Fdtd {
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = Some(n);
         self
+    }
+
+    /// Sets the highest frequency of interest `f` \[Hz\] (openEMS `f_max`).
+    /// Needed for waveforms without a bounded spectrum (Dirac, step) when
+    /// the mesh resolution is checked; see [`Fdtd::get_max_frequency`].
+    pub fn max_frequency(mut self, f: f64) -> Self {
+        self.max_frequency = Some(f);
+        self
+    }
+
+    /// Limits the simulated (physical) time to `t` \[s\] (openEMS
+    /// `MaxTime`); the run stops after `ceil(t/dt)` steps if that is fewer
+    /// than [`max_timesteps`](Fdtd::max_timesteps).
+    pub fn max_time(mut self, t: f64) -> Self {
+        self.max_time = Some(t);
+        self
+    }
+
+    /// Sets the probe / time-domain dump oversampling factor relative to
+    /// the Nyquist rate of the maximum frequency (openEMS `OverSampling`,
+    /// default 4). Stored for interoperability; not yet used by the engine.
+    pub fn oversampling(mut self, n: u32) -> Self {
+        self.oversampling = Some(n);
+        self
+    }
+
+    /// The highest frequency of interest \[Hz\]: the explicit
+    /// [`max_frequency`](Fdtd::max_frequency), else the waveform's
+    /// [`Waveform::max_frequency`].
+    pub fn get_max_frequency(&self) -> Option<f64> {
+        self.max_frequency
+            .or_else(|| self.waveform.as_ref().and_then(Waveform::max_frequency))
+    }
+
+    /// The explicitly set highest frequency of interest \[Hz\], if any.
+    pub fn get_explicit_max_frequency(&self) -> Option<f64> {
+        self.max_frequency
+    }
+
+    /// The simulated time limit \[s\], if any.
+    pub fn get_max_time(&self) -> Option<f64> {
+        self.max_time
+    }
+
+    /// The oversampling factor, if set.
+    pub fn get_oversampling(&self) -> Option<u32> {
+        self.oversampling
+    }
+
+    /// The step limit for time step `dt` \[s\]: [`max_timesteps`](Fdtd::max_timesteps),
+    /// reduced to `ceil(max_time/dt)` (at least 1) when a
+    /// [`max_time`](Fdtd::max_time) is set.
+    pub fn timestep_limit(&self, dt: f64) -> u64 {
+        match self.max_time {
+            Some(t) if dt > 0.0 => {
+                // Round first so that e.g. 1e-9 / 1e-11 = 100.000…01 gives 100.
+                let r = t / dt;
+                let n = if (r - r.round()).abs() <= 1e-9 * r {
+                    r.round()
+                } else {
+                    r.ceil()
+                };
+                if n < self.max_timesteps as f64 {
+                    (n as u64).max(1)
+                } else {
+                    self.max_timesteps
+                }
+            }
+            _ => self.max_timesteps,
+        }
     }
 
     /// The excitation waveform, if set.
@@ -609,6 +691,23 @@ impl Fdtd {
         }
         if self.threads == Some(0) {
             return Err(Error::Invalid("thread count must be at least 1".into()));
+        }
+        if let Some(f) = self.max_frequency
+            && !(f.is_finite() && f > 0.0)
+        {
+            return Err(Error::Invalid(format!(
+                "maximum frequency {f} must be finite and > 0"
+            )));
+        }
+        if let Some(t) = self.max_time
+            && !(t.is_finite() && t > 0.0)
+        {
+            return Err(Error::Invalid(format!(
+                "maximum time {t} must be finite and > 0"
+            )));
+        }
+        if self.oversampling == Some(0) {
+            return Err(Error::Invalid("oversampling must be at least 1".into()));
         }
         Ok(())
     }
@@ -783,5 +882,35 @@ mod tests {
         assert!(ok.clone().timestep(0.0).validate().is_err());
         assert!(ok.clone().timestep(f64::INFINITY).validate().is_err());
         assert!(ok.clone().threads(0).validate().is_err());
+        assert!(ok.clone().max_frequency(0.0).validate().is_err());
+        assert!(ok.clone().max_time(f64::NAN).validate().is_err());
+        assert!(ok.clone().oversampling(0).validate().is_err());
+    }
+
+    #[test]
+    fn max_frequency_time_and_oversampling() {
+        let f = Fdtd::new();
+        assert_eq!(f.get_max_frequency(), None);
+        assert_eq!(f.get_max_time(), None);
+        assert_eq!(f.get_oversampling(), None);
+        assert_eq!(f.timestep_limit(1e-12), Fdtd::DEFAULT_MAX_TIMESTEPS);
+        let f = f.waveform(Waveform::gaussian(1e9, 5e8));
+        assert_eq!(f.get_max_frequency(), Some(1.5e9));
+        assert_eq!(f.get_explicit_max_frequency(), None);
+        let f = f
+            .max_frequency(3e9)
+            .max_time(1e-9)
+            .oversampling(8)
+            .max_timesteps(500);
+        assert!(f.validate().is_ok());
+        assert_eq!(f.get_max_frequency(), Some(3e9));
+        assert_eq!(
+            (f.get_max_time(), f.get_oversampling()),
+            (Some(1e-9), Some(8))
+        );
+        assert_eq!(f.timestep_limit(1e-11), 100);
+        assert_eq!(f.timestep_limit(3e-12), 334);
+        assert_eq!(f.timestep_limit(1e-13), 500);
+        assert_eq!(f.timestep_limit(1.0), 1);
     }
 }

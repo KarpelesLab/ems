@@ -44,6 +44,25 @@
 //! The pulse is symmetric and considered over at `2T`
 //! ([`Waveform::duration`]); outside `[0, 2T]` it is exactly zero. The
 //! truncation changes the spectrum by less than 1e-6 of its peak.
+//!
+//! # openEMS / csx interoperability
+//!
+//! [`Waveform::from_csx`] and [`Waveform::to_csx`] convert from / to the
+//! file-level [`csx::fdtd::ExcitationSignal`]. The Gaussian definition above
+//! (cosine carrier, `τ`, `T`) is identical to csx's
+//! [`ExcitationSignal::eval`](csx::fdtd::ExcitationSignal::eval); the only
+//! difference is that `ems` is exactly zero outside `[0, 2T]` while csx
+//! evaluates the untruncated pulse (at most 1e-6 of the peak there). The
+//! public openEMS documentation defines `f0` as the centre frequency and
+//! `fc` as the 20 dB cutoff ("bandwidth is 2·fc"), which this definition
+//! satisfies; it does not specify the carrier phase or the delay.
+//!
+//! The other signals agree with csx for `t ≥ 0`, which is where the engine
+//! samples them. Differences: the sinusoid and the step are 0 for `t < 0`
+//! here (csx's sinusoid continues to negative times), and
+//! [`Waveform::Dirac`] is a sampled unit impulse (1 for the one sample
+//! within half a step of `t = 0`) where csx returns 1 only at exactly
+//! `t = 0`.
 
 use crate::error::{Error, Result};
 use crate::post::Complex64;
@@ -84,6 +103,63 @@ pub enum Waveform {
     Step,
     /// Arbitrary user function of time `t` \[s\].
     Custom(WaveformFn),
+    /// openEMS custom excitation (signal type 10): an expression of `t`
+    /// that keeps its source text, so it converts back to csx / XML.
+    Expression(ExpressionWaveform),
+}
+
+/// openEMS-style custom excitation: an expression of the time `t` \[s\]
+/// in which the names `f0` and `f_max` (alias `fmax`) are also defined.
+///
+/// Evaluation goes through csx's
+/// [`ExcitationSignal::evaluator`](csx::fdtd::ExcitationSignal::evaluator),
+/// so the values are exactly those of csx.
+#[derive(Debug, Clone)]
+pub struct ExpressionWaveform {
+    function: String,
+    f0: f64,
+    f_max: f64,
+    eval: csx::fdtd::SignalFn,
+}
+
+impl ExpressionWaveform {
+    /// Compiles `function` with the given base frequency `f0` and highest
+    /// frequency of interest `f_max` \[Hz\].
+    pub fn new(function: impl Into<String>, f0: f64, f_max: f64) -> Result<Self> {
+        let function = function.into();
+        let eval = csx::fdtd::ExcitationSignal::Custom {
+            function: function.clone(),
+            f0,
+            f_max,
+        }
+        .evaluator()?;
+        Ok(ExpressionWaveform {
+            function,
+            f0,
+            f_max,
+            eval,
+        })
+    }
+
+    /// The expression source.
+    pub fn function(&self) -> &str {
+        &self.function
+    }
+
+    /// Base frequency `f0` \[Hz\].
+    pub fn f0(&self) -> f64 {
+        self.f0
+    }
+
+    /// Highest frequency of interest `f_max` \[Hz\].
+    pub fn f_max(&self) -> f64 {
+        self.f_max
+    }
+
+    /// Value at time `t` \[s\].
+    pub fn eval(&self, t: f64) -> f64 {
+        self.eval.eval(t)
+    }
 }
 
 impl fmt::Debug for Waveform {
@@ -98,6 +174,12 @@ impl fmt::Debug for Waveform {
             Waveform::Dirac => f.write_str("Dirac"),
             Waveform::Step => f.write_str("Step"),
             Waveform::Custom(_) => f.write_str("Custom(<fn>)"),
+            Waveform::Expression(e) => f
+                .debug_struct("Expression")
+                .field("function", &e.function)
+                .field("f0", &e.f0)
+                .field("f_max", &e.f_max)
+                .finish(),
         }
     }
 }
@@ -163,8 +245,56 @@ impl Waveform {
         Ok(Waveform::Custom(Arc::new(move |t| compiled.eval(&[t]))))
     }
 
+    /// Converts a csx / openEMS excitation signal.
+    ///
+    /// Dirac and step signals carry the highest frequency of interest
+    /// `f_max`, which is not part of [`Waveform`]; [`Fdtd::from_csx`]
+    /// keeps it as the settings' maximum frequency. Custom signals become
+    /// [`Waveform::Expression`]. The result is validated.
+    ///
+    /// [`Fdtd::from_csx`]: crate::fdtd::Fdtd::from_csx
+    pub fn from_csx(s: &csx::fdtd::ExcitationSignal) -> Result<Self> {
+        use csx::fdtd::ExcitationSignal as S;
+        let w = match s {
+            S::Gaussian { f0, fc } => Waveform::gaussian(*f0, *fc),
+            S::Sinus { f0 } => Waveform::sinusoid(*f0),
+            S::Dirac { .. } => Waveform::Dirac,
+            S::Step { .. } => Waveform::Step,
+            S::Custom {
+                function,
+                f0,
+                f_max,
+            } => Waveform::Expression(ExpressionWaveform::new(function.clone(), *f0, *f_max)?),
+        };
+        w.validate()?;
+        Ok(w)
+    }
+
+    /// Converts to a csx / openEMS excitation signal; `None` for
+    /// [`Waveform::Custom`] (a closure has no file representation).
+    ///
+    /// Dirac and step signals get `f_max = 0`; [`Fdtd::to_csx`] fills in
+    /// the settings' maximum frequency instead.
+    ///
+    /// [`Fdtd::to_csx`]: crate::fdtd::Fdtd::to_csx
+    pub fn to_csx(&self) -> Option<csx::fdtd::ExcitationSignal> {
+        use csx::fdtd::ExcitationSignal as S;
+        Some(match self {
+            Waveform::Gaussian { f0, fc } => S::Gaussian { f0: *f0, fc: *fc },
+            Waveform::Sinusoid { f0 } => S::Sinus { f0: *f0 },
+            Waveform::Dirac => S::Dirac { f_max: 0.0 },
+            Waveform::Step => S::Step { f_max: 0.0 },
+            Waveform::Custom(_) => return None,
+            Waveform::Expression(e) => S::Custom {
+                function: e.function.clone(),
+                f0: e.f0,
+                f_max: e.f_max,
+            },
+        })
+    }
+
     /// Checks the parameters: Gaussian needs finite `f0 ≥ 0` and `fc > 0`,
-    /// Sinusoid a finite `f0 > 0`.
+    /// Sinusoid a finite `f0 > 0`, Expression finite `f0` and `f_max`.
     pub fn validate(&self) -> Result<()> {
         match *self {
             Waveform::Gaussian { f0, fc } => {
@@ -186,6 +316,16 @@ impl Waveform {
                 } else {
                     Err(Error::Invalid(format!(
                         "sinusoid waveform: frequency f0 = {f0} must be finite and > 0"
+                    )))
+                }
+            }
+            Waveform::Expression(ref e) => {
+                if e.f0.is_finite() && e.f_max.is_finite() {
+                    Ok(())
+                } else {
+                    Err(Error::Invalid(format!(
+                        "expression waveform: f0 = {} and f_max = {} must be finite",
+                        e.f0, e.f_max
                     )))
                 }
             }
@@ -230,6 +370,7 @@ impl Waveform {
                 }
             }
             Waveform::Custom(f) => f(t),
+            Waveform::Expression(e) => e.eval(t),
         }
     }
 
@@ -274,11 +415,13 @@ impl Waveform {
 
     /// Highest frequency of significant spectral content \[Hz\], used for
     /// mesh resolution checks: `f0 + fc` for the Gaussian, `f0` for the
-    /// sinusoid, `None` when unknown or unbounded.
+    /// sinusoid, `f_max` for an expression (if > 0), `None` when unknown or
+    /// unbounded.
     pub fn max_frequency(&self) -> Option<f64> {
         match *self {
             Waveform::Gaussian { f0, fc } => Some(f0 + fc),
             Waveform::Sinusoid { f0 } => Some(f0),
+            Waveform::Expression(ref e) if e.f_max > 0.0 => Some(e.f_max),
             _ => None,
         }
     }
@@ -424,5 +567,127 @@ mod tests {
             format!("{:?}", Waveform::gaussian(1.0, 2.0)),
             "Gaussian { f0: 1.0, fc: 2.0 }"
         );
+    }
+
+    use csx::fdtd::ExcitationSignal as Sig;
+
+    #[test]
+    fn gaussian_matches_csx() {
+        for (f0, fc) in [(2e9, 1e9), (1e9, 5e8), (0.0, 1e9), (10e9, 2e9), (5e6, 3e7)] {
+            let sig = Sig::Gaussian { f0, fc };
+            let w = Waveform::from_csx(&sig).unwrap();
+            assert!(matches!(w, Waveform::Gaussian { .. }));
+            // Same width, delay, duration and maximum frequency.
+            let tau = sig.gaussian_width().unwrap();
+            assert!((tau - gaussian_tau(fc)).abs() <= 1e-15 * tau);
+            assert!((sig.gaussian_delay().unwrap() - w.delay()).abs() <= 1e-15 * w.delay());
+            assert_eq!(sig.duration(), w.duration());
+            assert_eq!(Some(sig.max_frequency()), w.max_frequency());
+            // Same values over the whole pulse (cosine carrier, same phase).
+            let end = w.duration().unwrap();
+            let n = 20_000;
+            let mut max_err = 0f64;
+            for i in 1..n {
+                let t = end * i as f64 / n as f64;
+                max_err = max_err.max((w.value(t, 1e-15) - sig.eval(t)).abs());
+            }
+            // Same formula and operation order: bit-identical (0.0) today.
+            assert!(max_err <= 1e-15, "f0={f0} fc={fc}: {max_err}");
+            // At the window edges both are at the 1e-6 envelope level.
+            for t in [0.0, end] {
+                assert!((w.value(t, 1e-15) - sig.eval(t)).abs() <= 1.0001e-6);
+            }
+            // Outside [0, 2T] ems is exactly 0, csx's untruncated tail is tiny.
+            for t in [-0.5 * end, -1e-3 * end, end * 1.001, 1.5 * end] {
+                assert_eq!(w.value(t, 1e-15), 0.0);
+                assert!(sig.eval(t).abs() <= 1.0001e-6, "t={t}");
+            }
+            assert_eq!(w.to_csx(), Some(sig));
+        }
+    }
+
+    #[test]
+    fn other_signals_match_csx_for_nonnegative_t() {
+        let dt = 1e-12;
+        let ts: Vec<f64> = (0..2000).map(|i| i as f64 * 0.37 * dt).collect();
+        for sig in [
+            Sig::Sinus { f0: 1e9 },
+            Sig::Step { f_max: 2e9 },
+            Sig::Custom {
+                function: "sin(2*pi*f0*t)*exp(-t*f_max)".into(),
+                f0: 1e9,
+                f_max: 3e9,
+            },
+        ] {
+            let w = Waveform::from_csx(&sig).unwrap();
+            for &t in &ts {
+                assert_eq!(w.value(t, dt), sig.eval(t), "{sig:?} t={t}");
+            }
+        }
+        // Negative time: the ems sinusoid is switched off, csx continues.
+        let w = Waveform::from_csx(&Sig::Sinus { f0: 1e9 }).unwrap();
+        assert_eq!(w.value(-0.25e-9, dt), 0.0);
+        assert!((Sig::Sinus { f0: 1e9 }.eval(-0.25e-9) + 1.0).abs() < 1e-12);
+        // Dirac: both 1 at t = 0; ems also hits the half-step sample.
+        let d = Sig::Dirac { f_max: 1e9 };
+        let w = Waveform::from_csx(&d).unwrap();
+        assert_eq!((w.value(0.0, dt), d.eval(0.0)), (1.0, 1.0));
+        assert_eq!((w.value(dt, dt), d.eval(dt)), (0.0, 0.0));
+        assert_eq!((w.value(0.5 * dt, dt), d.eval(0.5 * dt)), (1.0, 0.0));
+    }
+
+    #[test]
+    fn csx_conversion_round_trip() {
+        let custom = Sig::Custom {
+            function: "f0*t + fmax".into(),
+            f0: 2.0,
+            f_max: 3.0,
+        };
+        for sig in [
+            Sig::Gaussian { f0: 1e9, fc: 1e8 },
+            Sig::Sinus { f0: 4e9 },
+            Sig::Dirac { f_max: 0.0 },
+            Sig::Step { f_max: 0.0 },
+            custom.clone(),
+        ] {
+            assert_eq!(Waveform::from_csx(&sig).unwrap().to_csx(), Some(sig));
+        }
+        let w = Waveform::from_csx(&custom).unwrap();
+        assert_eq!(w.value(0.5, 1.0), 4.0);
+        assert_eq!(w.max_frequency(), Some(3.0));
+        assert_eq!(w.duration(), None);
+        assert_eq!(
+            format!("{w:?}"),
+            r#"Expression { function: "f0*t + fmax", f0: 2.0, f_max: 3.0 }"#
+        );
+        let Waveform::Expression(e) = &w else {
+            unreachable!()
+        };
+        assert_eq!((e.function(), e.f0(), e.f_max()), ("f0*t + fmax", 2.0, 3.0));
+        // f_max of Dirac / step is not part of the waveform.
+        assert_eq!(
+            Waveform::from_csx(&Sig::Dirac { f_max: 1e9 })
+                .unwrap()
+                .to_csx(),
+            Some(Sig::Dirac { f_max: 0.0 })
+        );
+        assert_eq!(Waveform::custom(|t| t).to_csx(), None);
+        // Invalid input is rejected.
+        assert!(Waveform::from_csx(&Sig::Gaussian { f0: 1e9, fc: 0.0 }).is_err());
+        assert!(Waveform::from_csx(&Sig::Sinus { f0: -1.0 }).is_err());
+        let bad = Sig::Custom {
+            function: "q*t".into(),
+            f0: 1.0,
+            f_max: 1.0,
+        };
+        assert!(matches!(Waveform::from_csx(&bad), Err(Error::Csx(_))));
+        let nan = ExpressionWaveform::new("t", f64::NAN, 1.0).unwrap();
+        assert!(Waveform::Expression(nan).validate().is_err());
+    }
+
+    #[test]
+    fn waveform_is_send_sync() {
+        fn check<T: Send + Sync>() {}
+        check::<Waveform>();
     }
 }

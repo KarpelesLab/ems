@@ -23,7 +23,7 @@ pub use engine::{CellMaterials, Engine, Grid};
 pub use error::{Error, Result};
 pub use fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
 pub use post::Complex64;
-pub use waveform::Waveform;
+pub use waveform::{ExpressionWaveform, Waveform};
 
 /// The main user-facing types, for glob import: `use ems::prelude::*;`.
 pub mod prelude {
@@ -33,5 +33,5 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
     pub use crate::post::Complex64;
-    pub use crate::waveform::Waveform;
+    pub use crate::waveform::{ExpressionWaveform, Waveform};
 }

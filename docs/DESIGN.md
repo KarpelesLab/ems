@@ -60,13 +60,18 @@ uses an equivalent-circuit FDTD. We use the standard Yee scheme in integral form
 - `RectilinearGrid`: lines, delta unit, snapping, and smooth-mesh helpers.
 - Parameters and expressions, re-evaluated by `update()`.
 - XML read/write, including the openEMS document wrapper.
+- The file-level `<FDTD>` settings, typed as `csx::fdtd::FdtdSettings`
+  (all fields optional for a faithful round trip; excitation signal,
+  boundary conditions, timestep settings). See §11 Q1.
 
 **`ems` owns the solver:**
-- **FDTD settings.** These are what the openEMS `<FDTD>` element carries:
-  - the excitation waveform,
-  - boundary conditions,
-  - timestep count, end criteria, oversampling,
-  - and anything else solver-specific.
+- **Resolved FDTD settings** (`ems::Fdtd`, `ems::Waveform`): the validated
+  solver configuration, including what the file format cannot express
+  (CPML grading parameters, thread count, end-criteria check interval,
+  analytic waveform spectrum). `Fdtd::from_csx` converts csx's
+  `FdtdSettings` (returning warnings for ignored settings) and
+  `Fdtd::to_csx` converts back; `Waveform::from_csx` / `to_csx` do the
+  same for the excitation signal.
 - **Compile step.** `csx::ContinuousStructure` + settings → `Engine`. This
   rasterises materials onto edges, maps Excitation/ProbeBox/DumpBox/LumpedElement
   primitives to engine operators, and computes the time step.
@@ -326,8 +331,9 @@ ProbeBox, emitted into csx by the helper.
 `Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>)`.
 - **Gaussian**: centre `f0`, 20 dB half-bandwidth `fc`, delayed so it starts
   below 1e-6 of the peak.
-- **Custom**: an expression string from XML is evaluated through `csx::expr`
-  with variable `t`.
+- **Custom**: an expression string from XML becomes `Waveform::Expression`,
+  evaluated by csx's `ExcitationSignal::evaluator` (variable `t`, plus `f0`
+  and `f_max`), so values match csx exactly and the source text round-trips.
 - **Sampling**: E sources are sampled at `t^{n+1/2}`.
 - **Spectrum**: `Waveform::spectrum(f)` is used to normalise frequency-domain
   results.
@@ -441,7 +447,7 @@ they can be planned on the csx side.
 | `RectilinearGrid` lines + delta unit + coordinate system; smooth-mesh helpers | planned (grid) |
 | Model types are `Send + Sync` (no `Rc`/`RefCell`), so the compile step can rasterise in parallel | to confirm |
 | Cheap `Clone` of a structure (for `update()` without mutating the caller's model) | to confirm |
-| XML: access to the openEMS `<FDTD>` element, as a typed struct or a raw element tree that ems maps itself (§10 Q1) | planned (io::xml) |
+| XML: access to the openEMS `<FDTD>` element, as a typed struct or a raw element tree that ems maps itself (§11 Q1) | `csx::fdtd::FdtdSettings` + `OpenEmsDocument::fdtd_settings` (csx tree, after 0.0.1) |
 
 Anything solver-specific stays out of csx, so csx remains useful to other
 solvers and tools.
@@ -497,10 +503,14 @@ parallel.
 
 ## 11. Open questions for review
 
-1. **Who types the `<FDTD>` section?** csx's plan says it keeps it "typed-or-raw".
-   My proposal: csx exposes it as a raw element tree with attribute access, and
-   ems owns the typed `Fdtd` struct and its (de)serialisation. That keeps solver
-   semantics out of csx. Alternatively csx types it, and ems converts.
+1. **Who types the `<FDTD>` section?** *Decided:* csx types it
+   (`csx::fdtd::FdtdSettings`, `ExcitationSignal`, `BoundaryConditions`), as
+   file-level data with every field optional. ems keeps its resolved,
+   validated `Fdtd` / `Waveform` and converts both ways
+   (`Fdtd::from_csx` → `(Fdtd, warnings)`, `Fdtd::to_csx`). The Gaussian
+   pulse definitions of both crates are identical (cosine carrier,
+   `τ = √ln10/(π·fc)`, delay `τ·√(6 ln 10)`); ems additionally truncates it
+   to `[0, 2T]`.
 2. **Precision.** Is `f32`-only acceptable for M1, or do you want `f64` behind a
    generic from day one?
 3. **No rayon.** OK with a std-only thread pool, to match csx's minimal-dependency
