@@ -12,6 +12,7 @@ pub mod axis;
 pub mod constants;
 pub mod error;
 pub mod fdtd;
+pub mod io;
 pub mod post;
 pub mod waveform;
 
