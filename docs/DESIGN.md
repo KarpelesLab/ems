@@ -592,15 +592,27 @@ parallel.
 | Step | State |
 |---|---|
 | 1–8 | done |
-| 9 | examples (cavity, microstrip, patch antenna, dipole, run_xml) and README done; benchmarks need an idle machine for meaningful numbers; `hdf5` not started |
+| 9 | examples (cavity, microstrip, patch antenna, dipole, run_xml), README and idle-machine benchmark done; `hdf5` in progress |
 
 Pulled forward from M2:
 - Dispersive media (Drude/Lorentz/Debye, electric and magnetic) via ADE.
 - Second-order lumped-port reference plane.
 
 Remaining M1 items:
-- An idle-machine benchmark.
 - The optional `hdf5` feature.
+
+Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
+9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:
+
+| grid | 1 T | 8 T | 16 T | 32 T | 64 T |
+|---|---|---|---|---|---|
+| 128³ | 322 | 1582 | 1680 | 2338–2463 | 1149–1352 |
+| 256³ | 321 | 445 | 560 | 577 | 531 |
+
+With 8-cell CPML on all faces, 128³ at 64 T runs at 969 Mcells/s; energy
+checks every 10 steps give 1113 Mcells/s. 256³ is limited by memory
+bandwidth at about 50 GB/s, well below what the machine can sustain. The
+64-thread drop at 128³ comes from slab granularity and SMT.
 
 ## 11. Open questions for review
 
