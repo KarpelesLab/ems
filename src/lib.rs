@@ -10,6 +10,7 @@
 
 pub mod axis;
 pub mod constants;
+pub mod engine;
 pub mod error;
 pub mod fdtd;
 pub mod io;
