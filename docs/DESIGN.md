@@ -311,6 +311,11 @@ ProbeBox, emitted into csx by the helper.
   - `ems::mesh::check` warns if structure primitives intrude into the PML.
   - Grading `m = 3` and `σ_max = 0.8·(m+1)/(η·Δ_local)`; κ_max and α_max are
     configurable.
+  - The depth `ρ` is counted in cells (mesh index, half-integer for H), so on a
+    graded PML mesh the per-cell attenuation `σ·Δ` keeps the uniform profile.
+  - One operator (`engine::boundary::cpml::CpmlBoundary`) handles all CPML
+    faces; it applies `cb·((1/κ − 1)·S + ψ)` corrections after the kernels and
+    runs serially between the half-steps for now.
   - ψ arrays are stored only for the slabs; each ψ term handles one derivative
     direction, so edges and corners are correct.
 - **Periodic/Bloch**: M3. Neighbour indexing goes through the boundary layer, so

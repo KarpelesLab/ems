@@ -25,7 +25,7 @@ use super::fields::{Block, FieldStore, read, write};
 /// and the difference is exactly zero. The rounding is IEEE-exact, hence
 /// deterministic.
 #[inline(always)]
-fn flush(x: f32) -> f32 {
+pub(crate) fn flush(x: f32) -> f32 {
     const C: f32 = f32::from_bits(25 << 23); // 2^(25 − 127) = 2^-102
     (x + C) - C
 }
