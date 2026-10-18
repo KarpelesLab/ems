@@ -38,7 +38,8 @@ pub struct PortResult {
     freqs: Vec<f64>,
     v: Vec<Complex64>,
     i: Vec<Complex64>,
-    z_ref: Complex64,
+    /// Reference impedance per frequency.
+    z_ref: Vec<Complex64>,
 }
 
 impl PortResult {
@@ -53,23 +54,42 @@ impl PortResult {
         i: Vec<Complex64>,
         z_ref: Complex64,
     ) -> Result<Self> {
-        if v.len() != freqs.len() || i.len() != freqs.len() {
+        let z = vec![z_ref; freqs.len()];
+        Self::with_z_refs(freqs, v, i, z)
+    }
+
+    /// Like [`new`](Self::new) with a frequency-dependent reference
+    /// impedance, one value per frequency (e.g. the wave impedance of a
+    /// waveguide mode).
+    ///
+    /// Fails if the lengths differ or any `Re z_ref` is not positive and
+    /// finite.
+    pub fn with_z_refs(
+        freqs: Vec<f64>,
+        v: Vec<Complex64>,
+        i: Vec<Complex64>,
+        z_ref: Vec<Complex64>,
+    ) -> Result<Self> {
+        if v.len() != freqs.len() || i.len() != freqs.len() || z_ref.len() != freqs.len() {
             return Err(Error::Invalid(format!(
-                "port result: {} frequencies but {} voltages and {} currents",
+                "port result: {} frequencies but {} voltages, {} currents and {} \
+                 reference impedances",
                 freqs.len(),
                 v.len(),
-                i.len()
+                i.len(),
+                z_ref.len()
             )));
         }
-        if !(z_ref.is_finite() && z_ref.re > 0.0) {
+        if let Some(z) = z_ref.iter().find(|z| !(z.is_finite() && z.re > 0.0)) {
             return Err(Error::Invalid(format!(
-                "reference impedance {z_ref} must have a positive real part"
+                "reference impedance {z} must have a positive real part"
             )));
         }
         Ok(Self { freqs, v, i, z_ref })
     }
 
-    /// Returns the same spectra with another reference impedance.
+    /// Returns the same spectra with another (constant) reference
+    /// impedance.
     pub fn with_z_ref(&self, z_ref: Complex64) -> Result<Self> {
         Self::new(self.freqs.clone(), self.v.clone(), self.i.clone(), z_ref)
     }
@@ -89,33 +109,38 @@ impl PortResult {
         &self.i
     }
 
-    /// Reference impedance \[Ω\].
+    /// Reference impedance \[Ω\] (of the first frequency, for a
+    /// frequency-dependent reference, see [`z_refs`](Self::z_refs); NaN
+    /// for a result without frequencies).
     pub fn z_ref(&self) -> Complex64 {
         self.z_ref
+            .first()
+            .copied()
+            .unwrap_or(Complex64::new(f64::NAN, f64::NAN))
     }
 
-    fn norm(&self) -> f64 {
-        0.5 / self.z_ref.re.sqrt()
+    /// Reference impedance per frequency \[Ω\].
+    pub fn z_refs(&self) -> &[Complex64] {
+        &self.z_ref
     }
 
     /// Incident power wave `a = (V + Z_ref·I)/(2√Re Z_ref)`.
     pub fn a(&self) -> Vec<Complex64> {
-        let k = self.norm();
         self.v
             .iter()
             .zip(&self.i)
-            .map(|(&v, &i)| (v + self.z_ref * i) * k)
+            .zip(&self.z_ref)
+            .map(|((&v, &i), &z)| (v + z * i) * (0.5 / z.re.sqrt()))
             .collect()
     }
 
     /// Reflected power wave `b = (V − Z_ref*·I)/(2√Re Z_ref)`.
     pub fn b(&self) -> Vec<Complex64> {
-        let k = self.norm();
-        let zc = Complex64::new(self.z_ref.re, -self.z_ref.im);
         self.v
             .iter()
             .zip(&self.i)
-            .map(|(&v, &i)| (v - zc * i) * k)
+            .zip(&self.z_ref)
+            .map(|((&v, &i), &z)| (v - Complex64::new(z.re, -z.im) * i) * (0.5 / z.re.sqrt()))
             .collect()
     }
 
@@ -197,6 +222,22 @@ mod tests {
         let q = p.with_z_ref(c(20.0, 70.0)).unwrap();
         let d = q.incident_power()[0] - q.reflected_power()[0] - q.accepted_power()[0];
         assert!(d.abs() < 1e-13 * q.incident_power()[0]);
+    }
+
+    #[test]
+    fn frequency_dependent_reference() {
+        // Each frequency uses its own reference: matched loads give no
+        // reflection.
+        let z = vec![c(50.0, 0.0), c(80.0, 0.0)];
+        let i = vec![c(1.0, 0.0), c(0.5, 0.2)];
+        let v: Vec<Complex64> = i.iter().zip(&z).map(|(&i, &z)| z * i).collect();
+        let p = PortResult::with_z_refs(vec![1e9, 2e9], v, i, z.clone()).unwrap();
+        assert!(p.s11().iter().all(|s| s.norm() < 1e-15));
+        assert_eq!(p.z_refs(), &z[..]);
+        assert_eq!(p.z_ref(), z[0]);
+        let bad = vec![c(50.0, 0.0), c(0.0, 1.0)];
+        assert!(PortResult::with_z_refs(vec![1e9, 2e9], z.clone(), z.clone(), bad).is_err());
+        assert!(PortResult::with_z_refs(vec![1e9], z.clone(), z.clone(), z).is_err());
     }
 
     #[test]

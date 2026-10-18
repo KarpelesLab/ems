@@ -321,6 +321,30 @@ pub(crate) fn map_sources(
             ProbeType::Current => ProbeKind::Current,
             ProbeType::EField => ProbeKind::EField,
             ProbeType::HField => ProbeKind::HField,
+            ProbeType::WaveguideVoltage | ProbeType::WaveguideCurrent => {
+                // Mode-weighted sums computed by the compile step.
+                let (q, kind) = if s.probe_type == ProbeType::WaveguideVoltage {
+                    (ProbeQuantity::Voltage, ProbeKind::Voltage)
+                } else {
+                    (ProbeQuantity::Current, ProbeKind::Current)
+                };
+                let mut pr = Probe::new(q);
+                for &(axis, node, w) in &p.mode_entries {
+                    pr = pr.entry(axis, node, w * weight);
+                }
+                mapped.probes.push(ProbeEntry {
+                    name: p.name.clone(),
+                    id: p.id,
+                    number: s.number,
+                    kind,
+                    weight,
+                    op: ProbeOp::Scalar(engine.add_operator(pr)),
+                    frequencies: s.frequencies.clone(),
+                    start_time: s.start_time.value(),
+                    stop_time: s.stop_time.value(),
+                });
+                continue;
+            }
             // Reported by the compile step.
             _ => continue,
         };

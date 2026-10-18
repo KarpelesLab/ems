@@ -38,7 +38,7 @@ pub mod prelude {
     pub use crate::engine::{CellMaterials, EdgeMaterials, Engine, Grid};
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
-    pub use crate::port::LumpedPort;
+    pub use crate::port::{LumpedPort, RectWaveguidePort};
     pub use crate::post::{Complex64, PortResult};
     pub use crate::sim::{Results, Simulation};
     pub use crate::waveform::{ExpressionWaveform, Waveform};

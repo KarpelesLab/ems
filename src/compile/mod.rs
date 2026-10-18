@@ -85,8 +85,20 @@
 //! other shapes the bounding box is used (with a warning) and point
 //! primitives give `start = stop`. Only the first primitive of a probe or
 //! dump property is used.
+//!
+//! # Waveguide probes
+//!
+//! `WaveguideVoltage` / `WaveguideCurrent` probes integrate the tangential
+//! E / H field over the probe plane, weighted by the mode function of the
+//! property attributes `ModeFunctionX/Y/Z`. Their weights are computed
+//! here ([`ProbeSpec::mode_entries`]); the conventions and the
+//! discretisation are documented in `src/compile/mode.rs`
+//! (mode function in 1/m over drawing-unit coordinates, `V = w·∫E_t·f dA`
+//! after the E update, `I = w·∫H_t·f dA` after the H update, with H
+//! interpolated from the two adjacent dual planes onto the probe plane).
 
 pub mod dispersive;
+mod mode;
 
 use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
@@ -243,6 +255,10 @@ pub struct ProbeSpec<T> {
     pub start: [usize; 3],
     /// Node indices of the opposite corner (may be below `start`).
     pub stop: [usize; 3],
+    /// Waveguide probes (`WaveguideVoltage` / `WaveguideCurrent`): the
+    /// mode-weighted field entries `(axis, engine node, weight)` (see
+    /// [Waveguide probes](self#waveguide-probes)); empty otherwise.
+    pub mode_entries: Vec<(Axis, [usize; 3], f64)>,
 }
 
 /// An absorbing sheet from a csx `AbsorbingBC` primitive (see
@@ -414,10 +430,13 @@ fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
                 "only E- and H-field excitations are supported (plane waves: later); ignored"
             }
             PropertyKind::ProbeBox(pb) => match pb.probe_type {
-                ProbeType::Voltage | ProbeType::Current | ProbeType::EField | ProbeType::HField => {
-                    continue;
-                }
-                _ => "waveguide probes are not supported yet (M2); ignored",
+                ProbeType::Voltage
+                | ProbeType::Current
+                | ProbeType::EField
+                | ProbeType::HField
+                | ProbeType::WaveguideVoltage
+                | ProbeType::WaveguideCurrent => continue,
+                _ => "unknown probe type; ignored",
             },
             PropertyKind::DumpBox(d) => match d.dump_type {
                 DumpType::EField | DumpType::HField => continue,
@@ -443,8 +462,9 @@ type Specs = (
     Vec<ProbeSpec<csx::properties::DumpBox>>,
 );
 
-/// Snaps the ProbeBox / DumpBox properties of `model` to its grid.
-fn probe_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> Specs {
+/// Snaps the ProbeBox / DumpBox properties of `model` to its grid
+/// (`grid`: the same mesh in metres).
+fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec<String>) -> Specs {
     let (mut probes, mut dumps) = (Vec::new(), Vec::new());
     for p in model.properties() {
         if !matches!(p.kind, PropertyKind::ProbeBox(_) | PropertyKind::DumpBox(_)) {
@@ -468,13 +488,36 @@ fn probe_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> 
         }
         let (start, stop) = snap_primitive(&model.grid, prim, "probe/dump", &p.name, warnings);
         match &p.kind {
-            PropertyKind::ProbeBox(pb) => probes.push(ProbeSpec {
-                name: p.name.clone(),
-                id: p.id(),
-                settings: pb.clone(),
-                start,
-                stop,
-            }),
+            PropertyKind::ProbeBox(pb) => {
+                let mode_entries = if matches!(
+                    pb.probe_type,
+                    ProbeType::WaveguideVoltage | ProbeType::WaveguideCurrent
+                ) {
+                    match mode::mode_entries(
+                        model,
+                        p,
+                        pb,
+                        grid,
+                        model.grid.delta_unit,
+                        start,
+                        stop,
+                        warnings,
+                    ) {
+                        Some(e) => e,
+                        None => continue,
+                    }
+                } else {
+                    Vec::new()
+                };
+                probes.push(ProbeSpec {
+                    name: p.name.clone(),
+                    id: p.id(),
+                    settings: pb.clone(),
+                    start,
+                    stop,
+                    mode_entries,
+                })
+            }
             PropertyKind::DumpBox(d) => {
                 if d.dump_mode == DumpMode::NoInterpolation {
                     warnings.push(format!(
@@ -494,6 +537,7 @@ fn probe_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> 
                     settings: d.clone(),
                     start,
                     stop,
+                    mode_entries: Vec::new(),
                 })
             }
             _ => {}
@@ -729,7 +773,7 @@ pub fn compile(
             .property_by_name(&f.name)
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
-    let (probes, dumps) = probe_specs(model, &mut warnings);
+    let (probes, dumps) = probe_specs(model, &grid, &mut warnings);
     let abc = abc_specs(model, &mut warnings);
     Ok(Compiled {
         grid,

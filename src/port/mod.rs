@@ -6,6 +6,10 @@
 //! directly on an [`Engine`](crate::Engine); [`LumpedPort`] here builds the
 //! same physical port out of csx properties, which the
 //! [`Simulation`](crate::Simulation) maps onto engine operators.
+//!
+//! * [`LumpedPort`]: a resistor with a Thevenin source and V/I probes.
+//! * [`RectWaveguidePort`]: a TE_mn mode excitation and mode-matching
+//!   V/I probes in a rectangular waveguide.
 
 use csx::primitives::BoxShape;
 use csx::properties::{Excitation, LumpedElement, ProbeBox, ProbeType};
@@ -15,6 +19,9 @@ use crate::axis::Axis;
 use crate::post::{Complex64, PortResult};
 use crate::sim::Results;
 use crate::{Error, Result};
+
+mod waveguide;
+pub use waveguide::{RectWaveguidePort, WaveguidePortProperties};
 
 /// The csx property names and ids of an added [`LumpedPort`].
 #[derive(Debug, Clone, PartialEq, Eq)]

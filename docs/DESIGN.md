@@ -322,6 +322,38 @@ ProbeBox, emitted into csx by the helper.
 - Power waves with reference `Z_ref` (Pozar) give `S_ij`, `Z_in`, and
   accepted/incident power.
 
+**Waveguide ports** (`ems::port::RectWaveguidePort`, TE_mn of a rectangular
+guide). The helper emits only csx properties, so the port round-trips
+through XML:
+- A soft E `Excitation` over the excitation plane, with the transverse
+  mode function as its csx weighting functions.
+- A `WaveguideVoltage` and a `WaveguideCurrent` `ProbeBox` over the
+  reference plane, with the mode functions `e` and `h = d̂ × e` as the
+  csx user attributes `ModeFunctionX/Y/Z` (expressions in drawing-unit
+  coordinates, values in 1/m).
+- The mode functions are normalised to `∫|e|² dA = 1`, so a single wave
+  has `V = ∫E_t·e dA`, `I = ∫H_t·h dA` and `V/I = Z_TE = ωμ/β`.
+
+The compile step turns each waveguide probe into a weighted sum of edge
+values (`src/compile/mode.rs`). Tangential E and H of a transverse Yee
+plane share their transverse positions, so V/I of one mode has no
+transverse sampling error. H lies half a cell off the plane and is
+interpolated linearly from the two adjacent dual planes, which adds an
+`O((βΔ)²)` error.
+
+The analysis uses `PortResult::with_z_refs` with `Z_ref(f) = Z_TE(f)`.
+The probe and the soft-source plane must differ: the source's sheet
+current makes H discontinuous at its own plane. The guide behind the
+source must be absorbing.
+
+In `tests/validation_waveguide.rs` (1 mm cells, 20 × 10 mm guide):
+- A matched guide gives `|S11|` of −54 to −63 dB and `|S21| = 1 ± 6e-4`
+  over 9–12 GHz.
+- β from `arg S21` agrees with the exact Yee dispersion relation to about
+  1e-4. The remaining 0.1% from the analytic value is the scheme's
+  dispersion.
+- A short gives `|S11| = 1 ± 1e-3` with the right round-trip phase.
+
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml)}` per face, mirroring the openEMS
 `<BoundaryCond>` choices (including `PML_n`).
