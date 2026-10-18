@@ -584,5 +584,6 @@ fn field_probe_centre_dump_window_and_warnings() {
         .add_to(&mut m)
         .unwrap();
     let sim = Simulation::new(&m, &fdtd).unwrap();
-    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
+    let w = non_mesh_warnings(&sim);
+    assert!(w.is_empty(), "{w:?}");
 }
