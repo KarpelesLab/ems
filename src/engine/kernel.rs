@@ -41,13 +41,25 @@ fn h_row(h: &mut [f32], da: &[f32], db: &[f32], a: &[f32], b: &[f32], c: &[f32],
     }
 }
 
+/// `(1 + a)·p/b`, or 0 where `b = 0` (PEC and padding edges).
+///
+/// Written branch-free so the energy loops vectorise; where `b ≠ 0` the
+/// value is the same expression as a branching form, bit for bit.
+#[inline(always)]
+fn weight(a: f32, p: f64, b: f32) -> f64 {
+    let w = (1.0 + a as f64) * p / b as f64;
+    if b != 0.0 { w } else { 0.0 }
+}
+
 /// [`h_row`] that also returns the row's share of the leapfrog energy
 /// invariant, `Σ (1 + da)/db · h_old · h_new` (entries with `db = 0`
 /// skipped), and writes the new values only if `COMMIT`.
 ///
 /// `h_new` is computed by exactly the same expression as in [`h_row`], so
 /// the committed values are bit-identical to a plain update. The sum uses
-/// four interleaved `f64` accumulators in a fixed order (deterministic).
+/// four interleaved `f64` accumulators (entry `k` into `k & 3`) in a fixed
+/// order (deterministic); the main loop handles groups of four entries so
+/// the accumulators map onto one vector.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
 fn h_row_energy<const COMMIT: bool>(
@@ -62,18 +74,22 @@ fn h_row_energy<const COMMIT: bool>(
     let n = h.len();
     let (da, db, a, b, c, d) = (&da[..n], &db[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
     let mut acc = [0.0f64; 4];
-    for k in 0..n {
+    let mut one = |k: usize, acc: &mut f64| {
         let old = h[k];
         let new = flush(da[k] * old - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
-        let w = if db[k] != 0.0 {
-            (1.0 + da[k] as f64) * (old as f64 * new as f64) / db[k] as f64
-        } else {
-            0.0
-        };
-        acc[k & 3] += w;
+        *acc += weight(da[k], old as f64 * new as f64, db[k]);
         if COMMIT {
             h[k] = new;
         }
+    };
+    let full = n & !3;
+    for k0 in (0..full).step_by(4) {
+        for (l, acc) in acc.iter_mut().enumerate() {
+            one(k0 + l, acc);
+        }
+    }
+    for k in full..n {
+        one(k, &mut acc[k & 3]);
     }
     (acc[0] + acc[1]) + (acc[2] + acc[3])
 }
@@ -106,14 +122,24 @@ fn hrow<const ENERGY: bool, const COMMIT: bool>(
 fn e_energy_row(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f32], cb: &[f32]) {
     let n = u.len();
     let (ca, cb) = (&ca[..n], &cb[..n]);
-    for k in 0..n {
-        let w = if cb[k] != 0.0 {
-            let x = u[k] as f64;
-            (1.0 + ca[k] as f64) * (x * x) / cb[k] as f64
-        } else {
-            0.0
-        };
-        acc[(r + k) & 3] += w;
+    // `loc[l]` is accumulator `(r + l) & 3`, so entry k adds to `loc[k & 3]`.
+    let s = r & 3;
+    let mut loc: [f64; 4] = core::array::from_fn(|l| acc[(s + l) & 3]);
+    let one = |k: usize, acc: &mut f64| {
+        let x = u[k] as f64;
+        *acc += weight(ca[k], x * x, cb[k]);
+    };
+    let full = n & !3;
+    for k0 in (0..full).step_by(4) {
+        for (l, acc) in loc.iter_mut().enumerate() {
+            one(k0 + l, acc);
+        }
+    }
+    for k in full..n {
+        one(k, &mut loc[k & 3]);
+    }
+    for (l, v) in loc.into_iter().enumerate() {
+        acc[(s + l) & 3] = v;
     }
 }
 
