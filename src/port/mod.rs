@@ -105,6 +105,16 @@ pub struct PortProperties {
 /// away from the voltage, and an analysis based on it has a first-order
 /// reference-plane error (`|S11| = tan(K/4)` for a matched line with phase
 /// advance `K` per cell, instead of `tan²(K/4)`).
+///
+/// **Analysing written results by hand.** `port_it<n>` is kept as an
+/// H-loop probe (openEMS `ProbeBox` semantics), so a hand analysis of
+/// `port_ut<n>` / `port_it<n>` (e.g. the CSV files of the `run_xml`
+/// example, as with openEMS output) has that first-order error. For the
+/// second-order result use the element's terminal current instead:
+/// [`Results::lumped_current`]`("port_resist_<n>")`, written by `run_xml`
+/// as `port_resist_<n>.csv`, with `I = −i` (it is sampled at the same
+/// half-step times as `port_it<n>`). Equivalently, add the port cell's
+/// displacement current back, `I = I_loop + jω̃·C_p·V`, if `C_p` is known.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LumpedPort {
     number: u32,

@@ -7,8 +7,16 @@
 //! Prints the compile warnings, progress (energy decay, throughput) and how
 //! the run ended. Every probe is written as `DIR/<probe>.csv` (time series,
 //! `t` plus the value or the `x`, `y`, `z` field components) and every dump
-//! as VTK `.vtr` files with a `.pvd` index (`DIR/<dump>_*.vtr`). `DIR`
-//! defaults to `<model>_results` next to the model file.
+//! as VTK `.vtr` files with a `.pvd` index (`DIR/<dump>_*.vtr`). The
+//! terminal current of every lumped element is written as
+//! `DIR/<element>.csv` (`<element>_current.csv` if a probe has the same
+//! name; column `i`, along the element's direction; for a
+//! lumped port's `port_resist_<n>` the port current into the structure is
+//! `−i`). Use that, not the H-loop probe `port_it<n>`, as the port current
+//! when analysing ports by hand: it is defined at the same edges as the
+//! voltage `port_ut<n>` (second-order reference plane, see
+//! `ems::port::LumpedPort`). `DIR` defaults to `<model>_results` next to
+//! the model file.
 //!
 //! With the `hdf5` feature (`--features hdf5`), dumps whose DumpBox asks for
 //! HDF5 (`FileType="1"`) are written as `DIR/<dump>.h5` instead (ems layout,
@@ -162,6 +170,29 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         println!("wrote {}", path.display());
+    }
+    let probe_files: std::collections::HashSet<String> =
+        res.probes().iter().map(|p| file_stem(p.name())).collect();
+    for p in res.lumped_currents() {
+        let mut stem = file_stem(p.name());
+        if probe_files.contains(&stem) {
+            stem.push_str("_current"); // a probe already uses the name
+        }
+        let path = out.join(format!("{stem}.csv"));
+        let comment = format!(
+            "terminal current of lumped element {:?} along its direction, dt = {:e} s \
+             (port current into the structure = -i)",
+            p.name(),
+            p.dt()
+        );
+        if let ProbeValues::Scalar(v) = p.values() {
+            CsvWriter::new()
+                .comment(comment)
+                .column("t", p.times())
+                .column("i", v)
+                .write(&path)?;
+            println!("wrote {}", path.display());
+        }
     }
     #[cfg(feature = "hdf5")]
     {

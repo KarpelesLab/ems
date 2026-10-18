@@ -318,7 +318,10 @@ ProbeBox, emitted into csx by the helper.
   the port cell's own capacitance belongs to the structure: a matched TEM
   line reads `Z/cos(K/2)`, `|S11| = tan²(K/4)` (second order), instead of
   `Z·e^{jK/2}`, `|S11| = tan(K/4)` with the loop current
-  (`tests/validation_port.rs`).
+  (`tests/validation_port.rs`). The `port_it<n>` ProbeBox stays an H-loop
+  probe (openEMS semantics), so a hand analysis of written results must use
+  the element current instead: the `run_xml` example writes it as
+  `port_resist_<n>.csv` (`I = −i`), next to `port_ut<n>.csv`.
 - Power waves with reference `Z_ref` (Pozar) give `S_ij`, `Z_in`, and
   accepted/incident power. `Z_ref` may vary with frequency
   (`PortResult::new_per_frequency`), for transmission-line ports whose
