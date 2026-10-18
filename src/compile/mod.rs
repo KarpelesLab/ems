@@ -81,6 +81,11 @@ pub struct CompileOptions {
     /// discretising (default `true`). Set to `false` if the model is known
     /// to be up to date, to avoid the clone.
     pub update_model: bool,
+    /// Run the solver-aware mesh checks ([`crate::mesh::check_compiled`])
+    /// when building a [`Simulation`](crate::Simulation) and append their
+    /// warnings and errors to its warnings (default `true`). Not used by
+    /// [`compile`] itself.
+    pub mesh_check: bool,
 }
 
 impl Default for CompileOptions {
@@ -90,6 +95,7 @@ impl Default for CompileOptions {
             subsampling: d.subsampling,
             snap_tolerance: d.snap_tolerance,
             update_model: true,
+            mesh_check: true,
         }
     }
 }

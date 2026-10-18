@@ -459,7 +459,20 @@ fn run_uses_settings_and_maps_sources() {
         .max_timesteps(37)
         .waveform(ems::Waveform::gaussian(1e9, 0.5e9));
     let mut sim = Simulation::new(&model, &fdtd).unwrap();
-    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
+    // The only warning is the mesh check's: 37 steps are too few for the
+    // pulse.
+    assert_eq!(sim.warnings().len(), 1, "{:?}", sim.warnings());
+    assert!(
+        sim.warnings()[0].starts_with("mesh warning: the excitation needs"),
+        "{:?}",
+        sim.warnings()
+    );
+    let opts = CompileOptions {
+        mesh_check: false,
+        ..CompileOptions::default()
+    };
+    let quiet = Simulation::with_options(&model, &fdtd, &opts).unwrap();
+    assert!(quiet.warnings().is_empty(), "{:?}", quiet.warnings());
     // Discretised and mapped onto a soft source.
     assert_eq!(sim.source("src").unwrap().edges().count(), 2);
     let ex = &sim.sources().excitations;
@@ -470,6 +483,12 @@ fn run_uses_settings_and_maps_sources() {
     assert_eq!([node[0], node[1]], [2, 2]);
     let lim = sim.run_limits();
     assert_eq!(lim.max_timesteps, 37);
+    // MaxTime limits the step count via Fdtd::timestep_limit.
+    let dt = sim.engine().dt();
+    let timed = Simulation::new(&model, &fdtd.clone().max_time(10.5 * dt)).unwrap();
+    assert_eq!(timed.run_limits().max_timesteps, 11);
+    let long = Simulation::new(&model, &fdtd.clone().max_time(1e6 * dt)).unwrap();
+    assert_eq!(long.run_limits().max_timesteps, 37);
     assert!(lim.excitation_end.unwrap() > 0.0);
     let out = sim.run().unwrap();
     assert_eq!(out.outcome().unwrap().steps, 37);

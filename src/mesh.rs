@@ -491,10 +491,19 @@ pub fn check_compiled(
         } else {
             continue;
         };
-        r.push(sev, Location::Global, format!("csx discretisation: {w}"));
+        r.push(
+            sev,
+            Location::Global,
+            format!("{CSX_DISCRETISATION_PREFIX}{w}"),
+        );
     }
     Ok(r)
 }
+
+/// Prefix of the [`MeshIssue::message`]s with which [`check_compiled`]
+/// re-reports csx discretisation warnings (the original warnings are in
+/// [`Compiled::warnings`]; filter on this prefix to avoid duplicates).
+pub const CSX_DISCRETISATION_PREFIX: &str = "csx discretisation: ";
 
 /// Largest cell size (in drawing units, as expected by
 /// [`csx::mesh::MeshOptions::max_res`]) that resolves the shortest

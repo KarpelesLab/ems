@@ -11,6 +11,14 @@ use ems::port::LumpedPort;
 use ems::post::Complex64;
 use ems::{Axis, Fdtd, Simulation, Waveform};
 
+/// The simulation's warnings except those of the mesh check.
+fn non_mesh_warnings(sim: &Simulation) -> Vec<&String> {
+    sim.warnings()
+        .iter()
+        .filter(|w| !w.starts_with("mesh "))
+        .collect()
+}
+
 /// Model with `n` 1 mm cells per axis (lines at integer mm).
 fn cube(n: usize) -> ContinuousStructure {
     let mut m = ContinuousStructure::new();
@@ -196,7 +204,9 @@ fn probe_directions_and_weights() {
         [12.0, 10.0, 9.0],
     );
     let mut sim = Simulation::new(&m, &loop_fdtd(600)).unwrap();
-    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
+    // Short run: only the mesh check's "too few steps" warning.
+    let w = non_mesh_warnings(&sim);
+    assert!(w.is_empty(), "{w:?}");
     let res = sim.run().unwrap();
     let s = |n: &str| res.probe(n).unwrap().scalar().unwrap().to_vec();
     let (vu, vd, iu, id) = (s("v_up"), s("v_down"), s("i_up"), s("i_down"));
@@ -402,7 +412,9 @@ fn frequency_and_time_dumps() {
         .oversampling(1000)
         .threads(1);
     let mut sim = Simulation::new(&m, &fdtd).unwrap();
-    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
+    // Short run: only the mesh check's "too few steps" warning.
+    let w = non_mesh_warnings(&sim);
+    assert!(w.is_empty(), "{w:?}");
     let res = sim.run().unwrap();
     let pe = res.probe("e").unwrap();
     let probe = pe.dft_vector(pe.frequencies()).unwrap()[0][2];

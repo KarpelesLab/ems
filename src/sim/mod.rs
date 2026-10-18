@@ -5,11 +5,13 @@
 
 mod map;
 mod results;
+#[cfg(feature = "xml")]
+mod xml;
 
 pub use results::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results};
 
 use crate::Result;
-use crate::compile::{BoundaryHandles, CompileOptions, ModelSources, NodeMap, compile};
+use crate::compile::{BoundaryHandles, CompileOptions, Compiled, ModelSources, NodeMap, compile};
 use crate::engine::{
     EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle, RunLimits, TimeDump,
 };
@@ -143,6 +145,14 @@ impl Simulation {
 
     /// Compiles `model` with `fdtd` and explicit compile options.
     ///
+    /// With [`CompileOptions::mesh_check`] (the default) the compiled mesh
+    /// is checked by [`crate::mesh::check_compiled`] (default
+    /// [`CheckOptions`](crate::mesh::CheckOptions)) and every issue of
+    /// [`Severity::Warning`](crate::mesh::Severity::Warning) or worse is
+    /// appended to [`warnings`](Self::warnings), as `"mesh <severity>:
+    /// …"` lines. The csx discretisation warnings the check re-reports are
+    /// not repeated (they are already in the list).
+    ///
     /// # Errors
     /// See [`new`](Self::new).
     pub fn with_options(
@@ -152,7 +162,10 @@ impl Simulation {
     ) -> Result<Self> {
         let compiled = compile(model, fdtd, opts)?;
         let (mut engine, boundaries) = compiled.build()?;
-        let mut warnings = compiled.warnings;
+        let mut warnings = compiled.warnings.clone();
+        if opts.mesh_check {
+            warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
+        }
         let mut mapped = map::map_sources(
             &mut engine,
             &compiled.sources,
@@ -259,7 +272,10 @@ impl Simulation {
     }
 
     /// The run limits derived from the settings: at most
-    /// [`Fdtd::get_max_timesteps`] steps, the settings' end criteria, and
+    /// [`Fdtd::timestep_limit`] steps for the engine time step (i.e.
+    /// [`Fdtd::get_max_timesteps`], reduced by [`Fdtd::get_max_time`] if
+    /// set; counted from the engine's current step, as
+    /// [`RunLimits::max_timesteps`]), the settings' end criteria, and
     /// the waveform's [`duration`](crate::Waveform::duration) as the
     /// excitation end (`∞` for a waveform that never ends, none without a
     /// waveform).
@@ -268,7 +284,7 @@ impl Simulation {
             .fdtd
             .get_waveform()
             .map(|w| w.duration().unwrap_or(f64::INFINITY));
-        RunLimits::new(self.fdtd.get_max_timesteps())
+        RunLimits::new(self.fdtd.timestep_limit(self.engine.dt()))
             .end_criteria(self.fdtd.get_end_criteria().copied())
             .excitation_end(end)
     }
@@ -387,6 +403,34 @@ impl Simulation {
             dumps,
         }
     }
+}
+
+/// The mesh-check issues of at least warning severity as warning lines,
+/// without the csx discretisation warnings (already in the compile
+/// warnings).
+fn mesh_warnings(
+    model: &csx::ContinuousStructure,
+    fdtd: &Fdtd,
+    compiled: &Compiled,
+    opts: &CompileOptions,
+) -> Result<Vec<String>> {
+    use crate::mesh::{CheckOptions, Severity, check_compiled};
+    let check = CheckOptions {
+        snap_tolerance: opts.snap_tolerance,
+        update_model: opts.update_model,
+        ..CheckOptions::default()
+    };
+    let report = check_compiled(model, fdtd, compiled, &check)?;
+    Ok(report
+        .issues
+        .iter()
+        .filter(|i| i.severity >= Severity::Warning)
+        .filter(|i| {
+            !i.message
+                .starts_with(crate::mesh::CSX_DISCRETISATION_PREFIX)
+        })
+        .map(|i| format!("mesh {i}"))
+        .collect())
 }
 
 fn find<T>(list: &[(String, OperatorHandle<T>)], name: &str) -> Option<OperatorHandle<T>> {

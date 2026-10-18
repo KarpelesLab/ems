@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-written openEMS model: an empty 100 mm x 45 mm x 70 mm PEC cavity on a
+  uniform 5 mm mesh, excited by a Gaussian pulse on one E_y edge and probed
+  by a voltage probe on another E_y edge. Resonances (vacuum):
+  TE101 = 2.6139 GHz, TE201 = 3.6842 GHz.
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="5000" endCriteria="0" f_max="5.7e9">
+    <Excitation Type="0" f0="3.2e9" fc="2.5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="0" ymax="0" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation ID="0" Name="source" Number="0" Enabled="1" Type="0" Excite="0,1,0">
+        <Primitives>
+          <Box Priority="0">
+            <P1 X="30" Y="10" Z="25"/>
+            <P2 X="30" Y="15" Z="25"/>
+          </Box>
+        </Primitives>
+      </Excitation>
+      <ProbeBox ID="1" Name="probe" Number="0" Type="0" Weight="1">
+        <Primitives>
+          <Box Priority="0">
+            <P1 X="70" Y="20" Z="40"/>
+            <P2 X="70" Y="25" Z="40"/>
+          </Box>
+        </Primitives>
+      </ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100</XLines>
+      <YLines>0,5,10,15,20,25,30,35,40,45</YLines>
+      <ZLines>0,5,10,15,20,25,30,35,40,45,50,55,60,65,70</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

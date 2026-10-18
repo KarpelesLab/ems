@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<openEMS>
+    <FDTD NumberOfTimesteps="4000" endCriteria="0" f_max="3e9" TimeStepFactor="0.99" TimeStepMethod="1">
+        <Excitation Type="0" f0="0" fc="3e9" />
+        <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC" />
+    </FDTD>
+    <ContinuousStructure CoordSystem="0">
+        <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0">
+            <XLines Qty="21">0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+            <YLines Qty="21">0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+            <ZLines Qty="21">0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+        </RectilinearGrid>
+        <BackgroundMaterial Epsilon="1" Mue="1" Kappa="0" Sigma="0" />
+        <ParameterSet />
+        <Properties>
+            <Metal ID="0" Name="strip9">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="8" Y="10" Z="9" />
+                        <P2 X="12" Y="10" Z="9" />
+                    </Box>
+                </Primitives>
+            </Metal>
+            <Metal ID="1" Name="strip11">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="8" Y="10" Z="11" />
+                        <P2 X="12" Y="10" Z="11" />
+                    </Box>
+                </Primitives>
+            </Metal>
+            <LumpedElement ID="2" Name="load" Direction="2" Caps="1" R="100">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="12" Y="10" Z="9" />
+                        <P2 X="12" Y="10" Z="11" />
+                    </Box>
+                </Primitives>
+            </LumpedElement>
+            <LumpedElement ID="3" Name="port_resist_1" Direction="2" Caps="1" R="50">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="8" Y="10" Z="9" />
+                        <P2 X="8" Y="10" Z="11" />
+                    </Box>
+                </Primitives>
+            </LumpedElement>
+            <Excitation ID="4" Name="port_excite_1" Number="1" Enabled="1" Frequency="0" Delay="0" Type="0" Excite="0,0,500" PropDir="0,0,0">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="8" Y="10" Z="9" />
+                        <P2 X="8" Y="10" Z="11" />
+                    </Box>
+                </Primitives>
+                <Weight X="1" Y="1" Z="1" />
+            </Excitation>
+            <ProbeBox ID="5" Name="port_ut1" Number="1" Type="0" Weight="1" NormDir="-1" StartTime="0" StopTime="0">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="8" Y="10" Z="9" />
+                        <P2 X="8" Y="10" Z="11" />
+                    </Box>
+                </Primitives>
+            </ProbeBox>
+            <ProbeBox ID="6" Name="port_it1" Number="1" Type="1" Weight="-1" NormDir="2" StartTime="0" StopTime="0">
+                <FillColor R="0" G="0" B="0" a="255" />
+                <EdgeColor R="0" G="0" B="0" a="255" />
+                <Primitives>
+                    <Box Priority="0">
+                        <P1 X="8" Y="10" Z="9" />
+                        <P2 X="8" Y="10" Z="11" />
+                    </Box>
+                </Primitives>
+            </ProbeBox>
+        </Properties>
+    </ContinuousStructure>
+</openEMS>
