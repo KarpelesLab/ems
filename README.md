@@ -33,18 +33,28 @@ use ems::prelude::*;
 
 let mut model = ContinuousStructure::new();
 model.grid.delta_unit = 1e-3; // drawing unit: mm
-for a in 0..3 {
-    model.grid.set_lines(a, (0..=40).map(f64::from))?;
-}
+model.grid.set_lines(0, (0..=40).map(f64::from))?;
+model.grid.set_lines(1, (0..=40).map(f64::from))?;
+model.grid.set_lines(2, (0..=20).map(f64::from))?;
+// 2 mm FR-4 on a ground plane (the PEC z_min face), a 12 mm square patch
+// on top; everything stays clear of the 8-cell PML on the other faces.
 let sub = model.add_property(Property::material("sub", csx::Material::new(4.3, 0.0)));
-model.add_primitive(sub, Primitive::new(BoxShape::new([0., 0., 0.], [40., 40., 2.])))?;
-let port = LumpedPort::new(1, 50.0, [20., 20., 0.], [20., 20., 2.], Axis::Z)
+model.add_primitive(
+    sub,
+    Primitive::new(BoxShape::new([10., 10., 0.], [30., 30., 2.])),
+)?;
+let patch = model.add_property(Property::metal("patch"));
+model.add_primitive(
+    patch,
+    Primitive::new(BoxShape::new([14., 14., 2.], [26., 26., 2.])),
+)?;
+let port = LumpedPort::new(1, 50.0, [17., 20., 0.], [17., 20., 2.], Axis::Z)
     .excite(1.0)
     .add_to(&mut model)?; // writes LumpedElement + Excitation + probes into the model
 
 let fdtd = Fdtd::new()
     .waveform(Waveform::gaussian(2e9, 1e9))
-    .boundaries(Boundaries::all(Boundary::pml(8)))
+    .boundaries(Boundaries::all(Boundary::pml(8)).with(Face::ZMin, Boundary::Pec))
     .end_criteria(EndCriteria::energy_decay_db(-40.0));
 let mut sim = Simulation::new(&model, &fdtd)?;
 for w in sim.warnings() {
