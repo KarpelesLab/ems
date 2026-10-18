@@ -15,11 +15,16 @@
 //!
 //! The mesh is generated with csx's [`MeshBuilder`] and checked with
 //! [`ems::mesh::check`]; the domain is closed by an 8-cell CPML.
+//!
+//! An NF2FF box ([`ems::nf2ff`]) around the antenna gives the broadside
+//! directivity and gain at resonance (typically 6–7 dBi for a patch on a
+//! small ground plane) and the E- and H-plane patterns.
 
 use csx::mesh::{MeshBuilder, MeshOptions};
 use csx::primitives::BoxShape;
 use csx::properties::Material;
 use csx::{ContinuousStructure, Primitive, Property, TypeMask};
+use ems::nf2ff::Nf2ffBox;
 use ems::prelude::*;
 
 const EPS_R: f64 = 3.38;
@@ -87,6 +92,15 @@ fn main() -> Result<()> {
     print!("{report}");
 
     let mut sim = Simulation::new(&model, &fdtd)?;
+    // NF2FF box: 5 mm around the substrate and ground, every 5 MHz near the
+    // expected resonance.
+    let nf_freqs: Vec<f64> = (0..=40).map(|k| 2.25e9 + k as f64 * 5e6).collect();
+    let m = SUB / 2.0 + 5.0;
+    let nf = sim.add_nf2ff(&Nf2ffBox::new(
+        [-m, -m, -5.0],
+        [m, m, H + 5.0],
+        nf_freqs.clone(),
+    ))?;
     for w in sim.warnings() {
         println!("warning: {w}");
     }
@@ -130,6 +144,46 @@ fn main() -> Result<()> {
             hi / 1e9,
             (hi - lo) / freqs[k] * 100.0
         );
+    }
+
+    // Far field at the NF2FF frequency nearest to the resonance.
+    let ff = sim.nf2ff(&nf);
+    let q = (0..nf_freqs.len())
+        .min_by(|&a, &b| {
+            (nf_freqs[a] - freqs[k])
+                .abs()
+                .total_cmp(&(nf_freqs[b] - freqs[k]).abs())
+        })
+        .expect("frequencies");
+    let p_acc = port.analyze(&res, &nf_freqs[q..=q])?.accepted_power()[0];
+    let p_rad = ff.radiated_power(q);
+    let d = ff.max_directivity(q);
+    let d0 = ff.directivity(q, 0.0, 0.0);
+    // The model is lossless, so P_rad/P_acc would be 1; the few per cent
+    // missing are the transient cut off by the −35 dB end criterion (about
+    // 99.4 % at −55 dB).
+    println!(
+        "far field at {:.3} GHz: D_max = {:.2} dBi at θ = {:.1}°, broadside D = {:.2} dBi, \
+         G = {:.2} dBi, P_rad/P_acc = {:.1} %",
+        nf_freqs[q] / 1e9,
+        d.dbi(),
+        d.theta.to_degrees(),
+        10.0 * d0.log10(),
+        10.0 * (d0 * p_rad / p_acc).log10(),
+        100.0 * p_rad / p_acc
+    );
+    println!(" θ [°]   E-plane (φ = 0) [dBi]   H-plane (φ = 90°) [dBi]");
+    for t in (-90..=90).step_by(15) {
+        let th = f64::from(t).to_radians();
+        // Negative θ: the other half of the cut (φ + 180°).
+        let (th, pe, ph) = if th < 0.0 {
+            (-th, std::f64::consts::PI, 1.5 * std::f64::consts::PI)
+        } else {
+            (th, 0.0, 0.5 * std::f64::consts::PI)
+        };
+        let de = 10.0 * ff.directivity(q, th, pe).log10();
+        let dh = 10.0 * ff.directivity(q, th, ph).log10();
+        println!("{t:>6}   {de:>10.2}              {dh:>10.2}");
     }
     Ok(())
 }

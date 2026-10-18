@@ -17,6 +17,7 @@ use crate::engine::{
     TimeDump,
 };
 use crate::fdtd::Fdtd;
+use crate::nf2ff::{Nf2ffBox, Nf2ffHandle, Nf2ffResult};
 use map::{DumpOp, Mapped, ProbeOp};
 
 /// A compiled simulation: the [`Engine`] with the model's excitations,
@@ -278,6 +279,52 @@ impl Simulation {
             DumpOp::Freq(h) => Some(self.engine.operator(&h)),
             DumpOp::Time(_) => None,
         }
+    }
+
+    /// Adds a near-field to far-field box (see [`crate::nf2ff`]), with its
+    /// corners in drawing units snapped to the nearest mesh lines. Call it
+    /// before running; the box records from the next step on. A box
+    /// reaching into a PML adds a [warning](Self::warnings).
+    ///
+    /// # Errors
+    /// See [`Nf2ff::with_faces`](crate::nf2ff::Nf2ff::with_faces).
+    pub fn add_nf2ff(&mut self, b: &Nf2ffBox) -> Result<Nf2ffHandle> {
+        let k = map::dump_interval(&self.fdtd, self.engine.dt());
+        let (op, mirrors) = b.build(self.engine.grid(), self.delta_unit, k)?;
+        let n = self.engine.grid().nodes();
+        for (face, bc) in self.fdtd.get_boundaries().iter() {
+            let cells = bc.cells();
+            if cells == 0 {
+                continue;
+            }
+            let a = face.axis().index();
+            let inside = if face.is_max() {
+                op.hi()[a] + cells >= n[a] - 1
+            } else {
+                op.lo()[a] <= cells
+            };
+            if inside {
+                self.warnings.push(format!(
+                    "NF2FF box reaches into the PML of {face:?}; keep it inside the \
+                     interior"
+                ));
+            }
+        }
+        let op = self.engine.add_operator(op);
+        Ok(Nf2ffHandle { op, mirrors })
+    }
+
+    /// The far-field result of an NF2FF box added with
+    /// [`add_nf2ff`](Self::add_nf2ff), from the fields recorded so far,
+    /// with the box's mirror planes applied.
+    pub fn nf2ff(&self, h: &Nf2ffHandle) -> Nf2ffResult {
+        let mut r = self.engine.operator(&h.op).result();
+        for &m in &h.mirrors {
+            r = r
+                .with_mirror(m)
+                .expect("mirror planes were validated when the box was added");
+        }
+        r
     }
 
     /// The run limits derived from the settings: at most

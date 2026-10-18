@@ -511,6 +511,69 @@ remainder is the layer discretisation); thick sheet (`t/δ = 4.4…11`)
 reflection loss `1 − |Γ| ≈ 2R_s/η0` within 0.3 %; passive and
 thread-count independent in a 3-D cavity.
 
+### 5.10 Near-field to far-field transform
+
+`ems::nf2ff` (M3) computes radiation patterns from a closed box of
+recorded near fields, by the surface equivalence principle (Balanis,
+*Antenna Theory*, §12.2–12.3; Taflove & Hagness, ch. 8).
+
+- **Recording.** The engine operator `Nf2ff` holds one `FreqDump` per box
+  face and field (E and H), sampled at the primary nodes of the face. The
+  dumps' interpolation co-locates the two fields: E is averaged along its
+  own axis, and H bilinearly from the four surrounding dual edges, which is
+  across the face normal for the tangential components. The DFT kernel
+  uses each quantity's absolute sample time, (m − ½)·dt for H. That is
+  the half-step phase correction, so no explicit `e^{jωdt/2}` factor is
+  needed. Sampling runs serially on the stepping thread and is
+  bit-identical for any thread count.
+- **Sampling interval.** `Simulation::add_nf2ff` samples every k-th state,
+  with the same k as the frequency dumps: the Nyquist interval of the
+  settings' f_max divided by the oversampling factor (default 4). The
+  fields are band-limited, so this barely changes the results (patch
+  example: the same directivity to 0.01 dB) and costs much less (the
+  whole patch run goes from 40 s to 3.8 s).
+- **Equivalent currents.** On each face with outward normal n̂:
+  J = n̂ × H and M = −n̂ × E. The face integrals use trapezoidal node
+  weights, so they work on non-uniform meshes.
+- **Far field.** With the e^{jωt} convention of the DFTs and phase
+  centre c (the box centre by default):
+  N = ∮ J e^{jk r̂·(r'−c)} dS' and L = ∮ M e^{jk r̂·(r'−c)} dS'. Then
+  rE_θ e^{jkr} = −jk/(4π)·(L_φ + η0 N_θ),
+  rE_φ e^{jkr} = +jk/(4π)·(L_θ − η0 N_φ), and
+  U = (|rE_θ|² + |rE_φ|²)/(2η0).
+- **Power, directivity and gain.**
+  - P_rad is the box Poynting flux ½ Re ∮ n̂·(E × H*) dS = −½ Re ∮ E_t·J* dS.
+    `radiated_power_far` integrates U over the sphere instead, as a check.
+  - D = 4πU/P_rad.
+  - G = 4πU/P_acc, with P_acc the port's `accepted_power` from the same
+    run. Both come from DFTs of the same transient, so the normalisation
+    cancels.
+- **Mirrors.** For an infinite PEC or PMC plane, image currents are
+  added. A PEC plane reverses tangential J and normal M; a PMC plane
+  reverses normal J and tangential M. Faces on the plane are skipped, and
+  P_rad covers only the real half-space, so a monopole over ground gets
+  twice the dipole directivity. The box must not cross a mirror plane,
+  and at most one mirror per axis is allowed.
+- **Accuracy** (`tests/nf2ff.rs`, `src/nf2ff.rs` unit test):
+
+  | Case | Result |
+  |---|---|
+  | Analytic Hertzian-dipole fields on a 0.4 m cube (transform only) | P_rad within 2e-3, D = 1.5 within 5e-3 |
+  | Short dipole (FDTD, λ/30 cells, box 6 cells out) | D = 1.490 (−0.7%) |
+  | Same, box 9 cells out | D = 1.502 |
+  | Short dipole: P_far/P_box | 0.993 (box 6 cells) → 0.9997 (box 9 cells) |
+  | Monopole over a PEC boundary with a PEC mirror | D = 2.987 = 2 × dipole |
+  | Half-wave dipole (L = 0.475 λ) | D = 1.650, P_far/P_box = 1.0001, P_box/P_acc = 1.0013 |
+  | Patch antenna example | broadside D = 6.70 dBi |
+
+  The small short-dipole error comes from the second-order co-location
+  of the strong reactive near field close to the source. It shrinks when
+  the box is moved further out; the transform itself is exact for any
+  closed surface.
+- **Not done.** The background medium is vacuum only (η0, k0).
+  Frequency-dependent phase centres and openEMS's nf2ff file format are
+  out of scope: openEMS's nf2ff code is GPL and was not consulted.
+
 ## 6. Engine architecture
 
 ```

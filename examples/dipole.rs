@@ -17,10 +17,15 @@
 //! §4.6). The mesh is generated with csx's [`MeshBuilder`], fine along and
 //! around the wire and graded to λ/20 at `f_max` outside; an 8-cell CPML
 //! closes the domain.
+//!
+//! An NF2FF box ([`ems::nf2ff`]) around the dipole gives the directivity
+//! and gain at resonance: about 1.64 (2.15 dBi) for a thin half-wave
+//! dipole (Balanis §4.6), with gain = directivity in vacuum.
 
 use csx::mesh::{MeshBuilder, MeshOptions};
 use csx::primitives::BoxShape;
 use csx::{ContinuousStructure, Primitive, Property, TypeMask};
+use ems::nf2ff::Nf2ffBox;
 use ems::prelude::*;
 
 /// Cell size along and around the wire [mm].
@@ -66,6 +71,14 @@ fn main() -> Result<()> {
     .apply(&mut model)?;
 
     let mut sim = Simulation::new(&model, &fdtd)?;
+    // NF2FF box 2–3 cells around the wire, every 5 MHz near resonance.
+    let nf_freqs: Vec<f64> = (0..=60).map(|k| 0.8e9 + k as f64 * 5e6).collect();
+    let b = tip + 2.0 * D;
+    let nf = sim.add_nf2ff(&Nf2ffBox::new(
+        [-2.0 * D, -2.0 * D, -b],
+        [2.0 * D, 2.0 * D, b],
+        nf_freqs.clone(),
+    ))?;
     for w in sim.warnings() {
         println!("warning: {w}");
     }
@@ -113,6 +126,29 @@ fn main() -> Result<()> {
         f_res / 1e9,
         length / lambda,
         r_res
+    );
+
+    // Directivity and gain at the NF2FF frequency nearest to resonance.
+    let ff = sim.nf2ff(&nf);
+    let q = (0..nf_freqs.len())
+        .min_by(|&a, &b| {
+            (nf_freqs[a] - f_res)
+                .abs()
+                .total_cmp(&(nf_freqs[b] - f_res).abs())
+        })
+        .expect("frequencies");
+    let p_acc = port.analyze(&res, &nf_freqs[q..=q])?.accepted_power()[0];
+    let d = ff.max_directivity(q);
+    let g = ff.gain(q, d.theta, d.phi, p_acc);
+    println!(
+        "far field at {:.3} GHz: D = {:.3} ({:.2} dBi) at θ = {:.1}°, G = {:.2} dBi, \
+         P_rad/P_acc = {:.4}",
+        nf_freqs[q] / 1e9,
+        d.directivity,
+        d.dbi(),
+        d.theta.to_degrees(),
+        10.0 * g.log10(),
+        ff.radiated_power(q) / p_acc
     );
     Ok(())
 }

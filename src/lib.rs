@@ -16,6 +16,7 @@ pub mod error;
 pub mod fdtd;
 pub mod io;
 pub mod mesh;
+pub mod nf2ff;
 pub mod port;
 pub mod post;
 mod sim;
@@ -38,6 +39,7 @@ pub mod prelude {
     pub use crate::engine::{CellMaterials, EdgeMaterials, Engine, Grid};
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
+    pub use crate::nf2ff::{MirrorKind, Nf2ffBox, Nf2ffResult};
     pub use crate::port::{LumpedPort, MslPort, RectWaveguidePort};
     pub use crate::post::{Complex64, PortResult};
     pub use crate::sim::{Results, Simulation};
