@@ -612,7 +612,7 @@ Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 With 8-cell CPML on all faces, 128³ at 64 T runs at 969 Mcells/s; energy
 checks every 10 steps give 1113 Mcells/s. 256³ is limited by memory
 bandwidth at about 50 GB/s, well below what the machine can sustain. The
-64-thread drop at 128³ comes from slab granularity and SMT.
+64-thread drop at 128³ is not yet explained (suspects: slab granularity, SMT).
 
 ## 11. Open questions for review
 
