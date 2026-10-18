@@ -173,7 +173,8 @@ pub use coeffs::{
     primary_edge_cg,
 };
 pub use conformal::{
-    ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, MergedFaces,
+    ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, ConformalSheets,
+    MergedFaces, SheetCutEdge, SheetCutFace, SheetRegion,
 };
 pub use dispersive::{Dispersive, EdgePole, Pole};
 pub use dump::{

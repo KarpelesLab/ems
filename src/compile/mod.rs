@@ -62,7 +62,10 @@
 //! open part. Cut edges are removed from the PEC mask, fully covered ones
 //! added. [`Compiled::build`] then scales the coefficients
 //! (Dey–Mittra in integral form, with a stability floor and check; see
-//! [`crate::engine::conformal`]). Metal sheets, curves and wires keep the
+//! [`crate::engine::conformal`]). Zero-thickness metal sheets off the
+//! mesh planes (oblique plates, cylindrical and spherical shells) are
+//! split into pieces and regions on both sides (thin-sheet scheme of the
+//! same module); sheets on mesh planes, curves and wires keep the
 //! staircase mask. A cut edge's voltage `u` is then the voltage over its
 //! open part, `E·l_open`.
 //!
@@ -934,7 +937,8 @@ pub fn compile(
             materials.pec_mask(Axis::Y),
             materials.pec_mask(Axis::Z),
         ];
-        let geo = conformal::geometry(model, &pec, fdtd.resolved_threads());
+        let threads = fdtd.resolved_threads();
+        let geo = conformal::geometry(model, &pec, opts.snap_tolerance, threads, &mut warnings);
         for &(axis, k, v) in &geo.pec {
             materials.pec_mask_mut(axis)[k] = v;
         }

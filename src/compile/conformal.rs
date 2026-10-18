@@ -7,8 +7,10 @@
 //! A point is *in metal* when the highest-priority material or metal
 //! property containing it (csx priority query over materials and metals)
 //! is a `Metal` property and the containing primitive is a solid
-//! (dimension 3). Sheets, curves and wires stay with csx's PEC mask, as do
-//! conducting sheets.
+//! (dimension 3). Curves, wires, conducting sheets and metal sheets on
+//! mesh planes stay with csx's PEC mask; metal sheets off the mesh planes
+//! (oblique or curved) are split cell by cell instead, see `sheets`
+//! (src/compile/conformal/sheets.rs).
 //!
 //! # Edges
 //!
@@ -43,6 +45,8 @@ use crate::axis::Axis;
 use crate::engine::{ConformalEdge, ConformalFace, ConformalPec};
 use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
 use std::collections::HashMap;
+
+mod sheets;
 
 /// Bisection steps per transition.
 const BISECT: usize = 30;
@@ -201,10 +205,32 @@ fn par<T: Send>(
     })
 }
 
-/// Computes the conformal geometry of `model` on its (Cartesian) grid.
-/// `pec` is the engine-layout PEC mask after csx and sheets; `threads`
-/// parallelises the point queries (the result does not depend on it).
+/// Computes the conformal geometry of `model` on its (Cartesian) grid:
+/// solid metal and thin PEC sheets (`sheets`). `pec` is the
+/// engine-layout PEC mask after csx and sheets; `snap` is csx's relative
+/// snapping tolerance; `threads` parallelises the point queries (the
+/// result does not depend on it). csx warnings about the sheets handled
+/// here are removed from `warnings`.
 pub(super) fn geometry(
+    model: &csx::ContinuousStructure,
+    pec: &[&[bool]; 3],
+    snap: f64,
+    threads: usize,
+    warnings: &mut Vec<String>,
+) -> Geometry {
+    let mut out = solid_geometry(model, pec, threads);
+    let (edges, faces) = sheets::geometry(model, snap, threads, warnings);
+    for e in edges {
+        out.conformal.push_sheet_edge(e);
+    }
+    for f in faces {
+        out.conformal.push_sheet_face(f);
+    }
+    out
+}
+
+/// The solid-metal part of [`geometry`].
+fn solid_geometry(
     model: &csx::ContinuousStructure,
     pec: &[&[bool]; 3],
     threads: usize,

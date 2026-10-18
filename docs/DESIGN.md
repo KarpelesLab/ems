@@ -886,8 +886,9 @@ so existing results are unchanged. Geometry in `compile::conformal`, scheme
 in `engine::conformal`.
 
 **Geometry.** "In metal" = the highest-priority material/metal at the point
-is a `Metal` property with a solid (3-D) primitive; sheets, curves and wires
-keep csx's staircase PEC mask. Nodes and edge midpoints in the bounding box
+is a `Metal` property with a solid (3-D) primitive; curves, wires and
+sheets on mesh planes keep csx's PEC mask, sheets off the mesh planes are
+split (§5.13.1). Nodes and edge midpoints in the bounding box
 of the solid metal are queried; an edge whose three samples differ is
 sampled at 9 points and each transition bisected (2⁻³⁰ of the edge), giving
 the open fraction `f_e`. A face's open area `f_A` is the shoelace area of
@@ -933,11 +934,111 @@ bit-identical results for 1 and 3 threads. The sphere's lowest mode is
 triply degenerate and split by the mesh, which limits the frequency
 estimate of a single probe at these resolutions.
 
-**Limitations.** Only solid metal; metal intruding into a face without
-crossing its edges and features thinner than half a cell between the edge
-samples are not seen. Voltage probes on cut edges read `E·l_open`. The
-power-iteration check costs a few hundred matrix–vector products on the
-whole grid at setup (single thread).
+**Limitations.** Solid metal here, thin sheets in §5.13.1; metal intruding
+into a face without crossing its edges and features thinner than half a
+cell between the edge samples are not seen. Voltage probes on cut edges
+read `E·l_open`. The power-iteration check costs a few hundred
+matrix–vector products on the whole grid at setup (single thread).
+
+#### 5.13.1 Thin PEC sheets
+
+Same switch (`CompileOptions::conformal`). Applies to `Metal` primitives of
+dimension 2 that csx cannot put on its PEC mask (it warns "non axis-aligned
+sheet" / "not on a mesh plane" and drops them; with the option these
+warnings are removed): zero-thickness boxes (any transformation), polygons
+and zero-length extrusions off or oblique to the mesh planes, zero-width
+cylindrical and spherical shells. Geometry in `compile::conformal::sheets`,
+scheme in `engine::conformal::sheets` (`ConformalSheets` operator).
+
+**Why splitting.** A sheet has PEC on both faces but the two sides are
+independent fields. Dey–Mittra's coefficient change (§5.13) needs one
+voltage per edge and one current per face, which cannot hold the field on
+both sides of a sheet crossing the cell. Thickening the sheet to the
+smaller side of each cell would make it a staircase again on the side that
+loses its part (first order).
+
+**Geometry.** Each sheet has a side function `φ` (plane: normal distance;
+cylinder/sphere: squared distance to axis/centre minus `r²`), evaluated at
+the nodes, so every node is on a definite side and the parity of the
+crossings is consistent around every face. Crossings of an edge are the
+roots of `φ` along it (linear/quadratic, bisection if rounding breaks the
+parity); a crossing on the sheet's extent (polygon, rectangle, cylinder
+length) is a **cut**, kept ≥ 1e-6 of the edge from the ends. Faces around
+cut edges are partitioned with the crossings of one sheet: the perimeter
+arcs between crossings alternate sides; the negative side (half-space,
+cylinder or sphere interior) is convex, so all its arcs form one region,
+and each positive arc is a region closed by the trace between its end
+crossings. A trace not fully on the sheet (plate edge or hole in the face)
+does not separate: its arc joins the negative region (a slit). Region
+areas are the polygons of corners and crossings with chords for the traces
+(exact for planes, second order for curves). Pieces (edge parts between
+cuts) belong to the region of the arc containing their midpoint.
+
+**Scheme.** Each piece `p` of a cut edge has its own voltage
+`u_p = E·l_p` (`cb_p = f_p·cb`, `f_p = l_p/l`); each region `r` has its own
+current with inductance `f_r·L` and the contour of its pieces and uncut
+edges (the sheet contributes `E_tan = 0`). Ampère on a piece reads the
+regions containing it, the transpose. The system is again
+`C·du/dt = K'ᵀi`, `L·di/dt = −K'u` (`K'`: incidence of the split grid) and
+the §6 invariant (plus the operator's own `½C_p u_p² + ½L_r i_r i_r'`) is
+exact. Coupling with the kernel: cut edges are `ca = cb = 0` in the kernel
+and updated by the operator (their stored `u` is the sum of the pieces);
+owned faces are `da = 1, db = 0`, the operator writes the current of the
+largest region there; an uncut edge of a cut face on another region is
+corrected after the E kernel by `cb·s·(i_r − i_primary)`. Every face
+around a cut edge is owned, so the kernel never reads a split value.
+
+**Stability.** For the lossless leapfrog with positive `C`, `L` the
+condition is `s = (dt/2)·√λ_max(C^{-½}K'ᵀL⁻¹K'C^{-½}) < 1`, and then the
+conserved `W` is positive definite, so the fields are bounded. A region's
+row of that matrix is `∝ (Σ_p f_p)/f_r` (Gershgorin): splitting adds
+nothing dangerous through the pieces (small `f_p` only lowers `cb_p`) but a
+region with little area and a long open contour resonates far above the
+Courant limit: without remedy `s` = 13–37 on spherical shells at 2.5–5
+cells per radius.
+As for solid metal (§5.13), regions with `f_r < 0.5` are merged with the
+region **on the same side** of the in-plane neighbour across their
+most-open piece (that neighbour can be an uncut face, which is then owned
+by the operator), until the group reaches the threshold: one current with
+`L_g = Σ f_r·L` and the merged contour, `K' → P·K'`, still symmetric. A
+group has at least half a face of area but no more than its members'
+perimeter, so its row stays near that of an uncut face. Merging never
+crosses the sheet (pieces belong to one side), so the two sides stay
+decoupled. The power iteration of §5.13 runs on the combined system
+(pieces as extra unknowns, seeded on the cut cells), with the same
+threshold raising if it fails. Measured: `s` = 0.89–0.985 at Courant factor
+0.99 for every case tried (the tests below and 48 random spheres, plates,
+tilted cylinders and pairs of crossing plates at 8–17 cells), no floored
+regions, energy drift ≤ 1e-6 over 10 000 steps.
+
+**Validation** (`tests/conformal_sheet.rs`; probe spectrum as in §5.13;
+the staircase column is the equivalent solid metal without the option,
+since csx drops oblique sheets):
+
+| cavity | cells | staircase | conformal sheet |
+|---|---|---|---|
+| cylindrical shell TM010 (r = 10 mm) | 5 / 10 / 20 per radius | −6.84 / −3.76 / −1.91 % | −0.323 / −0.081 / −0.0197 % (order 2.02) |
+| right isosceles triangle (legs 20 mm) cut off a square by a 45° plate, TM21 | 20×21 / 40×41 | −2.54 / −1.26 % | −0.160 / −0.042 % (order 1.93) |
+| spherical shell lowest TM (r = 10 mm) | 5 per radius | −10.4 % | +0.31 % |
+
+The field behind the plate stays below 1e-5 of the driven side (f32
+rounding of the corrections). Energy drift over 20 000 steps after the
+source: 3.0e-7 (coarse spherical shell), 2.2e-7 (finite square plate tilted
+about two axes, with plate edges inside cut faces). Bit-identical results
+for 1 and 4 threads. Without sheets the solid-metal scheme is bit-identical
+to before (probe signals compared).
+
+**Limitations.** One sheet partitions each face: faces cut by two sheets
+(junctions, crossing plates) use the partition of the sheet with more cuts
+there, which leaves a gap of under a cell at the junction (warning); closed
+boxes of oblique plates therefore leak at their corners. Sheets touching
+solid conformal metal in the same cells are combined approximately (piece
+`cb` scaled by both fractions; owned faces drop their solid-metal `f_A`).
+Open polyhedra, cylindrical-coordinate boxes and conducting
+(`ConductingSheet`) oblique sheets are not handled. A trace that bulges
+into a face without crossing its edges is not seen. Sources, lumped
+elements and CPML on cut edges are not supported (the operator owns those
+voltages). Voltage probes on a cut edge read the sum of its pieces.
 
 ### 5.14 Thin wires
 

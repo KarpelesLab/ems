@@ -78,8 +78,22 @@
 //! tells whether it passed. Power iteration approaches `λ_max` from below,
 //! so `s` is an estimate, not a bound; the long-run tests check
 //! boundedness directly.
+//!
+//! # Thin PEC sheets
+//!
+//! Zero-thickness PEC sheets cutting cells ([`SheetCutEdge`],
+//! [`SheetCutFace`]) are modelled by splitting the cut edges into pieces
+//! and the cut faces into regions on either side of the sheet, each with
+//! its own voltage or current, and the region contours running along the
+//! sheet; the split system is again `C·du/dt = K'ᵀi`, `L·di/dt = −K'u`, so
+//! the energy invariant stays exact. Small regions are merged like small
+//! cut faces, and the stability check above runs on the combined system
+//! (the pieces as extra unknowns). The [`ConformalSheets`] operator holds
+//! the split unknowns; see its module docs (`conformal/sheets.rs`) for
+//! the coupling with the kernel. Faces owned by the sheet system are never
+//! used by the solid-metal scheme.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::Engine;
 use super::coeffs::Coefficients;
@@ -88,6 +102,10 @@ use super::kernel::flush;
 use super::operator::{Hooks, Operator, StepContext};
 use crate::axis::Axis;
 use crate::{Error, Result};
+
+mod sheets;
+
+pub use sheets::{ConformalSheets, SheetCutEdge, SheetCutFace, SheetRegion};
 
 /// An E edge partly inside metal: open length fraction `fraction` in
 /// `[0, 1)` (0: PEC).
@@ -158,6 +176,18 @@ pub struct ConformalReport {
     pub stability: f64,
     /// Whether `s ≤ max_stability` (true if not checked).
     pub verified: bool,
+    /// Edges cut by thin PEC sheets (split into pieces).
+    pub sheet_edges: usize,
+    /// Faces cut by thin PEC sheets.
+    pub sheet_faces: usize,
+    /// Region currents of the sheet system after merging (one per group
+    /// or unmerged region).
+    pub sheet_currents: usize,
+    /// Sheet regions merged into groups (including absorbed uncut faces).
+    pub sheet_merged: usize,
+    /// Small sheet regions without an open neighbour (area raised to the
+    /// threshold).
+    pub sheet_floored: usize,
 }
 
 impl ConformalReport {
@@ -179,6 +209,8 @@ impl ConformalReport {
 pub struct ConformalPec {
     edges: Vec<ConformalEdge>,
     faces: Vec<ConformalFace>,
+    sheet_edges: Vec<SheetCutEdge>,
+    sheet_faces: Vec<SheetCutFace>,
     options: ConformalOptions,
 }
 
@@ -223,9 +255,32 @@ impl ConformalPec {
         &self.faces
     }
 
+    /// Adds an edge cut by thin PEC sheets (see the [module docs](crate::engine::conformal#thin-pec-sheets)).
+    pub fn push_sheet_edge(&mut self, e: SheetCutEdge) {
+        self.sheet_edges.push(e);
+    }
+
+    /// Adds a face cut by thin PEC sheets (see the [module docs](crate::engine::conformal#thin-pec-sheets)).
+    pub fn push_sheet_face(&mut self, f: SheetCutFace) {
+        self.sheet_faces.push(f);
+    }
+
+    /// The edges cut by thin sheets.
+    pub fn sheet_edges(&self) -> &[SheetCutEdge] {
+        &self.sheet_edges
+    }
+
+    /// The faces cut by thin sheets.
+    pub fn sheet_faces(&self) -> &[SheetCutFace] {
+        &self.sheet_faces
+    }
+
     /// Whether there is nothing to apply.
     pub fn is_empty(&self) -> bool {
-        self.edges.is_empty() && self.faces.is_empty()
+        self.edges.is_empty()
+            && self.faces.is_empty()
+            && self.sheet_edges.is_empty()
+            && self.sheet_faces.is_empty()
     }
 
     /// Applies the scheme to `engine`: scales the coefficients of cut edges
@@ -254,18 +309,51 @@ impl ConformalPec {
                 seeds.push((a.index(), index(n, p)));
             }
         }
+        let sheet = (!self.sheet_faces.is_empty())
+            .then(|| sheets::Prepared::new(&self.sheet_edges, &self.sheet_faces, &co, n, dt));
+        if let Some(p) = &sheet {
+            seeds.extend(p.seeds());
+        }
+        let volume_faces: HashSet<Key> = self
+            .faces
+            .iter()
+            .map(|f| (f.axis.index(), index(n, f.node)))
+            .collect();
         let mut tau = self.options.merge_below.clamp(0.0, 1.0);
         let rounds = self.options.max_rounds.max(1);
         for round in 0..rounds {
-            let (coeffs, groups, mut report) = self.construct(&co, n, dt, tau);
+            let built = sheet
+                .as_ref()
+                .map(|p| p.construct(&co, n, dt, tau, &volume_faces));
+            let empty = HashSet::new();
+            let owned = built.as_ref().map_or(&empty, |b| &b.owned);
+            let (mut coeffs, groups, mut report) = self.construct(&co, n, dt, tau, owned);
+            let mut gterms = group_terms(&groups, n);
+            let mut extra = Vec::new();
+            if let Some(b) = &built {
+                b.apply_coefficients(&mut coeffs, n);
+                let (g, sq) = b.stability_terms(n);
+                gterms.extend(g);
+                extra = sq;
+                report.sheet_edges = b.report.edges;
+                report.sheet_faces = b.report.faces;
+                report.sheet_currents = b.report.groups;
+                report.sheet_merged = b.report.merged;
+                report.sheet_floored = b.report.floored;
+            }
             let last = round + 1 == rounds || tau >= 1.0;
             if self.options.iterations > 0 {
-                let s = stability(&coeffs, n, &groups, &seeds, self.options.iterations);
+                let s = stability(&coeffs, n, &gterms, &extra, &seeds, self.options.iterations);
                 report.stability = s;
                 report.verified = s <= self.options.max_stability;
             }
             if report.verified || last {
                 *engine.coefficients_mut() = coeffs;
+                // Before the merge groups, whose energy look-ahead reads
+                // the corrected edge voltages.
+                if let Some(b) = built {
+                    engine.add_operator(b.op);
+                }
                 if !groups.is_empty() {
                     engine.add_operator(MergedFaces::new(groups));
                 }
@@ -291,17 +379,19 @@ impl ConformalPec {
                 return Err(Error::Invalid(format!("invalid conformal face {f:?}")));
             }
         }
-        Ok(())
+        sheets::validate(&self.sheet_edges, &self.sheet_faces, n)
     }
 
     /// Coefficients (edge scaling already in `co`), merge groups and
-    /// counts for merge threshold `tau`.
+    /// counts for merge threshold `tau`; the faces in `owned` belong to the
+    /// thin-sheet system and are left alone.
     fn construct(
         &self,
         co: &Coefficients,
         n: [usize; 3],
         dt: f64,
         tau: f64,
+        owned: &HashSet<Key>,
     ) -> (Coefficients, Vec<Group>, ConformalReport) {
         let idx = |p: [usize; 3]| index(n, p);
         let mut out = co.clone();
@@ -314,6 +404,11 @@ impl ConformalPec {
             merge_below: tau,
             stability: f64::NAN,
             verified: true,
+            sheet_edges: 0,
+            sheet_faces: 0,
+            sheet_currents: 0,
+            sheet_merged: 0,
+            sheet_floored: 0,
         };
         let face_frac: HashMap<Key, f64> = self
             .faces
@@ -334,7 +429,10 @@ impl ConformalPec {
                 0.0
             }
         };
-        let live = |a: Axis, p: [usize; 3]| face_edges(a, p).iter().any(|&(e, q)| open(e, q));
+        let live = |a: Axis, p: [usize; 3]| {
+            !owned.contains(&(a.index(), idx(p)))
+                && face_edges(a, p).iter().any(|&(e, q)| open(e, q))
+        };
 
         // Union-find over faces; each root keeps its member list (sorted)
         // and total open area.
@@ -443,6 +541,7 @@ impl ConformalPec {
         for f in &self.faces {
             let k = idx(f.node);
             if grouped.contains_key(&(f.axis.index(), k)) || !live(f.axis, f.node) {
+                // (Faces owned by the sheet system are not live.)
                 continue;
             }
             let mut fa = f.fraction;
@@ -679,25 +778,16 @@ pub fn stability_factor(
     seeds: &[(usize, usize)],
     iterations: usize,
 ) -> f64 {
-    stability(co, nodes, &[], seeds, iterations)
+    stability(co, nodes, &[], &[], seeds, iterations)
 }
 
 /// A merge group for [`apply_s`]: `dt/L_g` and the circulation terms
-/// `(edge axis index, edge node index, sign)`.
+/// `(array, index, sign)`; arrays 0..3 are the E components (engine node
+/// index), array 3 the extra unknowns (thin-sheet edge pieces).
 type GroupTerms = (f64, Vec<(usize, usize, f64)>);
 
-fn stability(
-    co: &Coefficients,
-    n: [usize; 3],
-    groups: &[Group],
-    seeds: &[(usize, usize)],
-    iterations: usize,
-) -> f64 {
-    let len = n[0] * n[1] * n[2];
-    let sq: [Vec<f64>; 3] =
-        core::array::from_fn(|a| co.data[3 + a].iter().map(|&c| (c as f64).sqrt()).collect());
-    let db: [&[f32]; 3] = core::array::from_fn(|a| &co.data[9 + a][..]);
-    let gterms: Vec<GroupTerms> = groups
+fn group_terms(groups: &[Group], n: [usize; 3]) -> Vec<GroupTerms> {
+    groups
         .iter()
         .map(|g| {
             (
@@ -708,10 +798,30 @@ fn stability(
                     .collect(),
             )
         })
-        .collect();
-    let mut v: [Vec<f64>; 3] = core::array::from_fn(|a| {
+        .collect()
+}
+
+/// `extra` holds `√cb` of the extra unknowns (array 3 of the group terms).
+fn stability(
+    co: &Coefficients,
+    n: [usize; 3],
+    gterms: &[GroupTerms],
+    extra: &[f64],
+    seeds: &[(usize, usize)],
+    iterations: usize,
+) -> f64 {
+    let len = n[0] * n[1] * n[2];
+    let sq: [Vec<f64>; 4] = core::array::from_fn(|a| {
+        if a < 3 {
+            co.data[3 + a].iter().map(|&c| (c as f64).sqrt()).collect()
+        } else {
+            extra.to_vec()
+        }
+    });
+    let db: [&[f32]; 3] = core::array::from_fn(|a| &co.data[9 + a][..]);
+    let mut v: [Vec<f64>; 4] = core::array::from_fn(|a| {
         let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ (a as u64 + 1);
-        (0..len)
+        (0..sq[a].len())
             .map(|k| {
                 // xorshift: a fixed, thread-independent sequence.
                 state ^= state << 13;
@@ -732,7 +842,7 @@ fn stability(
         }
     }
     let mut h: [Vec<f64>; 3] = core::array::from_fn(|_| vec![0.0; len]);
-    let mut w: [Vec<f64>; 3] = core::array::from_fn(|_| vec![0.0; len]);
+    let mut w: [Vec<f64>; 4] = core::array::from_fn(|a| vec![0.0; sq[a].len()]);
     let mut lambda = 0.0;
     for _ in 0..iterations.max(1) {
         let norm = v.iter().flatten().map(|x| x * x).sum::<f64>().sqrt();
@@ -742,7 +852,7 @@ fn stability(
         for x in v.iter_mut().flatten() {
             *x /= norm;
         }
-        apply_s(n, &sq, &db, &gterms, &v, &mut h, &mut w);
+        apply_s(n, &sq, &db, gterms, &v, &mut h, &mut w);
         lambda = v
             .iter()
             .flatten()
@@ -760,15 +870,15 @@ fn stability(
 /// by `groups` (`(dt/L_g, terms)`); `h` is scratch.
 fn apply_s(
     n: [usize; 3],
-    sq: &[Vec<f64>; 3],
+    sq: &[Vec<f64>; 4],
     db: &[&[f32]; 3],
     groups: &[GroupTerms],
-    v: &[Vec<f64>; 3],
+    v: &[Vec<f64>; 4],
     h: &mut [Vec<f64>; 3],
-    w: &mut [Vec<f64>; 3],
+    w: &mut [Vec<f64>; 4],
 ) {
     let stride = [n[1] * n[2], n[2], 1];
-    let x: [Vec<f64>; 3] =
+    let x: [Vec<f64>; 4] =
         core::array::from_fn(|a| v[a].iter().zip(&sq[a]).map(|(v, s)| v * s).collect());
     for wa in w.iter_mut() {
         wa.fill(0.0);
@@ -812,7 +922,7 @@ fn apply_s(
             w[a][k] += s * f;
         }
     }
-    for a in 0..3 {
+    for a in 0..4 {
         for (wv, s) in w[a].iter_mut().zip(&sq[a]) {
             *wv *= s;
         }
