@@ -1,12 +1,15 @@
 //! Physics validation of the engine core: PEC cavity resonances (uniform,
-//! graded, dielectric/anisotropic fill), energy behaviour, determinism.
+//! graded, dielectric/anisotropic fill), energy behaviour, end criteria,
+//! determinism.
+
+use std::ops::ControlFlow;
 
 use ems::constants::C0;
 use ems::engine::{
     CellMaterials, EdgeSource, Engine, FaceCondition, FaceConditions, Grid, Material,
-    OperatorHandle, Probe, TimeStep,
+    OperatorHandle, Probe, RunLimits, RunOutcome, StopReason, TimeStep,
 };
-use ems::{Axis, Face};
+use ems::{Axis, EndCriteria, Face};
 
 /// Gaussian-modulated pulse centred at `f0` with ~`bw` bandwidth.
 fn pulse(f0: f64, bw: f64) -> (impl Fn(f64) -> f64 + Send + 'static, f64) {
@@ -201,41 +204,76 @@ fn small_cavity(mats: impl FnOnce(&Grid) -> CellMaterials, threads: usize) -> (E
     (e, t_end)
 }
 
-fn energy_bounded(steps: u64) {
-    let (mut e, t_end) = small_cavity(CellMaterials::vacuum, 2);
+/// Runs past the source, then samples the energy invariant every
+/// `interval` steps for `steps` steps; returns the largest relative
+/// deviation from the first sample, and that of the staggered energy.
+fn invariant_drift(e: &mut Engine, t_end: f64, steps: u64, interval: u64) -> (f64, f64) {
     e.run((t_end / e.dt()).ceil() as u64 + 1);
-    // `u` and `i` are half a step apart, so W ripples at twice the mode
-    // frequencies; compare the envelope early and late in the run.
-    let window = 2000;
-    let envelope = |e: &mut Engine| {
-        let (mut lo, mut hi) = (f64::MAX, 0.0f64);
-        for _ in 0..window {
-            e.step();
-            let w = e.energy();
-            lo = lo.min(w);
-            hi = hi.max(w);
-        }
-        (lo, hi)
-    };
-    let (lo0, hi0) = envelope(&mut e);
-    e.run(steps.saturating_sub(2 * window));
-    let (lo1, hi1) = envelope(&mut e);
-    eprintln!("energy envelope early [{lo0:.6e}, {hi0:.6e}], late [{lo1:.6e}, {hi1:.6e}]");
-    assert!(hi0 > 0.0);
-    assert!(hi1 <= hi0 * 1.01, "energy grew: {hi0} -> {hi1}");
-    assert!(hi1 >= hi0 * 0.99, "lossless energy decayed: {hi0} -> {hi1}");
-    assert!(lo1 >= lo0 * 0.97, "lossless energy decayed: {lo0} -> {lo1}");
+    let (w0, s0) = (e.energy(), e.energy_staggered());
+    assert!(w0 > 0.0);
+    let (mut dev, mut sdev) = (0.0f64, 0.0f64);
+    for _ in 0..steps / interval {
+        // Also check that the in-step value matches the read-only one.
+        let w_ro = e.energy();
+        let w = e.step_with_energy();
+        assert_eq!(w.to_bits(), w_ro.to_bits());
+        dev = dev.max((w / w0 - 1.0).abs());
+        sdev = sdev.max((e.energy_staggered() / s0 - 1.0).abs());
+        e.run(interval - 1);
+    }
+    eprintln!(
+        "W0 = {w0:.6e} J: max |W/W0 − 1| = {dev:.3e} (staggered energy: {sdev:.3e}) over {steps} steps"
+    );
+    (dev, sdev)
+}
+
+fn energy_conserved(steps: u64) {
+    let (mut e, t_end) = small_cavity(CellMaterials::vacuum, 2);
+    let (dev, sdev) = invariant_drift(&mut e, t_end, steps, 10);
+    assert!(dev < 1e-4, "lossless invariant drifted by {dev:e}");
+    // The staggered energy is visibly not conserved.
+    assert!(sdev > 100.0 * dev);
 }
 
 #[test]
-fn lossless_energy_bounded() {
-    energy_bounded(10_000);
+fn lossless_energy_conserved_uniform() {
+    energy_conserved(10_000);
 }
 
 #[test]
 #[ignore = "long: 1e5 steps (design §9); run with --ignored in release"]
-fn lossless_energy_bounded_long() {
-    energy_bounded(100_000);
+fn lossless_energy_conserved_long() {
+    energy_conserved(100_000);
+}
+
+#[test]
+fn lossless_energy_conserved_graded_dielectric() {
+    let g = Grid::new([
+        graded(0.1, 15, 0.3),
+        graded(0.07, 11, 0.2),
+        graded(0.05, 9, 0.25),
+    ])
+    .unwrap();
+    let mut m = CellMaterials::vacuum(&g);
+    m.fill_box([3..9, 2..8, 1..6], Material::dielectric(4.0));
+    let mut aniso = Material::VACUUM.with_mu_r(1.5);
+    aniso.eps_r = [2.0, 3.0, 1.5];
+    m.fill_box([9..14, 0..11, 4..9], aniso);
+    m.fill_pec_box([11..12, 3..8, 2..7]);
+    let mut e = Engine::builder(g)
+        .materials(m)
+        .faces(FaceConditions::default().with(Face::YMax, FaceCondition::Pmc))
+        .threads(3)
+        .build()
+        .unwrap();
+    let (f, t_end) = pulse(3e9, 2e9);
+    e.add_operator(
+        EdgeSource::new(f)
+            .edge(Axis::Z, [5, 4, 3], 1.0)
+            .edge(Axis::Y, [10, 5, 6], 0.7),
+    );
+    let (dev, _) = invariant_drift(&mut e, t_end, 8000, 50);
+    assert!(dev < 1e-4, "lossless invariant drifted by {dev:e}");
 }
 
 #[test]
@@ -246,28 +284,215 @@ fn lossy_energy_decays() {
         2,
     );
     e.run((t_end / e.dt()).ceil() as u64 + 1);
-    // Energy samples averaged over a window to remove the E/H exchange ripple.
+    // The invariant is non-increasing with electric loss.
+    let mut prev = e.energy();
+    let (w1, t1) = (prev, e.time());
+    for _ in 0..500 {
+        let w = e.step_with_energy();
+        assert!(w <= prev, "lossy energy grew: {prev} -> {w}");
+        prev = w;
+    }
+    // Average over a window to remove the small ripple of the loss rate
+    // (loss acts on the electric part only).
     let avg = |e: &mut Engine| {
         let mut s = 0.0;
         for _ in 0..100 {
-            e.step();
-            s += e.energy();
+            s += e.step_with_energy();
         }
-        (s / 100.0, e.time())
+        (s / 100.0, e.time() - 50.5 * e.dt())
     };
-    let (w1, t1) = avg(&mut e);
+    let (wa, ta) = avg(&mut e);
     e.run(400);
-    let (w2, t2) = avg(&mut e);
-    assert!(w2 < w1);
+    let (wb, tb) = avg(&mut e);
+    assert!(wb < wa && wa < w1 && t1 < ta);
     // Uniform conductivity: E-field energy decays at kappa/eps0, and on
     // average half the energy is electric -> W ~ exp(-kappa/eps0 * t).
-    let rate = (w1 / w2).ln() / (t2 - t1);
+    let rate = (wa / wb).ln() / (tb - ta);
     let want = kappa / ems::constants::EPS0;
     eprintln!("decay rate {rate:.4e}, expected {want:.4e}");
     assert!(
         (rate / want - 1.0).abs() < 0.02,
         "decay rate {rate} vs {want}"
     );
+}
+
+#[test]
+fn run_until_energy_decay() {
+    let kappa = 0.002;
+    let (mut e, t_end) = small_cavity(
+        |g| CellMaterials::new(g, Material::VACUUM.with_kappa(kappa)),
+        2,
+    );
+    let db = -30.0;
+    let crit = EndCriteria::energy_decay_db(db).check_interval(20);
+    let limits = RunLimits::new(100_000)
+        .end_criteria(crit)
+        .excitation_end(t_end);
+    let mut w_max = 0.0;
+    // First sample after the excitation: (time, energy).
+    let mut after: Option<(f64, f64)> = None;
+    let mut checks = 0u64;
+    let out = e
+        .run_until_with(&limits, |p| {
+            assert_eq!(p.timestep, checks * 20);
+            assert_eq!(p.steps, p.timestep + 1);
+            checks += 1;
+            w_max = f64::max(w_max, p.energy);
+            if p.time > t_end && after.is_none() {
+                after = Some((p.time, p.energy));
+            }
+            assert_eq!(p.max_energy, w_max);
+            assert!(p.energy_db <= 0.0);
+            assert!(p.mcells_per_s > 0.0);
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    let StopReason::EnergyDecay { ratio_db } = out.reason else {
+        panic!("unexpected stop {:?}", out.reason);
+    };
+    assert!(ratio_db < db && ratio_db > db - 1.0, "{ratio_db}");
+    assert_eq!(out.timestep, out.steps);
+    assert_eq!(out.time, e.time());
+    assert_eq!(out.max_energy, w_max);
+    assert!(out.energy / out.max_energy < crit.energy_ratio);
+    // The deciding sample is one step before the end.
+    let t_stop = out.time - e.dt();
+    let (ta, wa) = after.unwrap();
+    assert!(t_stop > ta);
+    // Free decay W(t) = W(ta)·exp(−κ/ε0·(t − ta)) after the source: the
+    // expected crossing of W = ratio·W_max.
+    let rate = kappa / ems::constants::EPS0;
+    let want = ta + (wa / (crit.energy_ratio * w_max)).ln() / rate;
+    eprintln!(
+        "stopped at {t_stop:.4e} s after {} steps, expected ≈ {want:.4e} s (checks every {:.3e} s)",
+        out.steps,
+        20.0 * e.dt()
+    );
+    let window = 0.01 * (want - ta) + 20.0 * e.dt();
+    assert!(
+        (t_stop - want).abs() < window,
+        "stop at {t_stop:e} s, expected {want:e} ± {window:e} s"
+    );
+}
+
+#[test]
+fn run_until_max_timesteps_and_abort() {
+    // Lossless: the energy never decays, so the run hits max_timesteps.
+    let (mut e, t_end) = small_cavity(CellMaterials::vacuum, 2);
+    let limits = RunLimits::new(1234)
+        .end_criteria(EndCriteria::energy_decay_db(-60.0))
+        .excitation_end(t_end);
+    let out = e.run_until(&limits).unwrap();
+    assert_eq!(out.reason, StopReason::MaxTimesteps);
+    assert_eq!((out.steps, out.timestep, e.timestep()), (1234, 1234, 1234));
+    assert!(out.energy > 0.0 && out.energy <= out.max_energy);
+    // A second call counts its own steps.
+    let out = e.run_until(&RunLimits::new(7)).unwrap();
+    assert_eq!(
+        (out.reason, out.steps, out.timestep),
+        (StopReason::MaxTimesteps, 7, 1241)
+    );
+    assert_eq!(
+        e.run_until(&RunLimits::new(0)).unwrap().reason,
+        StopReason::MaxTimesteps
+    );
+    // Abort from the callback.
+    let mut calls = 0;
+    let out = e
+        .run_until_with(&RunLimits::new(10_000), |p| {
+            calls += 1;
+            if p.steps > 300 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap();
+    assert_eq!(out.reason, StopReason::Aborted);
+    assert_eq!(out.steps, 301);
+    assert_eq!(calls, 7);
+    // Invalid limits are rejected before stepping.
+    let before = e.timestep();
+    let bad = RunLimits::new(10).end_criteria(EndCriteria::energy_ratio(2.0));
+    assert!(e.run_until(&bad).is_err());
+    assert!(
+        e.run_until(&RunLimits::new(10).excitation_end(f64::NAN))
+            .is_err()
+    );
+    assert_eq!(e.timestep(), before);
+}
+
+#[test]
+fn run_until_waits_for_excitation_and_energy() {
+    // No field yet and the source starts at ~0: the criterion must not
+    // fire on W_max = 0, nor before the excitation is over.
+    let (mut e, t_end) = small_cavity(CellMaterials::vacuum, 1);
+    let mut first_db = None;
+    let limits = RunLimits::new(100)
+        .end_criteria(EndCriteria::energy_ratio(1.0).check_interval(1))
+        .excitation_end(t_end);
+    let out = e
+        .run_until_with(&limits, |p| {
+            first_db.get_or_insert(p.energy_db);
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(first_db, Some(0.0));
+    assert!(100.0 * e.dt() < t_end);
+    assert_eq!(out.reason, StopReason::MaxTimesteps);
+}
+
+fn energy_trace(threads: usize) -> (Vec<u64>, RunOutcome) {
+    let g = Grid::new([
+        graded(0.1, 13, 0.2),
+        graded(0.08, 9, 0.1),
+        graded(0.06, 7, 0.0),
+    ])
+    .unwrap();
+    let mut m = CellMaterials::vacuum(&g);
+    m.fill_box(
+        [2..6, 1..5, 2..6],
+        Material::dielectric(3.0).with_kappa(0.05),
+    );
+    m.fill_box(
+        [7..12, 0..9, 0..3],
+        Material::VACUUM.with_mu_r(2.0).with_sigma_m(50.0),
+    );
+    m.fill_pec_box([9..10, 2..7, 1..6]);
+    let mut e = Engine::builder(g)
+        .materials(m)
+        .threads(threads)
+        .build()
+        .unwrap();
+    assert_eq!(e.threads(), threads);
+    let (f, t_end) = pulse(5e9, 4e9);
+    e.add_operator(EdgeSource::new(f).edge(Axis::Z, [4, 4, 3], 1.0));
+    let mut trace = Vec::new();
+    let limits = RunLimits::new(5000)
+        .end_criteria(EndCriteria::energy_decay_db(-20.0).check_interval(7))
+        .excitation_end(t_end);
+    let out = e
+        .run_until_with(&limits, |p| {
+            trace.push(p.energy.to_bits());
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    trace.push(e.energy().to_bits());
+    (trace, out)
+}
+
+#[test]
+fn energy_deterministic_across_threads() {
+    let (t1, o1) = energy_trace(1);
+    assert!(matches!(o1.reason, StopReason::EnergyDecay { .. }));
+    for threads in [2, 4] {
+        let (t, o) = energy_trace(threads);
+        assert_eq!(t1, t);
+        assert_eq!(
+            (o1.reason, o1.steps, o1.energy.to_bits()),
+            (o.reason, o.steps, o.energy.to_bits())
+        );
+    }
 }
 
 fn run_det(threads: usize, faces: FaceConditions) -> (Vec<Vec<f32>>, Vec<f64>, f64) {

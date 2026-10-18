@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 
 use super::coeffs::Coefficients;
 use super::fields::{FieldStore, read};
-use super::kernel::{update_e_slab, update_h_slab};
+use super::kernel::{energy_h_slab, update_e_slab, update_h_slab};
 
 /// State shared between the engine and its workers.
 #[derive(Debug)]
@@ -22,23 +22,41 @@ pub(crate) struct Shared {
     pub(crate) coeffs: RwLock<Coefficients>,
     /// Zero plane (`ny·nz`) for out-of-domain neighbours.
     pub(crate) zero: Vec<f32>,
+    /// Per-x-plane energy partial sums (`f64` bits) written by
+    /// [`Phase::HEnergy`]; each plane is written by exactly one thread and
+    /// read after the phase's completion barrier.
+    plane_energy: Vec<AtomicU64>,
     barrier: SpinBarrier,
     cmd: AtomicU8,
     steps: AtomicU64,
+}
+
+/// One half-step phase run on every slab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    /// H update.
+    H,
+    /// H update that also records the per-plane energy invariant.
+    HEnergy,
+    /// E update.
+    E,
 }
 
 const CMD_EXIT: u8 = 0;
 const CMD_H: u8 = 1;
 const CMD_E: u8 = 2;
 const CMD_RUN: u8 = 3;
+const CMD_H_ENERGY: u8 = 4;
 
 impl Shared {
     pub(crate) fn new(store: FieldStore, coeffs: Coefficients, threads: usize) -> Self {
         let zero = vec![0.0; store.layout.plane];
+        let plane_energy = (0..store.layout.n[0]).map(|_| AtomicU64::new(0)).collect();
         Self {
             store,
             coeffs: RwLock::new(coeffs),
             zero,
+            plane_energy,
             barrier: SpinBarrier::new(threads),
             cmd: AtomicU8::new(CMD_EXIT),
             steps: AtomicU64::new(0),
@@ -49,8 +67,47 @@ impl Shared {
         update_h_slab(&self.store, &read(&self.coeffs), s);
     }
 
+    /// H update of slab `s` recording the energy partial sum of each of its
+    /// planes.
+    pub(crate) fn h_energy(&self, s: usize) {
+        energy_h_slab::<true>(&self.store, &read(&self.coeffs), s, &mut |gi, w| {
+            self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
+        });
+    }
+
     pub(crate) fn e(&self, s: usize) {
         update_e_slab(&self.store, &read(&self.coeffs), &self.zero, s);
+    }
+
+    pub(crate) fn phase(&self, s: usize, phase: Phase) {
+        match phase {
+            Phase::H => self.h(s),
+            Phase::HEnergy => self.h_energy(s),
+            Phase::E => self.e(s),
+        }
+    }
+
+    /// Energy recorded by the last [`Phase::HEnergy`]: the per-plane sums
+    /// combined in plane order (independent of the partition), times
+    /// `dt/4`.
+    pub(crate) fn recorded_energy(&self, dt: f64) -> f64 {
+        let s: f64 = self
+            .plane_energy
+            .iter()
+            .map(|w| f64::from_bits(w.load(Ordering::Relaxed)))
+            .sum();
+        0.25 * dt * s
+    }
+
+    /// The energy invariant of the current state without changing it
+    /// (calling thread only; the workers must be idle).
+    pub(crate) fn current_energy(&self, dt: f64) -> f64 {
+        let co = read(&self.coeffs);
+        let mut planes = vec![0.0f64; self.store.layout.n[0]];
+        for s in 0..self.store.layout.slabs() {
+            energy_h_slab::<false>(&self.store, &co, s, &mut |gi, w| planes[gi] = w);
+        }
+        0.25 * dt * planes.iter().sum::<f64>()
     }
 }
 
@@ -142,6 +199,7 @@ fn worker(sh: Arc<Shared>, s: usize) {
         sh.barrier.wait();
         match sh.cmd.load(Ordering::Acquire) {
             CMD_H => sh.h(s),
+            CMD_H_ENERGY => sh.h_energy(s),
             CMD_E => sh.e(s),
             CMD_RUN => {
                 let n = sh.steps.load(Ordering::Acquire);
@@ -196,17 +254,17 @@ impl Pool {
         })
     }
 
-    /// One H or E half-step over all slabs.
-    pub(crate) fn half(&mut self, sh: &Shared, e: bool) {
+    /// One half-step phase over all slabs.
+    pub(crate) fn half(&mut self, sh: &Shared, phase: Phase) {
         self.busy = true;
-        sh.cmd
-            .store(if e { CMD_E } else { CMD_H }, Ordering::Release);
+        let cmd = match phase {
+            Phase::H => CMD_H,
+            Phase::HEnergy => CMD_H_ENERGY,
+            Phase::E => CMD_E,
+        };
+        sh.cmd.store(cmd, Ordering::Release);
         sh.barrier.wait();
-        if e {
-            sh.e(0)
-        } else {
-            sh.h(0)
-        }
+        sh.phase(0, phase);
         sh.barrier.wait();
         self.busy = false;
     }

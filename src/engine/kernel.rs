@@ -41,6 +41,82 @@ fn h_row(h: &mut [f32], da: &[f32], db: &[f32], a: &[f32], b: &[f32], c: &[f32],
     }
 }
 
+/// [`h_row`] that also returns the row's share of the leapfrog energy
+/// invariant, `Σ (1 + da)/db · h_old · h_new` (entries with `db = 0`
+/// skipped), and writes the new values only if `COMMIT`.
+///
+/// `h_new` is computed by exactly the same expression as in [`h_row`], so
+/// the committed values are bit-identical to a plain update. The sum uses
+/// four interleaved `f64` accumulators in a fixed order (deterministic).
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn h_row_energy<const COMMIT: bool>(
+    h: &mut [f32],
+    da: &[f32],
+    db: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    d: &[f32],
+) -> f64 {
+    let n = h.len();
+    let (da, db, a, b, c, d) = (&da[..n], &db[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
+    let mut acc = [0.0f64; 4];
+    for k in 0..n {
+        let old = h[k];
+        let new = flush(da[k] * old - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
+        let w = if db[k] != 0.0 {
+            (1.0 + da[k] as f64) * (old as f64 * new as f64) / db[k] as f64
+        } else {
+            0.0
+        };
+        acc[k & 3] += w;
+        if COMMIT {
+            h[k] = new;
+        }
+    }
+    (acc[0] + acc[1]) + (acc[2] + acc[3])
+}
+
+/// One H row, plain ([`h_row`], returns 0) or with energy
+/// ([`h_row_energy`]).
+#[inline(always)]
+fn hrow<const ENERGY: bool, const COMMIT: bool>(
+    h: &mut [f32],
+    da: &[f32],
+    db: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    d: &[f32],
+) -> f64 {
+    if ENERGY {
+        h_row_energy::<COMMIT>(h, da, db, a, b, c, d)
+    } else {
+        h_row(h, da, db, a, b, c, d);
+        0.0
+    }
+}
+
+/// `Σ (1 + ca)/cb · u²` over equal-length slices, skipping `cb = 0`
+/// (PEC and padding edges). Fixed summation order.
+#[allow(clippy::needless_range_loop)]
+fn e_energy(u: &[f32], ca: &[f32], cb: &[f32]) -> f64 {
+    let n = u.len();
+    let (ca, cb) = (&ca[..n], &cb[..n]);
+    let mut acc = [0.0f64; 4];
+    for k in 0..n {
+        let w = if cb[k] != 0.0 {
+            let x = u[k] as f64;
+            (1.0 + ca[k] as f64) * (x * x) / cb[k] as f64
+        } else {
+            0.0
+        };
+        acc[k & 3] += w;
+    }
+    (acc[0] + acc[1]) + (acc[2] + acc[3])
+}
+
 /// `u = ca·u + cb·((a − b) − (c − d))` over equal-length slices.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
@@ -59,6 +135,35 @@ fn plane(v: &[f32], local: usize, p: usize) -> &[f32] {
 /// Faraday update of all H dual edges in the x-planes of slab `s`:
 /// `i ← da·i − db·∮u` around the primary face each dual edge pierces.
 pub(crate) fn update_h_slab(store: &FieldStore, co: &Coefficients, s: usize) {
+    h_slab::<false, true>(store, co, s, &mut |_, _| {});
+}
+
+/// [`update_h_slab`] that also evaluates, for every x-plane `gi` of the
+/// slab, the plane's share of the leapfrog energy invariant in units of
+/// `dt/4` (see [`Engine::energy`](super::Engine::energy)):
+///
+/// ```text
+/// Σ (1 + ca)/cb · (u^n)²  +  Σ (1 + da)/db · i^{n−½} · i^{n+½}
+/// ```
+///
+/// and passes it to `sink(gi, value)`. Each plane's value is summed in a
+/// fixed order, independent of the slab partition. With `COMMIT = false`
+/// the currents are left unchanged (read-only evaluation of `i^{n+½}`).
+pub(crate) fn energy_h_slab<const COMMIT: bool>(
+    store: &FieldStore,
+    co: &Coefficients,
+    s: usize,
+    sink: &mut dyn FnMut(usize, f64),
+) {
+    h_slab::<true, COMMIT>(store, co, s, sink);
+}
+
+fn h_slab<const ENERGY: bool, const COMMIT: bool>(
+    store: &FieldStore,
+    co: &Coefficients,
+    s: usize,
+    sink: &mut dyn FnMut(usize, f64),
+) {
     let lay = &store.layout;
     let [nx, ny, nz] = lay.n;
     let p = lay.plane;
@@ -78,12 +183,13 @@ pub(crate) fn update_h_slab(store: &FieldStore, co: &Coefficients, s: usize) {
         let ix = &mut ix[l * p..(l + 1) * p];
         let iy = &mut iy[l * p..(l + 1) * p];
         let iz = &mut iz[l * p..(l + 1) * p];
+        let mut wh = 0.0f64;
         // x: curl_x = (uz[j+1] − uz[j]) − (uy[k+1] − uy[k]).
         let (da, db) = (&co.data[6][g.clone()], &co.data[9][g.clone()]);
         let m = nz - 1;
         for j in 0..ny - 1 {
             let r = j * nz;
-            h_row(
+            wh += hrow::<ENERGY, COMMIT>(
                 &mut ix[r..r + m],
                 &da[r..],
                 &db[r..],
@@ -93,43 +199,50 @@ pub(crate) fn update_h_slab(store: &FieldStore, co: &Coefficients, s: usize) {
                 &uy[r..],
             );
         }
-        if gi + 1 == nx {
-            continue; // y and z dual edges at the last plane are padding
+        // y and z dual edges at the last plane are padding.
+        if gi + 1 < nx {
+            let next: &Block = if gi + 1 < p1 {
+                &uo
+            } else {
+                un.as_deref().expect("next slab")
+            };
+            let ln = if gi + 1 < p1 { l + 1 } else { 0 };
+            let (uyn, uzn) = (plane(&next[1], ln, p), plane(&next[2], ln, p));
+            // y: curl_y = (ux[k+1] − ux[k]) − (uz[i+1] − uz[i]).
+            let (da, db) = (&co.data[7][g.clone()], &co.data[10][g.clone()]);
+            for j in 0..ny {
+                let r = j * nz;
+                wh += hrow::<ENERGY, COMMIT>(
+                    &mut iy[r..r + m],
+                    &da[r..],
+                    &db[r..],
+                    &ux[r + 1..],
+                    &ux[r..],
+                    &uzn[r..],
+                    &uz[r..],
+                );
+            }
+            // z: curl_z = (uy[i+1] − uy[i]) − (ux[j+1] − ux[j]).
+            let (da, db) = (&co.data[8][g.clone()], &co.data[11][g.clone()]);
+            for j in 0..ny - 1 {
+                let r = j * nz;
+                wh += hrow::<ENERGY, COMMIT>(
+                    &mut iz[r..r + nz],
+                    &da[r..],
+                    &db[r..],
+                    &uyn[r..],
+                    &uy[r..],
+                    &ux[r + nz..],
+                    &ux[r..],
+                );
+            }
         }
-        let next: &Block = if gi + 1 < p1 {
-            &uo
-        } else {
-            un.as_deref().expect("next slab")
-        };
-        let ln = if gi + 1 < p1 { l + 1 } else { 0 };
-        let (uyn, uzn) = (plane(&next[1], ln, p), plane(&next[2], ln, p));
-        // y: curl_y = (ux[k+1] − ux[k]) − (uz[i+1] − uz[i]).
-        let (da, db) = (&co.data[7][g.clone()], &co.data[10][g.clone()]);
-        for j in 0..ny {
-            let r = j * nz;
-            h_row(
-                &mut iy[r..r + m],
-                &da[r..],
-                &db[r..],
-                &ux[r + 1..],
-                &ux[r..],
-                &uzn[r..],
-                &uz[r..],
-            );
-        }
-        // z: curl_z = (uy[i+1] − uy[i]) − (ux[j+1] − ux[j]).
-        let (da, db) = (&co.data[8][g.clone()], &co.data[11][g]);
-        for j in 0..ny - 1 {
-            let r = j * nz;
-            h_row(
-                &mut iz[r..r + nz],
-                &da[r..],
-                &db[r..],
-                &uyn[r..],
-                &uy[r..],
-                &ux[r + nz..],
-                &ux[r..],
-            );
+        if ENERGY {
+            let mut we = 0.0f64;
+            for (a, uc) in [ux, uy, uz].into_iter().enumerate() {
+                we += e_energy(uc, &co.data[a][g.clone()], &co.data[3 + a][g.clone()]);
+            }
+            sink(gi, we + wh);
         }
     }
 }

@@ -71,7 +71,61 @@
 //! (the operators run on the calling thread in between). Every value is
 //! computed by the same expression regardless of the partition and there
 //! are no cross-thread reductions, so results are bit-identical for any
-//! thread count. [`Engine::energy`] sums in global index order.
+//! thread count. Energy sums are formed per x-plane in a fixed order and
+//! then combined in plane order, so they are bit-identical too.
+//!
+//! # Energy
+//!
+//! Write the lossless update in matrix form, with `K` the primary-face
+//! circulation of `u` (so that `Kᵀ` is the dual-face circulation of `i`,
+//! the integral-form Yee curls being transposes of each other):
+//!
+//! ```text
+//! L·(i^{n+½} − i^{n−½}) = −dt·K·u^n
+//! C·(u^{n+1} − u^n)     =  dt·Kᵀ·i^{n+½}
+//! ```
+//!
+//! Define `W^n = ½·uⁿᵀ·C·uⁿ + ½·i^{n−½}ᵀ·L·i^{n+½}`. Then
+//!
+//! ```text
+//! W^{n+1} − W^n = ½(u^{n+1} + u^n)ᵀ·C·(u^{n+1} − u^n)
+//!               + ½ i^{n+½}ᵀ·L·(i^{n+3/2} − i^{n−½})
+//!               = (dt/2)·(u^{n+1} + u^n)ᵀ·Kᵀ·i^{n+½}
+//!               − (dt/2)·i^{n+½}ᵀ·K·(u^{n+1} + u^n)  = 0,
+//! ```
+//!
+//! using the E update in the first term and the two H updates around
+//! `n+½` in the second. So `W^n` is exactly conserved by the scheme (it is
+//! the energy-like invariant of leapfrog; positive definite below the
+//! Courant limit), whereas `½·Σ C·u² + ½·Σ L·i²` with `u` and `i` half a
+//! step apart is not ([`Engine::energy_staggered`]). The dual form
+//! `½·uⁿᵀC·u^{n+1} + ½·|i^{n+½}|²_L` is conserved as well; we use `W^n`
+//! because it is a quantity at `t = n·dt` that the H update can produce
+//! (it reads `u^n` and has both `i^{n−½}` and `i^{n+½}` at hand).
+//!
+//! `C` and `L` are those *of the `f32` coefficients*, which makes the
+//! invariant exact for the scheme actually run: from
+//! `u^{n+1} = ca·u^n + cb·Kᵀi`, with `C = dt·(1 + ca)/(2·cb)` and
+//! `G = (1 − ca)/cb` the update is exactly
+//! `C·(u^{n+1} − u^n)/dt + G·(u^{n+1} + u^n)/2 = Kᵀi` (likewise `L`, `R`
+//! from `da`, `db`).
+//! With these losses the same computation gives
+//!
+//! ```text
+//! W^{n+1} − W^n = −(dt/4)·[ (u^{n+1} + u^n)ᵀ·G·(u^{n+1} + u^n)
+//!                         + i^{n+½}ᵀ·R·(i^{n+3/2} + 2·i^{n+½} + i^{n−½}) ],
+//! ```
+//!
+//! so electric loss makes `W` non-increasing step by step; the magnetic
+//! term is a positive dissipation on average (exactly so for a slowly
+//! varying `i`). Edges with `cb = 0` (PEC, padding) or `db = 0` are
+//! skipped. Operators (sources, boundaries, lumped elements) may add
+//! or remove energy; the invariant then is only the field energy.
+//!
+//! Measured on lossless closed cavities (tests/engine.rs): after the source
+//! has stopped, `W` stays constant to about `1e-6` relative over thousands
+//! of steps (`f32` rounding of the fields), on uniform and graded meshes
+//! with dielectric fill.
 
 pub mod boundary;
 mod coeffs;
@@ -85,6 +139,7 @@ mod operator;
 mod pool;
 pub mod port;
 mod probe;
+mod run;
 
 use core::marker::PhantomData;
 use std::sync::Arc;
@@ -102,12 +157,13 @@ pub use material::{CellMaterials, Material};
 pub use operator::{Operator, OperatorHandle, StepContext};
 pub use port::LumpedPort;
 pub use probe::{Probe, ProbeQuantity};
+pub use run::{Progress, RunLimits, RunOutcome, StopReason};
 
 use crate::axis::Axis;
 use crate::fdtd::Face;
 use crate::{Error, Result};
 use fields::{FieldStore, Layout, read, write};
-use pool::{Pool, Shared};
+use pool::{Phase, Pool, Shared};
 
 /// Configures and builds an [`Engine`]; see [`Engine::builder`].
 #[derive(Debug, Clone)]
@@ -342,14 +398,43 @@ impl Engine {
             .collect()
     }
 
-    /// Electromagnetic energy `W = ½·Σ C·u² + ½·Σ L·i²` \[J\], in `f64`.
+    /// Electromagnetic energy at `t = n·dt` \[J\], as the discrete invariant
+    /// of the leapfrog scheme (design §5.8):
     ///
-    /// `C` and `L` are recovered from the coefficients
-    /// (`C = dt·(1 + ca)/(2·cb)`, likewise `L`). `u` and `i` are half a step
-    /// apart, so for a lossless closed cavity `W` is not exactly constant
-    /// but bounded with a small `O((ω·dt)²)` ripple. The sum runs in global
-    /// index order and is therefore independent of the thread count.
+    /// ```text
+    /// W^n = ½·Σ C·(u^n)² + ½·Σ L·i^{n−½}·i^{n+½}
+    /// ```
+    ///
+    /// In a lossless closed region with no operators, `W^n` is exactly
+    /// constant (up to `f32` rounding of the fields); with losses it never
+    /// increases. See the [module docs](self#energy) for the derivation.
+    ///
+    /// `i^{n+½}` is not stored, so this evaluates the H update once more
+    /// without committing it (a full read-only pass over the grid on the
+    /// calling thread, roughly the cost of one H half-step plus a division
+    /// per edge). Operators are not run for that look-ahead, so an operator
+    /// acting on `i` in `pre_h`/`post_h` (e.g. CPML) is not reflected in the
+    /// `i^{n+½}` factor. [`step_with_energy`](Self::step_with_energy) and
+    /// [`run_until`](Self::run_until) obtain the same value as a by-product
+    /// of a real step, in parallel.
+    ///
+    /// The result is bit-identical for any thread count.
     pub fn energy(&self) -> f64 {
+        self.shared.current_energy(self.dt)
+    }
+
+    /// The simple staggered energy `½·Σ C·u² + ½·Σ L·i²` \[J\], with `u` at
+    /// `n·dt` and `i` at `(n − ½)·dt`.
+    ///
+    /// Always non-negative and cheap (no curl), but because `u` and `i` are
+    /// half a step apart it is not conserved: in a resonating cavity it
+    /// ripples at twice the mode frequencies, by up to `O(ω·dt)` relative
+    /// (tens of percent on coarse meshes). Prefer [`energy`](Self::energy);
+    /// this is kept as a diagnostic. `C` and `L` are recovered from the
+    /// coefficients (`C = dt·(1 + ca)/(2·cb)`, likewise `L`; edges with
+    /// `cb = 0` / `db = 0` are skipped). The sum runs in global index order,
+    /// independent of the thread count.
+    pub fn energy_staggered(&self) -> f64 {
         let co = read(&self.shared.coeffs);
         let st = &self.shared.store;
         let p = st.layout.plane;
@@ -392,17 +477,47 @@ impl Engine {
         }
     }
 
-    fn half(&mut self, e: bool) {
+    fn half(&mut self, phase: Phase) {
         match &mut self.pool {
-            Some(p) => p.half(&self.shared, e),
-            None if e => self.shared.e(0),
-            None => self.shared.h(0),
+            Some(p) => p.half(&self.shared, phase),
+            None => self.shared.phase(0, phase),
         }
     }
 
     /// Advances one full step (H then E, with all operator hooks).
     pub fn step(&mut self) {
         self.run(1);
+    }
+
+    /// Advances one full step like [`step`](Self::step) and returns the
+    /// energy invariant `W^n` \[J\] of the state *before* the step
+    /// (`t = n·dt` with `n` the [`timestep`](Self::timestep) before the
+    /// call), computed by the worker threads as part of the H update.
+    ///
+    /// Without operators this equals [`energy`](Self::energy) called just
+    /// before the step, bit for bit. With operators, `i^{n+½}` is the H
+    /// kernel result after the `pre_h` hooks and before the `post_h` ones.
+    /// The extra cost is about one division per edge in that half-step;
+    /// the result is bit-identical for any thread count.
+    pub fn step_with_energy(&mut self) -> f64 {
+        self.full_step(Phase::HEnergy);
+        self.shared.recorded_energy(self.dt)
+    }
+
+    /// One step with operator hooks, using `h` for the H phase.
+    fn full_step(&mut self, h: Phase) {
+        if self.ops.is_empty() {
+            self.half(h);
+            self.half(Phase::E);
+        } else {
+            self.hooks(0);
+            self.half(h);
+            self.hooks(1);
+            self.hooks(2);
+            self.half(Phase::E);
+            self.hooks(3);
+        }
+        self.step += 1;
     }
 
     /// Advances `n` full steps.
@@ -421,13 +536,7 @@ impl Engine {
             return;
         }
         for _ in 0..n {
-            self.hooks(0);
-            self.half(false);
-            self.hooks(1);
-            self.hooks(2);
-            self.half(true);
-            self.hooks(3);
-            self.step += 1;
+            self.full_step(Phase::H);
         }
     }
 }

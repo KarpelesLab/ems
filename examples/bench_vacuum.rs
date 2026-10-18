@@ -1,16 +1,18 @@
 //! Kernel throughput on an N³-cell vacuum box with PEC walls.
 //!
 //! ```text
-//! cargo run --release --example bench_vacuum -- [N=128] [threads=0 (all)] [steps=200]
+//! cargo run --release --example bench_vacuum -- [N=128] [threads=0 (all)] [steps=200] [K=0]
 //! ```
 //!
 //! Prints the update rate in Mcells/s (cells × steps / wall time; one cell
-//! update = all six field components).
+//! update = all six field components). With `K > 0` the steps run through
+//! `Engine::run_until` with an energy evaluation every `K` steps (and an
+//! end criterion that never fires), to measure that overhead.
 
 use std::time::Instant;
 
-use ems::Axis;
-use ems::engine::{Engine, Grid};
+use ems::engine::{Engine, Grid, RunLimits};
+use ems::{Axis, EndCriteria};
 
 fn main() {
     let args: Vec<usize> = std::env::args()
@@ -20,6 +22,7 @@ fn main() {
     let n = args.first().copied().unwrap_or(128);
     let threads = args.get(1).copied().unwrap_or(0);
     let steps = args.get(2).copied().unwrap_or(200) as u64;
+    let k = args.get(3).copied().unwrap_or(0) as u64;
 
     let grid = Grid::uniform([n, n, n], [1e-3; 3]).expect("grid");
     let cells = grid.num_cells() as f64;
@@ -33,10 +36,16 @@ fn main() {
     }
     e.run(10); // warm up
     let t = Instant::now();
-    e.run(steps);
+    if k == 0 {
+        e.run(steps);
+    } else {
+        let limits =
+            RunLimits::new(steps).end_criteria(EndCriteria::energy_ratio(1e-30).check_interval(k));
+        e.run_until(&limits).expect("run");
+    }
     let s = t.elapsed().as_secs_f64();
     println!(
-        "N={n} ({cells:.0} cells), threads={}, steps={steps}: {:.1} Mcells/s ({:.3} ms/step)",
+        "N={n} ({cells:.0} cells), threads={}, steps={steps}, K={k}: {:.1} Mcells/s ({:.3} ms/step)",
         e.threads(),
         cells * steps as f64 / s / 1e6,
         s / steps as f64 * 1e3
