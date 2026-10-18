@@ -17,8 +17,8 @@ intended as a replacement for [openEMS](https://openems.de).
 * Goal: run existing openEMS XML models unchanged.
 * Edition 2024, MSRV 1.95.
 
-Status: early development (milestone 1 mostly done). The API will still
-change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
+Status: early development (milestone 1 done, milestone 2 mostly done). The
+API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
 roadmap.
 
 ## Quick start
@@ -62,7 +62,7 @@ cargo run --release --example run_xml -- model.xml [--threads N] [--out DIR]
 
 It prints warnings, progress and the outcome, and writes every probe as
 `DIR/<name>.csv` and every dump as `.vtr` files. More examples:
-`cavity`, `microstrip`, `patch_antenna`, `dipole` (`cargo run --release
+`cavity`, `microstrip`, `waveguide`, `patch_antenna`, `dipole` (`cargo run --release
 --example <name>`).
 
 ## Status
@@ -71,13 +71,13 @@ It prints warnings, progress and the outcome, and writes every probe as
 |---|---|---|
 | mesh | Cartesian rectilinear (non-uniform), solver-aware checks (`ems::mesh`) | cylindrical (M4) |
 | materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`); Drude, Lorentz, Debye (electric and magnetic) | |
-| metal | PEC volumes, sheets and lines; priorities | conducting-sheet model (approximated as PEC), conformal (M4) |
-| boundaries | PEC, PMC, Mur, CPML (`PML_n`) | periodic (M3) |
+| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor) | conformal (M4) |
+| boundaries | PEC, PMC, Mur, CPML (`PML_n`); AbsorbingBC sheets | periodic (M3) |
 | sources | E/H soft/hard excitations with weighting and delay; Gaussian, sine, Dirac, step, custom waveforms | plane waves |
 | lumped elements | R, L, C, parallel and series | |
-| probes | voltage, current, E/H field; DFT | waveguide probes |
-| dumps | E/H time and frequency domain, VTK `.vtr` | HDF5, openEMS file layout (M2) |
-| ports | lumped port helper, S-parameters, Z_in | MSL / waveguide ports (M2), NF2FF (M3) |
+| probes | voltage, current, E/H field, waveguide mode voltage/current; DFT | |
+| dumps | E/H time and frequency domain, VTK `.vtr`, HDF5 (feature `hdf5`) | openEMS file layout (M2) |
+| ports | lumped, microstrip (`MslPort`) and rectangular waveguide (`RectWaveguidePort`) helpers; S-parameters, Z_in | NF2FF (M3) |
 | openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip | |
 | engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |
 

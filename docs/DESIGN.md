@@ -124,10 +124,10 @@ part of M1 (§3).
 | Milestone | Feature | csx side |
 |---|---|---|
 | M2 | Dispersive materials via ADE (Lorentz, Drude as zero-ω₀ Lorentz, Debye) — **done** (`engine::dispersive`, see §6) | Lorentz/Debye properties |
-| M2 | ConductingSheet (thin lossy conductor) surface model | ConductingSheet |
-| M2 | MSL and rectangular waveguide port helpers | probes, excitations with weighting |
+| M2 | ConductingSheet (thin lossy conductor) surface model — **done** (`engine::sheet`, §5.9) | ConductingSheet |
+| M2 | MSL and rectangular waveguide port helpers — **done** (`port::MslPort`, `port::RectWaveguidePort`, §5.5) | probes, excitations with weighting |
 | M2 | openEMS-compatible probe/dump output files (paths, text layout, HDF5 layout) | — |
-| M2 | AbsorbingBC sheets | AbsorbingBC |
+| M2 | AbsorbingBC sheets — **done** (`engine::boundary::abc`) | AbsorbingBC |
 | M3 | NF2FF, radiation patterns, gain/directivity | DumpBox |
 | M3 | Periodic / Bloch boundaries | — |
 | M4 | Cylindrical-coordinate mesh (incl. multigrid near the axis) | cylindrical `RectilinearGrid` |
@@ -702,6 +702,11 @@ These are reported here, not fixed in csx from this repo.
 10. **Averaging σ_m.** csx combines magnetic σ arithmetically across the two half
     cells, while μ is combined harmonically (in series). ems's per-cell path
     combines σ_m in series. Worth deciding on one convention.
+11. **Thirds rule at coinciding edges.** `MeshOptions::with_thirds` still adds
+    lines at edge−2d/3 and edge+d/3 when a metal edge coincides with a material
+    edge whose line it keeps; in `examples/microstrip.rs` this put a line
+    outside the domain and graded the PML (worked around with
+    `with_thirds([NaN, 0.25, NaN])`).
 
 ### 8.2 Feedback for hdf5rs
 
@@ -764,7 +769,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-18)
+### Status (2026-10-19)
 
 | Step | State |
 |---|---|
@@ -775,7 +780,14 @@ Pulled forward from M2:
 - Dispersive media (Drude/Lorentz/Debye, electric and magnetic) via ADE.
 - Second-order lumped-port reference plane.
 
-M1 is complete. M2 so far: AbsorbingBC sheets done (`engine::boundary::abc`).
+M1 is complete. M2 done: ConductingSheet, MSL and rectangular waveguide
+ports, AbsorbingBC sheets. M2 remaining: openEMS-compatible output files,
+blocked on reference files (the layout cannot be taken from openEMS's GPL
+scripts).
+
+Open conventions to confirm against real openEMS files:
+- Waveguide probe `ModeFunction*` coordinates are taken in drawing units
+  (like excitation weights).
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:
@@ -789,6 +801,13 @@ With 8-cell CPML on all faces, 128³ at 64 T runs at 969 Mcells/s; energy
 checks every 10 steps give 1113 Mcells/s. 256³ is limited by memory
 bandwidth at about 50 GB/s, well below what the machine can sustain. The
 64-thread drop at 128³ is not yet explained (suspects: slab granularity, SMT).
+
+After the wave-6 engine work (row-deduplicated coefficients, physical-core
+default thread count, yielding barrier), same machine, lightly loaded:
+256³ at 32 T 919 Mcells/s (×1.6), 128³ at 32 T 4468 Mcells/s, 1 T
+428 Mcells/s. The machine's measured stream bandwidth is about 70 GB/s; the
+old kernel was at that limit. The `patch_antenna` example went from ~25 s to
+2.4 s (mostly the thread-count default), with bit-identical output.
 
 ## 11. Open questions for review
 
