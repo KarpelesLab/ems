@@ -74,6 +74,13 @@
 //! one element with a branch: branches on the same edge are not combined
 //! implicitly.
 //!
+//! Besides the box form, an element can be given as an explicit **edge
+//! list** with per-edge values ([`LumpedElement::from_edges`], used for csx
+//! `LumpedElement`s, whose values csx distributes itself); every edge then
+//! uses exactly the per-edge equations above with its own `g_e`, `C_e`,
+//! `L_e`, `R_e`, and sources carry an explicit voltage per edge
+//! ([`LumpedElement::edge_source`]) instead of `V_s/M`.
+//!
 //! # Energy
 //!
 //! Folded capacitance is part of the edge's `C` and hence of the field
@@ -213,6 +220,18 @@ impl Source {
             Source::Waveform(w, a) => a * w.value(t, dt),
         }
     }
+
+    fn validate(&self) -> Result<()> {
+        if let Source::Waveform(w, a) = self {
+            w.validate()?;
+            if !a.is_finite() {
+                return Err(Error::Invalid(format!(
+                    "source amplitude {a} is not finite"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Adds a conductance `g` \[S\] and capacitance `c` \[F\] in parallel to an
@@ -237,15 +256,52 @@ pub fn fold_parallel(ca: f32, cb: f32, dt: f64, g: f64, c: f64) -> (f32, f32) {
     (((cap - 0.5 * cond * dt) / den) as f32, (dt / den) as f32)
 }
 
+/// The values of one edge of an edge-list lumped element
+/// ([`LumpedElement::from_edges`]): the edge's own share of the element,
+/// already distributed (no further `M`/`N` scaling is applied).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeValues {
+    /// Start node of the E edge along the element's axis.
+    pub node: [usize; 3],
+    /// Resistance of this edge \[Ω\], if any.
+    pub r: Option<f64>,
+    /// Inductance of this edge \[H\], if any.
+    pub l: Option<f64>,
+    /// Capacitance of this edge \[F\], if any.
+    pub c: Option<f64>,
+}
+
+impl EdgeValues {
+    fn present(&self) -> [bool; 3] {
+        [self.r.is_some(), self.l.is_some(), self.c.is_some()]
+    }
+}
+
+/// Per-edge folded conductance and capacitance, and branch `(R, L, C)`.
+type EdgeParts = (f64, f64, Option<(f64, f64, f64)>);
+
+/// Where an element sits: a box (values distributed over its edges) or an
+/// explicit edge list (values given per edge).
+#[derive(Debug, Clone)]
+enum Support {
+    Box(LumpedBox),
+    Edges {
+        axis: Axis,
+        edges: Vec<EdgeValues>,
+        /// Number of distinct positions along the axis (edges in series).
+        series: usize,
+    },
+}
+
 /// Auxiliary state of a series `R_e + L_e + C_e` branch on each edge.
 #[derive(Debug, Clone)]
 struct Branch {
-    /// `2·L_e/dt`.
-    two_l_dt: f64,
-    /// `1/C_e` (0 without capacitor).
-    inv_c: f64,
-    /// `Z = 2·L_e/dt + R_e + dt/(2·C_e)`.
-    z: f64,
+    /// `2·L_e/dt` per edge.
+    two_l_dt: Vec<f64>,
+    /// `1/C_e` per edge (0 without capacitor).
+    inv_c: Vec<f64>,
+    /// `Z = 2·L_e/dt + R_e + dt/(2·C_e)` per edge.
+    z: Vec<f64>,
     /// Branch current `j^n` per edge \[A\].
     j: Vec<f64>,
     /// Branch charge `q^n` per edge \[C\].
@@ -256,20 +312,28 @@ struct Branch {
     j_avg: Vec<f64>,
 }
 
-#[derive(Debug, Clone)]
 struct Installed {
     dt: f64,
     edges: Vec<[usize; 3]>,
     /// Final `cb` of each edge (after folding).
     cb: Vec<f64>,
-    /// Per-edge conductance in series with the source (0 if the source
-    /// sits in the branch or there is none).
-    g_src: f64,
+    /// Per-edge conductance in series with the source (0 where the source
+    /// sits in the branch).
+    g_src: Vec<f64>,
+    /// Edges in series along the axis (`M`).
+    series: usize,
+    /// Source time functions with their per-edge voltage weights.
+    terms: Vec<(Source, Vec<f64>)>,
+    /// Scratch: source voltage per edge of the current step.
+    v: Vec<f64>,
+    /// Whether the source drives the branch (series topology with branch).
+    src_in_branch: bool,
     branch: Option<Branch>,
 }
 
-/// A lumped R/L/C element, optionally with a Thevenin voltage source, over
-/// a [`LumpedBox`]; see the [module documentation](self) for the model.
+/// A lumped R/L/C element, optionally with Thevenin voltage sources, over
+/// a [`LumpedBox`] or an explicit list of edges; see the
+/// [module documentation](self) for the model.
 ///
 /// Build it, then install it with [`add_to`](Self::add_to), which changes
 /// the edge coefficients and registers the operator.
@@ -277,25 +341,32 @@ struct Installed {
 /// **Polarity.** The source voltage `V_s` acts along `+axis`: with the
 /// element open-circuited, `Σu` along a column (`∫E·dl` from `lo` to `hi`)
 /// tends to `V_s`, i.e. the `lo` end is the `+` terminal.
+///
+/// **Edge lists.** [`from_edges`](Self::from_edges) takes the per-edge
+/// values directly (e.g. as distributed by `csx::discretize`), with the
+/// same physics per edge as the box form; sources are given with a voltage
+/// weight per edge ([`edge_source`](Self::edge_source)).
 pub struct LumpedElement {
-    region: LumpedBox,
+    support: Support,
     r: Option<f64>,
     l: Option<f64>,
     c: Option<f64>,
     topology: Topology,
     source: Option<Source>,
+    edge_sources: Vec<(Source, Vec<f64>)>,
     state: Option<Installed>,
 }
 
 impl core::fmt::Debug for LumpedElement {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LumpedElement")
-            .field("region", &self.region)
+            .field("support", &self.support)
             .field("r", &self.r)
             .field("l", &self.l)
             .field("c", &self.c)
             .field("topology", &self.topology)
             .field("source", &self.source.is_some())
+            .field("edge_sources", &self.edge_sources.len())
             .finish_non_exhaustive()
     }
 }
@@ -314,12 +385,13 @@ impl LumpedElement {
     /// Element over `region` with no R, L or C yet (parallel topology).
     pub fn new(region: LumpedBox) -> Self {
         Self {
-            region,
+            support: Support::Box(region),
             r: None,
             l: None,
             c: None,
             topology: Topology::Parallel,
             source: None,
+            edge_sources: Vec::new(),
             state: None,
         }
     }
@@ -329,19 +401,61 @@ impl LumpedElement {
         Self::new(region).r(r)
     }
 
-    /// Sets the resistance \[Ω\].
+    /// Element on an explicit list of E edges along `axis`, with values
+    /// given per edge (not distributed further) and connected per edge
+    /// according to `topology`.
+    ///
+    /// All edges must have the same set of R/L/C present (so the element
+    /// either uses branch state on every edge or on none), and no edge may
+    /// be listed twice.
+    pub fn from_edges(axis: Axis, topology: Topology, edges: Vec<EdgeValues>) -> Result<Self> {
+        let Some(first) = edges.first() else {
+            return Err(Error::Invalid("lumped element has no edges".into()));
+        };
+        let pattern = first.present();
+        if edges.iter().any(|e| e.present() != pattern) {
+            return Err(Error::Invalid(
+                "lumped element edges must all have the same set of R, L, C".into(),
+            ));
+        }
+        let mut nodes: Vec<[usize; 3]> = edges.iter().map(|e| e.node).collect();
+        nodes.sort_unstable();
+        if nodes.windows(2).any(|w| w[0] == w[1]) {
+            return Err(Error::Invalid("lumped element lists an edge twice".into()));
+        }
+        let a = axis.index();
+        let mut along: Vec<usize> = nodes.iter().map(|n| n[a]).collect();
+        along.sort_unstable();
+        along.dedup();
+        Ok(Self {
+            support: Support::Edges {
+                axis,
+                series: along.len(),
+                edges,
+            },
+            r: None,
+            l: None,
+            c: None,
+            topology,
+            source: None,
+            edge_sources: Vec::new(),
+            state: None,
+        })
+    }
+
+    /// Sets the resistance \[Ω\] (box elements).
     pub fn r(mut self, r: f64) -> Self {
         self.r = Some(r);
         self
     }
 
-    /// Sets the inductance \[H\].
+    /// Sets the inductance \[H\] (box elements).
     pub fn l(mut self, l: f64) -> Self {
         self.l = Some(l);
         self
     }
 
-    /// Sets the capacitance \[F\].
+    /// Sets the capacitance \[F\] (box elements).
     pub fn c(mut self, c: f64) -> Self {
         self.c = Some(c);
         self
@@ -353,9 +467,11 @@ impl LumpedElement {
         self
     }
 
-    /// Thevenin source `V_s(t)` \[V\] in series with the resistor (parallel
-    /// topology) or the branch (series topology), sampled at
-    /// `t = (n + ½)·dt`.
+    /// Thevenin source `V_s(t)` \[V\] across the box, in series with the
+    /// resistor (parallel topology) or the branch (series topology),
+    /// sampled at `t = (n + ½)·dt`. Each of the `M` series edges gets
+    /// `V_s/M`. For an edge-list element use
+    /// [`edge_source`](Self::edge_source).
     pub fn source(mut self, v: impl Fn(f64) -> f64 + Send + 'static) -> Self {
         self.source = Some(Source::Fn(Box::new(v)));
         self
@@ -369,26 +485,90 @@ impl LumpedElement {
         self
     }
 
+    /// Adds a Thevenin source with per-edge voltages `weights[e]·v(t)`
+    /// \[V\] (one weight per edge, in the order of
+    /// [`edge_nodes`](Self::edge_nodes)), in series with each edge's
+    /// resistor or branch like [`source`](Self::source). Several sources
+    /// add up.
+    pub fn edge_source(
+        mut self,
+        weights: Vec<f64>,
+        v: impl Fn(f64) -> f64 + Send + 'static,
+    ) -> Self {
+        self.edge_sources.push((Source::Fn(Box::new(v)), weights));
+        self
+    }
+
+    /// [`edge_source`](Self::edge_source) with the time function
+    /// `amplitude · waveform(t)`.
+    pub fn edge_source_waveform(
+        mut self,
+        weights: Vec<f64>,
+        waveform: Waveform,
+        amplitude: f64,
+    ) -> Self {
+        self.edge_sources
+            .push((Source::Waveform(waveform, amplitude), weights));
+        self
+    }
+
     pub(crate) fn set_source(&mut self, s: Option<Source>) {
         self.source = s;
     }
 
-    /// The element's box.
-    pub fn region(&self) -> &LumpedBox {
-        &self.region
+    /// The element's box (`None` for an edge-list element).
+    pub fn region(&self) -> Option<&LumpedBox> {
+        match &self.support {
+            Support::Box(b) => Some(b),
+            Support::Edges { .. } => None,
+        }
     }
 
-    /// Resistance \[Ω\], if any.
+    /// Direction of the element's edges.
+    pub fn axis(&self) -> Axis {
+        match &self.support {
+            Support::Box(b) => b.axis(),
+            Support::Edges { axis, .. } => *axis,
+        }
+    }
+
+    /// Start nodes of the element's edges (box: column by column; edge
+    /// list: as given).
+    pub fn edge_nodes(&self) -> Vec<[usize; 3]> {
+        match &self.support {
+            Support::Box(b) => b.edges(),
+            Support::Edges { edges, .. } => edges.iter().map(|e| e.node).collect(),
+        }
+    }
+
+    /// Number `M` of edges in series along the axis (for an edge list:
+    /// the number of distinct positions along the axis).
+    pub fn series_edges(&self) -> usize {
+        match &self.support {
+            Support::Box(b) => b.series_edges(),
+            Support::Edges { series, .. } => *series,
+        }
+    }
+
+    /// The per-edge values of an edge-list element (empty for a box).
+    pub fn edge_values(&self) -> &[EdgeValues] {
+        match &self.support {
+            Support::Box(_) => &[],
+            Support::Edges { edges, .. } => edges,
+        }
+    }
+
+    /// Resistance \[Ω\] of a box element, if any.
     pub fn resistance(&self) -> Option<f64> {
         self.r
     }
 
-    /// Inductance \[H\], if any.
+    /// Inductance \[H\] of a box element, if any.
     pub fn inductance(&self) -> Option<f64> {
         self.l
     }
 
-    /// Capacitance \[F\], if any.
+    /// Capacitance \[F\] of a box element, if any.
     pub fn capacitance(&self) -> Option<f64> {
         self.c
     }
@@ -398,42 +578,148 @@ impl LumpedElement {
         self.topology
     }
 
+    /// Which of R, L, C are present.
+    fn present(&self) -> [bool; 3] {
+        match &self.support {
+            Support::Box(_) => [self.r.is_some(), self.l.is_some(), self.c.is_some()],
+            Support::Edges { edges, .. } => edges[0].present(),
+        }
+    }
+
+    fn has_source(&self) -> bool {
+        self.source.is_some() || !self.edge_sources.is_empty()
+    }
+
     /// Whether the element uses auxiliary branch state (inductor or series
     /// RLC) rather than a pure coefficient change.
     pub fn has_branch(&self) -> bool {
+        let [_, l, c] = self.present();
         match self.topology {
-            Topology::Parallel => self.l.is_some(),
-            Topology::Series => self.l.is_some() || self.c.is_some(),
+            Topology::Parallel => l,
+            Topology::Series => l || c,
         }
     }
 
     /// Validates the values (finite, `> 0`, at least one of R/L/C, a
-    /// parallel source needs an R).
+    /// parallel source needs an R, one weight per edge for edge sources).
     pub fn validate(&self) -> Result<()> {
-        for (name, v) in [("R", self.r), ("L", self.l), ("C", self.c)] {
-            if let Some(v) = v {
-                check_value(name, v)?;
+        match &self.support {
+            Support::Box(_) => {
+                for (name, v) in [("R", self.r), ("L", self.l), ("C", self.c)] {
+                    if let Some(v) = v {
+                        check_value(name, v)?;
+                    }
+                }
+            }
+            Support::Edges { edges, .. } => {
+                for e in edges {
+                    for (name, v) in [("R", e.r), ("L", e.l), ("C", e.c)] {
+                        if let Some(v) = v {
+                            check_value(name, v)?;
+                        }
+                    }
+                }
             }
         }
-        if self.r.is_none() && self.l.is_none() && self.c.is_none() {
+        let [r, l, c] = self.present();
+        if !(r || l || c) {
             return Err(Error::Invalid(
                 "lumped element needs at least one of R, L, C".into(),
             ));
         }
-        if self.source.is_some() && self.topology == Topology::Parallel && self.r.is_none() {
+        if self.has_source() && self.topology == Topology::Parallel && !r {
             return Err(Error::Invalid(
                 "a source on a parallel lumped element needs a resistance".into(),
             ));
         }
-        if let Some(Source::Waveform(w, a)) = &self.source {
-            w.validate()?;
-            if !a.is_finite() {
+        if let Some(s) = &self.source {
+            s.validate()?;
+        }
+        let ne = self.edge_nodes().len();
+        for (s, w) in &self.edge_sources {
+            s.validate()?;
+            if w.len() != ne {
                 return Err(Error::Invalid(format!(
-                    "source amplitude {a} is not finite"
+                    "edge source has {} weights for {ne} edges",
+                    w.len()
+                )));
+            }
+            if let Some(x) = w.iter().find(|x| !x.is_finite()) {
+                return Err(Error::Invalid(format!(
+                    "edge source weight {x} is not finite"
                 )));
             }
         }
         Ok(())
+    }
+
+    /// Checks that every edge exists in a grid of `nodes` nodes.
+    fn check_fits(&self, nodes: [usize; 3]) -> Result<()> {
+        match &self.support {
+            Support::Box(b) => b.check_fits(nodes),
+            Support::Edges { axis, edges, .. } => {
+                let a = axis.index();
+                for e in edges {
+                    let n = e.node;
+                    if (0..3).any(|t| n[t] >= nodes[t]) || n[a] + 1 >= nodes[a] {
+                        return Err(Error::Invalid(format!(
+                            "lumped edge {axis}:{n:?} is outside the grid ({nodes:?} nodes)"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Per-edge `(g_e, C_e, branch (R_e, L_e, C_e))`, in edge order.
+    fn edge_parts(&self) -> Vec<EdgeParts> {
+        let has_branch = self.has_branch();
+        let parts = |r: Option<f64>, l: Option<f64>, c: Option<f64>| match self.topology {
+            Topology::Parallel => (
+                r.map_or(0.0, |r| 1.0 / r),
+                c.unwrap_or(0.0),
+                l.map(|l| (0.0, l, f64::INFINITY)),
+            ),
+            Topology::Series if !has_branch => (r.map_or(0.0, |r| 1.0 / r), 0.0, None),
+            Topology::Series => (
+                0.0,
+                0.0,
+                Some((
+                    r.unwrap_or(0.0),
+                    l.unwrap_or(0.0),
+                    c.unwrap_or(f64::INFINITY),
+                )),
+            ),
+        };
+        match &self.support {
+            Support::Box(b) => {
+                let (m, n) = (b.series_edges() as f64, b.columns() as f64);
+                // Z_e = N·Z/M (module docs); conductances and capacitances
+                // scale inversely.
+                let p = match self.topology {
+                    Topology::Parallel => (
+                        self.r.map_or(0.0, |r| m / (n * r)),
+                        self.c.map_or(0.0, |c| m * c / n),
+                        self.l.map(|l| (0.0, n * l / m, f64::INFINITY)),
+                    ),
+                    Topology::Series if !has_branch => {
+                        (self.r.map_or(0.0, |r| m / (n * r)), 0.0, None)
+                    }
+                    Topology::Series => (
+                        0.0,
+                        0.0,
+                        Some((
+                            self.r.map_or(0.0, |r| n * r / m),
+                            self.l.map_or(0.0, |l| n * l / m),
+                            self.c.map_or(f64::INFINITY, |c| m * c / n),
+                        )),
+                    ),
+                };
+                vec![p; b.edges().len()]
+            }
+            Support::Edges { edges, .. } => edges.iter().map(|e| parts(e.r, e.l, e.c)).collect(),
+        }
     }
 
     /// Changes the edge coefficients of `engine` and sets up the auxiliary
@@ -444,35 +730,12 @@ impl LumpedElement {
         }
         self.validate()?;
         let nodes = engine.grid().nodes();
-        self.region.check_fits(nodes)?;
+        self.check_fits(nodes)?;
         let dt = engine.dt();
-        let (m, n) = (
-            self.region.series_edges() as f64,
-            self.region.columns() as f64,
-        );
-        let edges = self.region.edges();
-        let axis = self.region.axis();
+        let edges = self.edge_nodes();
+        let parts = self.edge_parts();
+        let axis = self.axis();
         let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
-        // Folded parts and branch, per edge.
-        let (g_e, c_e, branch) = match self.topology {
-            Topology::Parallel => (
-                self.r.map_or(0.0, |r| m / (n * r)),
-                self.c.map_or(0.0, |c| m * c / n),
-                self.l.map(|l| (0.0, n * l / m, f64::INFINITY)),
-            ),
-            Topology::Series if !self.has_branch() => {
-                (self.r.map_or(0.0, |r| m / (n * r)), 0.0, None)
-            }
-            Topology::Series => (
-                0.0,
-                0.0,
-                Some((
-                    self.r.map_or(0.0, |r| n * r / m),
-                    self.l.map_or(0.0, |l| n * l / m),
-                    self.c.map_or(f64::INFINITY, |c| m * c / n),
-                )),
-            ),
-        };
         let mut co = engine.coefficients_mut();
         let (ca, cb) = co.e_mut(axis);
         if let Some(p) = edges.iter().find(|&&p| cb[idx(p)] == 0.0) {
@@ -481,7 +744,7 @@ impl LumpedElement {
             )));
         }
         let mut cbs = Vec::with_capacity(edges.len());
-        for &p in &edges {
+        for (&p, &(g_e, c_e, _)) in edges.iter().zip(&parts) {
             let i = idx(p);
             if g_e != 0.0 || c_e != 0.0 {
                 (ca[i], cb[i]) = fold_parallel(ca[i], cb[i], dt, g_e, c_e);
@@ -490,28 +753,46 @@ impl LumpedElement {
         }
         drop(co);
         let ne = edges.len();
-        let branch = branch.map(|(r, l, c)| {
-            let inv_c = if c.is_finite() { 1.0 / c } else { 0.0 };
-            Branch {
-                two_l_dt: 2.0 * l / dt,
-                inv_c,
-                z: 2.0 * l / dt + r + 0.5 * dt * inv_c,
+        let has_branch = self.has_branch();
+        let branch = has_branch.then(|| {
+            let mut b = Branch {
+                two_l_dt: Vec::with_capacity(ne),
+                inv_c: Vec::with_capacity(ne),
+                z: Vec::with_capacity(ne),
                 j: vec![0.0; ne],
                 q: vec![0.0; ne],
                 u_prev: vec![0.0; ne],
                 j_avg: vec![0.0; ne],
+            };
+            for &(_, _, br) in &parts {
+                let (r, l, c) = br.unwrap_or((0.0, 0.0, f64::INFINITY));
+                let inv_c = if c.is_finite() { 1.0 / c } else { 0.0 };
+                b.two_l_dt.push(2.0 * l / dt);
+                b.inv_c.push(inv_c);
+                b.z.push(2.0 * l / dt + r + 0.5 * dt * inv_c);
             }
+            b
         });
-        let g_src = if branch.is_some() && self.topology == Topology::Series {
-            0.0
-        } else {
-            g_e
-        };
+        let src_in_branch = has_branch && self.topology == Topology::Series;
+        let g_src = parts
+            .iter()
+            .map(|&(g, _, _)| if src_in_branch { 0.0 } else { g })
+            .collect();
+        let series = self.series_edges();
+        let mut terms = Vec::new();
+        if let Some(s) = self.source.take() {
+            terms.push((s, vec![1.0 / series as f64; ne]));
+        }
+        terms.append(&mut self.edge_sources);
         self.state = Some(Installed {
             dt,
             edges,
             cb: cbs,
             g_src,
+            series,
+            v: vec![0.0; if terms.is_empty() { 0 } else { ne }],
+            terms,
+            src_in_branch,
             branch,
         });
         Ok(())
@@ -521,27 +802,30 @@ impl LumpedElement {
     /// sources and branches, an operator) and returns its handle.
     ///
     /// Fails, leaving the engine unchanged, if the values are invalid, the
-    /// box does not fit the grid or any of its edges is PEC (`cb = 0`, e.g.
-    /// metal or a PEC outer face).
+    /// element does not fit the grid or any of its edges is PEC (`cb = 0`,
+    /// e.g. metal or a PEC outer face).
     pub fn add_to(mut self, engine: &mut Engine) -> Result<OperatorHandle<LumpedElement>> {
         self.install(engine)?;
         Ok(engine.add_operator(self))
     }
 
-    /// Per-edge conductance `g_e` in series with the source (0 if none).
+    /// Per-edge conductance `g_e` in series with the source, of the first
+    /// edge (0 if none or before installation).
     pub fn edge_conductance(&self) -> f64 {
-        self.state.as_ref().map_or(0.0, |s| s.g_src)
+        self.state
+            .as_ref()
+            .and_then(|s| s.g_src.first().copied())
+            .unwrap_or(0.0)
     }
 
-    /// Average branch current `j̄` of the last step, summed over one
-    /// representative layer of the box (i.e. the element's branch current
-    /// along `+axis` for the inductor / series branch), \[A\]; 0 without a
-    /// branch.
+    /// Average branch current `j̄` of the last step, summed over all edges
+    /// and divided by the number `M` of series edges (i.e. the element's
+    /// branch current along `+axis` for the inductor / series branch),
+    /// \[A\]; 0 without a branch.
     pub fn branch_current(&self) -> f64 {
         let Some(s) = &self.state else { return 0.0 };
         let Some(b) = &s.branch else { return 0.0 };
-        let m = self.region.series_edges() as f64;
-        b.j_avg.iter().sum::<f64>() / m
+        b.j_avg.iter().sum::<f64>() / s.series as f64
     }
 
     /// Energy stored in the branch state, `Σ ½·L_e·j² + ½·q²/C_e` over
@@ -550,23 +834,24 @@ impl LumpedElement {
     pub fn branch_energy(&self) -> f64 {
         let Some(s) = &self.state else { return 0.0 };
         let Some(b) = &s.branch else { return 0.0 };
-        let half_l = 0.25 * b.two_l_dt * s.dt;
-        b.j.iter()
-            .zip(&b.q)
-            .map(|(&j, &q)| half_l * j * j + 0.5 * b.inv_c * q * q)
+        (0..b.j.len())
+            .map(|e| {
+                let half_l = 0.25 * b.two_l_dt[e] * s.dt;
+                half_l * b.j[e] * b.j[e] + 0.5 * b.inv_c[e] * b.q[e] * b.q[e]
+            })
             .sum()
     }
 
     /// Serial hooks used: `pre_e` and `post_e` with a branch, `post_e`
     /// with only a source, none for a pure coefficient change.
     pub(crate) fn used_hooks(&self) -> Hooks {
-        let branch = self
-            .state
-            .as_ref()
-            .map_or(self.has_branch(), |s| s.branch.is_some());
+        let (branch, source) = match &self.state {
+            Some(s) => (s.branch.is_some(), !s.terms.is_empty()),
+            None => (self.has_branch(), self.has_source()),
+        };
         if branch {
             Hooks::PRE_E | Hooks::POST_E
-        } else if self.source.is_some() {
+        } else if source {
             Hooks::POST_E
         } else {
             Hooks::NONE
@@ -574,8 +859,8 @@ impl LumpedElement {
     }
 
     pub(crate) fn pre_e_impl(&mut self, fields: &mut Fields<'_>) {
+        let axis = self.axis();
         let Some(s) = &mut self.state else { return };
-        let axis = self.region.axis();
         if let Some(b) = &mut s.branch {
             for (u, &p) in b.u_prev.iter_mut().zip(&s.edges) {
                 *u = fields.u.get(axis, p) as f64;
@@ -584,29 +869,44 @@ impl LumpedElement {
     }
 
     pub(crate) fn post_e_impl(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        let axis = self.axis();
         let Some(s) = &mut self.state else { return };
-        let axis = self.region.axis();
-        let m = self.region.series_edges() as f64;
-        let v_e = self
-            .source
-            .as_ref()
-            .map_or(0.0, |src| src.value(ctx.h_time(), s.dt) / m);
-        if s.g_src != 0.0 && v_e != 0.0 {
-            for (&p, &cb) in s.edges.iter().zip(&s.cb) {
-                let add = cb * s.g_src * v_e;
-                let u = fields.u.get_mut(axis, p);
-                *u = (*u as f64 + add) as f32;
+        let mut active = false;
+        if !s.terms.is_empty() {
+            s.v.fill(0.0);
+            for (src, w) in &s.terms {
+                let val = src.value(ctx.h_time(), s.dt);
+                if val != 0.0 {
+                    active = true;
+                    for (v, &w) in s.v.iter_mut().zip(w) {
+                        *v += w * val;
+                    }
+                }
+            }
+        }
+        if active && !s.src_in_branch {
+            for (e, &p) in s.edges.iter().enumerate() {
+                let add = s.cb[e] * s.g_src[e] * s.v[e];
+                if add != 0.0 {
+                    let u = fields.u.get_mut(axis, p);
+                    *u = (*u as f64 + add) as f32;
+                }
             }
         }
         if let Some(b) = &mut s.branch {
             // Series source sits in the branch; parallel source is in the
             // folded resistor.
-            let v_br = if s.g_src == 0.0 { v_e } else { 0.0 };
             for (e, (&p, &cb)) in s.edges.iter().zip(&s.cb).enumerate() {
+                let v_br = if active && s.src_in_branch {
+                    s.v[e]
+                } else {
+                    0.0
+                };
                 let u_star = fields.u.get(axis, p) as f64;
-                let k = b.two_l_dt * b.j[e] - b.q[e] * b.inv_c - v_br + 0.5 * b.u_prev[e];
-                let u_new = (b.z * u_star - cb * k) / (b.z + 0.5 * cb);
-                let jb = (k + 0.5 * u_new) / b.z;
+                let k = b.two_l_dt[e] * b.j[e] - b.q[e] * b.inv_c[e] - v_br + 0.5 * b.u_prev[e];
+                let z = b.z[e];
+                let u_new = (z * u_star - cb * k) / (z + 0.5 * cb);
+                let jb = (k + 0.5 * u_new) / z;
                 b.j[e] = 2.0 * jb - b.j[e];
                 b.q[e] += s.dt * jb;
                 b.j_avg[e] = jb;
@@ -786,5 +1086,78 @@ mod tests {
         for (x, y) in a.iter().zip(&b) {
             assert!((x - y).abs() <= 1e-4 * scale, "{x} vs {y}");
         }
+    }
+
+    /// An edge list with the box's distributed values and per-edge source
+    /// weights `1/M` reproduces the box element (parallel R ∥ L ∥ C and
+    /// series R + L + C, both with a source).
+    #[test]
+    fn edge_list_matches_box() {
+        let (r, l, c) = (40.0, 2e-9, 1e-12);
+        for topo in [Topology::Parallel, Topology::Series] {
+            let bx = LumpedBox::new(Axis::Z, [2, 2, 1], [3, 2, 3]).unwrap();
+            let (m, n) = (2.0, 2.0);
+            let src = |t: f64| (t * 2e10).sin();
+            let run = |el: LumpedElement| {
+                let g = Grid::uniform([5, 5, 5], [1e-3; 3]).unwrap();
+                let mut e = Engine::builder(g).threads(1).build().unwrap();
+                let h = el.add_to(&mut e).unwrap();
+                e.run(200);
+                (e.u_component(Axis::Z), e.operator(&h).branch_current())
+            };
+            let a = run(LumpedElement::new(bx)
+                .r(r)
+                .l(l)
+                .c(c)
+                .topology(topo)
+                .source(src));
+            let edges: Vec<EdgeValues> = bx
+                .edges()
+                .into_iter()
+                .map(|node| EdgeValues {
+                    node,
+                    r: Some(n * r / m),
+                    l: Some(n * l / m),
+                    c: Some(m * c / n),
+                })
+                .collect();
+            let w = vec![1.0 / m; edges.len()];
+            let el = LumpedElement::from_edges(Axis::Z, topo, edges)
+                .unwrap()
+                .edge_source(w, src);
+            assert!(el.region().is_none());
+            assert_eq!(el.series_edges(), 2);
+            let b = run(el);
+            let scale = a.0.iter().fold(0.0f32, |s, v| s.max(v.abs()));
+            assert!(scale > 0.0);
+            for (x, y) in a.0.iter().zip(&b.0) {
+                assert!((x - y).abs() <= 1e-5 * scale, "{topo:?}: {x} vs {y}");
+            }
+            assert!((a.1 - b.1).abs() <= 1e-5 * a.1.abs().max(1e-12));
+        }
+        // Mixed R/L/C presence and duplicate edges are rejected.
+        let e = |node, r| EdgeValues {
+            node,
+            r,
+            l: None,
+            c: None,
+        };
+        assert!(
+            LumpedElement::from_edges(
+                Axis::Z,
+                Topology::Parallel,
+                vec![e([1, 1, 1], Some(1.0)), e([1, 1, 2], None)]
+            )
+            .is_err()
+        );
+        assert!(
+            LumpedElement::from_edges(
+                Axis::Z,
+                Topology::Parallel,
+                vec![e([1, 1, 1], Some(1.0)), e([1, 1, 1], Some(1.0))]
+            )
+            .is_err()
+        );
+        assert!(LumpedElement::from_edges(Axis::Z, Topology::Parallel, vec![]).is_err());
     }
 }

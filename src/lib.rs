@@ -16,6 +16,7 @@ pub mod error;
 pub mod fdtd;
 pub mod io;
 pub mod mesh;
+pub mod port;
 pub mod post;
 mod sim;
 pub mod waveform;
@@ -27,7 +28,7 @@ pub use engine::{CellMaterials, EdgeMaterials, Engine, Grid};
 pub use error::{Error, Result};
 pub use fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
 pub use post::Complex64;
-pub use sim::Simulation;
+pub use sim::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Results, Simulation};
 pub use waveform::{ExpressionWaveform, Waveform};
 
 /// The main user-facing types, for glob import: `use ems::prelude::*;`.
@@ -37,7 +38,8 @@ pub mod prelude {
     pub use crate::engine::{CellMaterials, EdgeMaterials, Engine, Grid};
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
-    pub use crate::post::Complex64;
-    pub use crate::sim::Simulation;
+    pub use crate::port::LumpedPort;
+    pub use crate::post::{Complex64, PortResult};
+    pub use crate::sim::{Results, Simulation};
     pub use crate::waveform::{ExpressionWaveform, Waveform};
 }

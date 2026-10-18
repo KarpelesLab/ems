@@ -37,10 +37,21 @@
 //!    step factor; the thread count is used for both the discretisation and
 //!    the engine.
 //!
-//! Excitations, lumped elements and probes of the model are discretised by
-//! csx as well and kept in [`ModelSources`]; mapping them onto engine
-//! operators is a follow-up (see [`crate::Simulation`]). Until then they are
-//! reported in [`Compiled::warnings`].
+//! Excitations and lumped elements of the model are discretised by csx as
+//! well, and ProbeBox / DumpBox primitives are snapped to the mesh
+//! ([`ProbeSpec`]); all of these are kept in [`ModelSources`].
+//! [`Compiled::build`] creates only the bare engine with its boundaries;
+//! [`crate::Simulation`] maps the sources onto engine operators.
+//!
+//! **Snapping.** Each coordinate of a probe or dump box corner (drawing
+//! units, after the primitive's transformation) is moved to the nearest
+//! mesh line on its axis ([`csx::RectilinearGrid::nearest_line`]); a corner
+//! that is not on a line (within csx's [`snap`](csx::RectilinearGrid::snap)
+//! tolerance) or outside the mesh adds a warning. Box primitives keep their
+//! corner order (`start`, `stop`), which carries the probe direction; for
+//! other shapes the bounding box is used (with a warning) and point
+//! primitives give `start = stop`. Only the first primitive of a probe or
+//! dump property is used.
 
 use crate::axis::Axis;
 use crate::engine::boundary::cpml::CpmlBoundary;
@@ -54,6 +65,7 @@ use crate::{Error, Result};
 use csx::discretize::{
     DiscretizeOptions, ExcitationField, LumpedEdge, MaterialGrid, SheetInfo, discretize,
 };
+use csx::properties::{DumpMode, DumpType, ProbeType};
 use csx::{CoordSystem, PropertyKind};
 
 /// Options of [`compile`].
@@ -156,18 +168,38 @@ impl NodeMap {
     }
 }
 
-/// Model parts that csx discretised but the compile step does not map to
-/// engine operators yet (follow-up task). Edges/faces are in csx indexing;
-/// convert with [`Compiled::node_map`] / [`NodeMap::edge`].
+/// Model parts that are mapped onto engine operators by
+/// [`crate::Simulation`] (not by [`Compiled::build`]). Edges/faces are in
+/// csx indexing; convert with [`Compiled::node_map`] / [`NodeMap::edge`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelSources {
-    /// Excitations, with amplitudes per E edge (E types, field value along
-    /// the edge in V/m) or per H face (H types).
+    /// Enabled excitations, with amplitudes per E edge (E types, field
+    /// value along the edge in V/m) or per H face (H types, A/m).
     pub excitations: Vec<ExcitationField>,
     /// Lumped-element edges with values already distributed per edge.
     pub lumped: Vec<LumpedEdge>,
     /// Conducting sheets (currently approximated as PEC).
     pub sheets: Vec<SheetInfo>,
+    /// ProbeBox properties, snapped to the mesh.
+    pub probes: Vec<ProbeSpec<csx::properties::ProbeBox>>,
+    /// DumpBox properties, snapped to the mesh.
+    pub dumps: Vec<ProbeSpec<csx::properties::DumpBox>>,
+}
+
+/// A ProbeBox or DumpBox property (`T`) with its box snapped to mesh
+/// nodes (see the [module docs](self) on snapping).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeSpec<T> {
+    /// Property name.
+    pub name: String,
+    /// csx property id ([`csx::PropertyId`] value).
+    pub id: u32,
+    /// The property settings (parameters evaluated).
+    pub settings: T,
+    /// Node indices of the first box corner.
+    pub start: [usize; 3],
+    /// Node indices of the opposite corner (may be below `start`).
+    pub stop: [usize; 3],
 }
 
 /// Engine inputs produced by [`compile`]; [`build`](Self::build) turns
@@ -294,12 +326,26 @@ fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
             PropertyKind::AbsorbingBC(_) => {
                 "AbsorbingBC sheets are not supported yet (M2); ignored"
             }
-            PropertyKind::Excitation(_) => "excitations are not mapped to the engine yet; ignored",
-            PropertyKind::LumpedElement(_) => {
-                "lumped elements are not mapped to the engine yet; ignored"
+            PropertyKind::Excitation(e) if !e.enabled => "disabled; ignored",
+            PropertyKind::Excitation(e)
+                if !e.excitation_type.is_electric() && !e.excitation_type.is_magnetic() =>
+            {
+                "only E- and H-field excitations are supported (plane waves: later); ignored"
             }
-            PropertyKind::ProbeBox(_) => "probes are not mapped to the engine yet; ignored",
-            PropertyKind::DumpBox(_) => "dumps are not mapped to the engine yet; ignored",
+            PropertyKind::ProbeBox(pb) => match pb.probe_type {
+                ProbeType::Voltage | ProbeType::Current | ProbeType::EField | ProbeType::HField => {
+                    continue;
+                }
+                _ => "waveguide probes are not supported yet (M2); ignored",
+            },
+            PropertyKind::DumpBox(d) => match d.dump_type {
+                DumpType::EField | DumpType::HField => continue,
+                DumpType::EFieldFd | DumpType::HFieldFd if d.probe.frequencies.is_empty() => {
+                    "frequency-domain dump without frequencies; ignored"
+                }
+                DumpType::EFieldFd | DumpType::HFieldFd => continue,
+                _ => "only E/H field dumps (time or frequency domain) are supported; ignored",
+            },
             _ => continue,
         };
         out.push(format!(
@@ -308,6 +354,129 @@ fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
             p.kind.type_name()
         ));
     }
+}
+
+/// Probe and dump specs.
+type Specs = (
+    Vec<ProbeSpec<csx::properties::ProbeBox>>,
+    Vec<ProbeSpec<csx::properties::DumpBox>>,
+);
+
+/// Snaps the ProbeBox / DumpBox properties of `model` to its grid.
+fn probe_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> Specs {
+    let (mut probes, mut dumps) = (Vec::new(), Vec::new());
+    for p in model.properties() {
+        if !matches!(p.kind, PropertyKind::ProbeBox(_) | PropertyKind::DumpBox(_)) {
+            continue;
+        }
+        let Some(prim) = p.primitives.first() else {
+            warnings.push(format!(
+                "property {:?} ({}): no primitive; ignored",
+                p.name,
+                p.kind.type_name()
+            ));
+            continue;
+        };
+        if p.primitives.len() > 1 {
+            warnings.push(format!(
+                "property {:?} ({}): only the first of {} primitives is used",
+                p.name,
+                p.kind.type_name(),
+                p.primitives.len()
+            ));
+        }
+        let (start, stop) = snap_primitive(&model.grid, prim, &p.name, warnings);
+        match &p.kind {
+            PropertyKind::ProbeBox(pb) => probes.push(ProbeSpec {
+                name: p.name.clone(),
+                id: p.id(),
+                settings: pb.clone(),
+                start,
+                stop,
+            }),
+            PropertyKind::DumpBox(d) => {
+                if d.dump_mode == DumpMode::NoInterpolation {
+                    warnings.push(format!(
+                        "dump {:?}: NoInterpolation is dumped at the nodes (Node mode)",
+                        p.name
+                    ));
+                }
+                if d.opt_resolution.is_some() {
+                    warnings.push(format!(
+                        "dump {:?}: OptResolution is not supported; full resolution used",
+                        p.name
+                    ));
+                }
+                dumps.push(ProbeSpec {
+                    name: p.name.clone(),
+                    id: p.id(),
+                    settings: d.clone(),
+                    start,
+                    stop,
+                })
+            }
+            _ => {}
+        }
+    }
+    (probes, dumps)
+}
+
+/// Corner node indices of a probe / dump primitive; see the module docs.
+fn snap_primitive(
+    grid: &csx::RectilinearGrid,
+    prim: &csx::Primitive,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> ([usize; 3], [usize; 3]) {
+    let cart = prim
+        .coord_system
+        .is_none_or(|c| c == CoordSystem::Cartesian);
+    let tf = |v: csx::Vec3| {
+        if prim.transform.is_empty() {
+            v
+        } else {
+            prim.transform.apply(v)
+        }
+    };
+    let (a, b) = match &prim.shape {
+        csx::Shape::Box(bx) if cart => (tf(bx.start.value()), tf(bx.stop.value())),
+        csx::Shape::Point(pt) if cart => {
+            let v = tf(pt.point.value());
+            (v, v)
+        }
+        other => {
+            warnings.push(format!(
+                "probe/dump {name:?}: {} primitive replaced by its bounding box",
+                other.type_name()
+            ));
+            let bb = prim.bounding_box(CoordSystem::Cartesian);
+            (bb.min, bb.max)
+        }
+    };
+    let mut off = false;
+    let mut outside = false;
+    let mut snap = |v: f64, d: usize| -> usize {
+        let lines = grid.lines(d);
+        if v < lines[0] || v > lines[lines.len() - 1] {
+            outside = true;
+        }
+        if grid.snap(d, v).is_none() {
+            off = true;
+        }
+        grid.nearest_line(d, v).unwrap_or(0)
+    };
+    let start = [0, 1, 2].map(|d| snap(a.0[d], d));
+    let stop = [0, 1, 2].map(|d| snap(b.0[d], d));
+    if outside {
+        warnings.push(format!(
+            "probe/dump {name:?}: box extends outside the mesh; clamped to the mesh"
+        ));
+    } else if off {
+        warnings.push(format!(
+            "probe/dump {name:?}: box corners snapped to the nearest mesh lines"
+        ));
+    }
+    (start, stop)
 }
 
 /// Compiles `model` with solver settings `fdtd` into engine inputs; see
@@ -389,11 +558,17 @@ pub fn compile(
         None => TimeStep::Courant(fdtd.get_timestep_factor()),
     };
     let MaterialGrid {
-        excitations,
+        mut excitations,
         lumped,
         sheets,
         ..
     } = mg;
+    excitations.retain(|f| {
+        model
+            .property_by_name(&f.name)
+            .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
+    });
+    let (probes, dumps) = probe_specs(model, &mut warnings);
     Ok(Compiled {
         grid,
         delta_unit: model.grid.delta_unit,
@@ -408,6 +583,8 @@ pub fn compile(
             excitations,
             lumped,
             sheets,
+            probes,
+            dumps,
         },
         warnings,
     })

@@ -164,14 +164,14 @@ pub use dump::{
     Snapshot, TimeDump, VtrSeries,
 };
 pub use edge_material::EdgeMaterials;
-pub use excite::{Amplitude, EdgeSource};
+pub use excite::{Amplitude, EdgeSource, SourceKind};
 pub use fields::{FieldArrays, Fields};
 pub use grid::Grid;
-pub use lumped::{LumpedBox, LumpedElement, Topology, fold_parallel};
+pub use lumped::{EdgeValues, LumpedBox, LumpedElement, Topology, fold_parallel};
 pub use material::{CellMaterials, Material};
 pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
 pub use port::LumpedPort;
-pub use probe::{Probe, ProbeQuantity};
+pub use probe::{FieldProbe, Probe, ProbeQuantity};
 pub use run::{Progress, RunLimits, RunOutcome, StopReason};
 pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 

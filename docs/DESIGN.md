@@ -303,6 +303,12 @@ ProbeBox, emitted into csx by the helper.
   `u^{n+1} = ca·u^n + cb·(Σi + g·V_s^{n+1/2}/M)`.
 - This is exactly what you get when an E-field excitation overlaps a lumped
   resistor, so XML-sourced ports behave identically.
+- **Implemented:** `Simulation` maps csx `LumpedElement`s to edge-list
+  `engine::LumpedElement`s (per-edge values from `csx::discretize`) and turns
+  a soft E excitation on a resistive lumped edge into that element's
+  Thevenin source (`V_e = E·l` per edge). `ems::port::LumpedPort` emits the
+  four csx properties; `tests/sim_operators.rs` checks it against the
+  engine-level `engine::LumpedPort`.
 
 **Port analysis** (pure post-processing over probe results):
 - V and I DFTs; the current is corrected for its half-step time offset.

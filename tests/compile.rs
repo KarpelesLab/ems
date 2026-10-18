@@ -446,7 +446,7 @@ fn cylindrical_grid_is_unsupported() {
 // ------------------------------------------------------------------- run
 
 #[test]
-fn run_uses_settings_and_reports_unmapped_parts() {
+fn run_uses_settings_and_maps_sources() {
     let mut model = uniform_model([4, 4, 4], 1.0, 1e-3);
     add_box(
         &mut model,
@@ -459,12 +459,9 @@ fn run_uses_settings_and_reports_unmapped_parts() {
         .max_timesteps(37)
         .waveform(ems::Waveform::gaussian(1e9, 0.5e9));
     let mut sim = Simulation::new(&model, &fdtd).unwrap();
-    assert!(
-        sim.warnings().iter().any(|w| w.contains("\"src\"")),
-        "{:?}",
-        sim.warnings()
-    );
-    // Discretised and kept for the follow-up mapping.
+    assert!(sim.warnings().is_empty(), "{:?}", sim.warnings());
+    // Discretised and mapped onto a soft source.
+    assert_eq!(sim.source("src").unwrap().edges().count(), 2);
     let ex = &sim.sources().excitations;
     assert_eq!(ex.len(), 1);
     assert_eq!(ex[0].amplitudes.len(), 2);
@@ -475,7 +472,7 @@ fn run_uses_settings_and_reports_unmapped_parts() {
     assert_eq!(lim.max_timesteps, 37);
     assert!(lim.excitation_end.unwrap() > 0.0);
     let out = sim.run().unwrap();
-    assert_eq!(out.steps, 37);
+    assert_eq!(out.outcome().unwrap().steps, 37);
     assert_eq!(sim.engine().timestep(), 37);
     // Building directly from the compiled data gives the same engine.
     let c = compile(&model, &fdtd, &CompileOptions::default()).unwrap();

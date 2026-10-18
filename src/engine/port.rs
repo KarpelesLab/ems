@@ -47,6 +47,7 @@ use crate::{Error, Result};
 /// A lumped port operator; see the [module documentation](self).
 #[derive(Debug)]
 pub struct LumpedPort {
+    region: LumpedBox,
     element: LumpedElement,
     resistance: f64,
     edges: Vec<[usize; 3]>,
@@ -62,6 +63,7 @@ impl LumpedPort {
     /// Passive port of resistance `r` \[Ω\] over `region`.
     pub fn new(region: LumpedBox, r: f64) -> Self {
         Self {
+            region,
             element: LumpedElement::resistor(region, r),
             resistance: r,
             edges: Vec::new(),
@@ -89,7 +91,7 @@ impl LumpedPort {
 
     /// The port's box.
     pub fn region(&self) -> &LumpedBox {
-        self.element.region()
+        &self.region
     }
 
     /// Port resistance `R` \[Ω\] (also the default reference impedance).
@@ -101,7 +103,7 @@ impl LumpedPort {
     /// Fails, leaving the engine unchanged, under the same conditions as
     /// [`LumpedElement::add_to`].
     pub fn add_to(mut self, engine: &mut Engine) -> Result<OperatorHandle<LumpedPort>> {
-        let region = *self.element.region();
+        let region = self.region;
         region.check_fits(engine.grid().nodes())?;
         self.element.install(engine)?;
         self.dt = engine.dt();
@@ -189,11 +191,24 @@ impl LumpedPort {
 /// dropped (they read as zero in the kernel); high-side entries at the
 /// domain edge are padding and stay zero.
 fn current_loop(region: &LumpedBox) -> Vec<(Axis, [usize; 3], f64)> {
-    let axis = region.axis();
+    let a = region.axis().index();
+    let layer = region.lo()[a] + (region.series_edges() - 1) / 2;
+    loop_entries(region.axis(), region.lo(), region.hi(), layer)
+}
+
+/// Dual edges `(axis, node, weight)` whose weighted sum is `−∮H·dl`
+/// (right-handed about `+axis`) around the E edges along `axis` whose
+/// transverse node coordinates lie in `lo ..= hi`, in the dual plane
+/// crossing the edge layer `layer` (edges from node `layer` to
+/// `layer + 1` along `axis`). `lo[axis]`, `hi[axis]` are ignored.
+pub(crate) fn loop_entries(
+    axis: Axis,
+    lo: [usize; 3],
+    hi: [usize; 3],
+    layer: usize,
+) -> Vec<(Axis, [usize; 3], f64)> {
     let (ab, ac) = axis.others();
     let (a, b, c) = (axis.index(), ab.index(), ac.index());
-    let (lo, hi) = (region.lo(), region.hi());
-    let layer = lo[a] + (region.series_edges() - 1) / 2;
     let node = |pb: usize, pc: usize| {
         let mut p = [0; 3];
         p[a] = layer;
@@ -245,8 +260,8 @@ impl Operator for LumpedPort {
 
     fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         self.element.post_e_impl(fields, ctx);
-        let axis = self.element.region().axis();
-        let n = self.element.region().columns() as f64;
+        let axis = self.region.axis();
+        let n = self.region.columns() as f64;
         let s: f64 = self
             .edges
             .iter()
