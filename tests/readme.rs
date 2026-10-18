@@ -47,7 +47,8 @@ fn quick_start() -> Result<(Vec<String>, Vec<Complex64>)> {
 
 /// The README's first ```rust block, with the indentation of this file.
 fn readme_block() -> Vec<String> {
-    let readme = include_str!("../README.md");
+    // Normalise line endings (Windows checkouts may use CRLF).
+    let readme = include_str!("../README.md").replace("\r\n", "\n");
     let start = readme.find("```rust\n").expect("README has a rust block") + 8;
     let end = start + readme[start..].find("```").expect("closed block");
     readme[start..end]
@@ -58,7 +59,7 @@ fn readme_block() -> Vec<String> {
 }
 
 fn test_block() -> Vec<String> {
-    let src = include_str!("readme.rs");
+    let src = include_str!("readme.rs").replace("\r\n", "\n");
     let a = src.find("// README-BEGIN\n").unwrap() + "// README-BEGIN\n".len();
     let b = src.find("    // README-END").unwrap();
     src[a..b]
