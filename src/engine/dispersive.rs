@@ -123,8 +123,9 @@
 //! So `W + Σ W_p` is non-increasing (exactly conserved for lossless poles,
 //! up to `f32` rounding of the fields): the poles add no stability limit
 //! beyond the Courant limit of the `ε∞` medium. [`Operator::energy`]
-//! reports `Σ W_p` of the electric poles at `t = n·dt`, so
-//! [`Engine::energy`](super::Engine::energy) is the conserved total.
+//! reports `Σ W_p` of the electric poles at `t = n·dt` (plus the magnetic
+//! poles, below), so [`Engine::energy`](super::Engine::energy) is the
+//! conserved total.
 //!
 //! # Magnetic poles
 //!
@@ -135,13 +136,34 @@
 //! (`m = μ0·A/l*`). The update is identical with `(u, ca, cb)` replaced by
 //! `(i, da, db)`, centred at integer times (`i` from `(n − ½)·dt` to
 //! `(n + ½)·dt`), and gives `μ_d(ω) = μ0·(μ∞ + Σ χ_p(Ω_t))`.
-//! For these poles the energy bookkeeping does not close exactly at
-//! integer times (the exact invariant would need the magnetic branch
-//! average of the step in progress), so [`magnetic_energy`](Dispersive::magnetic_energy)
-//! (`Σ W_p` at `(n − ½)·dt`) is reported separately and is **not**
-//! included in [`Operator::energy`]. [`Engine::energy`](super::Engine::energy)'s
-//! look-ahead of `i^{n+½}` does not see the magnetic correction either.
 //!
+//! **Magnetic energy.** The magnetic branch state lives at half-integer
+//! times (`B^{n−½} = Σ ½·L·k² + ½·q²/C_p` after the H update that ends at
+//! `(n − ½)·dt`). Write `k̄^n` for the branch average of the H step from
+//! `(n − ½)·dt` to `(n + ½)·dt`, which lowers the dual-edge current by
+//! `db·k̄^n` relative to the plain kernel result `i*^{n+½}`. The field
+//! invariant with the corrected `i^{n+½}` changes by
+//! `−½·dt·i^{n+½}·(k̄^n + k̄^{n+1})` per step, so the conserved total is
+//! `W^n + B^{n+½} − ½·dt·k̄^n·i^{n+½}` (check by differencing with the
+//! trapezoidal branch update). By the branch update this equals
+//! `W^n + B^{n−½} + ½·dt·k̄^n·i^{n−½}`, and since
+//! `½·L·i^{n−½}·(i*^{n+½} − i^{n+½}) = ½·dt·i^{n−½}·k̄^n` (lossless
+//! dual edge, `db = dt/L`), it is exactly
+//!
+//! ```text
+//! W*^n + B^{n−½},     W*^n = ½·Σ C·(u^n)² + ½·Σ L·i^{n−½}·i*^{n+½}
+//! ```
+//!
+//! `W*^n` is what [`Engine::energy`](super::Engine::energy) and
+//! [`Engine::step_with_energy`](super::Engine::step_with_energy) evaluate:
+//! both take `i^{n+½}` from the H kernel *before* the slab hooks, i.e.
+//! without the magnetic correction. So [`Operator::energy`] reports the
+//! electric poles at `n·dt` plus the magnetic poles at `(n − ½)·dt`
+//! ([`magnetic_energy`](Dispersive::magnetic_energy)), and the engine
+//! total is conserved for lossless magnetic poles too (for a lossy
+//! background `da < 1` the identity holds up to a term of the order of
+//! the loss, which only dissipates).
+
 //! # Implementation
 //!
 //! The operator runs as [`SlabHooks`] on the worker threads: edges are
@@ -811,15 +833,14 @@ impl Dispersive {
     }
 
     /// Energy stored in the electric poles at `t = n·dt`,
-    /// `Σ ½·L·j² + ½·q²/C_p` \[J\] (module docs); this is
-    /// [`Operator::energy`].
+    /// `Σ ½·L·j² + ½·q²/C_p` \[J\] (module docs).
     pub fn electric_energy(&self) -> f64 {
         self.sum_energy(Field::Electric)
     }
 
     /// Energy stored in the magnetic poles at `t = (n − ½)·dt` \[J\]
-    /// (not part of [`Operator::energy`]; see
-    /// [Magnetic poles](self#magnetic-poles)).
+    /// (see [Magnetic poles](self#magnetic-poles) for why this is the
+    /// right time level for the engine's energy invariant).
     pub fn magnetic_energy(&self) -> f64 {
         self.sum_energy(Field::Magnetic)
     }
@@ -876,9 +897,11 @@ impl Operator for Dispersive {
         Some(parts)
     }
 
-    /// [`electric_energy`](Self::electric_energy).
+    /// [`electric_energy`](Self::electric_energy) plus
+    /// [`magnetic_energy`](Self::magnetic_energy) (see
+    /// [Magnetic poles](self#magnetic-poles)).
     fn energy(&self) -> f64 {
-        self.electric_energy()
+        self.electric_energy() + self.magnetic_energy()
     }
 }
 

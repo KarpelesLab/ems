@@ -622,7 +622,10 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     closed-form per-edge solve for any number of poles, no extra stability
     limit, exact discrete permittivity `ε∞ + χ(Ω_t)` with
     `Ω_t = (2/dt)·tan(ω·dt/2)`, pole energy reported through
-    `Operator::energy`. Magnetic poles use the dual update on H. Runs as
+    `Operator::energy`. Magnetic poles use the dual update on H; their
+    branch energy at `(n − ½)·dt` closes the engine invariant exactly,
+    because the energy look-ahead uses the uncorrected H kernel result
+    (derivation in the `engine::dispersive` docs). Runs as
     slab hooks (bit-identical for any thread count); registered after the
     CPML. The compile step samples the csx dispersive materials per edge
     over the same quarter / half cells as the static average.

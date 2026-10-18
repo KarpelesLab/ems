@@ -429,7 +429,11 @@ fn cavity(
 }
 
 fn energy_drift(steps: u64) -> (f64, f64) {
-    let (mut e, _) = cavity(1, true, false);
+    energy_drift_with(steps, false)
+}
+
+fn energy_drift_with(steps: u64, magnetic: bool) -> (f64, f64) {
+    let (mut e, _) = cavity(1, true, magnetic);
     e.run(10);
     let w0 = e.energy();
     let (mut lo, mut hi) = (w0, w0);
@@ -453,6 +457,25 @@ fn lossless_poles_conserve_energy() {
     eprintln!("lossless poles, 4000 steps: energy drift {drift:.2e}, pole share {share:.3}");
     assert!(drift < 1e-5, "{drift}");
     assert!(share > 0.01, "{share}");
+}
+
+/// Lossless electric and magnetic poles: the engine energy (which
+/// includes the magnetic branch energy at `(n − ½)·dt`) is conserved to
+/// the same level as the electric-only case, and the value
+/// `step_with_energy` computes during a real step equals `energy()`.
+#[test]
+fn lossless_magnetic_poles_conserve_energy() {
+    let (drift, share) = energy_drift_with(4000, true);
+    eprintln!(
+        "lossless electric + magnetic poles, 4000 steps: drift {drift:.2e}, pole share {share:.3}"
+    );
+    assert!(drift < 1e-5, "{drift}");
+    let (mut e, h) = cavity(1, true, true);
+    e.run(37);
+    assert!(e.operator(&h).magnetic_energy() > 0.0);
+    let w = e.energy();
+    let ws = e.step_with_energy();
+    assert_eq!(w.to_bits(), ws.to_bits(), "{w} vs {ws}");
 }
 
 /// Long-run variant: 100 000 steps.
@@ -481,17 +504,24 @@ fn lossy_poles_dissipate() {
     assert!(w < 0.5 * w0);
 }
 
-/// Electric and magnetic poles (lossy and lossless), long run: bounded.
+/// Electric and magnetic poles (lossy and lossless), long run: bounded,
+/// and with losses never increasing.
 #[test]
 fn magnetic_poles_stay_bounded() {
     for lossless in [true, false] {
-        let (mut e, h) = cavity(1, lossless, true);
+        let (mut e, _) = cavity(1, lossless, true);
         e.run(2);
         let w0 = e.energy();
         let mut wmax = 0.0f64;
+        let mut w = w0;
         for _ in 0..60 {
             e.run(50);
-            wmax = wmax.max(e.energy() + e.operator(&h).magnetic_energy());
+            let wn = e.energy();
+            if !lossless {
+                assert!(wn <= w * (1.0 + 1e-6), "{wn} > {w}");
+            }
+            w = wn;
+            wmax = wmax.max(wn);
         }
         eprintln!(
             "magnetic poles (lossless {lossless}): max W/W0 over 3000 steps {:.4}",
