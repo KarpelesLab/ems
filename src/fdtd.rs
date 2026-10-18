@@ -645,14 +645,16 @@ impl Fdtd {
         self.timestep
     }
 
-    /// The configured thread count; `None` means
-    /// [`std::thread::available_parallelism`].
+    /// The configured thread count; `None` lets the engine choose
+    /// ([`engine::default_threads`](crate::engine::default_threads)).
     pub fn get_threads(&self) -> Option<usize> {
         self.threads
     }
 
-    /// The thread count to use: the configured one, else
-    /// [`std::thread::available_parallelism`] (1 if unknown).
+    /// The thread count for the compile step (discretisation): the
+    /// configured one, else [`std::thread::available_parallelism`] (1 if
+    /// unknown). The engine's default is
+    /// [`engine::default_threads`](crate::engine::default_threads).
     pub fn resolved_threads(&self) -> usize {
         self.threads.unwrap_or_else(|| {
             std::thread::available_parallelism()

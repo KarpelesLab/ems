@@ -1,7 +1,7 @@
 //! Kernel throughput on an N³-cell vacuum box with PEC walls.
 //!
 //! ```text
-//! cargo run --release --example bench_vacuum -- [N=128] [threads=0 (all)] [steps=200] [K=0] [pml=0]
+//! cargo run --release --example bench_vacuum -- [N=128] [threads=0 (default)] [steps=200] [K=0] [pml=0]
 //! ```
 //!
 //! Prints the update rate in Mcells/s (cells × steps / wall time; one cell

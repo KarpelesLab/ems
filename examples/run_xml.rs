@@ -94,7 +94,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         n[2],
         g.num_cells() as f64 / 1e6,
         sim.engine().dt(),
-        sim.fdtd().resolved_threads(),
+        sim.engine().threads(),
         t0.elapsed().as_secs_f64()
     );
     for w in sim.warnings() {

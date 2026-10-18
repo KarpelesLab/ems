@@ -236,9 +236,11 @@ impl EngineBuilder {
         self
     }
 
-    /// Number of threads, including the caller; `0` (default) means
-    /// [`std::thread::available_parallelism`]. `1` runs everything inline.
-    /// Capped at `nx` (one x-plane per thread at least).
+    /// Number of threads, including the caller; `1` runs everything
+    /// inline. Capped at `nx` (one x-plane per thread at least).
+    ///
+    /// `0` (default) picks [`default_threads`] for the grid: one thread per
+    /// physical core, fewer on small grids.
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = n;
         self
@@ -257,7 +259,7 @@ impl EngineBuilder {
             }
         };
         let threads = match self.threads {
-            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+            0 => default_threads(grid.num_cells()),
             n => n,
         };
         let layout = Layout::new(grid.nodes(), threads);
@@ -279,6 +281,55 @@ impl EngineBuilder {
             pool,
         })
     }
+}
+
+/// Grid cells per thread below which the default thread count is reduced:
+/// on small grids the per-step synchronisation of more threads costs more
+/// than their share of the update.
+const MIN_CELLS_PER_THREAD: usize = 8192;
+
+/// The thread count an engine uses by default for a grid of `cells` cells:
+/// one thread per physical core available to the process, but at most one
+/// per [`MIN_CELLS_PER_THREAD`] cells (and at least 1).
+///
+/// The kernels are memory-bound, so a second hardware thread on a core
+/// (SMT) adds no throughput, while every extra thread adds to the per-step
+/// synchronisation and makes the run more sensitive to other load on the
+/// machine. Physical cores are counted from
+/// `/sys/devices/system/cpu/*/topology` on Linux: the
+/// [available parallelism](std::thread::available_parallelism) divided by
+/// the number of hardware threads per core. Elsewhere, or if that
+/// information is unavailable, the available parallelism is used.
+pub fn default_threads(cells: usize) -> usize {
+    let avail = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cores = (avail / smt_width()).max(1);
+    cores.min(cells / MIN_CELLS_PER_THREAD).max(1)
+}
+
+/// Hardware threads per core (1 if unknown): logical CPUs divided by
+/// distinct cores, from Linux sysfs.
+fn smt_width() -> usize {
+    use std::sync::OnceLock;
+    static W: OnceLock<usize> = OnceLock::new();
+    *W.get_or_init(|| {
+        let mut cores = std::collections::HashSet::new();
+        let mut cpus = 0usize;
+        for cpu in 0.. {
+            let path = format!("/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list");
+            match std::fs::read_to_string(path) {
+                Ok(s) => {
+                    cpus += 1;
+                    cores.insert(s.trim().to_owned());
+                }
+                Err(_) => break,
+            }
+        }
+        if cores.is_empty() {
+            1
+        } else {
+            (cpus / cores.len()).max(1)
+        }
+    })
 }
 
 /// A ready-to-run FDTD engine.
