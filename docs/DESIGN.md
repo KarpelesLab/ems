@@ -273,8 +273,14 @@ be `Sync` (§8).
 **LumpedElement (R)** over a box with `M` series edges along its direction and
 `N` parallel columns:
 - Per-edge conductance `g = M/(N·R)`, added to `G`.
-- L and C need one auxiliary state per edge (ADE). Series vs. parallel RLC
-  follows the csx property's documented semantics.
+- A parallel C is folded into the edge's `C` (`C_e = M·C/N`); R and C are pure
+  coefficient changes, composed with the material's existing C/G recovered
+  from `ca`/`cb`.
+- Inductors and series branches (any of R+L+C in series, or L in parallel)
+  use one auxiliary branch state per edge, updated trapezoidally and solved
+  implicitly with the edge voltage. This adds no stability limit.
+  Series vs. parallel follows the csx property's documented semantics.
+- Branch energy (L/C states) is not yet included in `Engine::energy()`.
 
 **Lumped port** = LumpedElement(R) + Excitation + voltage ProbeBox + current
 ProbeBox, emitted into csx by the helper.
