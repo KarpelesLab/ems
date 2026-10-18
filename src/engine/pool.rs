@@ -263,8 +263,11 @@ impl Shared {
 }
 
 /// Sense-free generation barrier: spins briefly (cheap for the short
-/// phases of small models), then blocks on a condition variable so idle
-/// workers do not burn CPU between `run` calls.
+/// phases of small models), then yields its time slice for a while (so a
+/// thread of the same run that was preempted by other load on the machine
+/// can finish its slab instead of competing with spinners), then blocks on
+/// a condition variable so idle workers do not burn CPU between `run`
+/// calls.
 #[derive(Debug)]
 struct SpinBarrier {
     n: usize,
@@ -274,7 +277,10 @@ struct SpinBarrier {
     cv: Condvar,
 }
 
-const SPIN: u32 = 1 << 14;
+/// Busy-wait iterations before yielding.
+const SPIN: u32 = 1 << 10;
+/// `yield_now` iterations before sleeping.
+const YIELD: u32 = 1 << 12;
 
 impl SpinBarrier {
     fn new(n: usize) -> Self {
@@ -302,6 +308,12 @@ impl SpinBarrier {
                 return;
             }
             std::hint::spin_loop();
+        }
+        for _ in 0..YIELD {
+            if self.generation.load(Ordering::Acquire) != generation {
+                return;
+            }
+            std::thread::yield_now();
         }
         let mut g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         while self.generation.load(Ordering::Acquire) == generation {
