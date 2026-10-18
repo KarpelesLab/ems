@@ -123,7 +123,7 @@ part of M1 (§3).
 ### Later milestones
 | Milestone | Feature | csx side |
 |---|---|---|
-| M2 | Dispersive materials via ADE (Lorentz, Drude as zero-ω₀ Lorentz, Debye) | Lorentz/Debye properties |
+| M2 | Dispersive materials via ADE (Lorentz, Drude as zero-ω₀ Lorentz, Debye) — **done** (`engine::dispersive`, see §6) | Lorentz/Debye properties |
 | M2 | ConductingSheet (thin lossy conductor) surface model | ConductingSheet |
 | M2 | MSL and rectangular waveguide port helpers | probes, excitations with weighting |
 | M2 | openEMS-compatible probe/dump output files (paths, text layout, HDF5 layout) | — |
@@ -412,7 +412,18 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
 - **Operators** (`Operator` trait): CPML, Mur, sources, lumped elements,
-  probes, dumps, and later ADE/NF2FF.
+  probes, dumps, dispersive media (ADE), and later NF2FF.
+  - Dispersive media (`engine::dispersive::Dispersive`): each Drude /
+    Lorentz / Debye pole is a series R–L–C branch per edge (polarisation
+    current `j = J·A*`), integrated with the trapezoidal rule and coupled
+    implicitly with the E update (semi-implicit, Okoniewski et al. 1997);
+    closed-form per-edge solve for any number of poles, no extra stability
+    limit, exact discrete permittivity `ε∞ + χ(Ω_t)` with
+    `Ω_t = (2/dt)·tan(ω·dt/2)`, pole energy reported through
+    `Operator::energy`. Magnetic poles use the dual update on H. Runs as
+    slab hooks (bit-identical for any thread count); registered after the
+    CPML. The compile step samples the csx dispersive materials per edge
+    over the same quarter / half cells as the static average.
   - Each has `pre/post_e` and `pre/post_h` serial hooks (calling thread,
     exclusive field access, registration order) for sparse work.
   - Bulk work (CPML) uses the optional `Operator::slab_hooks`: at
@@ -511,8 +522,15 @@ here, not fixed in csx from this repo.
    ems clones the model and calls `update()` on every compile.
 6. **Disabled excitations.** `discretize` does not appear to check
    `Excitation::enabled`.
-7. **Dispersive materials.** These are silently reduced to their static
-   values; a discretisation warning would help.
+7. **Dispersive materials.** `discretize` only reports the static values;
+   ems samples the poles itself with the priority query (`compile::dispersive`).
+   A per-edge dispersive-material output (property id + volume fraction per
+   edge) from `discretize` would avoid duplicating its sampling. Also, the
+   `LorentzPole` docs give `ε(ω) = ε∞ − ω_p²/(ω² − ω_L² − iω/τ)`, while the
+   openEMS documentation multiplies the whole bracket by `ε∞`
+   (`ε∞·(1 − Σ f_p²/(f² − f_L² − jf/(2πτ)))`); ems follows the openEMS
+   documentation. The docs should also say that `τ = 0` means lossless and
+   that frequencies are in Hz.
 8. **Bare axis index.** `discretize::Edge::dir` is a `usize` rather than an
    axis type.
 9. **Amplitude units.** Document explicitly that excitation amplitudes are field

@@ -136,6 +136,7 @@
 
 pub mod boundary;
 mod coeffs;
+pub mod dispersive;
 pub mod dump;
 mod edge_material;
 mod excite;
@@ -159,6 +160,7 @@ pub use coeffs::{
     Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,
     primary_edge_cg,
 };
+pub use dispersive::{Dispersive, EdgePole, Pole};
 pub use dump::{
     DumpPosition, DumpQuantity, DumpRegion, DumpSink, FieldSampler, FreqDump, MemorySink, Schedule,
     Snapshot, TimeDump, VtrSeries,

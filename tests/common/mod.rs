@@ -320,3 +320,82 @@ impl Drop for Timer {
         eprintln!("[{}] {:.2} s", self.0, self.1.elapsed().as_secs_f64());
     }
 }
+
+/// Wavenumber `K` (phase advance per cell) of the 1-D Yee scheme in a
+/// medium of complex relative `ε`, `μ` seen at Yee frequency `Ω`:
+/// `4·sin²(K/2) = Ω²·μ0·ε0·ε·μ·dz²`, branch with `Im K ≤ 0` (decaying
+/// along +z), `Re K ≥ 0` if lossless.
+pub fn yee_k_complex(om: f64, dz: f64, eps: Complex64, mu: Complex64) -> Complex64 {
+    let x = eps * mu * (om * om * MU0 * EPS0 * dz * dz);
+    let mut k = casin(csqrt(x) * 0.5) * 2.0;
+    if k.im > 1e-15 || (k.im.abs() <= 1e-15 && k.re < 0.0) {
+        k = -k;
+    }
+    k
+}
+
+/// Exact frequency response of the discrete 1-D Yee line with per-cell
+/// complex relative permittivity `eps[c]` and permeability `mu[c]` (as
+/// realised by the scheme at `f`, e.g. `ε∞ + χ(Ω_t)`), at frequency `f`.
+///
+/// Node `k` (between cells `k−1` and `k`) carries `(ε_{k−1} + ε_k)/2`, the
+/// H edge of cell `k` carries `μ_k`. The first two and last two cells must
+/// be uniform (incidence / exit media). The node equations
+/// `(E_{k+1} − E_k)/μ_k − (E_k − E_{k−1})/μ_{k−1} = −Ω²μ0ε0·ε_k·dz²·E_k` are
+/// integrated back from a pure outgoing wave. Returns `(Γ, E)` with `Γ` the
+/// reflection coefficient at node 0 and `E[k]` the node fields for a unit
+/// incident wave `e^{−jK_0·k}`.
+pub fn discrete_response(
+    eps: &[Complex64],
+    mu: &[Complex64],
+    dz: f64,
+    dt: f64,
+    f: f64,
+) -> (Complex64, Vec<Complex64>) {
+    let n = eps.len();
+    assert!(n >= 4 && mu.len() == n);
+    let om = yee_omega(f, dt);
+    let x = om * om * MU0 * EPS0 * dz * dz;
+    let j = Complex64::I;
+    let kr = yee_k_complex(om, dz, eps[n - 1], mu[n - 1]);
+    let kl = yee_k_complex(om, dz, eps[0], mu[0]);
+    let mut e = vec![Complex64::ZERO; n + 1];
+    // Normalise at the exit to avoid overflow in lossy media.
+    e[n] = Complex64::ONE;
+    e[n - 1] = (j * kr).exp();
+    for k in (1..n).rev() {
+        let eps_k = (eps[k - 1] + eps[k]) * 0.5;
+        e[k - 1] = e[k] - mu[k - 1] * ((e[k + 1] - e[k]) / mu[k] + eps_k * x * e[k]);
+    }
+    let (p, q) = ((-j * kl).exp(), (j * kl).exp());
+    let b = (e[1] - e[0] * p) / (q - p);
+    let a = e[0] - b;
+    (b / a, e.iter().map(|&v| v / a).collect())
+}
+
+/// Continuum reflection and transmission of a homogeneous slab (complex
+/// relative `eps`, `mu`, thickness `d`) in vacuum at normal incidence;
+/// the transmission is relative to vacuum over the same span (what a
+/// probe behind the slab sees against an all-vacuum run).
+pub fn slab_rt(f: f64, eps: Complex64, mu: Complex64, d: f64) -> (Complex64, Complex64) {
+    let w = 2.0 * PI * f;
+    let z = csqrt(mu / eps);
+    let r = (z - 1.0) / (z + 1.0);
+    let mut nn = csqrt(eps * mu);
+    if nn.im > 0.0 {
+        nn = -nn;
+    }
+    let beta = nn * (w / C0);
+    let j = Complex64::I;
+    let p = (-j * beta * (2.0 * d)).exp();
+    let den = 1.0 - r * r * p;
+    let g = r * (1.0 - p) / den;
+    let t = (1.0 - r * r) * (-j * beta * d).exp() / den * Complex64::cis(w / C0 * d);
+    (g, t)
+}
+
+/// Continuum reflection of a half-space (complex `eps`, `mu`) from vacuum.
+pub fn half_space_r(eps: Complex64, mu: Complex64) -> Complex64 {
+    let z = csqrt(mu / eps);
+    (z - 1.0) / (z + 1.0)
+}

@@ -37,6 +37,19 @@
 //!    step factor; the thread count is used for both the discretisation and
 //!    the engine.
 //!
+//! # Dispersive materials
+//!
+//! csx `LorentzMaterial` (Drude/Lorentz) and `DebyeMaterial` properties
+//! contribute their static part (`Epsilon`, `Mue`, … = `ε∞`, `μ∞`)
+//! through `discretize` like any material, and their poles through
+//! [`Compiled::dispersive`]: per E edge (and H dual edge for magnetic
+//! Lorentz poles), sampled with csx's priority query over the same
+//! quarter / half cells as the static average. [`Compiled::build`]
+//! installs them as one [`Dispersive`] operator. Parameter conventions
+//! (openEMS documentation) and the sampling rules are documented in
+//! [`dispersive`]; in short: `ω_p = 2π·f_plasma·√ε∞`,
+//! `ω_0 = 2π·f_Lor`, `γ = 1/τ` (0 for `τ = 0`), Debye `Δε`, `τ` as given.
+//!
 //! Excitations and lumped elements of the model are discretised by csx as
 //! well, and ProbeBox / DumpBox primitives are snapped to the mesh
 //! ([`ProbeSpec`]); all of these are kept in [`ModelSources`].
@@ -53,11 +66,14 @@
 //! primitives give `start = stop`. Only the first primitive of a probe or
 //! dump property is used.
 
+pub mod dispersive;
+
 use crate::axis::Axis;
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
 use crate::engine::{
-    EdgeMaterials, Engine, FaceCondition, FaceConditions, Grid, OperatorHandle, TimeStep,
+    Dispersive, EdgeMaterials, EdgePole, Engine, FaceCondition, FaceConditions, Grid,
+    OperatorHandle, TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
@@ -231,6 +247,10 @@ pub struct Compiled {
     pub threads: usize,
     /// csx ↔ engine index conversion.
     pub node_map: NodeMap,
+    /// Dispersive poles per edge from csx `LorentzMaterial` /
+    /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
+    /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
+    pub dispersive: Vec<EdgePole>,
     /// Not yet mapped model parts.
     pub sources: ModelSources,
     /// Diagnostics: csx model and discretisation warnings plus the
@@ -243,13 +263,18 @@ pub struct Compiled {
 pub struct BoundaryHandles {
     /// The Mur operator covering every Mur face, if any.
     pub mur: Option<OperatorHandle<MurBoundary>>,
+    /// The dispersive-material operator, if the model has dispersive
+    /// poles.
+    pub dispersive: Option<OperatorHandle<Dispersive>>,
     /// The CPML operator covering every PML face, if any.
     pub cpml: Option<OperatorHandle<CpmlBoundary>>,
 }
 
 impl Compiled {
     /// Builds the engine (coefficients, threads) and registers the boundary
-    /// operators: first the [`CpmlBoundary`], then the [`MurBoundary`].
+    /// operators, first the [`CpmlBoundary`], then the [`MurBoundary`],
+    /// then the [`Dispersive`] medium (after the CPML, so that a medium
+    /// reaching into the PML is coupled implicitly with it).
     ///
     /// # Errors
     /// Invalid time step or materials, or boundary operator setup errors
@@ -269,6 +294,13 @@ impl Compiled {
         if !self.mur.is_empty() {
             let op = MurBoundary::with_faces(&engine, &self.mur)?;
             h.mur = Some(engine.add_operator(op));
+        }
+        if !self.dispersive.is_empty() {
+            let mut d = Dispersive::new();
+            for &e in &self.dispersive {
+                d.push_entry(e);
+            }
+            h.dispersive = Some(d.add_to(&mut engine)?);
         }
         Ok((engine, h))
     }
@@ -326,9 +358,6 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
 fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
     for p in model.properties() {
         let what = match &p.kind {
-            PropertyKind::LorentzMaterial(_) | PropertyKind::DebyeMaterial(_) => {
-                "dispersion is not modelled yet (M2); only the static material is used"
-            }
             PropertyKind::AbsorbingBC(_) => {
                 "AbsorbingBC sheets are not supported yet (M2); ignored"
             }
@@ -558,6 +587,9 @@ pub fn compile(
         ));
     }
 
+    let dispersive =
+        dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings);
+
     let (faces, (mur, pml)) = map_boundaries(fdtd);
     let timestep = match fdtd.get_timestep() {
         Some(dt) => TimeStep::Fixed(dt),
@@ -585,6 +617,7 @@ pub fn compile(
         timestep,
         threads: fdtd.get_threads().unwrap_or(0),
         node_map,
+        dispersive,
         sources: ModelSources {
             excitations,
             lumped,
