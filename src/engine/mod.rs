@@ -2,8 +2,9 @@
 //! operator hooks.
 //!
 //! The engine is independent of [`csx`]: it is built from a [`Grid`], a
-//! [`CellMaterials`] map, face conditions and a [`TimeStep`]. The csx →
-//! engine compile step produces exactly these inputs.
+//! material map (per cell, [`CellMaterials`], or per edge,
+//! [`EdgeMaterials`]), face conditions and a [`TimeStep`]. The csx → engine
+//! compile step ([`crate::compile`]) produces exactly these inputs.
 //!
 //! # Formulation
 //!
@@ -130,6 +131,7 @@
 pub mod boundary;
 mod coeffs;
 pub mod dump;
+mod edge_material;
 mod excite;
 mod fields;
 mod grid;
@@ -154,6 +156,7 @@ pub use dump::{
     DumpPosition, DumpQuantity, DumpRegion, DumpSink, FieldSampler, FreqDump, MemorySink, Schedule,
     Snapshot, TimeDump, VtrSeries,
 };
+pub use edge_material::EdgeMaterials;
 pub use excite::{Amplitude, EdgeSource};
 pub use fields::{FieldArrays, Fields};
 pub use grid::Grid;
@@ -174,16 +177,32 @@ use pool::{Phase, Pool, Shared};
 #[derive(Debug, Clone)]
 pub struct EngineBuilder {
     grid: Grid,
-    materials: Option<CellMaterials>,
+    materials: Option<Materials>,
     faces: FaceConditions,
     timestep: TimeStep,
     threads: usize,
 }
 
+/// The material input of an [`EngineBuilder`].
+#[derive(Debug, Clone)]
+enum Materials {
+    Cells(CellMaterials),
+    Edges(Box<EdgeMaterials>),
+}
+
 impl EngineBuilder {
-    /// Material map (default: vacuum, no PEC edges).
+    /// Per-cell material map (default: vacuum, no PEC edges). Replaces a
+    /// map set with [`edge_materials`](Self::edge_materials).
     pub fn materials(mut self, m: CellMaterials) -> Self {
-        self.materials = Some(m);
+        self.materials = Some(Materials::Cells(m));
+        self
+    }
+
+    /// Per-edge material map (see [`EdgeMaterials`]), as produced by the
+    /// compile step. Replaces a map set with
+    /// [`materials`](Self::materials).
+    pub fn edge_materials(mut self, m: EdgeMaterials) -> Self {
+        self.materials = Some(Materials::Edges(Box::new(m)));
         self
     }
 
@@ -218,11 +237,14 @@ impl EngineBuilder {
     /// starts the worker threads.
     pub fn build(self) -> Result<Engine> {
         let grid = self.grid;
-        let mats = self
-            .materials
-            .unwrap_or_else(|| CellMaterials::vacuum(&grid));
         let dt = self.timestep.resolve(&grid)?;
-        let coeffs = Coefficients::compute(&grid, &mats, &self.faces, dt)?;
+        let coeffs = match &self.materials {
+            Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
+            Some(Materials::Edges(m)) => Coefficients::from_edges(&grid, m, &self.faces, dt)?,
+            None => {
+                Coefficients::from_edges(&grid, &EdgeMaterials::vacuum(&grid), &self.faces, dt)?
+            }
+        };
         let threads = match self.threads {
             0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
             n => n,

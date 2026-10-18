@@ -9,29 +9,34 @@
 //! architecture and roadmap.
 
 pub mod axis;
+pub mod compile;
 pub mod constants;
 pub mod engine;
 pub mod error;
 pub mod fdtd;
 pub mod io;
 pub mod post;
+mod sim;
 pub mod waveform;
 
 pub use axis::Axis;
+pub use compile::{CompileOptions, Compiled};
 pub use csx;
-pub use engine::{CellMaterials, Engine, Grid};
+pub use engine::{CellMaterials, EdgeMaterials, Engine, Grid};
 pub use error::{Error, Result};
 pub use fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
 pub use post::Complex64;
+pub use sim::Simulation;
 pub use waveform::{ExpressionWaveform, Waveform};
 
 /// The main user-facing types, for glob import: `use ems::prelude::*;`.
 pub mod prelude {
     pub use crate::axis::Axis;
     pub use crate::constants::{C0, EPS0, MU0, Z0};
-    pub use crate::engine::{CellMaterials, Engine, Grid};
+    pub use crate::engine::{CellMaterials, EdgeMaterials, Engine, Grid};
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
     pub use crate::post::Complex64;
+    pub use crate::sim::Simulation;
     pub use crate::waveform::{ExpressionWaveform, Waveform};
 }

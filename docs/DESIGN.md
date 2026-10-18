@@ -238,6 +238,16 @@ lumped elements). It has two advantages:
 ### 5.3 Rasterising the csx model
 The compile step turns csx properties into per-edge coefficients.
 
+**Implemented (`ems::compile`):** the sampling itself is done by
+`csx::discretize`, which returns per-E-edge ε/κ (quarter-cell averages),
+per-H-face μ (harmonic mean of the two half cells) and σ_m (arithmetic
+mean), a PEC mask and conducting-sheet edges. The compile step reorders
+these into `engine::EdgeMaterials` (z-fastest layout) and the engine builds
+`C`, `G`, `L`, `R` from them. The per-cell `CellMaterials` path is converted
+to `EdgeMaterials` too, so both share one coefficient builder; they differ
+only in how σ_m is combined across an interface. Conducting sheets are
+approximated as PEC (with a warning) until the M2 sheet model.
+
 **Volume materials** (Material, later dispersive): sampled at **primary cell
 centres**, using the csx priority rules.
 - Per-direction values feed the edges of that direction: x-edges use ε_x, κ_x.

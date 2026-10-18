@@ -1,0 +1,440 @@
+//! Compile step: [`csx::ContinuousStructure`] + [`Fdtd`] settings → engine
+//! inputs (design §6, §10 step 5).
+//!
+//! [`compile`] does, in this order:
+//!
+//! 1. **Model update.** If [`CompileOptions::update_model`] is set (the
+//!    default), parametric values are re-evaluated on a *clone* of the model
+//!    ([`csx::ContinuousStructure::update`]); the caller's model is never
+//!    mutated.
+//! 2. **Grid.** The csx mesh lines (drawing units) are multiplied by
+//!    [`csx::RectilinearGrid::delta_unit`] to give the engine [`Grid`] in
+//!    metres. Cylindrical grids are rejected with [`Error::Unsupported`]
+//!    (milestone M4).
+//! 3. **Materials.** [`csx::discretize::discretize`] samples the model onto
+//!    the grid (sub-cell averaging and priorities are csx's business, see
+//!    its module docs). Its arrays use the csx node order
+//!    `i + nx·(j + ny·k)` (x fastest); they are reordered into the engine
+//!    layout `(i·ny + j)·nz + k` (z fastest) by [`NodeMap`] and stored as
+//!    [`EdgeMaterials`]. The value conventions agree one to one: csx's
+//!    per-E-edge `epsilon`/`kappa` are the dual-face (quarter-cell, volume
+//!    weighted) averages and its per-H-face `mue` is the harmonic mean over
+//!    the two half cells, which is exactly what [`EdgeMaterials`] expects.
+//!    The only difference to the per-cell path ([`CellMaterials`](crate::engine::CellMaterials))
+//!    is the magnetic loss: csx averages `sigma` arithmetically, the
+//!    per-cell path combines the half cells as series `R`–`L` branches
+//!    (`R = L²·Σ R_c/L_c²`). Both agree on homogeneous dual edges.
+//! 4. **Metal.** The csx PEC mask becomes the engine PEC mask. Conducting
+//!    sheets are **approximated as PEC** for now (thin-conductor model is
+//!    M2); every such sheet adds a warning.
+//! 5. **Boundaries** from [`Fdtd::get_boundaries`]: PEC and PMC map to
+//!    [`FaceCondition`]s; Mur and PML faces are built as PEC faces and
+//!    listed in [`Compiled::mur`] / [`Compiled::pml`], from which
+//!    [`Compiled::build`] creates **one** [`MurBoundary`] covering all Mur
+//!    faces and **one** [`CpmlBoundary`] covering all PML faces.
+//! 6. **Time step and threads** from [`Fdtd`]: a time step override becomes
+//!    [`TimeStep::Fixed`], otherwise [`TimeStep::Courant`] with the time
+//!    step factor; the thread count is used for both the discretisation and
+//!    the engine.
+//!
+//! Excitations, lumped elements and probes of the model are discretised by
+//! csx as well and kept in [`ModelSources`]; mapping them onto engine
+//! operators is a follow-up (see [`crate::Simulation`]). Until then they are
+//! reported in [`Compiled::warnings`].
+
+use crate::axis::Axis;
+use crate::engine::boundary::cpml::CpmlBoundary;
+use crate::engine::boundary::mur::MurBoundary;
+use crate::engine::{
+    EdgeMaterials, Engine, FaceCondition, FaceConditions, Grid, OperatorHandle, TimeStep,
+};
+use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
+use crate::{Error, Result};
+
+use csx::discretize::{
+    DiscretizeOptions, ExcitationField, LumpedEdge, MaterialGrid, SheetInfo, discretize,
+};
+use csx::{CoordSystem, PropertyKind};
+
+/// Options of [`compile`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompileOptions {
+    /// Sub-samples per axis in each quarter / half cell used by csx to
+    /// average materials (`N`, `N³` samples; default 1).
+    pub subsampling: usize,
+    /// Relative tolerance for snapping sheets and lines to mesh lines
+    /// (default 1e-6 of the local cell size).
+    pub snap_tolerance: f64,
+    /// Re-evaluate parametric values on a clone of the model before
+    /// discretising (default `true`). Set to `false` if the model is known
+    /// to be up to date, to avoid the clone.
+    pub update_model: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        let d = DiscretizeOptions::default();
+        Self {
+            subsampling: d.subsampling,
+            snap_tolerance: d.snap_tolerance,
+            update_model: true,
+        }
+    }
+}
+
+/// Conversion between csx and engine node/edge indexing for one grid.
+///
+/// csx flattens node `[i, j, k]` as `i + nx·(j + ny·k)` (x fastest); the
+/// engine uses `(i·ny + j)·nz + k` (z fastest). Axis indices agree
+/// (0 = x, 1 = y, 2 = z), and an edge/face of axis `a` "at node `n`" means
+/// the same object in both crates (E edge from `n` along `a`; H face normal
+/// to `a` with lowest corner `n`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeMap {
+    nodes: [usize; 3],
+}
+
+impl NodeMap {
+    /// Map for a grid with `nodes` lines per axis.
+    pub fn new(nodes: [usize; 3]) -> Self {
+        Self { nodes }
+    }
+
+    /// Lines per axis.
+    pub fn nodes(&self) -> [usize; 3] {
+        self.nodes
+    }
+
+    /// Node of a csx flat index.
+    #[inline]
+    pub fn csx_node(&self, idx: usize) -> [usize; 3] {
+        let n = self.nodes;
+        let i = idx % n[0];
+        let r = idx / n[0];
+        [i, r % n[1], r / n[1]]
+    }
+
+    /// csx flat index of a node.
+    #[inline]
+    pub fn csx_index(&self, [i, j, k]: [usize; 3]) -> usize {
+        let n = self.nodes;
+        i + n[0] * (j + n[1] * k)
+    }
+
+    /// Engine flat index of a node.
+    #[inline]
+    pub fn engine_index(&self, [i, j, k]: [usize; 3]) -> usize {
+        let n = self.nodes;
+        (i * n[1] + j) * n[2] + k
+    }
+
+    /// Engine `(axis, node)` of a csx edge / face.
+    ///
+    /// # Panics
+    /// If the direction is not 0, 1 or 2.
+    pub fn edge(&self, e: csx::discretize::Edge) -> (Axis, [usize; 3]) {
+        let axis = Axis::from_index(e.dir).expect("csx edge direction in 0..3");
+        (axis, self.csx_node(e.index))
+    }
+
+    /// Reorders a csx node array into engine layout.
+    pub fn reorder<T: Copy + Default>(&self, csx: &[T]) -> Vec<T> {
+        let n = self.nodes;
+        let mut out = vec![T::default(); n[0] * n[1] * n[2]];
+        let mut e = 0;
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                let base = i + n[0] * j;
+                let stride = n[0] * n[1];
+                for (k, o) in out[e..e + n[2]].iter_mut().enumerate() {
+                    *o = csx[base + stride * k];
+                }
+                e += n[2];
+            }
+        }
+        out
+    }
+}
+
+/// Model parts that csx discretised but the compile step does not map to
+/// engine operators yet (follow-up task). Edges/faces are in csx indexing;
+/// convert with [`Compiled::node_map`] / [`NodeMap::edge`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelSources {
+    /// Excitations, with amplitudes per E edge (E types, field value along
+    /// the edge in V/m) or per H face (H types).
+    pub excitations: Vec<ExcitationField>,
+    /// Lumped-element edges with values already distributed per edge.
+    pub lumped: Vec<LumpedEdge>,
+    /// Conducting sheets (currently approximated as PEC).
+    pub sheets: Vec<SheetInfo>,
+}
+
+/// Engine inputs produced by [`compile`]; [`build`](Self::build) turns
+/// them into an [`Engine`].
+#[derive(Debug, Clone)]
+pub struct Compiled {
+    /// Mesh in metres.
+    pub grid: Grid,
+    /// The csx drawing unit in metres (the grid lines were multiplied by
+    /// it).
+    pub delta_unit: f64,
+    /// Effective per-edge materials and PEC mask, engine layout.
+    pub materials: EdgeMaterials,
+    /// Outer face conditions (Mur and PML faces are PEC).
+    pub faces: FaceConditions,
+    /// Mur faces and their phase velocities \[m/s\].
+    pub mur: Vec<(Face, f64)>,
+    /// PML faces and their parameters.
+    pub pml: Vec<(Face, Cpml)>,
+    /// Time step choice.
+    pub timestep: TimeStep,
+    /// Engine threads (`0`: available parallelism).
+    pub threads: usize,
+    /// csx ↔ engine index conversion.
+    pub node_map: NodeMap,
+    /// Not yet mapped model parts.
+    pub sources: ModelSources,
+    /// Diagnostics: csx model and discretisation warnings plus the
+    /// approximations made here.
+    pub warnings: Vec<String>,
+}
+
+/// The boundary operators created by [`Compiled::build`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoundaryHandles {
+    /// The Mur operator covering every Mur face, if any.
+    pub mur: Option<OperatorHandle<MurBoundary>>,
+    /// The CPML operator covering every PML face, if any.
+    pub cpml: Option<OperatorHandle<CpmlBoundary>>,
+}
+
+impl Compiled {
+    /// Builds the engine (coefficients, threads) and registers the boundary
+    /// operators: first the [`CpmlBoundary`], then the [`MurBoundary`].
+    ///
+    /// # Errors
+    /// Invalid time step or materials, or boundary operator setup errors
+    /// (e.g. a PML thicker than the mesh).
+    pub fn build(&self) -> Result<(Engine, BoundaryHandles)> {
+        let mut engine = Engine::builder(self.grid.clone())
+            .edge_materials(self.materials.clone())
+            .faces(self.faces)
+            .timestep(self.timestep)
+            .threads(self.threads)
+            .build()?;
+        let mut h = BoundaryHandles::default();
+        if !self.pml.is_empty() {
+            let op = CpmlBoundary::new(&engine, self.pml.iter().copied())?;
+            h.cpml = Some(engine.add_operator(op));
+        }
+        if !self.mur.is_empty() {
+            let op = MurBoundary::with_faces(&engine, &self.mur)?;
+            h.mur = Some(engine.add_operator(op));
+        }
+        Ok((engine, h))
+    }
+}
+
+/// Converts the csx grid (drawing units) into an engine [`Grid`] in metres.
+///
+/// # Errors
+/// [`Error::Unsupported`] for a cylindrical grid; [`Error::Invalid`] for a
+/// non-finite or non-positive delta unit or a grid with fewer than two
+/// lines on an axis.
+pub fn grid_from_csx(g: &csx::RectilinearGrid) -> Result<Grid> {
+    if g.coord_system != CoordSystem::Cartesian {
+        return Err(Error::Unsupported(
+            "cylindrical grids are not supported yet (milestone M4)".into(),
+        ));
+    }
+    let unit = g.delta_unit;
+    if !(unit.is_finite() && unit > 0.0) {
+        return Err(Error::Invalid(format!(
+            "grid delta unit {unit} must be finite and > 0"
+        )));
+    }
+    Grid::new(core::array::from_fn(|a| {
+        g.lines(a).iter().map(|&x| x * unit).collect()
+    }))
+}
+
+/// Mur faces with phase velocities, and PML faces with parameters.
+type AbsorbingFaces = (Vec<(Face, f64)>, Vec<(Face, Cpml)>);
+
+/// Maps the boundary settings: returns the face conditions plus the Mur
+/// and PML faces (built as PEC).
+fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
+    let mut faces = FaceConditions::default();
+    let (mut mur, mut pml) = (Vec::new(), Vec::new());
+    for (face, b) in fdtd.get_boundaries().iter() {
+        faces[face] = match b {
+            Boundary::Pec => FaceCondition::Pec,
+            Boundary::Pmc => FaceCondition::Pmc,
+            Boundary::Mur(m) => {
+                mur.push((face, m.velocity()));
+                FaceCondition::Pec
+            }
+            Boundary::Pml(p) => {
+                pml.push((face, *p));
+                FaceCondition::Pec
+            }
+        };
+    }
+    (faces, (mur, pml))
+}
+
+/// Warnings for properties the compile step does not (fully) handle.
+fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
+    for p in model.properties() {
+        let what = match &p.kind {
+            PropertyKind::LorentzMaterial(_) | PropertyKind::DebyeMaterial(_) => {
+                "dispersion is not modelled yet (M2); only the static material is used"
+            }
+            PropertyKind::AbsorbingBC(_) => {
+                "AbsorbingBC sheets are not supported yet (M2); ignored"
+            }
+            PropertyKind::Excitation(_) => "excitations are not mapped to the engine yet; ignored",
+            PropertyKind::LumpedElement(_) => {
+                "lumped elements are not mapped to the engine yet; ignored"
+            }
+            PropertyKind::ProbeBox(_) => "probes are not mapped to the engine yet; ignored",
+            PropertyKind::DumpBox(_) => "dumps are not mapped to the engine yet; ignored",
+            _ => continue,
+        };
+        out.push(format!(
+            "property {:?} ({}): {what}",
+            p.name,
+            p.kind.type_name()
+        ));
+    }
+}
+
+/// Compiles `model` with solver settings `fdtd` into engine inputs; see
+/// the [module docs](self) for the steps and conventions.
+///
+/// # Errors
+/// [`Error::Unsupported`] for cylindrical grids, [`Error::Invalid`] for
+/// invalid settings or meshes, [`Error::Csx`] for model errors (parameter
+/// evaluation, discretisation).
+pub fn compile(
+    model: &csx::ContinuousStructure,
+    fdtd: &Fdtd,
+    opts: &CompileOptions,
+) -> Result<Compiled> {
+    fdtd.validate()?;
+    let grid = grid_from_csx(&model.grid)?;
+    let updated;
+    let model = if opts.update_model {
+        let mut m = model.clone();
+        m.update()?;
+        updated = m;
+        &updated
+    } else {
+        model
+    };
+    let mut warnings = model.validate();
+    let mg: MaterialGrid = discretize(
+        model,
+        &DiscretizeOptions {
+            subsampling: opts.subsampling,
+            threads: fdtd.resolved_threads(),
+            snap_tolerance: opts.snap_tolerance,
+        },
+    )?;
+    let node_map = NodeMap::new(grid.nodes());
+    if mg.dims != grid.nodes() {
+        return Err(Error::Invalid(format!(
+            "discretised grid has {:?} nodes, expected {:?}",
+            mg.dims,
+            grid.nodes()
+        )));
+    }
+    warnings.extend(mg.warnings.iter().cloned());
+    property_warnings(model, &mut warnings);
+
+    let mut materials = EdgeMaterials::vacuum(&grid);
+    for axis in Axis::ALL {
+        let a = axis.index();
+        materials
+            .eps_r_mut(axis)
+            .copy_from_slice(&node_map.reorder(&mg.epsilon[a]));
+        materials
+            .kappa_mut(axis)
+            .copy_from_slice(&node_map.reorder(&mg.kappa[a]));
+        materials
+            .mu_r_mut(axis)
+            .copy_from_slice(&node_map.reorder(&mg.mue[a]));
+        materials
+            .sigma_m_mut(axis)
+            .copy_from_slice(&node_map.reorder(&mg.sigma[a]));
+        let mut pec: Vec<bool> = mg.pec[a]
+            .iter()
+            .zip(&mg.sheet[a])
+            .map(|(&p, &s)| p || s != 0)
+            .collect();
+        pec = node_map.reorder(&pec);
+        materials.pec_mask_mut(axis).copy_from_slice(&pec);
+    }
+    for s in &mg.sheets {
+        warnings.push(format!(
+            "ConductingSheet {:?} (conductivity {} S/m, thickness {} m) approximated as PEC (M2)",
+            s.name, s.conductivity, s.thickness
+        ));
+    }
+
+    let (faces, (mur, pml)) = map_boundaries(fdtd);
+    let timestep = match fdtd.get_timestep() {
+        Some(dt) => TimeStep::Fixed(dt),
+        None => TimeStep::Courant(fdtd.get_timestep_factor()),
+    };
+    let MaterialGrid {
+        excitations,
+        lumped,
+        sheets,
+        ..
+    } = mg;
+    Ok(Compiled {
+        grid,
+        delta_unit: model.grid.delta_unit,
+        materials,
+        faces,
+        mur,
+        pml,
+        timestep,
+        threads: fdtd.get_threads().unwrap_or(0),
+        node_map,
+        sources: ModelSources {
+            excitations,
+            lumped,
+            sheets,
+        },
+        warnings,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_map_round_trip() {
+        let m = NodeMap::new([3, 4, 5]);
+        let csx: Vec<usize> = (0..60).collect();
+        let e = m.reorder(&csx);
+        for i in 0..3 {
+            for j in 0..4 {
+                for k in 0..5 {
+                    let n = [i, j, k];
+                    assert_eq!(m.csx_node(m.csx_index(n)), n);
+                    assert_eq!(e[m.engine_index(n)], m.csx_index(n));
+                }
+            }
+        }
+        let (a, n) = m.edge(csx::discretize::Edge {
+            dir: 2,
+            index: m.csx_index([1, 2, 3]),
+        });
+        assert_eq!((a, n), (Axis::Z, [1, 2, 3]));
+    }
+}

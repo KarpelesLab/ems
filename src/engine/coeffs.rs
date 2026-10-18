@@ -2,6 +2,7 @@
 
 use core::ops::{Index, IndexMut};
 
+use super::edge_material::EdgeMaterials;
 use super::grid::Grid;
 use super::material::CellMaterials;
 use crate::axis::Axis;
@@ -275,8 +276,12 @@ pub struct Coefficients {
 }
 
 impl Coefficients {
-    /// Builds the coefficients for `grid`, `mats` and time step `dt`, with
-    /// the outer faces handled according to `faces`.
+    /// Builds the coefficients for `grid`, the per-cell map `mats` and time
+    /// step `dt`, with the outer faces handled according to `faces`.
+    ///
+    /// The cell map is first turned into effective edge values
+    /// ([`EdgeMaterials::from_cells`]), then [`from_edges`](Self::from_edges)
+    /// does the rest, so both input formats share one builder.
     pub fn compute(
         grid: &Grid,
         mats: &CellMaterials,
@@ -291,9 +296,43 @@ impl Coefficients {
             )));
         }
         mats.validate()?;
-        if !(dt.is_finite() && dt > 0.0) {
-            return Err(Error::Invalid(format!("invalid time step {dt}")));
+        Self::check_dt(dt)?;
+        Self::from_edges(grid, &EdgeMaterials::from_cells(grid, mats)?, faces, dt)
+    }
+
+    fn check_dt(dt: f64) -> Result<()> {
+        if dt.is_finite() && dt > 0.0 {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!("invalid time step {dt}")))
         }
+    }
+
+    /// Builds the coefficients from effective per-edge materials (see
+    /// [`EdgeMaterials`] for the circuit quantities), time step `dt` and
+    /// outer face conditions `faces`.
+    ///
+    /// E edges that are PEC (mask) or tangential to a
+    /// [`FaceCondition::Pec`] face get `ca = cb = 0`.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] if `mats` does not match the grid or fails
+    /// [`EdgeMaterials::validate`], or `dt` is not finite and positive.
+    pub fn from_edges(
+        grid: &Grid,
+        mats: &EdgeMaterials,
+        faces: &FaceConditions,
+        dt: f64,
+    ) -> Result<Self> {
+        if mats.nodes() != grid.nodes() {
+            return Err(Error::Invalid(format!(
+                "edge material map has {:?} nodes, grid has {:?}",
+                mats.nodes(),
+                grid.nodes()
+            )));
+        }
+        mats.validate()?;
+        Self::check_dt(dt)?;
         let n = grid.nodes();
         let len = grid.num_nodes();
         let mut data: [Vec<f32>; 12] = core::array::from_fn(|_| vec![0.0; len]);
@@ -302,9 +341,11 @@ impl Coefficients {
         let pec_face = Axis::ALL
             .map(|t| [false, true].map(|max| faces[Face::new(t, max)] == FaceCondition::Pec));
         for axis in Axis::ALL {
+            let (eps, kap) = (mats.eps_r(axis), mats.kappa(axis));
+            let (mu, sig) = (mats.mu_r(axis), mats.sigma_m(axis));
             let pec = mats.pec_mask(axis);
-            let (b, c) = axis.others();
-            let (a, b, c) = (axis.index(), b.index(), c.index());
+            let (ab, ac) = axis.others();
+            let (a, b, c) = (axis.index(), ab.index(), ac.index());
             for i in 0..n[0] {
                 for j in 0..n[1] {
                     for k in 0..n[2] {
@@ -317,7 +358,10 @@ impl Coefficients {
                                     || (p[t] == n[t] - 1 && pec_face[t][1])
                             });
                             if !(on_pec_face || pec[idx]) {
-                                let (cap, g) = primary_edge_cg(grid, mats, axis, p);
+                                let geo = grid.dual_delta(ab, p[b]) * grid.dual_delta(ac, p[c])
+                                    / grid.delta(axis, p[a]);
+                                let cap = EPS0 * eps[idx] * geo;
+                                let g = kap[idx] * geo;
                                 let den = cap + 0.5 * g * dt;
                                 co[a][idx] = ((cap - 0.5 * g * dt) / den) as f32;
                                 co[3 + a][idx] = (dt / den) as f32;
@@ -325,7 +369,10 @@ impl Coefficients {
                         }
                         // H dual edge along `axis` through p.
                         if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
-                            let (l, r) = dual_edge_lr(grid, mats, axis, p);
+                            let geo = grid.delta(ab, p[b]) * grid.delta(ac, p[c])
+                                / grid.dual_delta(axis, p[a]);
+                            let l = MU0 * mu[idx] * geo;
+                            let r = sig[idx] * geo;
                             let den = l + 0.5 * r * dt;
                             co[6 + a][idx] = ((l - 0.5 * r * dt) / den) as f32;
                             co[9 + a][idx] = (dt / den) as f32;
