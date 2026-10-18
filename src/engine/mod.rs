@@ -129,6 +129,7 @@
 
 pub mod boundary;
 mod coeffs;
+pub mod dump;
 mod excite;
 mod fields;
 mod grid;
@@ -148,6 +149,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use coeffs::{
     Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,
     primary_edge_cg,
+};
+pub use dump::{
+    DumpPosition, DumpQuantity, DumpRegion, DumpSink, FieldSampler, FreqDump, MemorySink, Schedule,
+    Snapshot, TimeDump, VtrSeries,
 };
 pub use excite::{Amplitude, EdgeSource};
 pub use fields::{FieldArrays, Fields};

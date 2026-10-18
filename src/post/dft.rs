@@ -192,7 +192,7 @@ impl RunningDft {
 
 /// `f·(t0 + n·dt)` reduced modulo one cycle, computed so that the result is
 /// accurate to a few ulps of one cycle regardless of the magnitude of `n`.
-fn phase_cycles(f: f64, t0: f64, dt: f64, n: f64) -> f64 {
+pub(crate) fn phase_cycles(f: f64, t0: f64, dt: f64, n: f64) -> f64 {
     let a = f * dt;
     let p = a * n;
     // Exact rounding error of the product (two-product via FMA).
