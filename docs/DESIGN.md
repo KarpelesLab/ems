@@ -1,0 +1,476 @@
+# `ems` — design document (draft for review, rev. 2)
+
+`ems` is a Rust FDTD (finite-difference time-domain) electromagnetic field solver,
+intended as a clean-room replacement for openEMS.
+
+`ems` is the solver half of a two-crate pair:
+
+| crate | replaces | responsibility |
+|---|---|---|
+| [`csx`](https://crates.io/crates/csx) | CSXCAD | geometry, primitives, materials and other properties, parameters and expressions, rectilinear grid, CSXCAD/openEMS XML |
+| `ems` (this crate) | openEMS | turning a `csx` model into an FDTD engine, time stepping, boundaries, sources, probes, ports, post-processing |
+
+Crate metadata, matching `csx` conventions:
+- Edition 2024, `rust-version = "1.95"`, version `0.0.0`, license MIT.
+- `missing_docs = "warn"`.
+- The same CI layout as csx: fmt, clippy `-D warnings` on all/no-default
+  features, tests on Linux/macOS/Windows, docs, an MSRV job pinned to 1.95, and
+  release-plz.
+
+---
+
+## 1. Clean-room policy
+
+Same rules as `csx`. No openEMS, CSXCAD, or AppCSXCAD source code is read or
+copied, by humans or by AI agents, not even "to check how they did it".
+
+**Allowed sources**
+- Published literature:
+  - Yee (1966)
+  - Taflove & Hagness, *Computational Electrodynamics*
+  - Gedney, *Introduction to the FDTD Method*
+  - Roden & Gedney (2000), CPML
+  - Mur (1981)
+  - Luebbers / Piket-May on lumped elements
+  - Pozar for ports and S-parameters
+- openEMS's public user documentation (wiki, tutorials, published API reference).
+  Use it to learn which features exist and what they mean to users.
+- The **observable openEMS XML file format**, for interoperability. Element and
+  attribute names are an interface; where the docs are silent, we choose the
+  behaviour deliberately and document it in rustdoc.
+
+**Process**
+- Every non-trivial algorithm has a doc comment citing its literature source.
+- `CLEANROOM.md` (shared wording with csx) is affirmed in the PR template.
+
+**Consequence:** we are not bound to openEMS's internal formulation. openEMS
+uses an equivalent-circuit FDTD. We use the standard Yee scheme in integral form
+(§5), which is textbook material and comes out equivalent on rectilinear meshes.
+
+## 2. What lives where
+
+**`csx` owns the model.** `ems` must not duplicate any of it:
+- Primitives and inside tests, including cylindrical-coordinate primitives and
+  transforms.
+- Materials, including per-direction ε/μ/κ/σ and spatial weighting expressions.
+- Dispersive material parameters (Lorentz/Debye).
+- Metal, ConductingSheet, LumpedElement, Excitation, ProbeBox, DumpBox,
+  AbsorbingBC.
+- Priorities and the background material.
+- `RectilinearGrid`: lines, delta unit, snapping, and smooth-mesh helpers.
+- Parameters and expressions, re-evaluated by `update()`.
+- XML read/write, including the openEMS document wrapper.
+
+**`ems` owns the solver:**
+- **FDTD settings.** These are what the openEMS `<FDTD>` element carries:
+  - the excitation waveform,
+  - boundary conditions,
+  - timestep count, end criteria, oversampling,
+  - and anything else solver-specific.
+- **Compile step.** `csx::ContinuousStructure` + settings → `Engine`. This
+  rasterises materials onto edges, maps Excitation/ProbeBox/DumpBox/LumpedElement
+  primitives to engine operators, and computes the time step.
+- **Engine.** Fields, update kernels, boundaries, sources, lumped elements,
+  probes, dumps, and end criteria.
+- **High-level helpers** such as lumped ports (and later MSL/waveguide ports and
+  NF2FF boxes). These **emit csx properties** (LumpedElement + Excitation +
+  voltage/current ProbeBoxes), the same way an openEMS script does. A port built
+  in Rust therefore round-trips through XML, and a port read from XML runs
+  unchanged.
+- **Post-processing:** DFT, port voltages/currents, S-parameters, impedance,
+  later far-field.
+
+Because the engine consumes csx properties rather than its own ad-hoc source and
+probe types, **running existing openEMS XML files comes almost for free**. csx
+parses the file; `ems` only needs to interpret the `<FDTD>` section. This is now
+part of M1 (§3).
+
+## 3. Scope
+
+### Milestone 1 ("solid core")
+- 3D Cartesian Yee FDTD on a non-uniform rectilinear mesh (`csx` grid).
+- Materials:
+  - ε, μ, electric conductivity κ, magnetic loss.
+  - **Diagonal anisotropy** (x/y/z values from csx). This is free in the
+    per-edge formulation.
+  - Spatial weighting expressions (evaluated via csx).
+- Metal (PEC), including **zero-thickness sheets**, and PMC boundaries.
+- Boundaries per face: PEC, PMC, Mur (1st order), CPML.
+- Waveforms: Gaussian-modulated pulse, sinusoid, Dirac, step, custom
+  `Fn(f64) -> f64`.
+- Sources from csx `Excitation` (soft/hard E-field over a primitive, with
+  vector weighting and delay).
+- Lumped elements from csx `LumpedElement`. R is in M1; L/C come later in M1 if
+  time allows, otherwise M2.
+- Lumped port helper and S-parameters.
+- Probes from csx `ProbeBox`:
+  - voltage: line integral of E;
+  - current: loop integral of H;
+  - E/H field probes;
+  - time-domain series, plus running DFTs at the probe's frequencies.
+- Dumps from csx `DumpBox`: time-domain snapshots and frequency-domain DFTs.
+  `.vtr` (VTK) writer in-tree; HDF5 behind a feature flag.
+- End criteria: max timesteps plus energy decay.
+- Multithreaded and deterministic regardless of thread count.
+- **openEMS XML**: `ems::Simulation::from_xml(path)`, built on csx's reader.
+  Results are exposed through the Rust API; on-disk output compatibility is M2.
+
+### Later milestones
+| Milestone | Feature | csx side |
+|---|---|---|
+| M2 | Dispersive materials via ADE (Lorentz, Drude as zero-ω₀ Lorentz, Debye) | Lorentz/Debye properties |
+| M2 | ConductingSheet (thin lossy conductor) surface model | ConductingSheet |
+| M2 | MSL and rectangular waveguide port helpers | probes, excitations with weighting |
+| M2 | openEMS-compatible probe/dump output files (paths, text layout, HDF5 layout) | — |
+| M2 | AbsorbingBC sheets | AbsorbingBC |
+| M3 | NF2FF, radiation patterns, gain/directivity | DumpBox |
+| M3 | Periodic / Bloch boundaries | — |
+| M4 | Cylindrical-coordinate mesh (incl. multigrid near the axis) | cylindrical `RectilinearGrid` |
+| M4 | Conformal / sub-cell PEC, thin wires | Wire/Curve primitives |
+| M4 | SAR | DumpBox |
+| later | Python bindings (pyo3, probably a separate `ems-py` crate covering both), GPU backend | — |
+
+Cylindrical-coordinate *primitives* on a Cartesian mesh already work in M1:
+inside tests belong to csx.
+
+## 4. Public API sketch
+
+The csx names below are illustrative. ems follows the csx API as it lands.
+
+```rust
+use csx::{ContinuousStructure, Material, Metal, primitives::Box as CsxBox};
+use ems::prelude::*;
+
+// 1. Model (csx): geometry and materials in drawing units, scaled by the grid's delta unit.
+let mut model = ContinuousStructure::new();
+model.grid_mut().set_delta_unit(1e-3);                     // mm
+let fr4 = model.add_property(Material::new("FR4").epsilon(4.3).kappa(0.01));
+let cu  = model.add_property(Metal::new("copper"));
+model.add_primitive(fr4, CsxBox::new([-20., -15., 0.], [20., 15., 1.6]), 0);
+model.add_primitive(cu,  CsxBox::new([-5., -5., 1.6], [5., 5., 1.6]), 10);     // sheet
+model.add_primitive(cu,  CsxBox::new([-20., -15., 0.], [20., 15., 0.]), 10);   // ground
+
+// 2. Solver settings (ems): the openEMS <FDTD> section.
+let fdtd = Fdtd::new()
+    .waveform(Waveform::gaussian(f0, fc))
+    .boundaries(Boundaries::all(Boundary::Pml(Cpml::cells(8))))
+    .end_criteria(EndCriteria::energy_decay_db(-40.0))
+    .max_timesteps(200_000);
+
+// 3. Helpers write csx properties into the model.
+let port = LumpedPort::new(1, 50.0, [0., 0., 0.], [0., 0., 1.6], Axis::Z)
+    .excite(1.0)
+    .add_to(&mut model)?;
+
+// Meshing uses csx grid helpers; ems adds solver-aware checks
+// (λ/20 at f_max in the densest material, grading ratio, PML room).
+ems::mesh::check(&model, &fdtd)?;
+
+// 4. Compile and run (or `prepare()` for an Engine you can step yourself).
+let res = Simulation::new(&model, &fdtd)?.run()?;
+let s11 = port.analyze(&res, &freqs).s11();
+
+// Alternatively, run an existing openEMS file:
+let res = Simulation::from_xml("patch.xml")?.run()?;
+```
+
+Design rules:
+- **Units.** Geometry stays in csx drawing units. The compile step multiplies by
+  the grid's delta unit, and everything inside ems is SI (metres, seconds).
+- **Expressions.** The compile step borrows the model immutably and calls
+  csx's `update()` on a clone if expressions are dirty. ems never mutates the
+  caller's model, except through explicit helper calls such as `add_to`.
+- **Handles.** Results are looked up by the csx property they came from
+  (typed id, or name for XML-sourced models).
+- **Stepping.** `Simulation::prepare()` returns an `Engine` with `step()`,
+  `run_until()`, and read access to the fields.
+- **Errors.** A hand-written `ems::Error` enum (no `thiserror`, like csx) that
+  wraps `csx::Error`. Compiling is fallible; stepping is not.
+- **I/O.** No hidden I/O; writing files is always an explicit call.
+
+## 5. Numerical formulation
+
+### 5.1 Grid
+- Primary mesh: the csx `RectilinearGrid` lines, times the delta unit.
+- E lives on **primary edges**. H lives on **dual edges**, which pierce
+  primary-face centres.
+- Dual nodes are the primary-cell midpoints. Dual cells at the domain boundary
+  are half cells.
+- M1 requires a Cartesian grid. A cylindrical grid is rejected with a clear
+  error until M4.
+
+### 5.2 Integral (voltage/current) form
+We store edge integrals, not field values:
+- `u = E·l`, on a primary edge of length `l`;
+- `i = H·l*`, on a dual edge of length `l*`.
+
+Per face:
+
+```
+C · du/dt + G · u = Σ i   (around the dual face pierced by the primary edge)
+L · di/dt + R · i = −Σ u  (around the primary face pierced by the dual edge)
+```
+
+The circuit quantities, with `A*` the dual face area and `A` the primary face area:
+- `C = ε·A*/l` and `G = κ·A*/l`
+- `L = μ·A/l*` and `R = σ_m·A/l*`
+
+Leapfrog in time, with the loss term averaged semi-implicitly:
+
+```
+u^{n+1}   = ca·u^n     + cb·(Σi)^{n+1/2}
+i^{n+3/2} = da·i^{n+1/2} − db·(Σu)^{n+1}
+ca = (C − G·dt/2)/(C + G·dt/2),   cb = dt/(C + G·dt/2)
+```
+
+This is the standard Yee scheme (Taflove, chapters on non-uniform grids and
+lumped elements). It has two advantages:
+- Lumped R/L/C and ports are just extra `G`/`C` (or an auxiliary state) added
+  to an edge.
+- Cell sizes are folded into the coefficients, so the kernel contains no
+  geometry.
+
+### 5.3 Rasterising the csx model
+The compile step turns csx properties into per-edge coefficients.
+
+**Volume materials** (Material, later dispersive): sampled at **primary cell
+centres**, using the csx priority rules.
+- Per-direction values feed the edges of that direction: x-edges use ε_x, κ_x.
+- `C`/`G` of an edge is the area-weighted parallel sum over the up to 4 cells
+  that share its dual face.
+- `L`/`R` combines the 2 half-cells along the dual edge in series.
+- Weighting expressions are evaluated by csx at the sample point.
+
+**Metal / PEC** is evaluated on **edges**, not cells. An E-edge whose segment lies
+inside a metal primitive (closed bounds, using csx's tolerance) gets
+`ca = cb = 0`.
+- 2D primitives (csx `dimension() == 2`, e.g. a zero-thickness box) mark the
+  in-plane edges they cover.
+- This requires a mesh line in the sheet plane, which `ems::mesh::check` verifies.
+
+**Priority between metal and material** follows csx priorities. A metal
+primitive below a higher-priority material does not short the edge.
+
+**Speed.** We do not query `property_at` for every cell. The compile step iterates
+the primitives:
+1. Map each primitive's bounding box to an index range on the grid.
+2. Inside-test only those cells/edges.
+3. Keep a per-cell "winning priority" buffer, so the highest priority wins.
+   Equal priority goes to the later primitive, matching csx's documented
+   tie-break.
+
+The x-slabs are processed in parallel. This needs csx primitives/properties to
+be `Sync` (§8).
+
+### 5.4 Time step
+- `dt = S / (c·sqrt(1/Δx_min² + 1/Δy_min² + 1/Δz_min²))`, with `S = 0.99`.
+  Here `c` is the vacuum speed of light. Materials with ε_r, μ_r ≥ 1 only make
+  the bound more conservative.
+- Users may override `dt`, but the override is validated.
+- The openEMS `<FDTD>` time-step factor maps onto `S`.
+
+### 5.5 Lumped elements and ports
+**LumpedElement (R)** over a box with `M` series edges along its direction and
+`N` parallel columns:
+- Per-edge conductance `g = M/(N·R)`, added to `G`.
+- L and C need one auxiliary state per edge (ADE). Series vs. parallel RLC
+  follows the csx property's documented semantics.
+
+**Lumped port** = LumpedElement(R) + Excitation + voltage ProbeBox + current
+ProbeBox, emitted into csx by the helper.
+- The engine treats the excitation on a resistive edge as a Thevenin source:
+  `u^{n+1} = ca·u^n + cb·(Σi + g·V_s^{n+1/2}/M)`.
+- This is exactly what you get when an E-field excitation overlaps a lumped
+  resistor, so XML-sourced ports behave identically.
+
+**Port analysis** (pure post-processing over probe results):
+- V and I DFTs; the current is corrected for its half-step time offset.
+- Power waves with reference `Z_ref` (Pozar) give `S_ij`, `Z_in`, and
+  accepted/incident power.
+
+### 5.6 Boundaries
+`Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml)}` per face, mirroring the openEMS
+`<BoundaryCond>` choices (including `PML_n`).
+
+- **PEC**: tangential E on the face is 0.
+- **PMC**: tangential H is 0, using the image condition in the outermost E update.
+- **Mur 1st order**: one-way wave equation on the tangential E of the face.
+- **CPML** (Roden & Gedney 2000):
+  - Occupies the **outermost `n` cells of the mesh**. This matches openEMS
+    `PML_n` semantics, so XML models mesh identically.
+  - `ems::mesh::check` warns if structure primitives intrude into the PML.
+  - Grading `m = 3` and `σ_max = 0.8·(m+1)/(η·Δ_local)`; κ_max and α_max are
+    configurable.
+  - ψ arrays are stored only for the slabs; each ψ term handles one derivative
+    direction, so edges and corners are correct.
+- **Periodic/Bloch**: M3. Neighbour indexing goes through the boundary layer, so
+  wrap-around fits without a rewrite.
+
+### 5.7 Waveforms
+`Waveform` is an enum: Gaussian, Sinusoid, Dirac, Step, and
+`Custom(Arc<dyn Fn(f64) -> f64 + Send + Sync>)`.
+- **Gaussian**: centre `f0`, 20 dB half-bandwidth `fc`, delayed so it starts
+  below 1e-6 of the peak.
+- **Custom**: an expression string from XML is evaluated through `csx::expr`
+  with variable `t`.
+- **Sampling**: E sources are sampled at `t^{n+1/2}`.
+- **Spectrum**: `Waveform::spectrum(f)` is used to normalise frequency-domain
+  results.
+
+### 5.8 End criteria
+- Energy `W = ½ΣCu² + ½ΣLi²` is computed every K steps.
+- The run stops when the excitation is over and `W/W_max <` threshold, or at
+  `max_timesteps`.
+- `Results` records the reason it stopped.
+
+## 6. Engine architecture
+
+```
+csx::ContinuousStructure ─┐
+ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, coeffs, operators[] } ─► Results
+                          ┘   (rasterise → C,G,L,R → ca,cb,da,db; map Excitation/
+                               LumpedElement/ProbeBox/DumpBox → operators; dt)
+```
+
+- **Storage**: six `Vec<f32>` field arrays plus `f32` coefficient arrays.
+  - Index is `(i·ny + j)·nz + k`; z is contiguous for autovectorisation.
+  - Memory: about 48 bytes/cell.
+- **Precision**: `f32` fields and coefficients. `f64` for geometry, time, DFT
+  accumulators and energy.
+- **Threads**: std only, no rayon (keeps the dependency footprint like csx's).
+  - A persistent worker pool (`std::thread::scope` + `Barrier`) splits x-slabs.
+    Each half-step costs one barrier; spawning per step would be too slow for
+    small models.
+  - Thread count is configurable and defaults to `available_parallelism()`.
+- **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
+  LLVM vectorises the k-loop.
+- **Operators** (internal trait): CPML, Mur, sources, lumped elements, probes,
+  dumps, and later ADE/NF2FF.
+  - Each has `pre/post_e` and `pre/post_h` hooks.
+  - Each touches a sparse set of cells.
+  - Their order is fixed and documented.
+- **Determinism**: no cross-thread floating-point reductions in updates.
+  Energy and probe sums are combined in slab order, so output is bit-identical
+  for any thread count.
+- **`unsafe`**: `forbid` like csx in M1. If a benchmark shows that a
+  bounds-check-free kernel is worth it, we relax this to `deny` with a single
+  audited `#[allow]` module. That would be a reviewed decision, not a default.
+
+## 7. Crate layout and dependencies
+
+```
+src/
+  lib.rs          prelude, re-exports (incl. `pub use csx`)
+  constants.rs    C0, MU0, EPS0, Z0
+  error.rs
+  fdtd.rs         Fdtd settings, Boundary, Cpml, EndCriteria
+  waveform.rs
+  mesh.rs         solver-aware mesh checks / suggestions on top of csx grid helpers
+  compile/        rasterise materials & metal, map csx properties to operators, dt
+  engine/         Fields, coefficients, kernels, thread pool, operator trait
+    boundary/     pec, pmc, mur, cpml
+    excite.rs     Excitation operators
+    lumped.rs     LumpedElement operators
+    probe.rs      ProbeBox operators, DFT accumulators
+    dump.rs       DumpBox operators
+  port/           LumpedPort (M1), MslPort / WaveguidePort (M2): emit csx props + analyze
+  post/           dft, complex (in-tree), sparams, impedance; nf2ff in M3
+  io/             vtr, csv; hdf5 (feature); openEMS <FDTD> section ↔ Fdtd (feature "xml")
+tests/            analytic validation (§9)
+benches/          Mcells/s (in-tree harness, no criterion)
+examples/         rectangular cavity, dipole, microstrip line, patch antenna, run-xml
+```
+
+**Dependencies**
+- Runtime: `csx` only.
+- Features:
+  - `xml` (default): enables `csx/xml` and the `<FDTD>` mapping.
+  - `hdf5` (off by default): pulls in a C library.
+- No `rayon`, `thiserror`, or `num-complex`; a small in-tree `Complex64` covers
+  the need.
+- Dev: none required; `approx`-style helpers live in-tree.
+
+## 8. What ems needs from csx
+
+csx is a work in progress. These are the interface points ems will rely on, so
+they can be planned on the csx side.
+
+| Need | csx status (as of 0.0.0 + current tree) |
+|---|---|
+| `Vec3`, `BoundingBox`, `CoordSystem`, `Transform`, `ParameterSet`/`Scalar`, `expr` evaluation with variables (`t` for custom waveforms) | present |
+| Iterate properties → primitives with priority, Cartesian bounding box, `dimension()`, and `is_inside(point, cs)` with closed-bound tolerance | primitives in progress |
+| Material getters per direction (ε, μ, κ, σ) at a point, including weighting | planned (properties) |
+| Typed Excitation / ProbeBox / DumpBox / LumpedElement / Metal / ConductingSheet fields (type, vector, direction, R/L/C, weights, frequency lists, dump type/mode, sub-sampling) | planned (properties) |
+| Background material | planned (structure) |
+| `RectilinearGrid` lines + delta unit + coordinate system; smooth-mesh helpers | planned (grid) |
+| Model types are `Send + Sync` (no `Rc`/`RefCell`), so the compile step can rasterise in parallel | to confirm |
+| Cheap `Clone` of a structure (for `update()` without mutating the caller's model) | to confirm |
+| XML: access to the openEMS `<FDTD>` element, as a typed struct or a raw element tree that ems maps itself (§10 Q1) | planned (io::xml) |
+
+Anything solver-specific stays out of csx, so csx remains useful to other
+solvers and tools.
+
+## 9. Validation strategy
+
+Tests check against physics, not openEMS output. Each test is small and fast
+(seconds in release mode); long ones are `#[ignore]` and run nightly.
+
+| Test | Expectation |
+|---|---|
+| PEC cavity TE101/TM110 (uniform and graded mesh) | < 0.5 % from analytic |
+| Lossless closed cavity, 1e5 steps | energy bounded |
+| Plane wave in vacuum | phase velocity matches the Yee dispersion relation |
+| CPML vs. large-domain reference | < −40 dB, normal and 45° incidence |
+| Mur, normal incidence | < −30 dB |
+| Dielectric slab, and an anisotropic slab per polarisation | within 1 % of Fresnel |
+| Conductive medium | attenuation within 1 % of analytic |
+| Lumped port into a matched parallel-plate line | \|S11\| < −30 dB |
+| Zero-thickness metal sheet | transmission < −60 dB |
+| Priority: material over metal, metal over material | edge state as specified |
+| XML round trip: build in Rust → write XML via csx → `from_xml` → run | bit-identical results |
+| Thread-count determinism | bit-identical, 1 vs. N threads |
+| Waveform | Gaussian spectrum matches the analytic transform |
+
+Plus unit tests for rasterisation (edge averaging, sheet detection), probe paths,
+and the `<FDTD>` mapping.
+
+## 10. Implementation order (M1)
+
+csx milestones are noted where ems is blocked on them.
+
+1. Scaffold: Cargo.toml, CI copied from csx, LICENSE, README, CLEANROOM.md,
+   with a `csx` path/git dependency during development.
+2. `constants`, `error`, `waveform`, `fdtd` settings, in-tree `Complex64` and DFT.
+   *No csx dependency beyond `expr`.*
+3. Engine core on a hand-built grid, before csx's grid lands: PEC walls, soft
+   point source, point probe, thread pool.
+   → cavity, stability, and determinism tests.
+4. Mur, then CPML. → reflection tests.
+5. Compile step from csx: grid, materials, metal sheets, priorities.
+   *Needs csx primitives + properties + structure + grid (csx M5–M8).*
+   → Fresnel, conductor, anisotropy, sheet tests.
+6. Excitation / LumpedElement / ProbeBox operators; LumpedPort helper; S-parameters.
+   → port tests.
+7. DumpBox operators, `.vtr` writer, end criteria, energy.
+8. `<FDTD>` mapping and `Simulation::from_xml`. *Needs csx XML (csx M9).*
+   → round-trip test.
+9. Benchmarks, examples, docs; optional `hdf5` feature.
+
+Steps 2–4 are independent of csx progress, so the two crates can advance in
+parallel.
+
+## 11. Open questions for review
+
+1. **Who types the `<FDTD>` section?** csx's plan says it keeps it "typed-or-raw".
+   My proposal: csx exposes it as a raw element tree with attribute access, and
+   ems owns the typed `Fdtd` struct and its (de)serialisation. That keeps solver
+   semantics out of csx. Alternatively csx types it, and ems converts.
+2. **Precision.** Is `f32`-only acceptable for M1, or do you want `f64` behind a
+   generic from day one?
+3. **No rayon.** OK with a std-only thread pool, to match csx's minimal-dependency
+   stance?
+4. **`unsafe` policy.** `forbid` like csx, with a possible later audited
+   exception for the kernel if benchmarks justify it?
+5. **openEMS output-file compatibility.** M2 as proposed, or do you need
+   existing Python/Matlab post-processing to read our files sooner?
+6. **HDF5.** Needed in M1? (It would be the only non-Rust dependency.)

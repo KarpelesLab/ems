@@ -1,0 +1,24 @@
+[package]
+name = "ems"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Pure Rust FDTD electromagnetic field solver, compatible with openEMS models"
+repository = "https://github.com/KarpelesLab/ems"
+readme = "README.md"
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
+keywords = ["fdtd", "openems", "electromagnetics", "simulation", "solver"]
+categories = ["science", "simulation", "mathematics"]
+
+[features]
+default = ["xml"]
+## Run openEMS XML files (enables the CSXCAD/openEMS XML support of `csx`).
+xml = ["csx/xml"]
+
+[dependencies]
+csx = { version = "0.0.0", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
