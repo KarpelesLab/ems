@@ -446,7 +446,7 @@ impl Compiled {
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
         if let Some(c) = &self.conformal {
-            h.conformal = Some(c.apply(&mut engine)?);
+            h.conformal = Some(c.apply(engine)?);
         }
         if !self.pml.is_empty() {
             let op = CpmlBoundary::new(engine, self.pml.iter().copied())?;
