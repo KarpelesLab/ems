@@ -245,8 +245,8 @@ mean), a PEC mask and conducting-sheet edges. The compile step reorders
 these into `engine::EdgeMaterials` (z-fastest layout) and the engine builds
 `C`, `G`, `L`, `R` from them. The per-cell `CellMaterials` path is converted
 to `EdgeMaterials` too, so both share one coefficient builder; they differ
-only in how σ_m is combined across an interface. Conducting sheets are
-approximated as PEC (with a warning) until the M2 sheet model.
+only in how σ_m is combined across an interface. Conducting sheets get the
+thin-conductor model of §5.9.
 
 **Volume materials** (Material, later dispersive): sampled at **primary cell
 centres**, using the csx priority rules.
@@ -461,6 +461,55 @@ In `tests/validation_waveguide.rs` (1 mm cells, 20 × 10 mm guide):
 - `Results` records the reason it stopped (`Engine::run_until` returns a
   `RunOutcome` with a `StopReason`: energy decay, max timesteps, aborted
   by the progress callback, or diverged).
+
+### 5.9 Conducting sheets
+A csx `ConductingSheet` (conductivity `σ`, thickness `t`) is a slab much
+thinner than the cells, drawn with zero thickness on a mesh plane
+(`engine::sheet::ConductingSheet`, mapping in `compile::sheet`).
+
+**Physics.** Inside a conductor the tangential fields diffuse across the
+thickness (`dE/dz = −jωμ0·H`, `dH/dz = −(σ + jωε0)·E`), so per unit square
+the slab is a uniform line of `γ = √(jωμ0(σ + jωε0))`,
+`Z_c = √(jωμ0/(σ + jωε0))`, a two-port with `Z11 = Z_c·coth(γt)`,
+`Z12 = Z_c·csch(γt)` (skin effect and shielding, Ramo–Whinnery–Van Duzer).
+For `t ≪ δ` it is a resistive sheet of conductance `σt`
+(`T = 2/(2 + η0σt)`); for `t ≫ δ` each face is a surface impedance
+`(1 + j)/(σδ)` and the transmission falls like `e^{−t/δ}`. A single shunt
+admittance on the edge cannot do both (shielding needs `1/Z12`, surface loss
+`1/Z11`; they differ by `cosh γt`), so the model keeps both faces.
+
+**Discretisation.** Each sheet edge is split into its two face voltages
+`u+`, `u−`, joined by a ladder that is the finite-volume (circuit) form of
+the diffusion equations: node conductances `σ·V_k·g` and capacitances
+`ε0·V_k·g`, series inductances `μ0·Δz_k/g` (`g = w/l` of the edge). In other
+words, a 1-D sub-grid across the thickness, error `O((Δz/δ)²)`. The layers
+are graded geometrically from both faces: first layer `0.15·δ(f_max)`,
+growth 1.15 (35 µm of copper at 10 GHz: 48 layers; `t ≤ 0.15·δ`: one
+layer), which keeps `Z11` within ~1 % of the exact value from DC to `f_max`.
+The edge's dual face is split at the sheet: each half has its share of the
+edge capacitance and conductance (material-aware, sampled by the compile
+step) and its half of the crossing dual edges, and the H updates see `u−`
+below the sheet and the length-weighted mean of `u±` on the crossing dual
+edges. The weights are the same in Ampère's and Faraday's laws, which keeps
+the symmetric (energy-conserving) structure of the Yee scheme. The ladder
+is integrated trapezoidally at `(n + ½)·dt`, coupled implicitly with the
+face voltages (one prefactored tridiagonal solve per edge and step): no
+extra stability limit, passive for any `σ`, `t`.
+
+**Compile mapping.** The sheet normal comes from the property's planar
+primitives; edges of line, curve or volume primitives (no normal) fall back
+to PEC with a warning. PEC wins over a sheet. Sheets with `σ ≤ 0` or
+`t ≤ 0` have no effect (warning). Sheet edges inside a CPML lose the CPML
+correction (warning).
+
+**Validation** (`tests/validation_sheet_conducting.rs`, TEM line,
+2–12 GHz): thin sheet (`η0σt = 3.77`) transmission within 1.3e-4 of
+`2/(2 + η0σt)`; thick-ish sheet (`σ = 1e6 S/m`, `t = 20 µm`,
+`t/δ = 1.8…4.4`, 16 dB below the thin-sheet value) within 0.27 dB / 1.2° of
+the exact slab, and within 1e-3 of the discrete ladder itself (the
+remainder is the layer discretisation); thick sheet (`t/δ = 4.4…11`)
+reflection loss `1 − |Γ| ≈ 2R_s/η0` within 0.3 %; passive and
+thread-count independent in a 3-D cavity.
 
 ## 6. Engine architecture
 

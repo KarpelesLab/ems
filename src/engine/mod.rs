@@ -151,6 +151,7 @@ pub mod port;
 mod probe;
 mod rows;
 mod run;
+pub mod sheet;
 mod slab;
 
 use core::marker::PhantomData;
@@ -176,6 +177,7 @@ pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
 pub use port::LumpedPort;
 pub use probe::{FieldProbe, Probe, ProbeQuantity};
 pub use run::{Progress, RunLimits, RunOutcome, StopReason};
+pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 
 use crate::axis::Axis;

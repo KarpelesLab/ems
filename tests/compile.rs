@@ -310,7 +310,7 @@ fn metal_sheet_marks_in_plane_edges() {
 }
 
 #[test]
-fn conducting_sheet_is_pec_with_warning() {
+fn conducting_sheet_edges() {
     let mut model = uniform_model([4, 4, 4], 1.0, 1e-3);
     add_box(
         &mut model,
@@ -319,19 +319,68 @@ fn conducting_sheet_is_pec_with_warning() {
         [4.0, 4.0, 2.0],
         0,
     );
+    // A substrate below the sheet (z < 2).
+    add_box(
+        &mut model,
+        Property::material("sub", csx::Material::new(3.0, 0.0)),
+        [0.0, 0.0, 0.0],
+        [4.0, 4.0, 2.0],
+        0,
+    );
     let c = compile(&model, &serial(), &CompileOptions::default()).unwrap();
-    assert!(c.materials.is_pec_edge(Axis::X, [1, 1, 2]));
-    assert!(c.materials.is_pec_edge(Axis::Y, [2, 1, 2]));
-    assert!(!c.materials.is_pec_edge(Axis::Z, [1, 1, 2]));
-    assert!(!c.materials.is_pec_edge(Axis::X, [1, 1, 1]));
+    assert!(!c.materials.is_pec_edge(Axis::X, [1, 1, 2]));
+    assert!(!c.materials.is_pec_edge(Axis::Y, [2, 1, 2]));
     assert_eq!(c.sources.sheets.len(), 1);
+    // 4 × 5 x edges and 5 × 4 y edges on z = 2.
+    assert_eq!(c.sheets.len(), 40);
+    let e = c
+        .sheets
+        .iter()
+        .find(|e| e.axis == Axis::X && e.node == [1, 1, 2])
+        .unwrap();
+    assert_eq!(e.normal, Axis::Z);
+    assert_eq!((e.conductivity, e.thickness), (5.8e7, 35e-6));
+    // Capacitance share above the sheet: air (1) vs substrate (3).
+    let (sc, sg) = e.upper_share.unwrap();
+    assert!((sc - 0.25).abs() < 1e-12, "{sc}");
+    assert_eq!(sg, sc);
     assert!(
-        c.warnings
-            .iter()
-            .any(|w| w.contains("ConductingSheet") && w.contains("PEC")),
+        !c.warnings.iter().any(|w| w.contains("ConductingSheet")),
         "{:?}",
         c.warnings
     );
+    let (mut engine, h) = c.build().unwrap();
+    let op = h.sheets.unwrap();
+    // Edges on the PEC outer faces are skipped: 2 × 4 per direction.
+    assert_eq!(engine.operator(&op).edges(), 40 - 2 * 8);
+    engine.run(5);
+}
+
+#[test]
+fn conducting_sheet_line_is_pec_with_warning() {
+    let mut model = uniform_model([4, 4, 4], 1.0, 1e-3);
+    add_box(
+        &mut model,
+        Property::conducting_sheet("wire", 5.8e7, 35e-6),
+        [1.0, 2.0, 2.0],
+        [3.0, 2.0, 2.0],
+        0,
+    );
+    add_box(
+        &mut model,
+        Property::conducting_sheet("void", 0.0, 35e-6),
+        [0.0, 0.0, 3.0],
+        [4.0, 4.0, 3.0],
+        0,
+    );
+    let c = compile(&model, &serial(), &CompileOptions::default()).unwrap();
+    assert!(c.materials.is_pec_edge(Axis::X, [1, 2, 2]));
+    assert!(c.materials.is_pec_edge(Axis::X, [2, 2, 2]));
+    assert!(!c.materials.is_pec_edge(Axis::X, [1, 1, 3]));
+    assert!(c.sheets.is_empty());
+    let has = |a: &str, b: &str| c.warnings.iter().any(|w| w.contains(a) && w.contains(b));
+    assert!(has("\"wire\"", "2 edge(s)"), "{:?}", c.warnings);
+    assert!(has("\"void\"", "no effect"), "{:?}", c.warnings);
 }
 
 #[test]

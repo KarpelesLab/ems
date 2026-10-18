@@ -24,9 +24,12 @@
 //!    is the magnetic loss: csx averages `sigma` arithmetically, the
 //!    per-cell path combines the half cells as series `R`–`L` branches
 //!    (`R = L²·Σ R_c/L_c²`). Both agree on homogeneous dual edges.
-//! 4. **Metal.** The csx PEC mask becomes the engine PEC mask. Conducting
-//!    sheets are **approximated as PEC** for now (thin-conductor model is
-//!    M2); every such sheet adds a warning.
+//! 4. **Metal.** The csx PEC mask becomes the engine PEC mask.
+//!    Conducting sheets become [`Compiled::sheets`], installed by
+//!    [`Compiled::build`] as one [`ConductingSheet`] operator (thin lossy
+//!    conductor with skin effect, see [`crate::engine::sheet`]); the
+//!    mapping rules (sheet normal, face shares, fallbacks) are in
+//!    [`sheet`].
 //! 5. **Boundaries** from [`Fdtd::get_boundaries`]: PEC and PMC map to
 //!    [`FaceCondition`]s; Mur and PML faces are built as PEC faces and
 //!    listed in [`Compiled::mur`] / [`Compiled::pml`], from which
@@ -99,14 +102,15 @@
 
 pub mod dispersive;
 mod mode;
+pub mod sheet;
 
 use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
 use crate::engine::{
-    Dispersive, EdgeMaterials, EdgePole, Engine, FaceCondition, FaceConditions, Grid,
-    OperatorHandle, TimeStep,
+    ConductingSheet, Dispersive, EdgeMaterials, EdgePole, Engine, FaceCondition, FaceConditions,
+    Grid, OperatorHandle, SheetEdge, TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
@@ -233,7 +237,8 @@ pub struct ModelSources {
     pub excitations: Vec<ExcitationField>,
     /// Lumped-element edges with values already distributed per edge.
     pub lumped: Vec<LumpedEdge>,
-    /// Conducting sheets (currently approximated as PEC).
+    /// The conducting sheets of the model (their edges are in
+    /// [`Compiled::sheets`]).
     pub sheets: Vec<SheetInfo>,
     /// ProbeBox properties, snapped to the mesh.
     pub probes: Vec<ProbeSpec<csx::properties::ProbeBox>>,
@@ -304,6 +309,13 @@ pub struct Compiled {
     /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
     /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
     pub dispersive: Vec<EdgePole>,
+    /// Conducting-sheet edges from csx `ConductingSheet` properties (see
+    /// [`sheet`]); installed by [`build`](Self::build) as one
+    /// [`ConductingSheet`] operator.
+    pub sheets: Vec<SheetEdge>,
+    /// Highest frequency of interest \[Hz\] ([`Fdtd::get_max_frequency`]),
+    /// used to grade the conducting-sheet layers.
+    pub max_frequency: Option<f64>,
     /// Not yet mapped model parts.
     pub sources: ModelSources,
     /// Diagnostics: csx model and discretisation warnings plus the
@@ -321,6 +333,8 @@ pub struct BoundaryHandles {
     pub dispersive: Option<OperatorHandle<Dispersive>>,
     /// The CPML operator covering every PML face, if any.
     pub cpml: Option<OperatorHandle<CpmlBoundary>>,
+    /// The conducting-sheet operator, if the model has conducting sheets.
+    pub sheets: Option<OperatorHandle<ConductingSheet>>,
     /// One operator per [`Compiled::abc`] sheet, in the same order.
     pub abc: Vec<OperatorHandle<AbsorbingSheet>>,
 }
@@ -330,7 +344,8 @@ impl Compiled {
     /// operators, first the [`CpmlBoundary`], then the [`MurBoundary`],
     /// then the [`Dispersive`] medium (after the CPML, so that a medium
     /// reaching into the PML is coupled implicitly with it), then the
-    /// [`AbsorbingSheet`]s (last, so that they see the final interior E).
+    /// [`ConductingSheet`]s, then the [`AbsorbingSheet`]s (last, so that
+    /// they see the final interior E).
     ///
     /// # Errors
     /// Invalid time step or materials, or boundary operator setup errors
@@ -357,6 +372,13 @@ impl Compiled {
                 d.push_entry(e);
             }
             h.dispersive = Some(d.add_to(&mut engine)?);
+        }
+        if !self.sheets.is_empty() {
+            let mut s = ConductingSheet::new(self.max_frequency);
+            for &e in &self.sheets {
+                s.push(e);
+            }
+            h.sheets = Some(s.add_to(&mut engine)?);
         }
         for a in &self.abc {
             let v = match a.phase_velocity {
@@ -724,6 +746,11 @@ pub fn compile(
     warnings.extend(mg.warnings.iter().cloned());
     property_warnings(model, &mut warnings);
 
+    let sheet_map = sheet::sheet_edges(model, &mg, &node_map, opts.snap_tolerance, &mut warnings);
+    let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
+    for &(d, idx) in &sheet_map.pec {
+        sheet_pec[d][idx] = true;
+    }
     let mut materials = EdgeMaterials::vacuum(&grid);
     for axis in Axis::ALL {
         let a = axis.index();
@@ -739,25 +766,21 @@ pub fn compile(
         materials
             .sigma_m_mut(axis)
             .copy_from_slice(&node_map.reorder(&mg.sigma[a]));
-        let mut pec: Vec<bool> = mg.pec[a]
+        let pec: Vec<bool> = mg.pec[a]
             .iter()
-            .zip(&mg.sheet[a])
-            .map(|(&p, &s)| p || s != 0)
+            .zip(&sheet_pec[a])
+            .map(|(&p, &s)| p || s)
             .collect();
-        pec = node_map.reorder(&pec);
-        materials.pec_mask_mut(axis).copy_from_slice(&pec);
-    }
-    for s in &mg.sheets {
-        warnings.push(format!(
-            "ConductingSheet {:?} (conductivity {} S/m, thickness {} m) approximated as PEC (M2)",
-            s.name, s.conductivity, s.thickness
-        ));
+        materials
+            .pec_mask_mut(axis)
+            .copy_from_slice(&node_map.reorder(&pec));
     }
 
     let dispersive =
         dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings);
 
     let (faces, (mur, pml)) = map_boundaries(fdtd);
+    sheet::pml_warning(&sheet_map.edges, grid.nodes(), &pml, &mut warnings);
     let timestep = match fdtd.get_timestep() {
         Some(dt) => TimeStep::Fixed(dt),
         None => TimeStep::Courant(fdtd.get_timestep_factor()),
@@ -787,6 +810,8 @@ pub fn compile(
         node_map,
         abc,
         dispersive,
+        sheets: sheet_map.edges,
+        max_frequency: fdtd.get_max_frequency(),
         sources: ModelSources {
             excitations,
             lumped,
