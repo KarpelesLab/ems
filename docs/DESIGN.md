@@ -1069,9 +1069,9 @@ discrete operator: leapfrog is stable for `dt < 2/√λ_max`, with `λ_max` of
 operator with all non-periodic faces open (PMC — PEC faces and materials only
 lower `λ_max`), including the merges, plus 0.1 % margin; cached in the grid.
 On a uniform Cartesian box it reproduces the CFL formula to 1e-6; runs at
-Courant factor 1.0 stay stable. Multigrid (coarsening α near the axis) is not
-implemented, so the time step is set by the innermost arcs (the mesh check
-warns).
+Courant factor 1.0 stay stable. Without multigrid the time step is set by
+the innermost arcs (the mesh check warns); multigrid (§5.15.1) coarsens
+them.
 
 **Dumps and probes.** Components are `(ρ, α, z)`; `E_α = u_α/(ρ_i·Δα)`,
 `H_α = i_α/(ρ_{i+½}·Δα*)` (the α edges next to the axis are interpolated
@@ -1107,6 +1107,113 @@ current and field probes, field dumps (VTK and HDF5) work.
 | axis port listed on one or all α copies | bit-identical |
 | openEMS XML (`CoordSystem="1"`) round trip | bit-identical probes |
 | 1 vs 3 threads | bit-identical |
+
+#### 5.15.1 Azimuthal multigrid near the axis
+
+**API.** `Fdtd::multigrid(radii)` (openEMS `MultiGrid`, comma-separated
+radii in drawing units; `Fdtd::from_csx` / `to_csx` map it) or, on the
+engine, `Grid::with_multigrid(&[ρ line indices])`. Each radius snaps to
+the nearest ρ line `I` (warning if moved). Inside it, cells `i < I`, the
+α resolution is halved once more: the coarsening factor of cell `i` is
+`f_i = 2^ℓ` with `ℓ` the number of zone boundaries above it. Rules: a
+cylindrical grid, `1 ≤ I ≤ nρ − 2`, distinct lines, α cells a multiple of
+`2^L`, and at least 3 coarse α cells on a closed grid. With no radii,
+the code paths are unchanged (the existing tests are bit-identical).
+Code: `engine::multigrid`, the multigrid branches of `Grid`'s geometry,
+`compile::cylindrical::multigrid`. Tests: `tests/cylindrical_multigrid.rs`.
+
+**Embedding, not a second grid.** The fields keep the fine layout; the
+coarse Yee grid is a subspace of it. Write `f` for a cell's factor, and
+call a line `j` *kept* in a cell if `j % f = 0`.
+
+| fine entry | coarse zone |
+|---|---|
+| E_ρ, H_α in cell `i`, and E_z on a line whose two cells share `f` | exist on kept lines only (others: `ca = cb = 0` / `da = db = 0`); kept ones take the coarse dual geometry: `Δα*` becomes `(α_{j+f} − α_{j−f})/2` in `A*` (E) and in `l*` (H_α, so `i_α` holds `H·l*_coarse`) |
+| E_α on ring `i` (`f` = factor of the outer cell) | the `f` fine edges of a coarse arc form one edge: `u_e = s_e·U`, `s_e = Δα_e/Σ Δα` (E_α constant along the arc) |
+| H_ρ on ring `i`, H_z in cell `i` | the `f` fine faces of a coarse face carry one value (copies) |
+| E_z on a zone boundary `ρ_I` (coarse `2f` inside, `f` outside) | lines kept inside: *masters*; lines kept only outside: *slaves*, `u_s = (1 − t)·U_a + t·U_b` from the neighbouring masters (`t` the α fraction). A master's dual face has the coarse width inside and the fine width outside; a slave's has only its outer half (its inner half lies in the coarse cell, covered by the master's arc) |
+
+The axis z edge is unchanged (all copies kept; its disc is bounded by
+the coarse H_α arcs). Materials are sampled on the fine dual faces (the
+csx averages); the coarse edges reuse their fine edge's average.
+
+**Coupling = Galerkin restriction.** Let `S` (E) and `T` (H) be these
+embeddings, `C`, `L` the edge capacitances and inductances, `K` the face
+circulation (§6 energy). The scheme run is the fine Yee scheme
+restricted to `range S × range T`:
+
+```text
+SᵀCS·dU/dt + SᵀGS·U = SᵀKᵀT·I,   TᵀLT·dI/dt + TᵀRT·I = −TᵀKS·U.
+```
+
+With `C̃ = SᵀCS`, `L̃ = TᵀLT` and the curls `K̃ = TᵀKS`, `K̃ᵀ = SᵀKᵀT`, this
+is a leapfrog scheme of the §6 form with symmetric positive mass
+matrices, so (i) `½UᵀC̃U + ½IᵀL̃I'` is exactly conserved (lossless) or
+non-increasing, and (ii) it is stable for `dt < 2/√λ_max(C̃⁻¹K̃ᵀL̃⁻¹K̃)`.
+Both hold whatever the zones, including the interfaces; there is no
+interpolation-induced instability because the restriction (`Sᵀ`, `Tᵀ`)
+is the transpose of the prolongation.
+
+In the fine arrays it is the fine kernel followed by a projection. From
+the kernel `u* = ca·u + cb·Kᵀi`, i.e. `W·u* = W⁻·u + Kᵀi` with
+`W = 1/cb = C/dt + G/2`, `W⁻ = ca/cb`, and `u = S·U`:
+
+```text
+SᵀWS·U' = SᵀW⁻S·U + SᵀKᵀi = SᵀW·u*   ⇒   u' = S·(SᵀWS)⁻¹·SᵀW·u*,
+```
+
+the `W`-orthogonal projection of the kernel result (no old values
+needed), and likewise `i' = T·(TᵀVT)⁻¹·TᵀV·i*` with `V = 1/db`. On a coarse
+arc this is `U' = Σ s_e W_e u*_e / Σ s_e² W_e`; on a coarse face the
+`1/db`-weighted mean of the copies (the periodic-merge formula, §5.6.1);
+on a zone boundary a symmetric tridiagonal system per z index (cyclic on
+a closed grid, solved by Sherman–Morrison; diagonally dominant), with
+PEC masters fixed at 0 and PEC slaves dropped from the interpolation.
+The coarse geometry is exactly what makes `C̃ = SᵀCS` and `L̃ = TᵀLT` the
+coarse Yee values: `Σ s_e² C_e = εA*/Σ l_e` for an arc, `Σ L_f = μ Σ A_f/l*`
+for a face, the coarse `A*`, `l*` for the single kept edges; for the
+masters and slaves `SᵀCS` is the consistent (non-lumped) mass of the
+linear interpolation, row sum = the area of the coarse dual face.
+
+The engine runs the H projection in the `post_h` gap (before and after
+operator hooks there) and the E projection after the periodic and axis
+merges (and again after `post_e` hooks), serially in a fixed order: the
+results are bit-identical for any thread count. The energy look-ahead
+uses the unprojected H kernel result, which is exact because the copies
+of `i^{n−½}` are equal (`Σ L_f ĩ i*_f = ĩ·L̃ ĩ'`). `courant_limit` applies
+both projections inside the Lanczos operator (still self-adjoint in the
+`C̃` inner product), so the reported limit is the coupled scheme's.
+
+**Accuracy.** In the coarse zone the scheme is the coarse Yee grid
+(second order). On a zone boundary the z field is coupled to second order
+(linear interpolation of the slaves), but the fine α edges on `ρ_I` see
+the coarse H_z (and the coarse cell sees their sum), a piecewise-constant
+coupling with a first-order local error ∝ `ρ_I·Δα`. Its effect on
+resonances grows with the zone radius and pushes frequencies up; the
+time step only needs the innermost cells coarsened, so small radii are the
+right choice (the mesh check still reports the limiting arcs).
+
+**Validation** (`tests/cylindrical_multigrid.rs`; the cavity of §5.15,
+20 × 24 × 15 cells, `Δρ` = 0.5 mm):
+
+| case | dt vs single grid | result |
+|---|---|---|
+| zones at ρ = 1.5 / 0.5 mm (lines 3, 1; 12 then 6 α cells) | ×3.65 | TM010 −0.057 %, TE111 −0.133 %, TM011 −0.096 %, TE211 −0.615 %, TM110 −0.016 %, TE011 −0.036 % (single grid −0.069 / −0.188 / −0.117 / −0.648 / −0.186 / −0.183 %) |
+| three levels, lines 4, 2, 1 (3 α cells at the axis) | ×5.94 | −0.035 / −0.017 / −0.057 / −0.548 / +0.444 / +0.348 % |
+| large zones, lines 8, 4 | ×3.66 | TE111 +0.55 %, TM110 +0.42 %: no extra gain, larger interface error |
+| same cavity in csx, `Fdtd::multigrid([1.5, 0.5])` | ×3.65 | TM010 / TE111 / TM011 / TM110 −0.045 / −0.124 / −0.309 / −0.015 % |
+| lossless cavity energy, 5000 steps after the pulse | | drift 5.7e-7 |
+| random fields at Courant factor 1.0, 20 000 steps: closed grid with axis (3 levels), PEC sector, annulus without axis | ×4.90, ×3.90, ×1.67 | energy constant to 4.4e-7, 1.7e-7, 6.0e-7 |
+| 1 vs 3 threads | | bit-identical |
+
+**Limits.** Removed edges hold 0, so field dumps and probes inside the
+zones see the stored representation: removed lines read 0 and H_α holds
+`H·l*_coarse` (dumps divide by the fine length, so it reads about `f`
+times the field). Excitations on removed edges have no effect and lumped elements
+on them fail (PEC edge); elements on coarse arcs or slaves act through
+the projection; the compile step warns about both. Absorbing α faces of
+a sector are not combined with multigrid (the projection would treat
+their `cb = 0` edges as PEC).
 
 ## 6. Engine architecture
 

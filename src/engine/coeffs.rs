@@ -376,7 +376,10 @@ impl Coefficients {
                             });
                             // Zero-length edges (α edges on the axis of a
                             // cylindrical grid) do not exist.
-                            let degenerate = cyl && grid.edge_length(axis, p) == 0.0;
+                            // Multigrid removes the edges off the kept α
+                            // lines (§5.15.1).
+                            let degenerate = cyl
+                                && (grid.edge_length(axis, p) == 0.0 || grid.mg_removed_e(axis, p));
                             if !(on_pec_face || pec[idx] || degenerate) {
                                 let geo = if cyl {
                                     grid.dual_face_area(axis, p) / grid.edge_length(axis, p)
@@ -396,7 +399,8 @@ impl Coefficients {
                         // flux: their dual edge does not exist.
                         if p[b] + 1 < n[b]
                             && p[c] + 1 < n[c]
-                            && !(cyl && grid.face_area(axis, p) == 0.0)
+                            && !(cyl
+                                && (grid.face_area(axis, p) == 0.0 || grid.mg_removed_h(axis, p)))
                         {
                             let geo = if cyl {
                                 grid.face_area(axis, p) / grid.dual_edge_length(axis, p)

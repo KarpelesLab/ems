@@ -131,7 +131,7 @@
 //! [`sar`]).
 
 mod conformal;
-mod cylindrical;
+pub(crate) mod cylindrical;
 pub mod dispersive;
 mod mode;
 pub mod planewave;
@@ -848,6 +848,7 @@ pub fn compile(
         model
     };
     let mut warnings: Vec<String> = model.validate().iter().map(ToString::to_string).collect();
+    let grid = cylindrical::multigrid(grid, &model.grid, fdtd.get_multigrid(), &mut warnings)?;
     let mg: MaterialGrid = discretize(
         model,
         &DiscretizeOptions::default()
@@ -978,6 +979,7 @@ pub fn compile(
             .property_by_name(&f.name)
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
+    cylindrical::multigrid_edge_warnings(&grid, &node_map, &excitations, &lumped, &mut warnings);
     let (probes, mut dumps) = probe_specs(model, &grid, &mut warnings);
     let sar = if cyl {
         cylindrical::no_sar(&mut dumps, &mut warnings);

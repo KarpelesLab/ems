@@ -42,13 +42,18 @@ const CLOSED_TOL: f64 = 1e-6;
 pub struct Grid {
     lines: [Vec<f64>; 3],
     coords: Coordinates,
+    /// Azimuthal multigrid zone boundaries of a cylindrical grid: ρ line
+    /// indices, strictly decreasing (outermost first); empty when off.
+    multigrid: Vec<usize>,
     /// Cached stability limit of a cylindrical grid (power iteration).
     courant: OnceLock<f64>,
 }
 
 impl PartialEq for Grid {
     fn eq(&self, other: &Self) -> bool {
-        self.lines == other.lines && self.coords == other.coords
+        self.lines == other.lines
+            && self.coords == other.coords
+            && self.multigrid == other.multigrid
     }
 }
 
@@ -85,6 +90,7 @@ impl Grid {
         Ok(Self {
             lines,
             coords: Coordinates::Cartesian,
+            multigrid: Vec::new(),
             courant: OnceLock::new(),
         })
     }
@@ -163,6 +169,133 @@ impl Grid {
         *self.courant.get_or_init(|| f(self))
     }
 
+    /// Enables azimuthal multigrid on a cylindrical grid (design §5.15.1):
+    /// each entry of `rings` is the index of a `ρ` line; inside each of
+    /// them (cells `i < ring`) the α resolution is halved once more, so
+    /// inside the innermost of `L` rings only every `2^L`-th α line is
+    /// kept. The rings may be given in any order; an empty list switches
+    /// multigrid off.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] if the grid is not cylindrical, a ring index is
+    /// repeated or not in `1..=nρ−2` (each zone boundary needs a cell on
+    /// both sides), the number of α cells is not a multiple of `2^L`, or a
+    /// closed grid would keep fewer than 3 α cells in its coarsest zone.
+    ///
+    /// ```
+    /// use ems::engine::Grid;
+    /// use std::f64::consts::TAU;
+    ///
+    /// let g = Grid::cylindrical([
+    ///     (0..=8).map(|i| i as f64 * 1e-3).collect(),
+    ///     (0..=32).map(|j| j as f64 * TAU / 32.0).collect(),
+    ///     vec![0.0, 1e-3],
+    /// ])?
+    /// .with_multigrid(&[4, 2])?;
+    /// assert_eq!(g.alpha_factor(0), 4); // cells 0, 1: every 4th α line
+    /// assert_eq!(g.alpha_factor(3), 2); // cells 2, 3: every 2nd
+    /// assert_eq!(g.alpha_factor(4), 1);
+    /// # Ok::<(), ems::Error>(())
+    /// ```
+    pub fn with_multigrid(mut self, rings: &[usize]) -> Result<Self> {
+        let mut r = rings.to_vec();
+        r.sort_unstable_by(|a, b| b.cmp(a));
+        if !r.is_empty() && !self.is_cylindrical() {
+            return Err(Error::Invalid("multigrid needs a cylindrical grid".into()));
+        }
+        if r.windows(2).any(|w| w[0] == w[1]) {
+            return Err(Error::Invalid(format!(
+                "multigrid: repeated zone boundary in {rings:?}"
+            )));
+        }
+        let [nr, na, _] = self.nodes();
+        if let Some(&bad) = r.iter().find(|&&i| i == 0 || i + 2 > nr) {
+            return Err(Error::Invalid(format!(
+                "multigrid: zone boundary rho line {bad} must be in 1..={}",
+                nr.saturating_sub(2)
+            )));
+        }
+        let f = 1usize << r.len().min(usize::BITS as usize - 1);
+        let cells = na - 1;
+        if cells % f != 0 {
+            return Err(Error::Invalid(format!(
+                "multigrid: {} levels need a multiple of {f} alpha cells, got {cells}",
+                r.len()
+            )));
+        }
+        if self.is_closed() && !r.is_empty() && cells / f < 3 {
+            return Err(Error::Invalid(format!(
+                "multigrid: the coarsest zone would keep {} alpha cells (at least 3 needed)",
+                cells / f
+            )));
+        }
+        self.multigrid = r;
+        self.courant = OnceLock::new();
+        Ok(self)
+    }
+
+    /// The multigrid zone boundaries (`ρ` line indices, outermost first);
+    /// empty without multigrid (see [`with_multigrid`](Self::with_multigrid)).
+    pub fn multigrid(&self) -> &[usize] {
+        &self.multigrid
+    }
+
+    /// Whether azimuthal multigrid is enabled.
+    pub fn has_multigrid(&self) -> bool {
+        !self.multigrid.is_empty()
+    }
+
+    /// The azimuthal coarsening factor of radial cell `i` (between `ρ_i`
+    /// and `ρ_{i+1}`): 1 without multigrid or outside every zone, `2^ℓ`
+    /// inside `ℓ` zone boundaries. Indices past the last cell use the last
+    /// cell.
+    pub fn alpha_factor(&self, i: usize) -> usize {
+        let i = i.min(self.lines[0].len() - 2);
+        1 << self.multigrid.iter().filter(|&&r| i < r).count()
+    }
+
+    /// Coarsening factors `(inner, outer)` of the cells on both sides of
+    /// the `ρ` line `i` (the first line uses its outer cell twice).
+    pub(crate) fn ring_factors(&self, i: usize) -> (usize, usize) {
+        let out = self.alpha_factor(i);
+        let inn = if i > 0 { self.alpha_factor(i - 1) } else { out };
+        (inn, out)
+    }
+
+    /// Dual α step `Δα*` at line `j` of a grid that keeps every `f`-th α
+    /// line (`j` a multiple of `f`): half the distance between the kept
+    /// neighbours, a half cell at the first and last line.
+    pub(crate) fn alpha_dual(&self, j: usize, f: usize) -> f64 {
+        let a = &self.lines[1];
+        let lo = if j >= f { a[j] - a[j - f] } else { 0.0 };
+        let hi = if j + f < a.len() {
+            a[j + f] - a[j]
+        } else {
+            0.0
+        };
+        0.5 * (lo + hi)
+    }
+
+    /// Whether the E edge along `axis` at `node` is removed by multigrid:
+    /// ρ edges and z edges off the kept α lines of their cell / line (the
+    /// axis z edge is never removed).
+    pub(crate) fn mg_removed_e(&self, axis: Axis, [i, j, _]: [usize; 3]) -> bool {
+        if self.multigrid.is_empty() {
+            return false;
+        }
+        match axis {
+            Axis::X => j % self.alpha_factor(i) != 0,
+            Axis::Y => false,
+            Axis::Z => !(i == 0 && self.has_axis()) && j % self.ring_factors(i).1 != 0,
+        }
+    }
+
+    /// Whether the H dual edge along `axis` at `node` is removed by
+    /// multigrid: the α dual edges off the kept α lines of their cell.
+    pub(crate) fn mg_removed_h(&self, axis: Axis, [i, j, _]: [usize; 3]) -> bool {
+        !self.multigrid.is_empty() && axis == Axis::Y && j % self.alpha_factor(i) != 0
+    }
+
     /// Radius of the dual line through cell `i` (`ρ_{i+½}`), or of node
     /// `i` itself for the last node (cylindrical helper).
     fn rho_dual(&self, i: usize) -> f64 {
@@ -190,8 +323,13 @@ impl Grid {
     /// `axis` through `node`: [`dual_delta`](Self::dual_delta), or
     /// `ρ_{i+½}·Δα*_j` for an α dual edge of a cylindrical grid.
     pub fn dual_edge_length(&self, axis: Axis, node: [usize; 3]) -> f64 {
-        let d = self.dual_delta(axis, node[axis.index()]);
+        let mut d = self.dual_delta(axis, node[axis.index()]);
         if self.is_cylindrical() && axis == Axis::Y {
+            // Multigrid: a kept α dual edge spans the coarse dual cell.
+            let f = self.alpha_factor(node[0]);
+            if f > 1 && node[1].is_multiple_of(f) {
+                d = self.alpha_dual(node[1], f);
+            }
             self.rho_dual(node[0]) * d
         } else {
             d
@@ -215,9 +353,18 @@ impl Grid {
             return db * dc;
         }
         let i = node[0];
+        let j = node[1];
         match axis {
             // others() = (Y, Z): Δα*, Δz*.
-            Axis::X => self.rho_dual(i) * db * dc,
+            Axis::X => {
+                let f = self.alpha_factor(i);
+                let db = if f > 1 && j.is_multiple_of(f) {
+                    self.alpha_dual(j, f)
+                } else {
+                    db
+                };
+                self.rho_dual(i) * db * dc
+            }
             // others() = (Z, X): Δz*, Δρ*.
             Axis::Y => db * dc,
             // others() = (X, Y).
@@ -225,7 +372,23 @@ impl Grid {
                 let r = &self.lines[0];
                 let lo = if i > 0 { 0.5 * (r[i - 1] + r[i]) } else { r[i] };
                 let hi = self.rho_dual(i);
-                dc * 0.5 * (hi * hi - lo * lo)
+                let (inn, out) = self.ring_factors(i);
+                if inn == 1 || (i == 0 && self.has_axis()) {
+                    return dc * 0.5 * (hi * hi - lo * lo);
+                }
+                // Multigrid (§5.15.1): the inner and outer halves of the
+                // dual face span the dual cells of their zones; a z edge
+                // kept only by the outer zone (a slave on a zone
+                // boundary) has the outer half only.
+                let (ri, outer) = (
+                    r[i],
+                    self.alpha_dual(j, out) * 0.5 * (hi * hi - r[i] * r[i]),
+                );
+                if j.is_multiple_of(inn) {
+                    self.alpha_dual(j, inn) * 0.5 * (ri * ri - lo * lo) + outer
+                } else {
+                    outer
+                }
             }
         }
     }

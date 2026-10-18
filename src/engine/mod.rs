@@ -150,6 +150,7 @@ mod kernel;
 pub mod lumped;
 mod material;
 pub mod medium;
+mod multigrid;
 mod operator;
 pub mod planewave;
 mod pool;
@@ -276,6 +277,7 @@ impl EngineBuilder {
         let faces = cylindrical::effective_faces(&grid, &self.faces);
         let periodic = Periodic::from_faces(&faces, grid.nodes())?;
         let axis = cylindrical::AxisMerge::new(&grid);
+        let multigrid = multigrid::Multigrid::new(&grid);
         let dt = self.timestep.resolve(&grid)?;
         let coeffs = match &self.materials {
             Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
@@ -306,6 +308,7 @@ impl EngineBuilder {
             ops: Vec::new(),
             periodic,
             axis,
+            multigrid,
             pool,
         })
     }
@@ -374,6 +377,9 @@ pub struct Engine {
     periodic: Option<Periodic>,
     /// Axis merge of a cylindrical grid, run after the periodic merge.
     axis: Option<cylindrical::AxisMerge>,
+    /// Azimuthal multigrid projections (H in the `post_h` gap, E after the
+    /// axis merge).
+    multigrid: Option<multigrid::Multigrid>,
     pool: Option<Pool>,
 }
 
@@ -651,8 +657,9 @@ impl Engine {
             gaps: Gaps {
                 a: mask.intersects(Hooks::PRE_H | Hooks::POST_E)
                     || self.periodic.is_some()
-                    || self.axis.is_some(),
-                b: mask.intersects(Hooks::POST_H | Hooks::PRE_E),
+                    || self.axis.is_some()
+                    || self.multigrid.is_some(),
+                b: mask.intersects(Hooks::POST_H | Hooks::PRE_E) || self.multigrid.is_some(),
             },
         };
         let Self {
@@ -662,10 +669,12 @@ impl Engine {
             ops,
             periodic,
             axis,
+            multigrid,
             pool,
             ..
         } = self;
         let post_e_ops = mask.contains(Hooks::POST_E);
+        let mid_ops = mask.intersects(Hooks::POST_H | Hooks::PRE_E);
         let mut hook = |g: Gap| {
             let (t, which): (u64, &[Hooks]) = match g {
                 Gap::PreH(t) => (t, &[Hooks::PRE_H]),
@@ -685,11 +694,20 @@ impl Engine {
             let post_e = matches!(g, Gap::PostE(_));
             let periodic = periodic.as_ref().filter(|_| post_e);
             let axis = axis.as_ref().filter(|_| post_e);
+            let mid = matches!(g, Gap::Mid(_));
+            let mg_e = multigrid.as_ref().filter(|_| post_e);
+            let mg_h = multigrid.as_ref().filter(|_| mid);
             if let Some(p) = periodic {
                 p.merge(&mut f, &co);
             }
             if let Some(a) = axis {
                 a.merge(&mut f, &co);
+            }
+            if let Some(m) = mg_e {
+                m.merge_e(&mut f.u, &co);
+            }
+            if let Some(m) = mg_h {
+                m.merge_h(&mut f.i, &co);
             }
             for &w in which {
                 for r in ops.iter_mut().filter(|r| r.hooks.contains(w)) {
@@ -708,6 +726,12 @@ impl Engine {
                 if let Some(a) = axis {
                     a.merge(&mut f, &co);
                 }
+                if let Some(m) = mg_e {
+                    m.merge_e(&mut f.u, &co);
+                }
+            }
+            if mid_ops && let Some(m) = mg_h {
+                m.merge_h(&mut f.i, &co);
             }
         };
         pool::drive(pool.as_mut(), shared, &plan, &mut hook);

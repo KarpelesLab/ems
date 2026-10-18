@@ -109,3 +109,115 @@ pub(super) fn drop_ignored_boundaries(
         keep
     });
 }
+
+/// Applies the [`Fdtd::multigrid`](crate::Fdtd::multigrid) radii (drawing
+/// units) to `grid`: each radius snaps to the nearest `ρ` line of the csx
+/// grid (with a warning if it is not on one). Cartesian grids ignore them
+/// with a warning.
+///
+/// # Errors
+/// [`Error::Invalid`](crate::Error::Invalid) from
+/// [`Grid::with_multigrid`] (zone boundary at the first or last line, two
+/// radii on the same line, α cells not a multiple of `2^L`, …).
+pub(crate) fn multigrid(
+    grid: Grid,
+    csx_grid: &csx::RectilinearGrid,
+    radii: &[f64],
+    warnings: &mut Vec<String>,
+) -> crate::Result<Grid> {
+    if radii.is_empty() {
+        return Ok(grid);
+    }
+    if !grid.is_cylindrical() {
+        warnings.push(format!(
+            "multigrid radii {radii:?} ignored: multigrid needs a cylindrical grid"
+        ));
+        return Ok(grid);
+    }
+    let rho = csx_grid.lines(0);
+    let rings: Vec<usize> = radii
+        .iter()
+        .map(|&r| {
+            let i = (0..rho.len())
+                .min_by(|&a, &b| (rho[a] - r).abs().total_cmp(&(rho[b] - r).abs()))
+                .unwrap_or(0);
+            if (rho[i] - r).abs() > 1e-9 * r.abs().max(rho[i].abs()) {
+                warnings.push(format!(
+                    "multigrid radius {r} snapped to the rho line {} (index {i})",
+                    rho[i]
+                ));
+            }
+            i
+        })
+        .collect();
+    grid.with_multigrid(&rings)
+}
+
+/// Warns about excitation and lumped-element edges that the multigrid
+/// zones of `grid` remove (they have no effect, or make the element fail)
+/// or couple (α edges of a coarse arc, slave z edges on a zone boundary:
+/// the element then acts through the zone projection).
+pub(super) fn multigrid_edge_warnings(
+    grid: &Grid,
+    node_map: &super::NodeMap,
+    excitations: &[csx::discretize::ExcitationField],
+    lumped: &[csx::discretize::LumpedEdge],
+    warnings: &mut Vec<String>,
+) {
+    use crate::Axis;
+    if !grid.has_multigrid() {
+        return;
+    }
+    let coupled = |axis: Axis, [i, j, _]: [usize; 3]| match axis {
+        Axis::Y => !(i == 0 && grid.has_axis()) && grid.alpha_factor(i) > 1,
+        Axis::Z => {
+            let (inn, out) = grid.ring_factors(i);
+            !(i == 0 && grid.has_axis()) && inn > out && j % inn != 0
+        }
+        Axis::X => false,
+    };
+    for ex in excitations {
+        let magnetic = ex.excitation_type.is_magnetic();
+        let removed = ex
+            .amplitudes
+            .iter()
+            .filter(|(e, _)| {
+                let (axis, node) = node_map.edge(*e);
+                if magnetic {
+                    grid.mg_removed_h(axis, node)
+                } else {
+                    grid.mg_removed_e(axis, node)
+                }
+            })
+            .count();
+        if removed > 0 {
+            warnings.push(format!(
+                "excitation {:?}: {removed} of its {} edges lie off the alpha lines kept by the \
+                 multigrid zones and have no effect",
+                ex.name,
+                ex.amplitudes.len()
+            ));
+        }
+    }
+    let mut names: Vec<(&str, usize, usize)> = Vec::new();
+    for le in lumped {
+        let (axis, node) = node_map.edge(le.edge);
+        let (r, c) = (grid.mg_removed_e(axis, node), coupled(axis, node));
+        if r || c {
+            match names.iter_mut().find(|n| n.0 == le.name) {
+                Some(n) => {
+                    n.1 += usize::from(r);
+                    n.2 += usize::from(c);
+                }
+                None => names.push((&le.name, usize::from(r), usize::from(c))),
+            }
+        }
+    }
+    for (name, r, c) in names {
+        warnings.push(format!(
+            "lumped element {name:?}: {r} edge(s) removed and {c} coupled by the multigrid \
+             zones (place lumped elements on the rho / z edges of kept alpha lines, or outside \
+             the zones)"
+        ));
+    }
+}

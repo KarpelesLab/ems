@@ -176,12 +176,14 @@ pub(crate) fn courant_limit(grid: &Grid) -> f64 {
 
 /// The operator `A = P·C⁻¹·Kᵀ·L⁻¹·K` on vacuum coefficients (built with
 /// `dt = 1`, so `cb = 1/C` and `db = 1/L`), with `P` the periodic and
-/// axis merges.
+/// axis merges and, with multigrid, its E and H projections
+/// ([`multigrid`](super::multigrid)).
 struct Op {
     n: [usize; 3],
     co: Coefficients,
     periodic: Option<super::boundary::periodic::Periodic>,
     axis: Option<AxisMerge>,
+    multigrid: Option<super::multigrid::Multigrid>,
 }
 
 impl Op {
@@ -196,6 +198,7 @@ impl Op {
             co,
             periodic,
             axis: AxisMerge::new(grid),
+            multigrid: super::multigrid::Multigrid::new(grid),
         }
     }
 
@@ -258,6 +261,13 @@ impl Op {
                 }
             }
         }
+        if let Some(m) = &self.multigrid {
+            let plane = self.n[1] * self.n[2];
+            m.merge_e(
+                &mut super::multigrid::F64Planes { plane, data: u },
+                &self.co,
+            );
+        }
     }
 
     /// `w = A·u`.
@@ -265,8 +275,46 @@ impl Op {
         let n = self.n;
         let len = n[0] * n[1] * n[2];
         let mut out: [Vec<f64>; 3] = core::array::from_fn(|_| vec![0.0; len]);
-        // Faces normal to `a` at node p, (a, b, c) cyclic:
-        // ∮u = u_b(p) + u_c(p + e_b) − u_b(p + e_c) − u_c(p).
+        // Multigrid: the H currents `L⁻¹·K·u` are projected (copies of the
+        // coarse faces) before `Kᵀ`.
+        let hcur = self.multigrid.as_ref().map(|m| {
+            let mut h: [Vec<f64>; 3] = core::array::from_fn(|_| vec![0.0; len]);
+            self.faces(u, |a, idx, _, _, v| h[a][idx] = v);
+            let plane = n[1] * n[2];
+            m.merge_h(
+                &mut super::multigrid::F64Planes {
+                    plane,
+                    data: &mut h,
+                },
+                &self.co,
+            );
+            h
+        });
+        // Kᵀ: each face's current goes to its four edges with the signs
+        // of its circulation.
+        self.faces(u, |a, idx, ib, ic, v| {
+            let (b, c) = ((a + 1) % 3, (a + 2) % 3);
+            let h = hcur.as_ref().map_or(v, |h| h[a][idx]);
+            out[b][idx] += h;
+            out[c][ib] += h;
+            out[b][ic] -= h;
+            out[c][idx] -= h;
+        });
+        for (a, comp) in out.iter_mut().enumerate() {
+            let cb = self.co.cb(Axis::ALL[a]);
+            for (v, &b) in comp.iter_mut().zip(cb) {
+                *v *= b as f64;
+            }
+        }
+        self.project(&mut out);
+        out
+    }
+
+    /// Calls `f(a, idx, idx + e_b, idx + e_c, db·∮u)` for every existing
+    /// face normal to `a` (H dual edge `a` at `idx`), with (a, b, c)
+    /// cyclic and `∮u = u_b(p) + u_c(p + e_b) − u_b(p + e_c) − u_c(p)`.
+    fn faces(&self, u: &[Vec<f64>; 3], mut f: impl FnMut(usize, usize, usize, usize, f64)) {
+        let n = self.n;
         for a in 0..3 {
             let (b, c) = ((a + 1) % 3, (a + 2) % 3);
             let db = self.co.db(Axis::ALL[a]);
@@ -285,24 +333,11 @@ impl Op {
                         pc[c] += 1;
                         let (ib, ic) = (self.idx(pb), self.idx(pc));
                         let circ = u[b][idx] + u[c][ib] - u[b][ic] - u[c][idx];
-                        let h = d as f64 * circ;
-                        // Kᵀ: the same four edges with the same signs.
-                        out[b][idx] += h;
-                        out[c][ib] += h;
-                        out[b][ic] -= h;
-                        out[c][idx] -= h;
+                        f(a, idx, ib, ic, d as f64 * circ);
                     }
                 }
             }
         }
-        for (a, comp) in out.iter_mut().enumerate() {
-            let cb = self.co.cb(Axis::ALL[a]);
-            for (v, &b) in comp.iter_mut().zip(cb) {
-                *v *= b as f64;
-            }
-        }
-        self.project(&mut out);
-        out
     }
 }
 

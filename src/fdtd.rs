@@ -475,6 +475,7 @@ pub struct Fdtd {
     oversampling: Option<u32>,
     bloch_wavevector: Option<[f64; 3]>,
     bloch_frequency: Option<f64>,
+    multigrid: Vec<f64>,
 }
 
 impl Default for Fdtd {
@@ -492,6 +493,7 @@ impl Default for Fdtd {
             oversampling: None,
             bloch_wavevector: None,
             bloch_frequency: None,
+            multigrid: Vec::new(),
         }
     }
 }
@@ -618,6 +620,30 @@ impl Fdtd {
     pub fn bloch_frequency(mut self, f: f64) -> Self {
         self.bloch_frequency = Some(f);
         self
+    }
+
+    /// Azimuthal multigrid near the axis of a cylindrical grid (openEMS
+    /// `MultiGrid`, design §5.15.1): radii in **drawing units** (like the
+    /// mesh lines). Inside each radius the number of α lines is halved
+    /// once more, so inside the smallest of `L` radii only every `2^L`-th
+    /// α line is kept and the short arcs next to the axis no longer set
+    /// the time step. Each radius snaps to the nearest `ρ` mesh line, which
+    /// must have a cell on both sides; the number of α cells must be a
+    /// multiple of `2^L`. Ignored (with a warning) on Cartesian grids. An
+    /// empty list (the default) switches multigrid off.
+    ///
+    /// The zone boundaries couple the zones to second order for the z
+    /// field and first order (in the arc `ρ·Δα`) for the azimuthal one, so
+    /// keep the radii small: the time step is set by the innermost cells
+    /// anyway (see [`Grid::with_multigrid`](crate::engine::Grid::with_multigrid)).
+    pub fn multigrid(mut self, radii: impl Into<Vec<f64>>) -> Self {
+        self.multigrid = radii.into();
+        self
+    }
+
+    /// The multigrid radii (drawing units); empty when off.
+    pub fn get_multigrid(&self) -> &[f64] {
+        &self.multigrid
     }
 
     /// The explicit Bloch wavevector \[rad/m\], if set.
@@ -748,6 +774,15 @@ impl Fdtd {
         if !(s > 0.0 && s <= 1.0) {
             return Err(Error::Invalid(format!(
                 "timestep factor {s} must be in (0, 1]"
+            )));
+        }
+        if let Some(r) = self
+            .multigrid
+            .iter()
+            .find(|r| !(r.is_finite() && **r > 0.0))
+        {
+            return Err(Error::Invalid(format!(
+                "multigrid radius {r} must be finite and > 0"
             )));
         }
         if let Some(dt) = self.timestep

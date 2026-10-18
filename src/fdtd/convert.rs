@@ -37,7 +37,7 @@ impl Fdtd {
     /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor) |
     /// | `cell_constant_material` | `true` → warning (ems averages materials onto edges) |
     /// | `coord_system` | `0` (Cartesian) or `1` (cylindrical) accepted: the coordinate system is that of the model's grid; anything else → [`Error::Unsupported`] |
-    /// | `multi_grid` | warning: multigrid near the axis of cylindrical grids is not implemented |
+    /// | `multi_grid` (`MultiGrid`) | [`multigrid`](Fdtd::multigrid): comma-separated radii in drawing units; unparsable → [`Error::Invalid`] |
     /// | `excitation` (`<Excitation>`) | [`waveform`](Fdtd::waveform) via [`Waveform::from_csx`] |
     /// | `boundary.faces` (`<BoundaryCond>`) | PEC / PMC / Mur / `PML_n` → [`Boundary`] with [`Cpml::cells`]`(n)` and default grading; absent → all PEC |
     /// | `boundary.mur_phase_velocity` | [`Mur::phase_velocity`] of every Mur face |
@@ -55,12 +55,17 @@ impl Fdtd {
                 "FDTD CoordSystem={cs}: only Cartesian (0) and cylindrical (1) are supported"
             )));
         }
-        if s.multi_grid.is_some() {
-            warn.push(
-                "FDTD MultiGrid ignored: multigrid near the axis of cylindrical grids is not \
-                 implemented (the full azimuthal resolution is used up to the axis)"
-                    .into(),
-            );
+        if let Some(m) = &s.multi_grid {
+            f.multigrid = m
+                .split(',')
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| {
+                    v.parse::<f64>().map_err(|_| {
+                        Error::Invalid(format!("FDTD MultiGrid={m:?}: {v:?} is not a number"))
+                    })
+                })
+                .collect::<Result<_>>()?;
         }
 
         f.max_timesteps = match s.number_of_timesteps {
@@ -185,6 +190,13 @@ impl Fdtd {
             max_time: self.max_time,
             time_step: self.timestep,
             time_step_factor: Some(self.timestep_factor),
+            multi_grid: (!self.multigrid.is_empty()).then(|| {
+                self.multigrid
+                    .iter()
+                    .map(f64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }),
             excitation,
             boundary: Some(BoundaryConditions {
                 faces,
@@ -424,12 +436,13 @@ mod tests {
         s.coord_system = Some(0);
         s.extra_attributes = vec![("Verbose".into(), "3".into())];
         s.excitation_extra_attributes = vec![("Delay".into(), "1e-9".into())];
-        let (_, warn) = Fdtd::from_csx(&s).unwrap();
-        assert_eq!(warn.len(), 5, "{warn:?}");
+        let (f, warn) = Fdtd::from_csx(&s).unwrap();
+        assert_eq!(f.get_multigrid(), &[10.0, 20.0]);
+        assert_eq!(f.to_csx().multi_grid.as_deref(), Some("10,20"));
+        assert_eq!(warn.len(), 4, "{warn:?}");
         for key in [
             "TimeStepMethod=3",
             "CellConstantMaterial",
-            "MultiGrid",
             "Verbose",
             "Delay",
         ] {
@@ -443,6 +456,11 @@ mod tests {
         let mut bad = FdtdSettings::new();
         bad.coord_system = Some(2);
         assert!(matches!(Fdtd::from_csx(&bad), Err(Error::Unsupported(_))));
+        let mut bad = FdtdSettings::new();
+        bad.multi_grid = Some("1,x".into());
+        assert!(Fdtd::from_csx(&bad).is_err());
+        bad.multi_grid = Some("-1".into());
+        assert!(Fdtd::from_csx(&bad).is_err());
         let mut bad = FdtdSettings::new();
         bad.number_of_timesteps = Some(0);
         assert!(Fdtd::from_csx(&bad).is_err());

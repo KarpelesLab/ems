@@ -456,6 +456,12 @@ pub fn check_with(
     opts.validate()?;
     fdtd.validate()?;
     let grid = grid_from_csx(&model.grid)?;
+    let grid = crate::compile::cylindrical::multigrid(
+        grid,
+        &model.grid,
+        fdtd.get_multigrid(),
+        &mut Vec::new(),
+    )?;
     let model = updated(model, opts)?;
     let model = model.as_ref();
     let ctx = Ctx::new(model, &grid, fdtd, opts);
@@ -1022,7 +1028,7 @@ impl<'a> Ctx<'a> {
 
     /// The time step of a cylindrical grid comes from its discrete operator
     /// and is usually set by the short arcs `ρ·Δα` next to `ρ_min` (or the
-    /// axis); there is no azimuthal coarsening (multigrid) yet.
+    /// axis), unless multigrid ([`Fdtd::multigrid`]) coarsens them.
     fn check_timestep_cylindrical(&self, r: &mut MeshReport) {
         let s = &r.stats;
         let rho = self.grid.lines(Axis::X);
@@ -1031,7 +1037,7 @@ impl<'a> Ctx<'a> {
         } else {
             rho[0]
         };
-        let arc = inner * self.grid.min_delta(Axis::Y);
+        let arc = inner * self.grid.min_delta(Axis::Y) * self.grid.alpha_factor(0) as f64;
         let ratio = s.dt / s.dt_typical;
         let msg = format!(
             "time step {:.4e} s (stability limit of the cylindrical operator); the shortest \
@@ -1049,8 +1055,8 @@ impl<'a> Ctx<'a> {
                 Severity::Warning,
                 loc,
                 format!(
-                    "{msg}: the arcs near the axis dominate the time step (fewer alpha lines \
-                     or a larger rho_min help; multigrid is not implemented)"
+                    "{msg}: the arcs near the axis dominate the time step (fewer alpha lines, \
+                     a larger rho_min or multigrid near the axis help)"
                 ),
             );
         } else {
