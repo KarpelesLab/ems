@@ -505,12 +505,11 @@ solvers and tools.
 
 ### 8.1 Feedback for csx (found while integrating)
 
-Open items found by ems work against csx master `b949cf86`. These are reported
-here, not fixed in csx from this repo.
+Open items found by ems work against csx, re-checked against csx 0.0.2.
+These are reported here, not fixed in csx from this repo.
 
-1. **Release.** `discretize`, `fdtd` and `mesh` are not in the published 0.0.1.
-   ems builds through a `[patch.crates-io]` git pin until 0.0.2 ships.
-   release-plz's semver check fails on ems until then.
+1. **Release.** *Resolved:* csx 0.0.2 ships `discretize`, `fdtd` and `mesh`;
+   ems depends on it from crates.io (no git pin).
 2. **Gaussian docs.** `ExcitationSignal::Gaussian` and the crate docs say
    "Gaussian-modulated sine", but the code (correctly, and matching ems) uses a
    cosine carrier.
@@ -600,7 +599,6 @@ Pulled forward from M2:
 - Second-order lumped-port reference plane.
 
 Remaining M1 items:
-- csx 0.0.2 release, so the git pin can go.
 - An idle-machine benchmark.
 - The optional `hdf5` feature.
 

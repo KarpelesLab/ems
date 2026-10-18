@@ -309,7 +309,7 @@ pub(super) fn dispersive_poles(
         return Vec::new();
     }
     let s = Sampler {
-        index: model.index(
+        index: model.spatial_index(
             CoordSystem::Cartesian,
             TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
         ),

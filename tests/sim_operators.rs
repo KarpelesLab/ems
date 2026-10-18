@@ -144,7 +144,10 @@ fn csx_port_matches_engine_port() {
     // The port current is minus the port resistor's terminal current.
     let el = ra.lumped_current("port_resist_1").unwrap();
     assert_eq!(el.kind(), ems::ProbeKind::Current);
-    assert_eq!(Some(el.id()), m.property_id("port_resist_1"));
+    assert_eq!(
+        Some(el.id()),
+        m.property_id("port_resist_1").map(|p| p.get())
+    );
     assert!((el.times()[0] - 0.5 * ra.dt()).abs() < 1e-24);
     let va = ra.probe("port_ut1").unwrap().scalar().unwrap();
     let ia: Vec<f64> = el.scalar().unwrap().iter().map(|i| -i).collect();

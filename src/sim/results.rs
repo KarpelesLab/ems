@@ -51,9 +51,10 @@ impl ProbeResult {
         &self.name
     }
 
-    /// csx property id.
-    pub fn id(&self) -> csx::PropertyId {
-        csx::PropertyId(self.id)
+    /// csx property id ([`csx::Property::id`], equal to
+    /// [`csx::PropertyId::get`]).
+    pub fn id(&self) -> u32 {
+        self.id
     }
 
     /// The probe number of the property.
@@ -192,9 +193,10 @@ impl DumpResult {
         &self.name
     }
 
-    /// csx property id.
-    pub fn id(&self) -> csx::PropertyId {
-        csx::PropertyId(self.id)
+    /// csx property id ([`csx::Property::id`], equal to
+    /// [`csx::PropertyId::get`]).
+    pub fn id(&self) -> u32 {
+        self.id
     }
 
     /// The data.
@@ -287,7 +289,7 @@ impl Results {
 
     /// The probe of the csx property `id`.
     pub fn probe_by_id(&self, id: csx::PropertyId) -> Option<&ProbeResult> {
-        self.probes.iter().find(|p| p.id == id.0)
+        self.probes.iter().find(|p| p.id == id.get())
     }
 
     /// The terminal current of the csx `LumpedElement` named `name`: the
@@ -323,6 +325,6 @@ impl Results {
 
     /// The dump of the csx property `id`.
     pub fn dump_by_id(&self, id: csx::PropertyId) -> Option<&DumpResult> {
-        self.dumps.iter().find(|d| d.id == id.0)
+        self.dumps.iter().find(|d| d.id == id.get())
     }
 }

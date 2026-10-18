@@ -21,8 +21,8 @@ impl Fdtd {
     /// A malformed `<FDTD>` element ([`Error::Csx`](crate::Error::Csx)) and
     /// the errors of [`Fdtd::from_csx`].
     pub fn from_document(doc: &OpenEmsDocument) -> Result<(Fdtd, Vec<String>)> {
-        match doc.fdtd_settings() {
-            Some(s) => Fdtd::from_csx(&s?),
+        match doc.fdtd_settings()? {
+            Some(s) => Fdtd::from_csx(&s),
             None => {
                 let (f, mut w) = Fdtd::from_csx(&Default::default())?;
                 w.insert(

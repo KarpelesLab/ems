@@ -60,9 +60,9 @@ fn main() -> Result<()> {
             .with_margin(150.0)
             .with_mask(TypeMask::PHYSICAL),
     )
-    .add_lines(0, near)
-    .add_lines(1, near)
-    .add_lines(2, (0..=2 * ARM_CELLS + 1).map(|i| -tip + i as f64 * D))
+    .with_lines(0, near)
+    .with_lines(1, near)
+    .with_lines(2, (0..=2 * ARM_CELLS + 1).map(|i| -tip + i as f64 * D))
     .apply(&mut model)?;
 
     let mut sim = Simulation::new(&model, &fdtd)?;

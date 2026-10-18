@@ -265,6 +265,12 @@ impl Waveform {
                 f0,
                 f_max,
             } => Waveform::Expression(ExpressionWaveform::new(function.clone(), *f0, *f_max)?),
+            other => {
+                return Err(Error::Unsupported(format!(
+                    "excitation signal type {}",
+                    other.id()
+                )));
+            }
         };
         w.validate()?;
         Ok(w)

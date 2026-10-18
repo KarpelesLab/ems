@@ -103,11 +103,11 @@ fn main() -> Result<()> {
             .with_ratio(1.4)
             .with_mask(TypeMask::PHYSICAL),
     )
-    .add_lines(0, [-37.0, 37.0])
-    .add_lines(1, (0..=6).map(|i| -W / 2.0 + 0.25 * i as f64))
-    .add_lines(1, [-22.0, 22.0])
-    .add_lines(2, (0..=4).map(|i| H * i as f64 / 4.0))
-    .add_lines(2, [20.0])
+    .with_lines(0, [-37.0, 37.0])
+    .with_lines(1, (0..=6).map(|i| -W / 2.0 + 0.25 * i as f64))
+    .with_lines(1, [-22.0, 22.0])
+    .with_lines(2, (0..=4).map(|i| H * i as f64 / 4.0))
+    .with_lines(2, [20.0])
     .apply(&mut model)?;
 
     let fdtd = Fdtd::new()

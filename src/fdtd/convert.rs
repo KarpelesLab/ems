@@ -205,6 +205,12 @@ fn boundaries_from_csx(b: &BoundaryConditions, warn: &mut Vec<String>) -> Bounda
                 has_pml = true;
                 Boundary::Pml(Cpml::cells(n as usize))
             }
+            ref other => {
+                warn.push(format!(
+                    "boundary condition {other:?} on {face:?} not supported; using PEC"
+                ));
+                Boundary::Pec
+            }
         };
     }
     if !has_mur && b.mur_phase_velocity.is_some() {
@@ -246,7 +252,7 @@ mod tests {
 
     #[test]
     fn csx_defaults() {
-        let s = FdtdSettings::with_defaults(2e9, 1e9);
+        let s = FdtdSettings::gaussian(2e9, 1e9);
         let (f, warn) = Fdtd::from_csx(&s).unwrap();
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(f.get_max_timesteps(), 1_000_000_000);
@@ -351,7 +357,7 @@ mod tests {
 
     #[test]
     fn timestep_settings_and_warnings() {
-        let mut s = FdtdSettings::with_defaults(1e9, 5e8);
+        let mut s = FdtdSettings::gaussian(1e9, 5e8);
         s.number_of_timesteps = Some(30_000);
         s.time_step_factor = Some(0.5);
         s.time_step = Some(1e-13);

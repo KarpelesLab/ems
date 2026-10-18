@@ -177,7 +177,7 @@ impl Simulation {
         mapped.lumped_ids = mapped
             .lumped
             .iter()
-            .map(|(n, _)| model.property_id(n).map_or(u32::MAX, |p| p.0))
+            .map(|(n, _)| model.property_id(n).map_or(u32::MAX, |p| p.get()))
             .collect();
         Ok(Self {
             engine,

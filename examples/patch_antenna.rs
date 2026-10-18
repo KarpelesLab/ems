@@ -80,7 +80,7 @@ fn main() -> Result<()> {
             .with_thirds([max_xy, max_xy, 3.0])
             .with_mask(TypeMask::PHYSICAL),
     )
-    .add_lines(2, (1..4).map(|i| H * i as f64 / 4.0))
+    .with_lines(2, (1..4).map(|i| H * i as f64 / 4.0))
     .apply(&mut model)?;
 
     let report = ems::mesh::check(&model, &fdtd)?;

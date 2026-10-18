@@ -537,14 +537,13 @@ pub fn compile(
     } else {
         model
     };
-    let mut warnings = model.validate();
+    let mut warnings: Vec<String> = model.validate().iter().map(ToString::to_string).collect();
     let mg: MaterialGrid = discretize(
         model,
-        &DiscretizeOptions {
-            subsampling: opts.subsampling,
-            threads: fdtd.resolved_threads(),
-            snap_tolerance: opts.snap_tolerance,
-        },
+        &DiscretizeOptions::default()
+            .with_subsampling(opts.subsampling)
+            .with_threads(fdtd.resolved_threads())
+            .with_snap_tolerance(opts.snap_tolerance),
     )?;
     let node_map = NodeMap::new(grid.nodes());
     if mg.dims != grid.nodes() {
