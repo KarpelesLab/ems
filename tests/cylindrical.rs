@@ -442,17 +442,18 @@ fn radial(nr: usize, probe: usize, use_cpml: bool) -> Vec<f64> {
 }
 
 #[test]
-fn rho_face_absorbers_treat_the_wave_as_plane() {
-    // CPML and Mur on the ρ_max face use the plane-wave (Cartesian)
-    // stretch / one-way equation, so a cylindrical wave reflects at the
-    // order of 1/(kρ): about −31 dB at ρ = 26 mm (5–25 GHz), −37 dB at
-    // 56 mm, −43 dB at 116 mm, alike for both. Probe at ρ = 50 mm, layer from
+fn rho_face_absorbers() {
+    // Mur on the ρ_max face uses the plane-wave one-way equation, so a
+    // cylindrical wave reflects at the order of 1/(kρ): about −31 dB at
+    // ρ = 26 mm (5–25 GHz), −37 dB at 56 mm, −43 dB at 116 mm (the
+    // Cartesian-style CPML alike). A PML there is the cylindrical PML
+    // (§5.15.2, tests/cyl_pml.rs). Probe at ρ = 50 mm, layer from
     // ρ = 56 mm; the reference ends at 260 mm.
     let reference = radial(520, 100, true);
     let cpml = 20.0 * rel_diff(&radial_cpml(120, 100), &reference).log10();
     let mur = 20.0 * rel_diff(&radial(120, 100, false), &reference).log10();
-    println!("rho_max reflection: CPML(8) {cpml:.1} dB, Mur {mur:.1} dB");
-    assert!(cpml < -35.0 && mur < -34.0, "{cpml:.1} / {mur:.1} dB");
+    println!("rho_max reflection: PML(8) {cpml:.1} dB, Mur {mur:.1} dB");
+    assert!(cpml < -80.0 && mur < -34.0, "{cpml:.1} / {mur:.1} dB");
 }
 
 #[test]

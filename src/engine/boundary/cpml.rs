@@ -182,6 +182,17 @@
 //! including the layer): −83.6 dB in vacuum, −85.7 dB for `ε_r` = 4 and 12
 //! (−80.5 / −73.4 dB with the vacuum `σ_max`).
 //!
+//! # Cylindrical grids
+//!
+//! On a cylindrical grid the z faces (and the α faces of a sector) use
+//! the layers above unchanged. The `ρ_max` face uses the cylindrical PML
+//! of [`cyl_pml`](super::cyl_pml) instead, a stretch of the radius itself,
+//! which also enters the α metric. It takes over every component in its
+//! x-planes, including the corners with the z / α layers, which are cut at
+//! its interface. [`CpmlBoundary::plane_rho_max`] restores the plain
+//! Cartesian stretch there, for comparison only (it reflects at the order
+//! of `1/(kρ)`).
+//!
 //! # Parallel execution and cost
 //!
 //! The correction runs as [slab hooks](crate::engine::SlabHooks): inside
@@ -203,6 +214,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use super::cyl_pml::CylLayer;
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0, Z0};
 use crate::engine::Coefficients;
@@ -520,6 +532,10 @@ pub struct CpmlBoundary {
     nodes: [usize; 3],
     dt: f64,
     layers: Vec<Layer>,
+    /// The `ρ_max` layer of a cylindrical grid uses the cylindrical PML
+    /// ([`cyl_pml`](super::cyl_pml)) and these are its grid and interface
+    /// line.
+    cyl: Option<(Grid, usize)>,
     /// The state partitioned over the engine's slabs, once registered.
     parts: Option<Arc<CpmlParts>>,
 }
@@ -537,6 +553,7 @@ struct CpmlParts {
 struct Pieces {
     e: Vec<Slab>,
     h: Vec<Slab>,
+    cyl: Option<CylLayer>,
 }
 
 impl CpmlParts {
@@ -549,14 +566,22 @@ impl CpmlParts {
 
 impl SlabHooks for CpmlParts {
     fn post_h_slab(&self, i: &mut SlabMut<'_>, u: &SlabRef<'_>, ctx: &SlabContext<'_>) {
-        for s in &mut self.pieces(ctx.slab).h {
+        let mut p = self.pieces(ctx.slab);
+        for s in &mut p.h {
             s.apply(i, u, ctx.coefficients.db(s.comp), &self.zero, false);
+        }
+        if let Some(c) = &mut p.cyl {
+            c.post_h(i, u, |a| ctx.coefficients.db(a), &self.zero);
         }
     }
 
     fn post_e_slab(&self, u: &mut SlabMut<'_>, i: &SlabRef<'_>, ctx: &SlabContext<'_>) {
-        for s in &mut self.pieces(ctx.slab).e {
+        let mut p = self.pieces(ctx.slab);
+        for s in &mut p.e {
             s.apply(u, i, ctx.coefficients.cb(s.comp), &self.zero, true);
+        }
+        if let Some(c) = &mut p.cyl {
+            c.post_e(u, i, |a| ctx.coefficients.cb(a), &self.zero);
         }
     }
 }
@@ -605,6 +630,7 @@ impl CpmlBoundary {
         let n = grid.nodes();
         let mut cells = [0usize; 6];
         let mut out = Vec::new();
+        let mut cyl = None;
         for (face, params) in layers {
             params.validate()?;
             if cells[face.index()] != 0 {
@@ -619,6 +645,16 @@ impl CpmlBoundary {
                 )));
             }
             cells[face.index()] = params.cells;
+            if grid.is_cylindrical() && face == Face::XMax {
+                let inner = total - params.cells;
+                if grid.lines(Axis::X)[inner] <= 0.0 {
+                    return Err(Error::Invalid(format!(
+                        "PML on {face}: the layer of {} cells reaches the axis",
+                        params.cells
+                    )));
+                }
+                cyl = Some((grid.clone(), inner));
+            }
             let n_face = index(face, params.cells);
             out.push(Layer::new(grid, dt, face, params, n_face));
         }
@@ -634,6 +670,7 @@ impl CpmlBoundary {
             nodes: n,
             dt,
             layers: out,
+            cyl,
             parts: None,
         })
     }
@@ -662,6 +699,41 @@ impl CpmlBoundary {
     /// layer.
     pub fn h_profile(&self, face: Face) -> Option<&[CpmlCoefficients]> {
         self.layer(face).map(|l| &l.h_coeffs[..])
+    }
+
+    /// Whether the `ρ_max` face of a cylindrical grid uses the cylindrical
+    /// PML ([`cyl_pml`](super::cyl_pml), the default there).
+    pub fn is_cylindrical_rho_max(&self) -> bool {
+        self.cyl.is_some()
+    }
+
+    /// Uses the Cartesian (plane-wave) stretch on the `ρ_max` face of a
+    /// cylindrical grid instead of the cylindrical PML. It reflects an
+    /// outgoing cylindrical wave at the order of `1/(kρ)`; this exists for
+    /// comparison only.
+    pub fn plane_rho_max(mut self) -> Self {
+        self.cyl = None;
+        self
+    }
+
+    /// The Cartesian stretch `[β, w, 1/κ − 1]` of the layers normal to
+    /// `normal` for the `comp` correction (E or H side), per node index
+    /// along `normal`, or `None` if `normal` has no layer.
+    fn transverse(&self, e_side: bool, comp: Axis, normal: Axis) -> Option<[Vec<f32>; 3]> {
+        let len = self.nodes[normal.index()];
+        let mut out: [Vec<f32>; 3] = core::array::from_fn(|_| vec![0.0; len]);
+        let mut any = false;
+        for l in self.layers.iter().filter(|l| l.face.axis() == normal) {
+            let slabs = if e_side { &l.e } else { &l.h };
+            for s in slabs.iter().filter(|s| s.comp == comp) {
+                let r = s.lo[normal.index()]..s.hi[normal.index()];
+                out[0][r.clone()].copy_from_slice(&s.b);
+                out[1][r.clone()].copy_from_slice(&s.a);
+                out[2][r].copy_from_slice(&s.k);
+                any = true;
+            }
+        }
+        any.then_some(out)
     }
 
     fn layer(&self, face: Face) -> Option<&Layer> {
@@ -825,14 +897,29 @@ impl Operator for CpmlBoundary {
             "CPML built for another grid"
         );
         assert_eq!(part.dt(), self.dt, "CPML built for another time step");
+        // The cylindrical ρ_max layer takes over all of its x-planes,
+        // including the overlaps with the other faces' layers.
+        let cyl = self.cyl.as_ref().map(|(grid, inner)| {
+            let l = self.layer(Face::XMax).expect("ρ_max layer");
+            let layer = CylLayer::new(grid, self.dt, &l.params, l.n, |e, c, d| {
+                self.transverse(e, c, d)
+            });
+            (layer, *inner)
+        });
+        let x_end = cyl.as_ref().map_or(self.nodes[0], |c| c.1);
         let slabs = (0..part.slabs())
             .map(|q| {
                 let r = part.planes(q);
                 let mut p = Pieces::default();
                 for l in &self.layers {
-                    p.e.extend(l.e.iter().filter_map(|s| s.clip(r.start, r.end)));
-                    p.h.extend(l.h.iter().filter_map(|s| s.clip(r.start, r.end)));
+                    if cyl.is_some() && l.face == Face::XMax {
+                        continue;
+                    }
+                    let end = r.end.min(x_end);
+                    p.e.extend(l.e.iter().filter_map(|s| s.clip(r.start, end)));
+                    p.h.extend(l.h.iter().filter_map(|s| s.clip(r.start, end)));
                 }
+                p.cyl = cyl.as_ref().map(|c| c.0.clip(r.start, r.end));
                 Mutex::new(p)
             })
             .collect();

@@ -8,6 +8,7 @@
 
 pub mod abc;
 pub mod cpml;
+pub mod cyl_pml;
 pub mod mur;
 pub mod periodic;
 

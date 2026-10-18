@@ -424,6 +424,8 @@ openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
     runs serially between the half-steps for now.
   - ψ arrays are stored only for the slabs; each ψ term handles one derivative
     direction, so edges and corners are correct.
+  - On the `ρ_max` face of a cylindrical grid the same operator runs the
+    cylindrical PML instead (§5.15.2).
 - **AbsorbingBC sheets** (csx `AbsorbingBC`, implemented,
   `engine::boundary::abc::AbsorbingSheet`): the same first-order Mur update
   on the tangential E of a rectangle on an interior mesh plane, against the
@@ -1079,12 +1081,13 @@ from the outer edge only). Dump coordinates are `(ρ, α, z)`, so VTK files
 show the parameter box, not the physical cylinder.
 
 **Boundaries.** CPML and Mur work on the z faces as on Cartesian grids
-(coax TEM reflection −86 dB with CPML(8)). On the `ρ_max` face they use the
-plane-wave stretch / one-way equation, which does not match an outgoing
+(coax TEM reflection −86 dB with CPML(8)). A PML on the `ρ_max` face is the
+cylindrical PML of §5.15.2 (−94 dB at 58 mm with 8 cells). Mur there uses
+the plane-wave one-way equation, which does not match an outgoing
 cylindrical wave: the reflection is of order `1/(kρ)`, measured −31 dB at
-`ρ = 26 mm`, −37 dB at 56 mm, −43 dB at 116 mm (5–25 GHz, CPML(8) and Mur
-alike). A cylindrical PML (complex-stretched `ρ̃` in the α metric) is future
-work.
+`ρ = 26 mm`, −37 dB at 56 mm, −43 dB at 116 mm (5–25 GHz; the
+Cartesian-style CPML layer, still available as `plane_rho_max()` for
+comparison, is alike).
 
 **Not available on cylindrical grids** (dropped with a warning or refused):
 conducting sheets (PEC instead), dispersive poles (static values only), plane
@@ -1214,6 +1217,134 @@ on them fail (PEC edge); elements on coarse arcs or slaves act through
 the projection; the compile step warns about both. Absorbing α faces of
 a sector are not combined with multigrid (the projection would treat
 their `cb = 0` edges as PEC).
+
+#### 5.15.2 Cylindrical PML on `ρ_max`
+
+Code: `engine::boundary::cyl_pml`, used by `CpmlBoundary` for the `XMax`
+face of every cylindrical grid (so `Simulation` and openEMS XML models
+get it automatically); tests: `tests/cyl_pml.rs`.
+
+**Why the Cartesian layer reflects.** The CPML replaces `∂/∂ρ` by
+`(1/s)·∂/∂ρ`. In cylindrical coordinates the radius also appears in the α
+metric (`ρ·dα`), so stretching only the derivative is not a change of
+coordinates and the layer is not matched to `H_ν(kρ)`; the mismatch is of
+order `1/(kρ)`. The matched layer stretches the radius itself
+(Teixeira & Chew 1997; Chew & Weedon 1994):
+
+```
+ρ̃ = ρ0 + ∫_{ρ0}^{ρ} s dρ',   s = κ + σ/(α + jω·ε0)
+```
+
+which enters both `dρ̃ = s·dρ` and the metric `ρ̃·dα`.
+
+**Integral form.** The circulations of §5.2 are topological. In the
+stretched coordinates only the edge lengths and face areas change, and
+they become complex, so the PML is a per-edge frequency-dependent `C` and
+`L`. With `u`, `i` the integrals over the stretched edges:
+
+```
+(jω·C + G)·g·u = Σi,   g = (Ã*/A*)/(l̃/l)
+(jω·L + R)·h·i = −Σu,  h = (Ã/A)/(l̃*/l*)
+```
+
+From the table of §5.15, with `s` the mean stretch over an interval
+(`(ρ̃_b − ρ̃_a)/(ρ_b − ρ_a)`), `s̄ = ρ̃/ρ` at a point and
+`s̄₂ = (ρ̃_a + ρ̃_b)/(ρ_a + ρ_b)`:
+
+| component | `g` / `h` | intervals |
+|---|---|---|
+| E_ρ (cell i) | `s̄/s` | `s` over cell `i`, `s̄` at `ρ_{i+½}` |
+| E_α (line i) | `s/s̄` | `s` over the dual cell, `s̄` at `ρ_i` |
+| E_z (line i) | `s·s̄₂` | the dual cell (annular area `(ρ̃_b² − ρ̃_a²)/(ρ_b² − ρ_a²)`) |
+| H_ρ (line i) | `s̄/s` | `s` over the dual cell, `s̄` at `ρ_i` |
+| H_α (cell i) | `s/s̄` | `s` over cell `i`, `s̄` at `ρ_{i+½}` |
+| H_z (cell i) | `s·s̄₂` | cell `i` |
+
+This is the discrete anisotropic medium `diag(s̄/s, s/s̄, s·s̄)` of
+Teixeira & Chew. Outside the layer every factor is exactly 1, so there `u`
+and `i` are the physical integrals. The stretched radius at any
+fractional index is `ρ̃ = (ρ + K) + Σ/p`, with `p = jω·ε0 + α`,
+`K = ∫(κ − 1)dρ` and `Σ = ∫σ dρ`. `α` is constant over the layer: a
+graded `α` would make `ρ̃` non-rational in `p`. Every factor is then a
+ratio or product of first-order functions `(A·p + B)/(C·p + D)` of `p`.
+
+**Time stepping.** The kernel applies the plain circulation `S`. The
+operator adds `cb·(Y − S)` (E) or `−db·(Y − T)` (H), with `Y = g⁻¹∗S`
+evaluated as a cascade of at most two first-order stages
+(`s/s̄`, `s̄/s`, or `1/s̄₂` then `1/s`). This is the same "correct after the
+kernel" structure as the CPML, but `g⁻¹` multiplies the **whole**
+circulation, not one derivative term. Each stage `A/C + r/(jω + γ)`
+(`γ = (α + D/C)/ε0`) is discretised with the bilinear (trapezoidal) rule:
+
+```
+y^n = (A/C)·x^n + ψ^n,   ψ^n = β·ψ^{n−1} + w·(x^n + x^{n−1}),
+β = (2 − γ·dt)/(2 + γ·dt),   w = r·dt/(2 + γ·dt)
+```
+
+This realises every stage exactly at the warped frequency
+`Ω = (2/dt)·tan(ω·dt/2)`. All stages share that warp, so the semi-discrete
+layer is still an exact stretch, `s(Ω)`. The first-order recursive
+convolution of the CPML (`ψ ← e^{−γdt}ψ + …`) was tried first. It gave
+−63 dB at 26 mm and improved by 4.5 dB per halving of `dt`, so it was a
+time-discretisation error. The bilinear form gives −82 dB, independent of
+`dt`. State: two `ψ` and two previous inputs per edge.
+
+**Grading.** As the CPML: index depth `t`, `σ = σ_max(Δ)·t^m`,
+`κ = 1 + (κ_max − 1)·t^m`, medium-tuned `σ_max`. The integrals are exact
+(`ρ` is linear in the index within a cell), and `Σ = Σ_tot·t^{m+1}` with
+`Σ_tot = σ_max(Δ)·Δ·n/(m + 1)`.
+
+**Late-time stability.** With `α = 0` the stretch is infinite at DC, and
+`s` appears in the numerator of some factors (a pure integrator for `H_ρ`
+on the interface line, where `s̄ = 1`). Static fields left by a source with
+DC content then made the energy grow slowly, quadratically in time
+(+0.8 % over 100 000 steps), the known weak instability of unsplit PMLs.
+The layer therefore uses the CFS shift `α = max(α_max, 10⁻³·σ_max)`.
+That moves every pole to `γ ≥ α/ε0 > 0`, and the CFS corner
+`α/(2π·ε0)` sits near 1 % of the frequency at which the cells are λ/20,
+so absorption in band is unchanged. With it, static remainders settle (a
+damped ripple of ~1e-5) and never grow.
+
+**Corners.** The layer handles every component in its x-planes, including
+where z-face (or α-face, for sectors) CPML layers overlap it. Those
+Cartesian layers are cut at the interface, and inside the ρ layer the
+derivative term along that axis is stretched with the face's own CPML
+recursion, `(1/κ_q)·D + ψ_q`, before `g⁻¹` is applied to the sum. That is
+the exact two-axis stretch. Simply adding the two corrections (z-CPML on
+its derivative term, `g⁻¹` on the plain sum) is **unstable** (measured).
+
+**Restrictions.** The interface radius must be `> 0` (the layer must not
+reach the axis). A `ρ_min` PML (annulus) keeps the Cartesian stretch.
+
+**Validation** (`tests/cyl_pml.rs`). Measured as the time-gated
+difference to a reference domain 560 cells larger; 0.5 mm cells,
+5–25 GHz; annulus from 2 mm with 16 α cells (all resolved azimuthal
+orders excited). TM between PEC plates, TE between PMC plates:
+
+| case | cylindrical PML | Cartesian-style layer |
+|---|---|---|
+| TM, layer at 58 mm, PML(8) | −93.8 dB | −38.2 dB |
+| TE, same | −90.5 dB | −37.0 dB |
+| TM, PML(4) / (6) / (12) / (16) | −50.8 / −73.7 / −101.2 / −105.8 dB | −38.1 … −39.5 dB |
+| TE, PML(4) / (6) / (12) / (16) | −51.4 / −75.1 / −98.0 / −102.2 dB | −35.6 … −38.1 dB |
+| TM / TE, PML(8), m = 2 | −86.5 / −86.3 dB | −38.2 / −36.9 dB |
+| TM / TE, PML(8), m = 4 | −91.3 / −88.4 dB | −38.1 / −37.0 dB |
+| TM / TE, PML(8), sigma_factor 0.5 / 2 | −53.2 / −90.7, −53.7 / −89.9 dB | −38 dB |
+| TM / TE, PML(8), κ_max = 3 | −99.5 / −89.8 dB | −38.4 / −37.2 dB |
+| TM / TE, PML(8), α_max = 0.05 S/m | −94.9 / −89.5 dB | −38.2 / −37.1 dB |
+| TM / TE, layer at 26 mm | −82.4 / −80.3 dB | −31.6 / −30.8 dB |
+| TM / TE, layer at 114 mm | −99.3 / −97.4 dB | −45.4 / −42.7 dB |
+| 3-D, 1 mm cells, PML(8) on ρ_max and both z faces (corners) | −75.0 dB | −33.0 dB |
+| zero-mean pulse, 16 000 steps | energy −113 … −134 dB of peak, no late growth | |
+| DC source remainder, 12 000 steps | constant within 2e-4 | |
+| 1, 2, 3, 5 threads (3-D, corners) | bit-identical | |
+
+Thin layers are limited by the round trip through the PEC-backed layer,
+`exp(−1.6·n·sigma_factor)`: −56 dB for 4 cells or for
+`sigma_factor = 0.5`. 6 cells already reach −74 dB, and 8 cells the
+discretisation floor of about −90 dB, which falls slowly with the radius
+(−81 dB at 26 mm, −98 dB at 114 mm; Δ/ρ effects). The 3-D number also
+contains the grazing incidence on the Cartesian z layers.
 
 ## 6. Engine architecture
 
