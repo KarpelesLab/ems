@@ -2,6 +2,7 @@
 
 use super::fields::Fields;
 use super::operator::{Operator, StepContext};
+use crate::axis::Axis;
 
 /// Which field a [`Probe`] samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +22,7 @@ pub enum ProbeQuantity {
 #[derive(Debug, Clone)]
 pub struct Probe {
     quantity: ProbeQuantity,
-    entries: Vec<(usize, [usize; 3], f64)>,
+    entries: Vec<(Axis, [usize; 3], f64)>,
     interval: u64,
     times: Vec<f64>,
     values: Vec<f64>,
@@ -40,17 +41,17 @@ impl Probe {
     }
 
     /// Probe of the single E edge along `axis` at `node`.
-    pub fn voltage(axis: usize, node: [usize; 3]) -> Self {
+    pub fn voltage(axis: Axis, node: [usize; 3]) -> Self {
         Self::new(ProbeQuantity::Voltage).entry(axis, node, 1.0)
     }
 
     /// Probe of the single H dual edge along `axis` at `node`.
-    pub fn current(axis: usize, node: [usize; 3]) -> Self {
+    pub fn current(axis: Axis, node: [usize; 3]) -> Self {
         Self::new(ProbeQuantity::Current).entry(axis, node, 1.0)
     }
 
     /// Adds component `axis` at `node` with `weight`.
-    pub fn entry(mut self, axis: usize, node: [usize; 3], weight: f64) -> Self {
+    pub fn entry(mut self, axis: Axis, node: [usize; 3], weight: f64) -> Self {
         self.entries.push((axis, node, weight));
         self
     }

@@ -1,15 +1,17 @@
 //! Update coefficients (materials → `ca, cb, da, db`) and the time step.
 
+use core::ops::{Index, IndexMut};
+
 use super::grid::Grid;
 use super::material::CellMaterials;
+use crate::axis::Axis;
 use crate::constants::{C0, EPS0, MU0};
+use crate::fdtd::Face;
 use crate::{Error, Result};
 
 /// What the coefficient builder does with the tangential E edges lying on
-/// one of the six outer faces of the domain.
-///
-/// Faces are indexed `2·axis + side` with `side = 0` for the low face
-/// (`x_min`, …) and `1` for the high face; see [`face_index`].
+/// one of the six outer faces of the domain; one per [`Face`] in
+/// [`FaceConditions`].
 ///
 /// Higher-level boundaries map onto this as follows (for the operator
 /// authors):
@@ -35,10 +37,78 @@ pub enum FaceCondition {
     Pmc,
 }
 
-/// Index of the outer face normal to `axis` (`0..3`); `high = false` is the
-/// face at the first grid line, `true` the face at the last one.
-pub const fn face_index(axis: usize, high: bool) -> usize {
-    2 * axis + high as usize
+/// The [`FaceCondition`] of each of the six outer faces, indexed by
+/// [`Face`] (default: all PEC).
+///
+/// ```
+/// use ems::engine::{FaceCondition, FaceConditions};
+/// use ems::Face;
+///
+/// let mut f = FaceConditions::default().with(Face::ZMin, FaceCondition::Pmc);
+/// f[Face::XMax] = FaceCondition::Pmc;
+/// assert_eq!(f[Face::ZMin], FaceCondition::Pmc);
+/// assert_eq!(f[Face::YMin], FaceCondition::Pec);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FaceConditions([FaceCondition; 6]);
+
+impl FaceConditions {
+    /// The same condition `c` on all six faces.
+    pub const fn all(c: FaceCondition) -> Self {
+        Self([c; 6])
+    }
+
+    /// From one condition per face in [`Face::ALL`] order
+    /// (x_min, x_max, y_min, y_max, z_min, z_max).
+    pub const fn from_array(faces: [FaceCondition; 6]) -> Self {
+        Self(faces)
+    }
+
+    /// The conditions in [`Face::ALL`] order.
+    pub const fn to_array(self) -> [FaceCondition; 6] {
+        self.0
+    }
+
+    /// Returns `self` with the condition of `face` set to `c`.
+    pub const fn with(mut self, face: Face, c: FaceCondition) -> Self {
+        self.0[face.index()] = c;
+        self
+    }
+
+    /// Sets the condition of `face`.
+    pub fn set(&mut self, face: Face, c: FaceCondition) {
+        self.0[face.index()] = c;
+    }
+
+    /// The condition of `face`.
+    pub const fn get(&self, face: Face) -> FaceCondition {
+        self.0[face.index()]
+    }
+
+    /// Iterates over `(face, condition)` pairs in [`Face::ALL`] order.
+    pub fn iter(&self) -> impl Iterator<Item = (Face, FaceCondition)> + '_ {
+        Face::ALL.into_iter().zip(self.0.iter().copied())
+    }
+}
+
+impl From<[FaceCondition; 6]> for FaceConditions {
+    /// See [`FaceConditions::from_array`].
+    fn from(faces: [FaceCondition; 6]) -> Self {
+        Self(faces)
+    }
+}
+
+impl Index<Face> for FaceConditions {
+    type Output = FaceCondition;
+    fn index(&self, face: Face) -> &FaceCondition {
+        &self.0[face.index()]
+    }
+}
+
+impl IndexMut<Face> for FaceConditions {
+    fn index_mut(&mut self, face: Face) -> &mut FaceCondition {
+        &mut self.0[face.index()]
+    }
 }
 
 /// How the time step is chosen.
@@ -94,13 +164,14 @@ pub fn courant_limit(grid: &Grid) -> f64 {
 pub fn primary_edge_cg(
     grid: &Grid,
     mats: &CellMaterials,
-    axis: usize,
+    axis: Axis,
     node: [usize; 3],
 ) -> (f64, f64) {
     let n = grid.nodes();
-    assert!(node[axis] + 1 < n[axis], "not a primary edge");
-    let (b, c) = ((axis + 1) % 3, (axis + 2) % 3);
-    let l = grid.delta(axis, node[axis]);
+    let (ab, ac) = axis.others();
+    let (a, b, c) = (axis.index(), ab.index(), ac.index());
+    assert!(node[a] + 1 < n[a], "not a primary edge");
+    let l = grid.delta(axis, node[a]);
     let (mut cap, mut cond) = (0.0, 0.0);
     for cb in [node[b].wrapping_sub(1), node[b]] {
         if cb >= n[b] - 1 {
@@ -111,13 +182,13 @@ pub fn primary_edge_cg(
                 continue;
             }
             let mut cell = [0; 3];
-            cell[axis] = node[axis];
+            cell[a] = node[a];
             cell[b] = cb;
             cell[c] = cc;
-            let area = 0.25 * grid.delta(b, cb) * grid.delta(c, cc);
+            let area = 0.25 * grid.delta(ab, cb) * grid.delta(ac, cc);
             let m = mats.get(cell);
-            cap += EPS0 * m.eps_r[axis] * area;
-            cond += m.kappa[axis] * area;
+            cap += EPS0 * m.eps_r[a] * area;
+            cond += m.kappa[a] * area;
         }
     }
     (cap / l, cond / l)
@@ -129,27 +200,23 @@ pub fn primary_edge_cg(
 ///
 /// # Panics
 /// If the dual edge does not exist (a transverse index at its last node).
-pub fn dual_edge_lr(
-    grid: &Grid,
-    mats: &CellMaterials,
-    axis: usize,
-    node: [usize; 3],
-) -> (f64, f64) {
+pub fn dual_edge_lr(grid: &Grid, mats: &CellMaterials, axis: Axis, node: [usize; 3]) -> (f64, f64) {
     let n = grid.nodes();
-    let (b, c) = ((axis + 1) % 3, (axis + 2) % 3);
+    let (ab, ac) = axis.others();
+    let (a, b, c) = (axis.index(), ab.index(), ac.index());
     assert!(node[b] + 1 < n[b] && node[c] + 1 < n[c], "not a dual edge");
-    let area = grid.delta(b, node[b]) * grid.delta(c, node[c]);
+    let area = grid.delta(ab, node[b]) * grid.delta(ac, node[c]);
     let (mut inv_l, mut r_over_l2) = (0.0, 0.0);
-    for ca in [node[axis].wrapping_sub(1), node[axis]] {
-        if ca >= n[axis] - 1 {
+    for ca in [node[a].wrapping_sub(1), node[a]] {
+        if ca >= n[a] - 1 {
             continue;
         }
         let mut cell = node;
-        cell[axis] = ca;
+        cell[a] = ca;
         let half = 0.5 * grid.delta(axis, ca);
         let m = mats.get(cell);
-        let lc = MU0 * m.mu_r[axis] * area / half;
-        let rc = m.sigma_m[axis] * area / half;
+        let lc = MU0 * m.mu_r[a] * area / half;
+        let rc = m.sigma_m[a] * area / half;
         inv_l += 1.0 / lc;
         r_over_l2 += rc / (lc * lc);
     }
@@ -209,12 +276,11 @@ pub struct Coefficients {
 
 impl Coefficients {
     /// Builds the coefficients for `grid`, `mats` and time step `dt`, with
-    /// the outer faces handled according to `faces` (indexed by
-    /// [`face_index`]).
+    /// the outer faces handled according to `faces`.
     pub fn compute(
         grid: &Grid,
         mats: &CellMaterials,
-        faces: &[FaceCondition; 6],
+        faces: &FaceConditions,
         dt: f64,
     ) -> Result<Self> {
         if mats.cells() != grid.cells() {
@@ -232,34 +298,37 @@ impl Coefficients {
         let len = grid.num_nodes();
         let mut data: [Vec<f32>; 12] = core::array::from_fn(|_| vec![0.0; len]);
         let co = &mut data;
-        for axis in 0..3 {
-            let (b, c) = ((axis + 1) % 3, (axis + 2) % 3);
+        // Per axis `t`: whether its [low, high] face is PEC.
+        let pec_face = Axis::ALL
+            .map(|t| [false, true].map(|max| faces[Face::new(t, max)] == FaceCondition::Pec));
+        for axis in Axis::ALL {
             let pec = mats.pec_mask(axis);
+            let (b, c) = axis.others();
+            let (a, b, c) = (axis.index(), b.index(), c.index());
             for i in 0..n[0] {
                 for j in 0..n[1] {
                     for k in 0..n[2] {
                         let p = [i, j, k];
                         let idx = grid.index(p);
                         // E edge along `axis` starting at p.
-                        if p[axis] + 1 < n[axis] {
+                        if p[a] + 1 < n[a] {
                             let on_pec_face = [b, c].iter().any(|&t| {
-                                (p[t] == 0 && faces[face_index(t, false)] == FaceCondition::Pec)
-                                    || (p[t] == n[t] - 1
-                                        && faces[face_index(t, true)] == FaceCondition::Pec)
+                                (p[t] == 0 && pec_face[t][0])
+                                    || (p[t] == n[t] - 1 && pec_face[t][1])
                             });
                             if !(on_pec_face || pec[idx]) {
                                 let (cap, g) = primary_edge_cg(grid, mats, axis, p);
                                 let den = cap + 0.5 * g * dt;
-                                co[axis][idx] = ((cap - 0.5 * g * dt) / den) as f32;
-                                co[3 + axis][idx] = (dt / den) as f32;
+                                co[a][idx] = ((cap - 0.5 * g * dt) / den) as f32;
+                                co[3 + a][idx] = (dt / den) as f32;
                             }
                         }
                         // H dual edge along `axis` through p.
                         if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
                             let (l, r) = dual_edge_lr(grid, mats, axis, p);
                             let den = l + 0.5 * r * dt;
-                            co[6 + axis][idx] = ((l - 0.5 * r * dt) / den) as f32;
-                            co[9 + axis][idx] = (dt / den) as f32;
+                            co[6 + a][idx] = ((l - 0.5 * r * dt) / den) as f32;
+                            co[9 + a][idx] = (dt / den) as f32;
                         }
                     }
                 }
@@ -274,31 +343,31 @@ impl Coefficients {
     }
 
     /// `ca` of the E edges along `axis`.
-    pub fn ca(&self, axis: usize) -> &[f32] {
-        &self.data[axis]
+    pub fn ca(&self, axis: Axis) -> &[f32] {
+        &self.data[axis.index()]
     }
     /// `cb` of the E edges along `axis`.
-    pub fn cb(&self, axis: usize) -> &[f32] {
-        &self.data[3 + axis]
+    pub fn cb(&self, axis: Axis) -> &[f32] {
+        &self.data[3 + axis.index()]
     }
     /// `da` of the H dual edges along `axis`.
-    pub fn da(&self, axis: usize) -> &[f32] {
-        &self.data[6 + axis]
+    pub fn da(&self, axis: Axis) -> &[f32] {
+        &self.data[6 + axis.index()]
     }
     /// `db` of the H dual edges along `axis`.
-    pub fn db(&self, axis: usize) -> &[f32] {
-        &self.data[9 + axis]
+    pub fn db(&self, axis: Axis) -> &[f32] {
+        &self.data[9 + axis.index()]
     }
 
     /// Mutable `ca`, `cb` of the E edges along `axis` (for boundary and
     /// lumped-element operators at setup time).
-    pub fn e_mut(&mut self, axis: usize) -> (&mut [f32], &mut [f32]) {
-        self.pair_mut(axis)
+    pub fn e_mut(&mut self, axis: Axis) -> (&mut [f32], &mut [f32]) {
+        self.pair_mut(axis.index())
     }
 
     /// Mutable `da`, `db` of the H dual edges along `axis`.
-    pub fn h_mut(&mut self, axis: usize) -> (&mut [f32], &mut [f32]) {
-        self.pair_mut(6 + axis)
+    pub fn h_mut(&mut self, axis: Axis) -> (&mut [f32], &mut [f32]) {
+        self.pair_mut(6 + axis.index())
     }
 
     fn pair_mut(&mut self, first: usize) -> (&mut [f32], &mut [f32]) {
@@ -363,7 +432,7 @@ mod tests {
             Material::dielectric(4.0).with_kappa(2.0),
         );
         // Interior x edge at node (0, 1, 1): dual face y in [0.5, 2], z in [1, 2.5].
-        let (c, gg) = primary_edge_cg(&g, &m, 0, [0, 1, 1]);
+        let (c, gg) = primary_edge_cg(&g, &m, Axis::X, [0, 1, 1]);
         // Areas: cells j=0 -> dy/2 = 0.5, j=1 -> 1.0; k=0 -> 1.0, k=1 -> 0.5.
         let a_diel = 0.5 * (1.0 + 0.5);
         let a_vac = 1.0 * (1.0 + 0.5);
@@ -374,7 +443,7 @@ mod tests {
         let eps_eff = c * 1.0 / (EPS0 * (a_diel + a_vac));
         assert!(rel(eps_eff, (4.0 * a_diel + a_vac) / (a_diel + a_vac)) < 1e-14);
         // Corner edge at the domain edge: a single quarter cell.
-        let (c, _) = primary_edge_cg(&g, &m, 0, [1, 0, 0]);
+        let (c, _) = primary_edge_cg(&g, &m, Axis::X, [1, 0, 0]);
         assert!(rel(c, EPS0 * 4.0 * 0.5 * 1.0) < 1e-14);
     }
 
@@ -384,7 +453,7 @@ mod tests {
         let mut m = CellMaterials::vacuum(&g);
         m.set([1, 0, 0], Material::VACUUM.with_mu_r(3.0).with_sigma_m(5.0));
         // x dual edge through node 1: half cells of 0.5 (vacuum) and 1.0 (mu_r 3).
-        let (l, r) = dual_edge_lr(&g, &m, 0, [1, 0, 0]);
+        let (l, r) = dual_edge_lr(&g, &m, Axis::X, [1, 0, 0]);
         let area = 2.0;
         let l1 = MU0 * area / 0.5;
         let l2 = MU0 * 3.0 * area / 1.0;
@@ -394,11 +463,11 @@ mod tests {
         // Homogeneous dual edge reproduces L = mu A / l*, R = sigma A / l*.
         let mut m2 = CellMaterials::new(&g, Material::VACUUM.with_mu_r(2.0).with_sigma_m(7.0));
         m2.set([0, 0, 0], *m2.get([1, 0, 0]));
-        let (l, r) = dual_edge_lr(&g, &m2, 0, [1, 0, 0]);
+        let (l, r) = dual_edge_lr(&g, &m2, Axis::X, [1, 0, 0]);
         assert!(rel(l, MU0 * 2.0 * area / 1.5) < 1e-14);
         assert!(rel(r, 7.0 * area / 1.5) < 1e-14);
         // Boundary dual edge: single half cell.
-        let (l, _) = dual_edge_lr(&g, &m2, 0, [2, 0, 0]);
+        let (l, _) = dual_edge_lr(&g, &m2, Axis::X, [2, 0, 0]);
         assert!(rel(l, MU0 * 2.0 * area / 1.0) < 1e-14);
     }
 
@@ -406,40 +475,40 @@ mod tests {
     fn faces_pec_and_loss() {
         let g = Grid::uniform([3, 3, 3], [1e-3; 3]).unwrap();
         let mut m = CellMaterials::new(&g, Material::VACUUM.with_kappa(1.0));
-        m.set_pec_edge(2, [1, 1, 1]);
+        m.set_pec_edge(Axis::Z, [1, 1, 1]);
         let dt = TimeStep::default().resolve(&g).unwrap();
-        let mut faces = [FaceCondition::Pec; 6];
+        let mut faces = FaceConditions::default();
         let co = Coefficients::compute(&g, &m, &faces, dt).unwrap();
         // Tangential edge on the x_min face is PEC; interior edge is not.
-        assert_eq!(co.cb(1)[g.index([0, 1, 1])], 0.0);
-        assert!(co.cb(1)[g.index([1, 1, 1])] > 0.0);
+        assert_eq!(co.cb(Axis::Y)[g.index([0, 1, 1])], 0.0);
+        assert!(co.cb(Axis::Y)[g.index([1, 1, 1])] > 0.0);
         // PEC mask.
-        assert_eq!(co.cb(2)[g.index([1, 1, 1])], 0.0);
-        assert_eq!(co.ca(2)[g.index([1, 1, 1])], 0.0);
+        assert_eq!(co.cb(Axis::Z)[g.index([1, 1, 1])], 0.0);
+        assert_eq!(co.ca(Axis::Z)[g.index([1, 1, 1])], 0.0);
         // Normal edge touching the face is not tangential.
-        assert!(co.cb(0)[g.index([0, 1, 1])] > 0.0);
+        assert!(co.cb(Axis::X)[g.index([0, 1, 1])] > 0.0);
         // Padding.
-        assert_eq!(co.cb(0)[g.index([3, 1, 1])], 0.0);
-        assert_eq!(co.db(0)[g.index([1, 3, 1])], 0.0);
+        assert_eq!(co.cb(Axis::X)[g.index([3, 1, 1])], 0.0);
+        assert_eq!(co.db(Axis::X)[g.index([1, 3, 1])], 0.0);
         // Loss coefficients.
-        let (c, gg) = primary_edge_cg(&g, &m, 0, [1, 1, 1]);
+        let (c, gg) = primary_edge_cg(&g, &m, Axis::X, [1, 1, 1]);
         let idx = g.index([1, 1, 1]);
         let ca = (c - gg * dt / 2.0) / (c + gg * dt / 2.0);
-        assert!(rel(co.ca(0)[idx] as f64, ca) < 1e-6);
+        assert!(rel(co.ca(Axis::X)[idx] as f64, ca) < 1e-6);
         assert!(ca < 1.0);
         assert!(
             rel(
-                Coefficients::capacitance(co.ca(0)[idx], co.cb(0)[idx], dt),
+                Coefficients::capacitance(co.ca(Axis::X)[idx], co.cb(Axis::X)[idx], dt),
                 c
             ) < 1e-6
         );
         // PMC on x_min keeps the face edges alive (half dual face).
-        faces[face_index(0, false)] = FaceCondition::Pmc;
+        faces[Face::XMin] = FaceCondition::Pmc;
         let co = Coefficients::compute(&g, &m, &faces, dt).unwrap();
-        let (c_face, _) = primary_edge_cg(&g, &m, 1, [0, 1, 1]);
+        let (c_face, _) = primary_edge_cg(&g, &m, Axis::Y, [0, 1, 1]);
         assert!(rel(c_face, 0.5 * c) < 1e-12);
-        assert!(co.cb(1)[g.index([0, 1, 1])] > 0.0);
+        assert!(co.cb(Axis::Y)[g.index([0, 1, 1])] > 0.0);
         // But not where the x_min face meets the (PEC) y_min... z_min face.
-        assert_eq!(co.cb(1)[g.index([0, 1, 0])], 0.0);
+        assert_eq!(co.cb(Axis::Y)[g.index([0, 1, 0])], 0.0);
     }
 }

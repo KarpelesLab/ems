@@ -2,6 +2,7 @@
 
 use super::fields::Fields;
 use super::operator::{Operator, StepContext};
+use crate::axis::Axis;
 
 /// Time function of a source, `t` \[s\] → amplitude \[V\].
 pub type Amplitude = Box<dyn Fn(f64) -> f64 + Send>;
@@ -17,7 +18,7 @@ pub type Amplitude = Box<dyn Fn(f64) -> f64 + Send>;
 /// A soft source on a PEC edge (`ca = cb = 0`) behaves like a hard source:
 /// the kernel clears the edge and the source writes the amplitude.
 pub struct EdgeSource {
-    edges: Vec<(usize, [usize; 3], f32)>,
+    edges: Vec<(Axis, [usize; 3], f32)>,
     amplitude: Amplitude,
 }
 
@@ -40,13 +41,13 @@ impl EdgeSource {
 
     /// Adds the primary edge along `axis` starting at `node`, with `weight`
     /// (use a negative weight to excite against the axis direction).
-    pub fn edge(mut self, axis: usize, node: [usize; 3], weight: f64) -> Self {
+    pub fn edge(mut self, axis: Axis, node: [usize; 3], weight: f64) -> Self {
         self.edges.push((axis, node, weight as f32));
         self
     }
 
     /// The excited edges `(axis, node, weight)`.
-    pub fn edges(&self) -> impl Iterator<Item = (usize, [usize; 3], f64)> + '_ {
+    pub fn edges(&self) -> impl Iterator<Item = (Axis, [usize; 3], f64)> + '_ {
         self.edges.iter().map(|&(a, n, w)| (a, n, w as f64))
     }
 }

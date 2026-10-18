@@ -19,6 +19,7 @@ pub mod waveform;
 
 pub use axis::Axis;
 pub use csx;
+pub use engine::{CellMaterials, Engine, Grid};
 pub use error::{Error, Result};
 pub use fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
 pub use post::Complex64;
@@ -28,6 +29,7 @@ pub use waveform::Waveform;
 pub mod prelude {
     pub use crate::axis::Axis;
     pub use crate::constants::{C0, EPS0, MU0, Z0};
+    pub use crate::engine::{CellMaterials, Engine, Grid};
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
     pub use crate::post::Complex64;

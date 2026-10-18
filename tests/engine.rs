@@ -3,9 +3,10 @@
 
 use ems::constants::C0;
 use ems::engine::{
-    CellMaterials, EdgeSource, Engine, FaceCondition, Grid, Material, OperatorHandle, Probe,
-    TimeStep,
+    CellMaterials, EdgeSource, Engine, FaceCondition, FaceConditions, Grid, Material,
+    OperatorHandle, Probe, TimeStep,
 };
+use ems::{Axis, Face};
 
 /// Gaussian-modulated pulse centred at `f0` with ~`bw` bandwidth.
 fn pulse(f0: f64, bw: f64) -> (impl Fn(f64) -> f64 + Send + 'static, f64) {
@@ -94,21 +95,21 @@ fn run_cavity(
     threads: usize,
     scale: f64,
 ) -> CavityRun {
-    let nearest = |axis: usize, x: f64| {
+    let nearest = |axis: Axis, x: f64| {
         let l = grid.lines(axis);
         (0..l.len())
             .min_by(|&a, &b| (l[a] - x).abs().total_cmp(&(l[b] - x).abs()))
             .unwrap()
     };
     let src = [
-        nearest(0, 0.3 * DIMS[0]),
-        nearest(1, 0.3 * DIMS[1]),
-        nearest(2, 0.4 * DIMS[2]),
+        nearest(Axis::X, 0.3 * DIMS[0]),
+        nearest(Axis::Y, 0.3 * DIMS[1]),
+        nearest(Axis::Z, 0.4 * DIMS[2]),
     ];
     let prb = [
-        nearest(0, 0.7 * DIMS[0]),
-        nearest(1, 0.5 * DIMS[1]),
-        nearest(2, 0.6 * DIMS[2]),
+        nearest(Axis::X, 0.7 * DIMS[0]),
+        nearest(Axis::Y, 0.5 * DIMS[1]),
+        nearest(Axis::Z, 0.6 * DIMS[2]),
     ];
     let mut e = Engine::builder(grid)
         .materials(mats)
@@ -116,8 +117,8 @@ fn run_cavity(
         .build()
         .unwrap();
     let (f, t_end) = pulse(3.2e9 * scale, 2.5e9 * scale);
-    e.add_operator(EdgeSource::new(f).edge(1, src, 1.0));
-    let h = e.add_operator(Probe::voltage(1, prb));
+    e.add_operator(EdgeSource::new(f).edge(Axis::Y, src, 1.0));
+    let h = e.add_operator(Probe::voltage(Axis::Y, prb));
     e.run(steps);
     let p = e.operator(&h);
     CavityRun {
@@ -194,8 +195,8 @@ fn small_cavity(mats: impl FnOnce(&Grid) -> CellMaterials, threads: usize) -> (E
     let (f, t_end) = pulse(3e9, 1e9);
     e.add_operator(
         EdgeSource::new(f)
-            .edge(2, [3, 2, 2], 1.0)
-            .edge(0, [6, 5, 3], -0.5),
+            .edge(Axis::Z, [3, 2, 2], 1.0)
+            .edge(Axis::X, [6, 5, 3], -0.5),
     );
     (e, t_end)
 }
@@ -269,7 +270,7 @@ fn lossy_energy_decays() {
     );
 }
 
-fn run_det(threads: usize, faces: [FaceCondition; 6]) -> (Vec<Vec<f32>>, Vec<f64>, f64) {
+fn run_det(threads: usize, faces: FaceConditions) -> (Vec<Vec<f32>>, Vec<f64>, f64) {
     let g = Grid::new([
         graded(0.1, 13, 0.2),
         graded(0.08, 9, 0.1),
@@ -295,11 +296,11 @@ fn run_det(threads: usize, faces: [FaceCondition; 6]) -> (Vec<Vec<f32>>, Vec<f64
         .unwrap();
     assert_eq!(e.threads(), threads);
     let (f, _) = pulse(5e9, 4e9);
-    e.add_operator(EdgeSource::new(f).edge(2, [4, 4, 3], 1.0));
-    let h: OperatorHandle<Probe> = e.add_operator(Probe::current(0, [5, 3, 3]).interval(3));
+    e.add_operator(EdgeSource::new(f).edge(Axis::Z, [4, 4, 3], 1.0));
+    let h: OperatorHandle<Probe> = e.add_operator(Probe::current(Axis::X, [5, 3, 3]).interval(3));
     e.run(300);
     let mut arrays = Vec::new();
-    for a in 0..3 {
+    for a in Axis::ALL {
         arrays.push(e.u_component(a));
         arrays.push(e.i_component(a));
     }
@@ -308,9 +309,9 @@ fn run_det(threads: usize, faces: [FaceCondition; 6]) -> (Vec<Vec<f32>>, Vec<f64
 
 #[test]
 fn deterministic_across_threads() {
-    let mut faces = [FaceCondition::Pec; 6];
-    faces[1] = FaceCondition::Pmc;
-    faces[4] = FaceCondition::Pmc;
+    let faces = FaceConditions::default()
+        .with(Face::XMax, FaceCondition::Pmc)
+        .with(Face::ZMin, FaceCondition::Pmc);
     let (a1, p1, w1) = run_det(1, faces);
     assert!(w1 > 0.0);
     for t in [2, 3, 4] {
@@ -336,8 +337,8 @@ fn deterministic_run_vs_step_no_operators() {
         let g = Grid::uniform([9, 7, 5], [1e-3; 3]).unwrap();
         let mut e = Engine::builder(g).threads(threads).build().unwrap();
         let mut f = e.fields_mut();
-        f.u.set(2, [4, 3, 2], 1.0);
-        f.i.set(0, [2, 2, 2], 1e-3);
+        f.u.set(Axis::Z, [4, 3, 2], 1.0);
+        f.i.set(Axis::X, [2, 2, 2], 1e-3);
         drop(f);
         e
     };
@@ -349,7 +350,7 @@ fn deterministic_run_vs_step_no_operators() {
         b.step();
     }
     assert_eq!(a.timestep(), 200);
-    for ax in 0..3 {
+    for ax in Axis::ALL {
         assert_eq!(a.u_component(ax), b.u_component(ax));
         assert_eq!(a.i_component(ax), b.i_component(ax));
     }
@@ -363,11 +364,11 @@ fn pec_walls_and_padding_stay_zero() {
     for j in 0..ny {
         for k in 0..nz {
             // Tangential E on the x faces, and the x-edge padding plane.
-            assert_eq!(e.u(1, [0, j, k]), 0.0);
-            assert_eq!(e.u(2, [nx - 1, j, k]), 0.0);
-            assert_eq!(e.u(0, [nx - 1, j, k]), 0.0);
+            assert_eq!(e.u(Axis::Y, [0, j, k]), 0.0);
+            assert_eq!(e.u(Axis::Z, [nx - 1, j, k]), 0.0);
+            assert_eq!(e.u(Axis::X, [nx - 1, j, k]), 0.0);
             // Normal H on a PEC face stays zero.
-            assert_eq!(e.i(0, [0, j, k]), 0.0);
+            assert_eq!(e.i(Axis::X, [0, j, k]), 0.0);
         }
     }
     assert!(e.energy() > 0.0);

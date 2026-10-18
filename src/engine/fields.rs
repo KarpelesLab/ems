@@ -10,6 +10,8 @@
 
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use crate::axis::Axis;
+
 /// The three components of one field type (E or H) of one slab.
 pub(crate) type Block = [Vec<f32>; 3];
 
@@ -118,7 +120,7 @@ impl FieldStore {
 /// Exclusive view of one field type: the E edge voltages `u` or the H
 /// dual-edge currents `i`, all three components.
 ///
-/// Values are addressed by component `axis` (`0..3`) and node `[i, j, k]` in
+/// Values are addressed by component [`Axis`] and node `[i, j, k]` in
 /// the convention of the [engine module docs](super). Whole x-planes
 /// (`ny·nz` values, z contiguous) are available as slices for bulk
 /// operators.
@@ -137,11 +139,11 @@ impl FieldArrays<'_> {
     /// Value of component `axis` at `node`.
     ///
     /// # Panics
-    /// If `axis ≥ 3` or the node is out of range.
+    /// If the node is out of range.
     #[inline]
-    pub fn get(&self, axis: usize, node: [usize; 3]) -> f32 {
+    pub fn get(&self, axis: Axis, node: [usize; 3]) -> f32 {
         let (s, o) = self.layout.locate(node);
-        self.blocks[s][axis][o]
+        self.blocks[s][axis.index()][o]
     }
 
     /// Mutable reference to component `axis` at `node`.
@@ -150,37 +152,37 @@ impl FieldArrays<'_> {
     /// docs) is allowed but meaningless; keep them at zero.
     ///
     /// # Panics
-    /// If `axis ≥ 3` or the node is out of range.
+    /// If the node is out of range.
     #[inline]
-    pub fn get_mut(&mut self, axis: usize, node: [usize; 3]) -> &mut f32 {
+    pub fn get_mut(&mut self, axis: Axis, node: [usize; 3]) -> &mut f32 {
         let (s, o) = self.layout.locate(node);
-        &mut self.blocks[s][axis][o]
+        &mut self.blocks[s][axis.index()][o]
     }
 
     /// Sets component `axis` at `node`.
     #[inline]
-    pub fn set(&mut self, axis: usize, node: [usize; 3], v: f32) {
+    pub fn set(&mut self, axis: Axis, node: [usize; 3], v: f32) {
         *self.get_mut(axis, node) = v;
     }
 
     /// The x-plane `i` of component `axis` (`ny·nz` values, index
     /// `j·nz + k`).
-    pub fn plane(&self, axis: usize, i: usize) -> &[f32] {
+    pub fn plane(&self, axis: Axis, i: usize) -> &[f32] {
         let (s, o) = self.layout.locate([i, 0, 0]);
-        &self.blocks[s][axis][o..o + self.layout.plane]
+        &self.blocks[s][axis.index()][o..o + self.layout.plane]
     }
 
     /// Mutable x-plane `i` of component `axis`.
-    pub fn plane_mut(&mut self, axis: usize, i: usize) -> &mut [f32] {
+    pub fn plane_mut(&mut self, axis: Axis, i: usize) -> &mut [f32] {
         let (s, o) = self.layout.locate([i, 0, 0]);
-        &mut self.blocks[s][axis][o..o + self.layout.plane]
+        &mut self.blocks[s][axis.index()][o..o + self.layout.plane]
     }
 
     /// Copies component `axis` into one contiguous array in global layout.
-    pub fn to_vec(&self, axis: usize) -> Vec<f32> {
+    pub fn to_vec(&self, axis: Axis) -> Vec<f32> {
         let mut v = Vec::with_capacity(self.layout.n[0] * self.layout.plane);
         for b in &self.blocks {
-            v.extend_from_slice(&b[axis]);
+            v.extend_from_slice(&b[axis.index()]);
         }
         v
     }
@@ -222,11 +224,11 @@ mod tests {
         assert_eq!(l.slabs(), 3);
         let store = FieldStore::new(Layout::new([5, 2, 3], 2));
         let mut f = store.lock();
-        f.u.set(1, [4, 1, 2], 3.0);
-        f.i.set(0, [0, 0, 1], 2.0);
-        assert_eq!(f.u.get(1, [4, 1, 2]), 3.0);
-        let v = f.u.to_vec(1);
+        f.u.set(Axis::Y, [4, 1, 2], 3.0);
+        f.i.set(Axis::X, [0, 0, 1], 2.0);
+        assert_eq!(f.u.get(Axis::Y, [4, 1, 2]), 3.0);
+        let v = f.u.to_vec(Axis::Y);
         assert_eq!(v[(4 * 2 + 1) * 3 + 2], 3.0);
-        assert_eq!(f.i.plane(0, 0)[1], 2.0);
+        assert_eq!(f.i.plane(Axis::X, 0)[1], 2.0);
     }
 }

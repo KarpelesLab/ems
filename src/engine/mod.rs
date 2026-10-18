@@ -20,7 +20,9 @@
 //!
 //! # Array layout
 //!
-//! Axes are plain `usize` (`0 = x`, `1 = y`, `2 = z`). Every field and
+//! Field components and edge directions are selected by [`Axis`]; in the
+//! table below `u[0]` is the [`Axis::X`] component of `u`, and so on
+//! ([`Axis::index`]). Outer faces are named by [`Face`]. Every field and
 //! coefficient array has one entry per **primary node** `[i, j, k]`
 //! (`i < nx`, `j < ny`, `k < nz`) at linear index `(i·ny + j)·nz + k`
 //! (z contiguous). Write `x_i`, `y_j`, `z_k` for the grid lines and
@@ -86,7 +88,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use coeffs::{
-    Coefficients, FaceCondition, TimeStep, courant_limit, dual_edge_lr, face_index, primary_edge_cg,
+    Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,
+    primary_edge_cg,
 };
 pub use excite::{Amplitude, EdgeSource};
 pub use fields::{FieldArrays, Fields};
@@ -95,6 +98,8 @@ pub use material::{CellMaterials, Material};
 pub use operator::{Operator, OperatorHandle, StepContext};
 pub use probe::{Probe, ProbeQuantity};
 
+use crate::axis::Axis;
+use crate::fdtd::Face;
 use crate::{Error, Result};
 use fields::{FieldStore, Layout, read, write};
 use pool::{Pool, Shared};
@@ -104,7 +109,7 @@ use pool::{Pool, Shared};
 pub struct EngineBuilder {
     grid: Grid,
     materials: Option<CellMaterials>,
-    faces: [FaceCondition; 6],
+    faces: FaceConditions,
     timestep: TimeStep,
     threads: usize,
 }
@@ -116,18 +121,16 @@ impl EngineBuilder {
         self
     }
 
-    /// Condition of the outer face `face` (see [`face_index`]).
-    ///
-    /// # Panics
-    /// If `face ≥ 6`.
-    pub fn face(mut self, face: usize, c: FaceCondition) -> Self {
+    /// Condition of the outer face `face`.
+    pub fn face(mut self, face: Face, c: FaceCondition) -> Self {
         self.faces[face] = c;
         self
     }
 
-    /// Conditions of all six outer faces (default: all PEC).
-    pub fn faces(mut self, faces: [FaceCondition; 6]) -> Self {
-        self.faces = faces;
+    /// Conditions of all six outer faces (default: all PEC). Accepts a
+    /// [`FaceConditions`] or a `[FaceCondition; 6]` in [`Face::ALL`] order.
+    pub fn faces(mut self, faces: impl Into<FaceConditions>) -> Self {
+        self.faces = faces.into();
         self
     }
 
@@ -218,7 +221,7 @@ impl Engine {
         EngineBuilder {
             grid,
             materials: None,
-            faces: [FaceCondition::Pec; 6],
+            faces: FaceConditions::default(),
             timestep: TimeStep::default(),
             threads: 0,
         }
@@ -303,34 +306,34 @@ impl Engine {
     }
 
     /// E edge voltage of component `axis` at `node` \[V\].
-    pub fn u(&self, axis: usize, node: [usize; 3]) -> f32 {
+    pub fn u(&self, axis: Axis, node: [usize; 3]) -> f32 {
         let (s, o) = self.shared.store.layout.locate(node);
-        read(&self.shared.store.u[s])[axis][o]
+        read(&self.shared.store.u[s])[axis.index()][o]
     }
 
     /// H dual-edge current of component `axis` at `node` \[A\].
-    pub fn i(&self, axis: usize, node: [usize; 3]) -> f32 {
+    pub fn i(&self, axis: Axis, node: [usize; 3]) -> f32 {
         let (s, o) = self.shared.store.layout.locate(node);
-        read(&self.shared.store.i[s])[axis][o]
+        read(&self.shared.store.i[s])[axis.index()][o]
     }
 
     /// Copy of the E voltages of component `axis` in global layout.
-    pub fn u_component(&self, axis: usize) -> Vec<f32> {
+    pub fn u_component(&self, axis: Axis) -> Vec<f32> {
         self.shared
             .store
             .u
             .iter()
-            .flat_map(|b| read(b)[axis].clone())
+            .flat_map(|b| read(b)[axis.index()].clone())
             .collect()
     }
 
     /// Copy of the H currents of component `axis` in global layout.
-    pub fn i_component(&self, axis: usize) -> Vec<f32> {
+    pub fn i_component(&self, axis: Axis) -> Vec<f32> {
         self.shared
             .store
             .i
             .iter()
-            .flat_map(|b| read(b)[axis].clone())
+            .flat_map(|b| read(b)[axis.index()].clone())
             .collect()
     }
 

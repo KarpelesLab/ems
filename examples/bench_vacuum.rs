@@ -9,6 +9,7 @@
 
 use std::time::Instant;
 
+use ems::Axis;
 use ems::engine::{Engine, Grid};
 
 fn main() {
@@ -28,7 +29,7 @@ fn main() {
         .expect("engine");
     {
         let mut f = e.fields_mut();
-        f.u.set(2, [n / 3, n / 2, n / 2], 1.0);
+        f.u.set(Axis::Z, [n / 3, n / 2, n / 2], 1.0);
     }
     e.run(10); // warm up
     let t = Instant::now();

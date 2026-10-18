@@ -6,12 +6,14 @@
 //! *Computational Electrodynamics*, 3rd ed., ch. 3 and the non-uniform-grid
 //! discussion there). At the outer boundary the dual cells are half cells.
 
+use crate::axis::Axis;
 use crate::{Error, Result};
 
 /// A validated rectilinear mesh in metres.
 ///
-/// Axes are numbered `0 = x`, `1 = y`, `2 = z`. The grid has `n[a]` node
-/// lines along axis `a` (at least 2) and therefore `n[a] − 1` cells.
+/// Per-axis arrays such as [`nodes`](Self::nodes) are indexed by
+/// [`Axis::index`] (`[x, y, z]`). The grid has `n[a]` node lines along axis
+/// `a` (at least 2) and therefore `n[a] − 1` cells.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Grid {
     lines: [Vec<f64>; 3],
@@ -23,7 +25,7 @@ impl Grid {
     /// Every axis needs at least two lines; the coordinates must be finite
     /// and strictly increasing. The total node count must fit in `usize`.
     pub fn new(lines: [Vec<f64>; 3]) -> Result<Self> {
-        for (a, l) in lines.iter().enumerate() {
+        for (a, l) in Axis::ALL.into_iter().zip(&lines) {
             if l.len() < 2 {
                 return Err(Error::Invalid(format!(
                     "grid axis {a} needs at least 2 lines, got {}",
@@ -58,9 +60,9 @@ impl Grid {
         Self::new([axis(0), axis(1), axis(2)])
     }
 
-    /// Node coordinates of axis `a`.
-    pub fn lines(&self, axis: usize) -> &[f64] {
-        &self.lines[axis]
+    /// Node coordinates along `axis`.
+    pub fn lines(&self, axis: Axis) -> &[f64] {
+        &self.lines[axis.index()]
     }
 
     /// Number of nodes per axis, `[nx, ny, nz]`.
@@ -100,24 +102,26 @@ impl Grid {
     /// Primary edge length `Δ_a(i) = line[i+1] − line[i]` along `axis`,
     /// for `i < n[axis] − 1` (also the size of cell `i` along that axis).
     #[inline]
-    pub fn delta(&self, axis: usize, i: usize) -> f64 {
-        self.lines[axis][i + 1] - self.lines[axis][i]
+    pub fn delta(&self, axis: Axis, i: usize) -> f64 {
+        let l = self.lines(axis);
+        l[i + 1] - l[i]
     }
 
     /// All primary edge lengths of `axis` (`n[axis] − 1` values).
-    pub fn deltas(&self, axis: usize) -> Vec<f64> {
-        self.lines[axis].windows(2).map(|w| w[1] - w[0]).collect()
+    pub fn deltas(&self, axis: Axis) -> Vec<f64> {
+        self.lines(axis).windows(2).map(|w| w[1] - w[0]).collect()
     }
 
     /// Dual node position along `axis`: midpoint of cell `i`
     /// (`i < n[axis] − 1`).
-    pub fn dual_line(&self, axis: usize, i: usize) -> f64 {
-        0.5 * (self.lines[axis][i] + self.lines[axis][i + 1])
+    pub fn dual_line(&self, axis: Axis, i: usize) -> f64 {
+        let l = self.lines(axis);
+        0.5 * (l[i] + l[i + 1])
     }
 
     /// All dual node positions of `axis` (`n[axis] − 1` values).
-    pub fn dual_lines(&self, axis: usize) -> Vec<f64> {
-        self.lines[axis]
+    pub fn dual_lines(&self, axis: Axis) -> Vec<f64> {
+        self.lines(axis)
             .windows(2)
             .map(|w| 0.5 * (w[0] + w[1]))
             .collect()
@@ -128,16 +132,16 @@ impl Grid {
     /// `(Δ(i−1) + Δ(i)) / 2`. At the outer nodes (`i = 0`, `i = n − 1`) the
     /// dual cell is a half cell and the length is `Δ/2` of the single
     /// adjacent cell.
-    pub fn dual_delta(&self, axis: usize, i: usize) -> f64 {
-        let n = self.lines[axis].len();
+    pub fn dual_delta(&self, axis: Axis, i: usize) -> f64 {
+        let n = self.lines(axis).len();
         let lo = if i > 0 { self.delta(axis, i - 1) } else { 0.0 };
         let hi = if i + 1 < n { self.delta(axis, i) } else { 0.0 };
         0.5 * (lo + hi)
     }
 
     /// Smallest cell size along `axis`.
-    pub fn min_delta(&self, axis: usize) -> f64 {
-        self.lines[axis]
+    pub fn min_delta(&self, axis: Axis) -> f64 {
+        self.lines(axis)
             .windows(2)
             .map(|w| w[1] - w[0])
             .fold(f64::INFINITY, f64::min)
@@ -145,7 +149,7 @@ impl Grid {
 
     /// Smallest cell size per axis.
     pub fn min_deltas(&self) -> [f64; 3] {
-        [self.min_delta(0), self.min_delta(1), self.min_delta(2)]
+        Axis::ALL.map(|a| self.min_delta(a))
     }
 }
 
@@ -176,15 +180,15 @@ mod tests {
         assert_eq!(g.num_nodes(), 24);
         assert_eq!(g.cells(), [3, 1, 2]);
         assert_eq!(g.num_cells(), 6);
-        assert_eq!(g.deltas(0), vec![1.0, 2.0, 3.0]);
-        assert_eq!(g.dual_lines(0), vec![0.5, 2.0, 4.5]);
-        assert_eq!(g.dual_delta(0, 0), 0.5);
-        assert_eq!(g.dual_delta(0, 1), 1.5);
-        assert_eq!(g.dual_delta(0, 3), 1.5);
+        assert_eq!(g.deltas(Axis::X), vec![1.0, 2.0, 3.0]);
+        assert_eq!(g.dual_lines(Axis::X), vec![0.5, 2.0, 4.5]);
+        assert_eq!(g.dual_delta(Axis::X, 0), 0.5);
+        assert_eq!(g.dual_delta(Axis::X, 1), 1.5);
+        assert_eq!(g.dual_delta(Axis::X, 3), 1.5);
         assert_eq!(g.min_deltas(), [1.0, 2.0, 0.5]);
         assert_eq!(g.index([1, 1, 2]), (2 + 1) * 3 + 2);
         // Dual edges tile the whole axis.
-        let s: f64 = (0..4).map(|i| g.dual_delta(0, i)).sum();
+        let s: f64 = (0..4).map(|i| g.dual_delta(Axis::X, i)).sum();
         assert_eq!(s, 6.0);
     }
 }

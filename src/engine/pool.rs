@@ -111,6 +111,32 @@ pub(crate) struct Pool {
     busy: bool,
 }
 
+/// One-shot start signal: workers wait here before joining the barrier,
+/// so that a failed spawn can release the ones already started.
+#[derive(Debug, Default)]
+struct StartGate {
+    /// `None` until decided; `Some(true)` = run, `Some(false)` = exit.
+    state: Mutex<Option<bool>>,
+    cv: Condvar,
+}
+
+impl StartGate {
+    fn open(&self, run: bool) {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) -> bool {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(run) = *g {
+                return run;
+            }
+            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
 fn worker(sh: Arc<Shared>, s: usize) {
     loop {
         sh.barrier.wait();
@@ -137,23 +163,33 @@ impl Pool {
     /// Spawns one worker per slab except slab 0, which the caller runs.
     pub(crate) fn spawn(sh: &Arc<Shared>) -> std::io::Result<Self> {
         let slabs = sh.store.layout.slabs();
+        let gate = Arc::new(StartGate::default());
         let mut workers = Vec::with_capacity(slabs.saturating_sub(1));
         for s in 1..slabs {
             let sh = Arc::clone(sh);
+            let g = Arc::clone(&gate);
             let h = std::thread::Builder::new()
                 .name(format!("ems-worker-{s}"))
-                .spawn(move || worker(sh, s));
+                .spawn(move || {
+                    if g.wait() {
+                        worker(sh, s);
+                    }
+                });
             match h {
                 Ok(h) => workers.push(h),
                 Err(e) => {
-                    // Release the ones already started: they all wait at the
-                    // barrier for `slabs` participants, which can no longer
-                    // be reached, so we cannot join them; detach instead.
-                    drop(workers);
+                    // The barrier can no longer be completed: tell the
+                    // workers already started to exit before entering it,
+                    // and join them.
+                    gate.open(false);
+                    for w in workers {
+                        let _ = w.join();
+                    }
                     return Err(e);
                 }
             }
         }
+        gate.open(true);
         Ok(Self {
             workers,
             busy: false,

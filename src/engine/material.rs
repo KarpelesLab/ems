@@ -8,14 +8,15 @@
 use core::ops::Range;
 
 use super::grid::Grid;
+use crate::axis::Axis;
 use crate::{Error, Result};
 
 /// Diagonal-anisotropic linear material.
 ///
-/// Every quantity has one value per axis (`[x, y, z]`). An edge along axis
-/// `a` only uses the `a` component, so e.g. x-directed E edges see
-/// `eps_r[0]` and `kappa[0]`, x-directed H edges see `mu_r[0]` and
-/// `sigma_m[0]`.
+/// Every quantity has one value per axis (`[x, y, z]`, indexed by
+/// [`Axis::index`]). An edge along axis `a` only uses the `a` component, so
+/// e.g. x-directed E edges see `eps_r[0]` and `kappa[0]`, x-directed H edges
+/// see `mu_r[0]` and `sigma_m[0]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Material {
     /// Relative permittivity ε_r (> 0).
@@ -215,11 +216,11 @@ impl CellMaterials {
         self.table.iter().try_for_each(Material::validate)
     }
 
-    fn edge_index(&self, axis: usize, [i, j, k]: [usize; 3]) -> usize {
+    fn edge_index(&self, axis: Axis, [i, j, k]: [usize; 3]) -> usize {
         let n = self.nodes;
-        assert!(axis < 3, "axis {axis} out of range");
+        let a = axis.index();
         assert!(
-            i < n[0] && j < n[1] && k < n[2] && [i, j, k][axis] + 1 < n[axis],
+            i < n[0] && j < n[1] && k < n[2] && [i, j, k][a] + 1 < n[a],
             "edge {axis}:[{i}, {j}, {k}] is not a primary edge of a {n:?}-node grid"
         );
         (i * n[1] + j) * n[2] + k
@@ -230,23 +231,23 @@ impl CellMaterials {
     ///
     /// # Panics
     /// If the edge does not exist (e.g. an x edge at `i = nx − 1`).
-    pub fn set_pec_edge(&mut self, axis: usize, node: [usize; 3]) {
+    pub fn set_pec_edge(&mut self, axis: Axis, node: [usize; 3]) {
         let e = self.edge_index(axis, node);
-        self.pec[axis][e] = true;
+        self.pec[axis.index()][e] = true;
     }
 
     /// Whether the primary edge along `axis` at `node` is marked PEC.
     ///
     /// # Panics
     /// If the edge does not exist.
-    pub fn is_pec_edge(&self, axis: usize, node: [usize; 3]) -> bool {
-        self.pec[axis][self.edge_index(axis, node)]
+    pub fn is_pec_edge(&self, axis: Axis, node: [usize; 3]) -> bool {
+        self.pec[axis.index()][self.edge_index(axis, node)]
     }
 
     /// The PEC mask of `axis`, one flag per node in field-array order
     /// (padding entries are always `false`).
-    pub fn pec_mask(&self, axis: usize) -> &[bool] {
-        &self.pec[axis]
+    pub fn pec_mask(&self, axis: Axis) -> &[bool] {
+        &self.pec[axis.index()]
     }
 
     /// Marks every primary edge that lies inside the closed node box
@@ -263,12 +264,13 @@ impl CellMaterials {
                 "node range {r:?} out of range on axis {a}"
             );
         }
-        for axis in 0..3 {
+        for axis in Axis::ALL {
+            let a = axis.index();
             for i in ranges[0].clone() {
                 for j in ranges[1].clone() {
                     for k in ranges[2].clone() {
                         let p = [i, j, k];
-                        if p[axis] + 1 < ranges[axis].end {
+                        if p[a] + 1 < ranges[a].end {
                             self.set_pec_edge(axis, p);
                         }
                     }
@@ -306,19 +308,19 @@ mod tests {
         let mut m = CellMaterials::vacuum(&g);
         // Sheet in the z = 2 plane covering x in [1, 3], y in [0, 1].
         m.fill_pec_box([1..4, 0..2, 2..3]);
-        assert!(m.is_pec_edge(0, [1, 0, 2]));
-        assert!(m.is_pec_edge(0, [2, 1, 2]));
-        assert!(!m.is_pec_edge(0, [3, 0, 2]));
-        assert!(m.is_pec_edge(1, [3, 0, 2]));
-        assert!(!m.is_pec_edge(1, [3, 1, 2]));
-        assert!(!m.is_pec_edge(2, [1, 0, 2]));
-        assert_eq!(m.pec_mask(2).iter().filter(|&&b| b).count(), 0);
+        assert!(m.is_pec_edge(Axis::X, [1, 0, 2]));
+        assert!(m.is_pec_edge(Axis::X, [2, 1, 2]));
+        assert!(!m.is_pec_edge(Axis::X, [3, 0, 2]));
+        assert!(m.is_pec_edge(Axis::Y, [3, 0, 2]));
+        assert!(!m.is_pec_edge(Axis::Y, [3, 1, 2]));
+        assert!(!m.is_pec_edge(Axis::Z, [1, 0, 2]));
+        assert_eq!(m.pec_mask(Axis::Z).iter().filter(|&&b| b).count(), 0);
     }
 
     #[test]
     #[should_panic]
     fn pec_padding_edge_rejected() {
         let g = Grid::uniform([2, 2, 2], [1.0; 3]).unwrap();
-        CellMaterials::vacuum(&g).set_pec_edge(0, [2, 0, 0]);
+        CellMaterials::vacuum(&g).set_pec_edge(Axis::X, [2, 0, 0]);
     }
 }
