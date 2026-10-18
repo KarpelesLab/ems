@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn square_lattice_radius() {
         // e^(−γ)/(2√2).
-        let want = (-0.577_215_664_901_532_9_f64).exp() / (2.0 * 2f64.sqrt());
+        let want = (-core::f64::consts::EULER_GAMMA).exp() / (2.0 * 2f64.sqrt());
         let r = lattice_radius(1.0, 1.0);
         assert!((r - want).abs() < 1e-6 * want, "{r} vs {want}");
         // Scales with the cell size.
