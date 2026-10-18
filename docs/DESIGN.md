@@ -587,6 +587,46 @@ recorded near fields, by the surface equivalence principle (Balanis,
   Frequency-dependent phase centres and openEMS's nf2ff file format are
   out of scope: openEMS's nf2ff code is GPL and was not consulted.
 
+### 5.11 Plane waves (total-field / scattered-field)
+
+csx `PlaneWave` excitations (type 10) are injected with the TF/SF technique
+(Taflove & Hagness ch. 5) by `engine::PlaneWave`; the compile mapping is in
+`compile::planewave`.
+
+- **Regions.** A node box `start..=stop` is the total-field region: the E
+  edges in the closed box and the H edges whose half-cell coordinates lie
+  strictly inside. Then total-field H edges only read total-field E edges,
+  and the two regions touch only through the E edges on the box surface and
+  the H edges just outside.
+- **Consistency conditions.** After the H update every scattered-field H
+  edge next to a surface E edge gets `+db·K·u_inc^n`; after the E update
+  every surface E edge gets `+cb·K·i_inc^{n+½}` per scattered-field H
+  neighbour (`K = ±1` the shared curl sign; the integral-form curls are
+  transposes, so one sign serves both). Using the engine's own `cb`, `db`
+  keeps materials and PEC on the surface consistent. Box faces on the domain
+  boundary get no corrections.
+- **Incident field** from an auxiliary 1-D Yee grid along `k̂` on the
+  engine's time step (so E and H come with the right staggering), hard
+  source a few cells before the entry corner, a 64-cell graded matched-loss
+  layer at the far end, and 4-point Lagrange interpolation at the projected
+  edge positions `ξ = k̂·(r − r_ref)`. Its spacing is chosen so that its
+  numerical wavenumber equals the 3-D Yee wavenumber along `k̂` at a matching
+  frequency (the waveform centre); along a mesh axis this is the cell size
+  and the match is exact at every frequency, and so it is along the face
+  and body diagonals of a cubic mesh (all samples then sit half-way between
+  auxiliary nodes, and the interpolation is a uniform filter of an exact
+  discrete wave).
+- **Reference.** `E_inc = Excite·a(t − Delay)` at the box corner the wave
+  enters first; the 1-D source runs ahead by the numerical travel time.
+- **Measured** (`tests/planewave.rs`, 1 mm cubic mesh, 8–16 GHz pulse):
+  scattered-field leakage −130 dB at normal incidence and along the
+  diagonals, −77 dB at 30°, about −55 dB on a mesh graded ±20 %. A PEC
+  plate and a dielectric slab inside the box give the exact discrete (Yee)
+  reflection to 5e-5 and 4e-5.
+- **Limitations.** Homogeneous lossless background around the box (vacuum
+  from csx; `PlaneWaveSpec::with_background` in the engine API), box clear of
+  CPML/Mur, injected energy not tracked by `Engine::energy`.
+
 ## 6. Engine architecture
 
 ```

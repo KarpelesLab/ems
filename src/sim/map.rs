@@ -13,8 +13,8 @@ use crate::compile::{ModelSources, NodeMap};
 use crate::engine::port::loop_entries;
 use crate::engine::{
     DumpPosition, DumpQuantity, DumpRegion, EdgeSource, EdgeValues, Engine, FieldProbe,
-    FieldSampler, FreqDump, LumpedElement, OperatorHandle, Probe, ProbeQuantity, Schedule,
-    SourceKind, TimeDump, Topology,
+    FieldSampler, FreqDump, LumpedElement, OperatorHandle, PlaneWave, Probe, ProbeQuantity,
+    Schedule, SourceKind, TimeDump, Topology,
 };
 use crate::fdtd::Fdtd;
 
@@ -66,6 +66,7 @@ pub(crate) struct Mapped {
     /// csx property id of each entry of `lumped` (filled by the caller).
     pub lumped_ids: Vec<u32>,
     pub sources: Vec<(String, OperatorHandle<EdgeSource>)>,
+    pub plane_waves: Vec<(String, OperatorHandle<PlaneWave>)>,
     pub probes: Vec<ProbeEntry>,
     pub dumps: Vec<DumpEntry>,
 }
@@ -203,7 +204,7 @@ pub(crate) fn map_sources(
 
     // ---- excitations.
     let waveform = fdtd.get_waveform();
-    if waveform.is_none() && !src.excitations.is_empty() {
+    if waveform.is_none() && !(src.excitations.is_empty() && src.plane_waves.is_empty()) {
         warnings
             .push("the settings have no excitation waveform; all excitations are ignored".into());
     }
@@ -310,6 +311,17 @@ pub(crate) fn map_sources(
     for (name, op) in soft_e.into_iter().chain(others) {
         let h = engine.add_operator(op);
         mapped.sources.push((name, h));
+    }
+    // Plane waves last: their corrections add to the final kernel values.
+    for pw in &src.plane_waves {
+        let Some(w) = waveform else { break };
+        let (wf, delay) = (w.clone(), pw.delay);
+        match PlaneWave::new(engine, &pw.spec, move |t| wf.value(t - delay, dt)) {
+            Ok(op) => mapped
+                .plane_waves
+                .push((pw.name.clone(), engine.add_operator(op))),
+            Err(e) => warnings.push(format!("plane wave {:?}: {e}; ignored", pw.name)),
+        }
     }
 
     // ---- probes.

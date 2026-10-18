@@ -13,8 +13,8 @@ pub use results::{DumpData, DumpResult, ProbeKind, ProbeResult, ProbeValues, Res
 use crate::Result;
 use crate::compile::{BoundaryHandles, CompileOptions, Compiled, ModelSources, NodeMap, compile};
 use crate::engine::{
-    EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle, Progress, RunLimits,
-    TimeDump,
+    EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle, PlaneWave, Progress,
+    RunLimits, TimeDump,
 };
 use crate::fdtd::Fdtd;
 use crate::nf2ff::{Nf2ffBox, Nf2ffHandle, Nf2ffResult};
@@ -80,7 +80,12 @@ use map::{DumpOp, Mapped, ProbeOp};
 ///      updates, so on a lumped element's edge the element has no effect:
 ///      warning), `HFieldSoft` / `HFieldHard` add to / overwrite the H
 ///      dual-edge currents.
-///    * Plane waves are not supported yet (warning).
+///    * `PlaneWave` (type 10) excitations become total-field /
+///      scattered-field [`PlaneWave`](crate::engine::PlaneWave) operators,
+///      one per primitive box, with incident E `Excite·a(t − Delay)` at the
+///      box corner the wave enters first (mapping rules in
+///      [`crate::compile::planewave`]); they are registered after all other
+///      sources.
 ///
 ///    Without a waveform in the settings, excitations are ignored with a
 ///    warning.
@@ -261,6 +266,13 @@ impl Simulation {
     /// excitation became a lumped element's Thevenin source only).
     pub fn source(&self, name: &str) -> Option<&EdgeSource> {
         let h = find(&self.mapped.sources, name)?;
+        Some(self.engine.operator(&h))
+    }
+
+    /// The plane-wave operator of the csx excitation `name` (the first one
+    /// if the property has several primitives).
+    pub fn plane_wave(&self, name: &str) -> Option<&PlaneWave> {
+        let h = find(&self.mapped.plane_waves, name)?;
         Some(self.engine.operator(&h))
     }
 

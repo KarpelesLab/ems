@@ -38,7 +38,11 @@
 //! 6. **Absorbing sheets.** csx `AbsorbingBC` primitives become
 //!    [`AbcSpec`]s ([`Compiled::abc`]), installed by [`Compiled::build`] as
 //!    one [`AbsorbingSheet`] each (see [Absorbing sheets](#absorbing-sheets)).
-//! 7. **Time step and threads** from [`Fdtd`]: a time step override becomes
+//! 7. **Plane waves.** csx `PlaneWave` excitations (type 10, which csx
+//!    does not discretise) become [`PlaneWaveSource`]s in
+//!    [`ModelSources::plane_waves`] (total-field / scattered-field boxes;
+//!    rules in [`planewave`]).
+//! 8. **Time step and threads** from [`Fdtd`]: a time step override becomes
 //!    [`TimeStep::Fixed`], otherwise [`TimeStep::Courant`] with the time
 //!    step factor; the thread count is used for both the discretisation and
 //!    the engine.
@@ -102,7 +106,10 @@
 
 pub mod dispersive;
 mod mode;
+pub mod planewave;
 pub mod sheet;
+
+pub use planewave::PlaneWaveSource;
 
 use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
@@ -118,7 +125,7 @@ use crate::{Error, Result};
 use csx::discretize::{
     DiscretizeOptions, ExcitationField, LumpedEdge, MaterialGrid, SheetInfo, discretize,
 };
-use csx::properties::{AbcType, DumpMode, DumpType, ProbeType};
+use csx::properties::{AbcType, DumpMode, DumpType, ExcitationType, ProbeType};
 use csx::{CoordSystem, PropertyKind};
 
 /// Options of [`compile`].
@@ -244,6 +251,9 @@ pub struct ModelSources {
     pub probes: Vec<ProbeSpec<csx::properties::ProbeBox>>,
     /// DumpBox properties, snapped to the mesh.
     pub dumps: Vec<ProbeSpec<csx::properties::DumpBox>>,
+    /// Plane-wave excitations (total-field / scattered-field boxes, see
+    /// [`planewave`]).
+    pub plane_waves: Vec<PlaneWaveSource>,
 }
 
 /// A ProbeBox or DumpBox property (`T`) with its box snapped to mesh
@@ -447,9 +457,11 @@ fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
         let what = match &p.kind {
             PropertyKind::Excitation(e) if !e.enabled => "disabled; ignored",
             PropertyKind::Excitation(e)
-                if !e.excitation_type.is_electric() && !e.excitation_type.is_magnetic() =>
+                if !e.excitation_type.is_electric()
+                    && !e.excitation_type.is_magnetic()
+                    && e.excitation_type != ExcitationType::PlaneWave =>
             {
-                "only E- and H-field excitations are supported (plane waves: later); ignored"
+                "unknown excitation type; ignored"
             }
             PropertyKind::ProbeBox(pb) => match pb.probe_type {
                 ProbeType::Voltage
@@ -743,8 +755,23 @@ pub fn compile(
             grid.nodes()
         )));
     }
-    warnings.extend(mg.warnings.iter().cloned());
+    let pw_names: Vec<&str> = model
+        .properties()
+        .iter()
+        .filter(|p| {
+            matches!(&p.kind, PropertyKind::Excitation(e)
+                if e.excitation_type == ExcitationType::PlaneWave)
+        })
+        .map(|p| p.name.as_str())
+        .collect();
+    warnings.extend(
+        mg.warnings
+            .iter()
+            .filter(|w| !planewave::is_csx_skip_warning(w, &pw_names))
+            .cloned(),
+    );
     property_warnings(model, &mut warnings);
+    let plane_waves = planewave::plane_wave_sources(model, fdtd, &mut warnings);
 
     let sheet_map = sheet::sheet_edges(model, &mg, &node_map, opts.snap_tolerance, &mut warnings);
     let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
@@ -818,6 +845,7 @@ pub fn compile(
             sheets,
             probes,
             dumps,
+            plane_waves,
         },
         warnings,
     })

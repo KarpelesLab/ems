@@ -328,8 +328,8 @@ fn hard_and_soft_sources_and_field_probe() {
     assert!((got - want).abs() < 1e-6 * 2e-3, "{got} vs {want}");
 }
 
-/// Disabled excitations are ignored; plane waves and unsupported dumps
-/// produce warnings.
+/// Disabled excitations are ignored; plane waves without a direction and
+/// unsupported dumps produce warnings.
 #[test]
 fn unsupported_and_disabled_properties() {
     let mut m = line_model();
