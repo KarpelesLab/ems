@@ -128,11 +128,11 @@ part of M1 (§3).
 | M2 | MSL and rectangular waveguide port helpers — **done** (`port::MslPort`, `port::RectWaveguidePort`, §5.5) | probes, excitations with weighting |
 | M2 | openEMS-compatible probe/dump output files (paths, text layout, HDF5 layout) | — |
 | M2 | AbsorbingBC sheets — **done** (`engine::boundary::abc`) | AbsorbingBC |
-| M3 | NF2FF, radiation patterns, gain/directivity | DumpBox |
-| M3 | Periodic / Bloch boundaries | — |
+| M3 | NF2FF, radiation patterns, gain/directivity — **done** (`ems::nf2ff`, §5.10) | DumpBox |
+| M3 | Periodic / Bloch boundaries — **done** (`Boundary::Periodic`, engine-level `BlochPair`, §5.6.1) | — |
 | M4 | Cylindrical-coordinate mesh (incl. multigrid near the axis) | cylindrical `RectilinearGrid` |
 | M4 | Conformal / sub-cell PEC, thin wires | Wire/Curve primitives |
-| M4 | SAR | DumpBox |
+| M4 | SAR — **done** (`ems::post::sar`, §5.12) | DumpBox |
 | later | Python bindings (pyo3, probably a separate `ems-py` crate covering both), GPU backend | — |
 
 Cylindrical-coordinate *primitives* on a Cartesian mesh already work in M1:
@@ -1003,7 +1003,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-19)
+### Status (2026-10-19, after wave 7)
 
 | Step | State |
 |---|---|
@@ -1017,7 +1017,15 @@ Pulled forward from M2:
 M1 is complete. M2 done: ConductingSheet, MSL and rectangular waveguide
 ports, AbsorbingBC sheets. M2 remaining: openEMS-compatible output files,
 blocked on reference files (the layout cannot be taken from openEMS's GPL
-scripts).
+scripts). M3 done: NF2FF, periodic boundaries, Bloch pairs (engine level).
+Also done: plane-wave TF/SF sources (§5.11), SAR (M4, §5.12), energy
+invariant with magnetic poles and conducting sheets, medium-tuned CPML.
+
+Remaining:
+- openEMS output layout (M2, needs reference files).
+- Bloch boundaries through `Simulation`/`Fdtd` (needs a matching oblique
+  plane wave; `BlochPair` drives two engines).
+- M4: cylindrical mesh, conformal / sub-cell PEC, thin wires.
 
 Open conventions to confirm against real openEMS files:
 - Waveguide probe `ModeFunction*` coordinates are taken in drawing units

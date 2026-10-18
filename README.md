@@ -17,8 +17,8 @@ intended as a replacement for [openEMS](https://openems.de).
 * Goal: run existing openEMS XML models unchanged.
 * Edition 2024, MSRV 1.95.
 
-Status: early development (milestone 1 done, milestone 2 mostly done). The
-API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
+Status: early development (milestones 1 and 3 done, 2 mostly done, SAR from
+milestone 4). The API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
 roadmap.
 
 ## Quick start
@@ -82,12 +82,14 @@ It prints warnings, progress and the outcome, and writes every probe as
 | mesh | Cartesian rectilinear (non-uniform), solver-aware checks (`ems::mesh`) | cylindrical (M4) |
 | materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`); Drude, Lorentz, Debye (electric and magnetic) | |
 | metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor) | conformal (M4) |
-| boundaries | PEC, PMC, Mur, CPML (`PML_n`); AbsorbingBC sheets | periodic (M3) |
-| sources | E/H soft/hard excitations with weighting and delay; Gaussian, sine, Dirac, step, custom waveforms | plane waves |
+| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch (engine-level `BlochPair`) | Bloch through `Simulation` |
+| sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF); Gaussian, sine, Dirac, step, custom waveforms | plane waves in a non-vacuum background |
 | lumped elements | R, L, C, parallel and series | |
 | probes | voltage, current, E/H field, waveguide mode voltage/current; DFT | |
 | dumps | E/H time and frequency domain, VTK `.vtr`, HDF5 (feature `hdf5`) | openEMS file layout (M2) |
-| ports | lumped, microstrip (`MslPort`) and rectangular waveguide (`RectWaveguidePort`) helpers; S-parameters, Z_in | NF2FF (M3) |
+| ports | lumped, microstrip (`MslPort`) and rectangular waveguide (`RectWaveguidePort`) helpers; S-parameters, Z_in | |
+| antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes | non-vacuum background, openEMS nf2ff file format |
+| SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps | rotated averaging cubes |
 | openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip | |
 | engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |
 
