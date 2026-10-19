@@ -79,16 +79,16 @@ It prints warnings, progress and the outcome, and writes every probe as
 
 | area | implemented | not yet |
 |---|---|---|
-| mesh | Cartesian and cylindrical (ρ, α, z, with axis and closed azimuth) rectilinear, non-uniform; solver-aware checks (`ems::mesh`) | multigrid near the cylindrical axis |
+| mesh | Cartesian and cylindrical (ρ, α, z, with axis, closed azimuth and azimuthal multigrid near the axis) rectilinear, non-uniform; solver-aware checks (`ems::mesh`) | |
 | materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`); Drude, Lorentz, Debye (electric and magnetic) | |
-| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor); conformal PEC (`CompileOptions::with_conformal`); thin wires (radius below the cell size) | oblique thin wires |
-| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave) | cylindrical PML on the outer radius |
-| sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF); Gaussian, sine, Dirac, step, custom waveforms | plane waves in a non-vacuum background |
+| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor); conformal PEC volumes and zero-thickness sheets (`CompileOptions::with_conformal`); thin wires (radius below the cell size), axis-aligned or oblique | conformal PEC on cylindrical grids |
+| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave); stretched-radius cylindrical PML on ρ_max | |
+| sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF, homogeneous possibly lossy background); Gaussian, sine, Dirac, step, custom waveforms | |
 | lumped elements | R, L, C, parallel and series | |
 | probes | voltage, current, E/H field, waveguide mode voltage/current; DFT | |
 | dumps | E/H time and frequency domain, VTK `.vtr`, HDF5 (feature `hdf5`) | openEMS file layout (M2) |
 | ports | lumped, microstrip (`MslPort`) and rectangular waveguide (`RectWaveguidePort`) helpers; S-parameters, Z_in | |
-| antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes | non-vacuum background, openEMS nf2ff file format |
+| antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes; homogeneous lossless background | openEMS nf2ff file format |
 | SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps | rotated averaging cubes |
 | openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip | |
 | engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |

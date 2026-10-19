@@ -1882,7 +1882,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-19, after wave 8)
+### Status (2026-10-19, after wave 9)
 
 | Step | State |
 |---|---|
@@ -1903,14 +1903,22 @@ invariant with magnetic poles and conducting sheets, medium-tuned CPML.
 Wave 8 (M4 done): cylindrical grids (§5.15), conformal PEC (§5.13), thin
 wires (§5.14), Bloch / oblique incidence through `Simulation` (§5.6.2).
 
+Wave 9: azimuthal multigrid near the cylindrical axis (§5.15.1, ×3.65
+time step with two zones); stretched-radius cylindrical PML on ρ_max
+(§5.15.2, −94 dB with 8 cells vs −38 dB before); oblique thin wires
+(§5.14.1, tilted dipoles within 0.5 % of each other); conformal
+zero-thickness PEC sheets (§5.13.1, second order); plane waves and NF2FF in
+homogeneous non-vacuum backgrounds, plane-wave-aware energy end criterion
+(§5.10, §5.11).
+
 Remaining:
 - openEMS output layout (M2, needs reference files).
-- Multigrid near the cylindrical axis (the innermost arcs set the time
-  step); a cylindrical PML on the outer radius (the Cartesian-style layer
-  reflects about −31 to −43 dB, scaling as 1/(kρ)).
-- Oblique thin wires; conformal PEC for sheets and on cylindrical grids;
-  NF2FF, plane waves, MSL/waveguide ports, sheets and dispersive media on
+- Conformal PEC on cylindrical grids; NF2FF, plane waves, MSL/waveguide
+  ports, sheets and dispersive media on cylindrical grids; oblique wires on
   cylindrical grids.
+- Junctions of several oblique sheets in one cell (sub-cell gap); a csx
+  way to express a feed on an oblique wire; layered/dispersive backgrounds
+  for plane waves and NF2FF.
 
 Open conventions to confirm against real openEMS files:
 - Waveguide probe `ModeFunction*` coordinates are taken in drawing units
