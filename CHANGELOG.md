@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/KarpelesLab/ems/compare/v0.0.1...v0.0.2) - 2026-10-19
+
+### Other
+
+- Update README and design status after wave 9
+- Oblique thin wires: 1-D wire network coupled to the Yee lattice
+- Conformal zero-thickness PEC sheets (split cells, merged small regions)
+- Cylindrical PML on the rho_max face (complex-stretched radius)
+- Azimuthal multigrid near the cylindrical axis
+- Plane waves and NF2FF in non-vacuum backgrounds; plane-wave end criterion
+- Use f64::consts::EULER_GAMMA (clippy approx_constant on Rust 1.99)
+- Update README and design status after wave 8 (M4 done)
+- Fix conformal/Bloch merge: pass the engine through; no conformal on cylindrical grids
+- Cylindrical grids through compile and Simulation; lumped copies; docs
+- Cylindrical (rho, alpha, z) engine: geometry, axis, closed azimuth, stability
+- Bloch mode in Simulation: oblique plane waves on periodic structures
+- Add thin-wire model for csx Wire primitives thinner than the staircase
+- Add conformal PEC (Dey-Mittra in integral form with cell merging)
+- normalise CRLF so the snippet check passes on Windows
+- Update README and design status after wave 7 (M3 done)
+- avoid hdf5-only intra-doc links in builds without the feature
+- Add SAR: local and 1 g / 10 g mass-averaged, from csx SAR dumps
+- Add periodic boundaries and Bloch (sine-cosine) engine pairs
+- Add plane-wave excitation (TF/SF) and csx PlaneWave mapping
+- Lumped ports: document hand analysis; run_xml writes element currents
+- README quick start: warning-free model, kept in sync by a test
+- tune sigma_max to the layer's refractive index
+- Make the engine energy exact with conducting sheets
+- Include magnetic dispersive poles in the engine energy invariant
+- Add NF2FF transform: radiation patterns, directivity, gain, power
+- Update README and design status after wave 6 (M2 mostly done)
+- Add ConductingSheet thin-conductor model (skin effect) and csx mapping
+- Fix rustdoc link to private constant in default_threads docs
+- branch-free, 4-lane energy accumulation loops
+- yield in the worker barrier before sleeping
+- default to one thread per physical core, fewer on small grids
+- read coefficients through a row-deduplicated kernel view
+- Add microstrip-line port helper (MslPort) with line-parameter extraction
+- Document waveguide probes in the Simulation docs
+- Add rectangular waveguide port (TE_mn) and waveguide mode probes
+- Design doc: M1 complete; hdf5rs feedback
+- Add optional HDF5 output (feature `hdf5`, pure-Rust hdf5rs)
+- Add AbsorbingBC sheets (first-order Mur on interior mesh planes)
+- Design doc: mark the 64-thread slowdown as unexplained
+- Record idle-machine benchmark in design doc
+
 ## [0.0.1](https://github.com/KarpelesLab/ems/compare/v0.0.0...v0.0.1) - 2026-10-18
 
 ### Other
