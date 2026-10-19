@@ -104,7 +104,8 @@
 //! # Scope and validity
 //!
 //! * Straight wires along a mesh axis, on a mesh line (`r0` given per
-//!   wire). The transverse cell sizes next to the wire may differ (graded
+//!   wire); wires of other orientations or positions:
+//!   [`super::oblique_wire`]. The transverse cell sizes next to the wire may differ (graded
 //!   mesh, rectangular cells); the lattice radius then uses the harmonic
 //!   mean of the two cell sizes per axis, and `(g − 1)/Σc` is an
 //!   approximation (0.4 % of `Z0` in a tube of 1 × 1.5 mm cells).

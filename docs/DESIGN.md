@@ -1081,7 +1081,8 @@ every operator unchanged):
   runs along an axis on mesh lines becomes a run between the nearest mesh
   lines; lumped edges on the same line touching a run (dipole feed gaps,
   monopole bases) join it; contiguous runs of one radius form one
-  `ThinWire` (`Compiled::thin_wires`). Oblique or off-mesh segments, radii
+  `ThinWire` (`Compiled::thin_wires`). A wire with any oblique segment
+  goes to the oblique model of §5.14.1 as a whole. Off-mesh segments, radii
   at or above `r_eq` (below half a cell) and cylindrical structures keep the
   plain staircase with a warning; wires sharing a node warn. The mesh check
   looks past the correction (`ThinWire::remove`) when it estimates the
@@ -1108,6 +1109,165 @@ one-cell rod of `ε/g`, `μ·g` that a real thin wire does not present.
 The plain staircase on 10 mm cells (`a ≈ 2 mm`) gives a dipole slope of
 661 Ω/GHz; the thin wire of 0.496 mm on the same mesh 974 Ω/GHz (reference
 973), and 0.198 mm 1160 Ω/GHz with a 1.4 % higher resonance.
+
+#### 5.14.1 Oblique thin wires
+
+The material model above needs the wire on a line of mesh edges. Wires of
+any orientation and position (Cartesian grids) use a separate model
+(`engine::oblique_wire`, operator `ObliqueWires`; compile rules in
+`compile::wire`): the wire carries its own unknowns on a 1-D polyline
+grid that is independent of the mesh, as in the thin-wire models of
+Holland and Simpson (1981) and the hybrid wire models of Edelvik et al.
+(2003), coupled to the Yee lattice by interpolation and spreading with
+one and the same matrix. We chose this over a staircase with corrections:
+a staircase of an oblique wire is a meander √2…√3 times longer than the
+wire, whose inductance and resonance no per-edge material change can
+repair.
+
+**Unknowns.** The polyline is cut into segments of at most half the
+local cell size (polyline vertices are nodes; coincident end points of
+different wires are one junction node). Per segment `s` a current `I_s`,
+per node `j` a correction potential `V_j`.
+
+**Coupling.** `P_{e,s} = ∫_s w_e·dl` with the lowest-order Whitney edge
+functions `w_e` (constant along edge `e`, bilinear across: the usual
+trilinear interpolation of the Yee components; exact per piece of the
+segment between mesh planes with two Gauss points). The wire sees
+`(Pᵀu)_s = ∫_s E·dl`; the grid gets `−P·I` in Ampère's law
+(`C·du/dt = Kᵀi − P·I`). Since `∇λ_n` (node hat) is the sum of the Whitney
+functions of the edges at `n`, the deposit is charge conserving: the grid
+charge is exactly the wire node charges spread with the trilinear hats.
+
+**Wire equations.** `L_s·dI_s/dt + R_s·I_s = (Pᵀu)_s − (V_b − V_a) +
+V_src,s` and `C_j·dV_j/dt = (current into j)`; `R_s`, `V_src,s` only on a
+feed segment (`WireFeed`: delta gap with internal resistance; port
+voltage `V_src − R·Ī`, current `Ī`). Ends on a conductor (PEC edge,
+lumped-element edge, PEC outer face: any edge at a node end point, the
+edge for an end on an edge, all four edges for an end inside a face) have
+`V = 0`; other ends are open, at the end node.
+
+**Time stepping and stability.** `I`, `V` live at integer times and are
+advanced with the trapezoidal rule, implicitly coupled with the E update
+(the lumped-branch scheme of §5.5 for a whole network). With the kernel
+result `u*` and `Ī = (Iⁿ + I^{n+1})/2`:
+
+```
+u^{n+1} = u* − cb·P·Ī
+[2L/dt + R + ½·PᵀD_cb·P + (dt/2)·G·C⁻¹·Gᵀ]·Ī = (2L/dt)·Iⁿ + Pᵀ(u* + uⁿ)/2 − G·Vⁿ + V_src
+I^{n+1} = 2Ī − Iⁿ,   V^{n+1} = Vⁿ + dt·C⁻¹·Gᵀ·Ī
+```
+
+(`G`: node-to-segment incidence, `D_cb` the edges' `cb`). The matrix is
+symmetric positive definite, constant and banded along the wire; it is
+factored once (envelope Cholesky) at the first step. Multiplying the E
+update by `ū = (uⁿ + u^{n+1})/2` and the wire equations by `Ī` and
+`V̄` gives
+
+```
+(W^{n+1} + W_w^{n+1}) − (Wⁿ + W_wⁿ) = dt·Ī·V_src − dt·R·Ī² (lossless grid),
+W_w = ½·Σ L_s·I_s² + ½·Σ C_j·V_j²,
+```
+
+with `W` the leapfrog invariant of §6: the coupling terms cancel exactly.
+`W` is positive definite under the ordinary Courant condition and `W_w`
+always, so **the time step stays the Yee one**, for any radius, segment
+length and orientation, and the scheme is energy conserving (the
+operator reports `W_w`). An explicit leapfrog of `I` and `V` would add
+a local stiffness `(ω·dt/2)² = dt²/(4·L_s·C_e)` on the coupled edges,
+about `0.5·(Δ/ℓ)/ln(r_eq/r0)` on cubic cells at `S = 0.99` (segment
+length `ℓ`), on top of a lattice already at 0.98 of its bound; it would
+need a reduced time step. The implicit coupling avoids any reduction.
+
+**In-cell corrections.** The grid already holds part of the wire's
+field: that of the deposited (smeared) current and charge. `L_s` and
+`C_j` add the rest, so that the total is the reduced-kernel thin wire of
+radius `r0`. For a uniform charge density and current on the wire within
+a window of five local cell sizes:
+
+- `k(x) = (1/4π)∫ ds/√(|x(s) − x|² + r0²) − φ_lat(x)` is the potential per
+  unit line charge (times `ε`) that the lattice misses at `x`; `φ_lat`
+  is the potential of the node charges spread with the hats, propagated
+  with the lattice Green's function of the discrete Laplacian
+  (`−Δ_h G = δ/V`, the static Yee lattice for the charge; computed from
+  the Bessel-function integral `G(n) = (1/V)∫₀^∞ Π_d e^(−2t/h_d²)·
+  I_{n_d}(2t/h_d²) dt`, Watson's `0.2527310/h` at the origin for cubic
+  cells), sampled with the same hats. `C_j = ε·∫ ds/k(s)` over the node's
+  half segments (3 Gauss points each).
+- `L_s = μ·[(1/4π)∫_s∫ t̂·t̂'/√(|x − x'|² + r0²) − Λ_lat,s]`, `Λ_lat` the
+  flux of the Whitney current deposit through the lattice (`−Δ_h A = μ·J`
+  per component in the Coulomb gauge) seen by the segment's own weights.
+
+The lattice is taken uniform with the spacings of the cell containing the
+node (segment midpoint): exact on uniform meshes, an approximation on
+graded ones. For a straight wire on a mesh line the corrections give back
+the lattice radius of §5.14 (`r_e` 0.2003 vs 0.1985·Δ, the window
+truncation), at a cell centre 0.717·Δ (2-D estimate from the bilinear
+spreading, `r_eq·exp(2π·(1/8 + 1/(4π)))` = 0.718·Δ); an oblique wire
+passes through all positions in between, hence corrections per element.
+Both corrections must be positive (roughly `r0 < 0.15·Δ`); thicker
+wires keep the csx staircase with a warning.
+
+Why `∫ds/k` over the node's half segments rather than `k` at the node:
+at an open end `k` drops to about half (the near field is one-sided), and
+using the end-point value made the end node's capacitance that of a
+whole interior node, i.e. half a segment of extra wire: a dipole's
+resonance was then first order in the segment length (−6.0 / −3.4 / −1.9
+/ −1.2 % for 10 / 5 / 2.5 / 1.25 mm segments on 10 mm cells). With the
+integral it is converged at half a cell (below).
+
+**Compile.** A metal csx `Wire` (radius > 0, Cartesian) with at least
+one segment not along a mesh axis goes to this model as a whole, if the
+corrections are positive; it is removed from the model before csx's
+discretisation (no staircase; csx's warnings are renumbered to the
+original primitive indices). Axis-aligned wires keep the material model
+unchanged. Ends at lumped-element edges (a feed gap given as a csx lumped
+port) and on metal are connected. There is no csx form of a wire feed;
+`WireFeed` is engine-level.
+
+**Validation** (`tests/oblique_wire.rs`, `tests/oblique_wire_dipole.rs`
+`--ignored` in release). Dipole 170 mm, radius `a` = 0.496 mm, 10 mm gap,
+50 Ω, on uniform 10 mm cells; reference: the material model on the same
+cells (0.8381 GHz, 72.37 Ω, 974 Ω/GHz; the 2.5 mm staircase gives
+0.8355 GHz, 72.58 Ω, 973 Ω/GHz):
+
+| oblique model, wire | `f_res` | `R_in` | `dX/df` |
+|---|---|---|---|
+| along z, on a mesh line | 0.8294 GHz (−1.05 %) | 72.08 Ω (−0.40 %) | 990 (+1.7 %) |
+| along z, cell centre | 0.8334 GHz (−0.57 %) | 71.25 Ω (−1.56 %) | 986 (+1.2 %) |
+| 30° in xz | 0.8311 GHz (−0.84 %) | 71.60 Ω (−1.07 %) | 987 (+1.3 %) |
+| 45° in xz | 0.8323 GHz (−0.70 %) | 71.56 Ω (−1.13 %) | 985 (+1.1 %) |
+| 30° in xz, off-mesh | 0.8334 GHz (−0.56 %) | 71.39 Ω (−1.35 %) | 987 (+1.3 %) |
+| along (1, 2, 3), off-mesh | 0.8333 GHz (−0.57 %) | 71.46 Ω (−1.26 %) | 985 (+1.1 %) |
+
+Spread of the resonance over orientations and positions 0.49 %; all
+within −0.7…−0.25 % of the fine staircase. Segment length 10 / 5 / 2.5 /
+1.25 mm (along z): 0.8256 / 0.8298 / 0.8304 / 0.8306 GHz. Mesh 5 / 10 /
+20 mm: on a mesh line 0.8310 / 0.8294 / 0.8245 GHz, at a cell centre
+0.8338 / 0.8334 / 0.8337 GHz (the dipole is 8.5 cells long on 20 mm).
+Fast test (debug, 20 mm cells): 45° and (1, 2, 3) against the same wire
+along z within 0.9 % (`f_res`), 2.2 % (`R_in`), 1.1 % (slope). Energy:
+closed PEC box, three wires (bend, junction, an end standing on the
+floor, a lossless feed, `r0` = Δ/1000 and Δ/20), Courant 0.999, 15 000
+steps after the source: drift within 3.4·10⁻⁸ with 17 % of the energy in
+the wire state; 1 vs 4 threads bit-identical. Open 45° dipole with Mur
+boundaries, 50 000 steps: the energy decays to the static residue of the
+pulse (3.7·10⁻⁸ of the peak) and stays constant. Through csx with the gap
+as a lumped port and the arms tilted 30° from its terminals: +2.6 %
+`f_res`, +6.2 % `R_in`, −6.3 % slope (the gap is then the lattice's
+lumped edge, a 10 mm piece of `r_eq ≈ 2 mm` wire, and the arms are offset
+by the gap).
+
+**Limits.** Remaining position dependence (on a mesh line the resonance
+is 0.4 % low on 10 mm cells, 1.1 % on 20 mm) comes from the local
+(diagonal) correction near the ends and the feed, where the charge is
+far from uniform over the correction's range (about a cell); a full
+correction matrix would remove it at the cost of a wider band. Graded
+meshes use the local cell's spacings; media are assumed homogeneous
+around the wire (`ε_r`, `μ_r` averaged over the coupled edges); wires
+closer than a few cells to each other or to other conductors, wire ends
+in the PML (the correction line is not absorbed) and cylindrical grids
+are not covered; wire energy is reported, wire losses (finite
+conductivity) are not modelled.
 
 ### 5.15 Cylindrical coordinates
 
@@ -1487,7 +1647,8 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
 - **Operators** (`Operator` trait): CPML, Mur, sources, lumped elements,
-  probes, dumps, dispersive media (ADE), and later NF2FF.
+  probes, dumps, dispersive media (ADE), oblique thin wires (§5.14.1,
+  serial `pre_e`/`post_e`), and later NF2FF.
   - Dispersive media (`engine::dispersive::Dispersive`): each Drude /
     Lorentz / Debye pole is a series R–L–C branch per edge (polarisation
     current `j = J·A*`), integrated with the trapezoidal rule and coupled
@@ -1648,7 +1809,17 @@ These are reported here, not fixed in csx from this repo.
     `with_thirds([NaN, 0.25, NaN])`).
 12. **Thin wires in `MeshBuilder`.** Mesh lines are placed on a thin `Wire`'s
     bounding box (its surface) rather than on its axis, so models with
-    sub-cell wires have to be meshed with zero-radius stand-ins.
+    sub-cell wires have to be meshed with zero-radius stand-ins. For a
+    tilted wire this matters more (§5.14.1): a 170 mm dipole of radius
+    0.5 mm at 45° in xz with a 10 mm target gets lines at the box faces
+    `±(60.1 ± 0.5)` mm in x and z and `±0.5` mm in y, graded down to
+    0.5 mm cells (69 instead of about 35 lines per axis, a 20× smaller
+    time step), and the cells there are then too small for the wire, so
+    the oblique model rejects it. The oblique model needs no line on the
+    wire at all, only a locally uniform mesh around it. Suggestion: treat
+    `Wire`s thinner than the target cell as lines (no surface lines), and
+    oblique ones (and `Curve`s) as contributing no fixed lines, perhaps
+    with an option to keep the mesh uniform within a few cells of them.
 
 ### 8.2 Feedback for hdf5rs
 

@@ -36,6 +36,9 @@
 //!    [`sheet`]. Metal `Wire` primitives thinner than the staircase get
 //!    the thin-wire correction of [`crate::engine::wire`] on their edge
 //!    materials ([`Compiled::thin_wires`]; rules in `compile/wire.rs`).
+//!    Metal `Wire`s with an oblique segment are taken out of the model
+//!    before step 3 and become the wire network of
+//!    [`crate::engine::oblique_wire`] ([`Compiled::oblique_wires`]).
 //! 5. **Boundaries** from [`Fdtd::get_boundaries`]: PEC and PMC map to
 //!    [`FaceCondition`]s; Mur and PML faces are built as PEC faces and
 //!    listed in [`Compiled::mur`] / [`Compiled::pml`], from which
@@ -150,8 +153,8 @@ use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
-    EdgePole, Engine, FaceCondition, FaceConditions, Grid, OperatorHandle, SheetEdge, ThinWire,
-    TimeStep,
+    EdgePole, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires, OperatorHandle, SheetEdge,
+    ThinWire, TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
@@ -382,6 +385,11 @@ pub struct Compiled {
     /// [`crate::engine::wire`]), already applied to
     /// [`materials`](Self::materials).
     pub thin_wires: Vec<ThinWire>,
+    /// Oblique thin wires (csx `Wire` primitives with a segment that is
+    /// not along a mesh axis; see [`crate::engine::oblique_wire`] and
+    /// `compile/wire.rs`), removed from the model before discretisation;
+    /// installed by [`build`](Self::build).
+    pub oblique_wires: Option<ObliqueWires>,
     /// Conducting-sheet edges from csx `ConductingSheet` properties (see
     /// [`sheet`]); installed by [`build`](Self::build) as one
     /// [`ConductingSheet`] operator.
@@ -413,6 +421,9 @@ pub struct BoundaryHandles {
     pub sheets: Option<OperatorHandle<ConductingSheet>>,
     /// One operator per [`Compiled::abc`] sheet, in the same order.
     pub abc: Vec<OperatorHandle<AbsorbingSheet>>,
+    /// The oblique thin-wire operator, if [`Compiled::oblique_wires`] is
+    /// set.
+    pub oblique_wires: Option<OperatorHandle<ObliqueWires>>,
     /// What the conformal PEC step did, if [`Compiled::conformal`] is set.
     pub conformal: Option<ConformalReport>,
 }
@@ -423,8 +434,8 @@ impl Compiled {
     /// operators, first the [`CpmlBoundary`], then the [`MurBoundary`],
     /// then the [`Dispersive`] medium (after the CPML, so that a medium
     /// reaching into the PML is coupled implicitly with it), then the
-    /// [`ConductingSheet`]s, then the [`AbsorbingSheet`]s (last, so that
-    /// they see the final interior E).
+    /// [`ConductingSheet`]s, then the [`ObliqueWires`], then the
+    /// [`AbsorbingSheet`]s (last, so that they see the final interior E).
     ///
     /// # Errors
     /// Invalid time step or materials, or boundary operator setup errors
@@ -472,6 +483,9 @@ impl Compiled {
                 s.push(e);
             }
             h.sheets = Some(s.add_to(engine)?);
+        }
+        if let Some(w) = &self.oblique_wires {
+            h.oblique_wires = Some(engine.add_operator(w.clone()));
         }
         for a in &self.abc {
             let v = match a.phase_velocity {
@@ -852,13 +866,18 @@ pub fn compile(
     };
     let mut warnings: Vec<String> = model.validate().iter().map(ToString::to_string).collect();
     let grid = cylindrical::multigrid(grid, &model.grid, fdtd.get_multigrid(), &mut warnings)?;
-    let mg: MaterialGrid = discretize(
+    // Oblique thin wires are not discretised by csx (see compile/wire.rs).
+    let (oblique, stripped) = wire::oblique_wires(model, &grid, &mut warnings);
+    let full_model = model;
+    let model = stripped.as_ref().unwrap_or(model);
+    let mut mg: MaterialGrid = discretize(
         model,
         &DiscretizeOptions::default()
             .with_subsampling(opts.subsampling)
             .with_threads(fdtd.resolved_threads())
             .with_snap_tolerance(opts.snap_tolerance),
     )?;
+    oblique.renumber_warnings(&mut mg.warnings);
     let node_map = NodeMap::new(grid.nodes());
     if mg.dims != grid.nodes() {
         return Err(Error::Invalid(format!(
@@ -954,7 +973,7 @@ pub fn compile(
         dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings)
     };
     let thin_wires = wire::thin_wires(
-        model,
+        full_model,
         &grid,
         &mg.lumped,
         opts.snap_tolerance,
@@ -968,6 +987,14 @@ pub fn compile(
         cylindrical::drop_ignored_boundaries(&grid, &mut mur, &mut pml, &mut warnings);
     }
     sheet::pml_warning(&sheet_map.edges, grid.nodes(), &pml, &mut warnings);
+    let oblique_wires = wire::oblique_operator(
+        &oblique,
+        &grid,
+        &materials,
+        &mg.lumped,
+        &faces,
+        &mut warnings,
+    );
     let timestep = match fdtd.get_timestep() {
         Some(dt) => TimeStep::Fixed(dt),
         None => TimeStep::Courant(fdtd.get_timestep_factor()),
@@ -1005,6 +1032,7 @@ pub fn compile(
         abc,
         dispersive,
         thin_wires,
+        oblique_wires,
         sheets: sheet_map.edges,
         max_frequency: fdtd.get_max_frequency(),
         conformal,

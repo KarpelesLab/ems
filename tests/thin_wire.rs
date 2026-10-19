@@ -283,7 +283,8 @@ fn csx_mapping() {
     let i = c.grid.index([10, 10, 10]);
     assert!((c.materials.eps_r(Axis::X)[i] - 1.0 / g).abs() < 1e-12);
 
-    // Unsupported pieces keep the staircase, with warnings.
+    // Unsupported pieces keep the staircase, with warnings; the oblique
+    // wire goes to the oblique thin-wire model (tests/oblique_wire.rs).
     let extra = vec![
         Primitive::new(Wire::new([[3.0, 3.0, 3.0], [6.0, 7.0, 3.0]], 0.02)),
         Primitive::new(Wire::new([[3.5, 15.0, 2.0], [3.5, 15.0, 8.0]], 0.02)),
@@ -292,14 +293,13 @@ fn csx_mapping() {
     let (m, _) = wire_model(0.02, extra);
     let c = compile(&m, &wire_fdtd(), &CompileOptions::default()).unwrap();
     let ws: Vec<&String> = c.warnings.iter().filter(|w| !mesh(w)).collect();
-    for want in [
-        "not along a mesh axis",
-        "not on mesh lines",
-        "not below the staircase radius",
-    ] {
+    for want in ["not on mesh lines", "not below the staircase radius"] {
         assert!(ws.iter().any(|w| w.contains(want)), "{want}: {ws:?}");
     }
+    // Nothing about the oblique wire (primitive #0 of "other").
+    assert!(ws.iter().all(|w| !w.contains("primitive #0")), "{ws:?}");
     assert_eq!(c.thin_wires.len(), 1);
+    assert!(c.oblique_wires.as_ref().is_some_and(|w| w.segments() > 0));
 
     // The thin wire changes the port impedance against the staircase.
     let z = |r: f64| {

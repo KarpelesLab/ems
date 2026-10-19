@@ -1,4 +1,21 @@
-//! csx `Wire` primitives on metal → thin wires ([`crate::engine::wire`]).
+//! csx `Wire` primitives on metal → thin wires ([`crate::engine::wire`],
+//! [`crate::engine::oblique_wire`]).
+//!
+//! # Oblique wires
+//!
+//! A metal `Wire` (radius > 0, Cartesian structure and grid) with at
+//! least one polyline segment that is not along a mesh axis is modelled
+//! as a whole by the oblique wire network ([`ObliqueWires`]), if the
+//! model's in-cell corrections are positive for it (roughly: radius below
+//! 0.15 cells everywhere along it). It is then removed from the model
+//! before csx discretises it, so it leaves no staircase (csx's own
+//! warnings are renumbered to the original primitive indices); otherwise
+//! it keeps the plain staircase, with a warning. Its ends are connected
+//! where they touch a PEC edge, a lumped-element edge (a feed gap given as
+//! a lumped port) or a PEC outer face. All remaining rules below are
+//! about axis-aligned wires.
+//!
+//! # Axis-aligned wires
 //!
 //! `csx::discretize` makes the edges of a metal wire's centre line PEC (a
 //! staircase through the nearest mesh nodes) and, for a wire radius of at
@@ -10,8 +27,8 @@
 //! * Every polyline segment of the wire that runs along a mesh axis, on
 //!   mesh lines in the two transverse directions (within the compile snap
 //!   tolerance), becomes a run of wire edges between the mesh lines
-//!   nearest to its end points. Oblique segments, and segments off the
-//!   mesh lines, keep the plain staircase, with a warning.
+//!   nearest to its end points. Segments off the mesh lines keep the plain
+//!   staircase, with a warning.
 //! * Lumped-element edges along the same line that touch a wire run (the
 //!   feed gap of a dipole, the base of a monopole) join the run, so the
 //!   current through the element sees the wire's inductance and the nodes
@@ -33,8 +50,10 @@ use csx::primitives::Shape;
 use csx::{CoordSystem, PropertyKind, Vec3};
 
 use crate::axis::Axis;
+use crate::engine::oblique_wire::{ObliqueWire, ObliqueWires};
 use crate::engine::wire::ThinWire;
-use crate::engine::{EdgeMaterials, Grid};
+use crate::engine::{EdgeMaterials, FaceCondition, FaceConditions, Grid};
+use crate::fdtd::Face;
 
 /// `(axis, transverse node indices, radius bits)`: one mesh line carrying
 /// wire edges of one radius.
@@ -94,22 +113,13 @@ pub(super) fn thin_wires(
                 ));
                 continue;
             }
-            let shape = prim.cartesian_shape(cs);
-            let Shape::Wire(w) = &*shape else {
+            let Some(pts) = wire_points(prim, cs) else {
                 continue;
             };
-            let pts: Vec<Vec3> = w
-                .points
-                .iter()
-                .map(|q| {
-                    let c = q.value();
-                    if prim.transform.is_empty() {
-                        c
-                    } else {
-                        prim.transform.apply(c)
-                    }
-                })
-                .collect();
+            if pts.windows(2).any(|s| is_oblique(s[0], s[1])) {
+                // The oblique model's business (`oblique_wires`).
+                continue;
+            }
             let mut thick = false;
             for (si, seg) in pts.windows(2).enumerate() {
                 let (a, b) = (seg[0], seg[1]);
@@ -261,4 +271,195 @@ pub(super) fn thin_wires(
         }
     });
     wires
+}
+
+/// The polyline of a csx `Wire` primitive in drawing units, after the
+/// primitive's transformation (`None` for other shapes).
+fn wire_points(prim: &csx::Primitive, cs: CoordSystem) -> Option<Vec<Vec3>> {
+    let shape = prim.cartesian_shape(cs);
+    let Shape::Wire(w) = &*shape else {
+        return None;
+    };
+    Some(
+        w.points
+            .iter()
+            .map(|q| {
+                let c = q.value();
+                if prim.transform.is_empty() {
+                    c
+                } else {
+                    prim.transform.apply(c)
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Whether the segment `a → b` moves along more than one axis.
+fn is_oblique(a: Vec3, b: Vec3) -> bool {
+    let scale = (0..3)
+        .map(|d| a[d].abs().max(b[d].abs()))
+        .fold(0.0, f64::max);
+    (0..3)
+        .filter(|&d| (a[d] - b[d]).abs() > 1e-9 * scale.max(f64::MIN_POSITIVE))
+        .count()
+        > 1
+}
+
+/// The csx `Wire`s handled by the oblique thin-wire model
+/// ([`crate::engine::oblique_wire`]), with labels for warnings.
+#[derive(Debug, Clone, Default)]
+pub(super) struct ObliqueSet {
+    pub wires: Vec<ObliqueWire>,
+    pub labels: Vec<String>,
+    /// Per property name: the (sorted) primitive indices removed from the
+    /// model.
+    removed: BTreeMap<String, Vec<usize>>,
+}
+
+impl ObliqueSet {
+    /// Rewrites csx discretisation warnings about the model without the
+    /// oblique wires (`property "name" primitive #k (…)`) to the primitive
+    /// indices of the original model.
+    pub(super) fn renumber_warnings(&self, warnings: &mut [String]) {
+        for (name, gone) in &self.removed {
+            let prefix = format!("property {name:?} primitive #");
+            for w in warnings.iter_mut() {
+                let Some(rest) = w.strip_prefix(&prefix) else {
+                    continue;
+                };
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                let Ok(k) = rest[..digits].parse::<usize>() else {
+                    continue;
+                };
+                // The k-th original index that was kept.
+                let orig = (0..).filter(|i| !gone.contains(i)).nth(k).unwrap_or(k);
+                *w = format!("{prefix}{orig}{}", &rest[digits..]);
+            }
+        }
+    }
+}
+
+/// Finds the metal `Wire` primitives of `model` with at least one segment
+/// that is not along a mesh axis and a radius the oblique model supports
+/// (see the module docs), and returns them with a copy of the model
+/// without them (`None` if there are none), so that csx does not
+/// staircase them. Wires that are too thick keep the staircase, with a
+/// warning.
+pub(super) fn oblique_wires(
+    model: &csx::ContinuousStructure,
+    grid: &Grid,
+    warnings: &mut Vec<String>,
+) -> (ObliqueSet, Option<csx::ContinuousStructure>) {
+    let unit = model.grid.delta_unit;
+    let cs = model.coord_system;
+    let mut set = ObliqueSet::default();
+    if cs != CoordSystem::Cartesian || model.grid.coord_system != CoordSystem::Cartesian {
+        return (set, None);
+    }
+    let vacuum = EdgeMaterials::vacuum(grid);
+    // (property index, primitive index) to remove.
+    let mut remove: Vec<(usize, usize)> = Vec::new();
+    for (pk, p) in model.properties().iter().enumerate() {
+        if !matches!(p.kind, PropertyKind::Metal) {
+            continue;
+        }
+        for (pi, prim) in p.primitives.iter().enumerate() {
+            let Shape::Wire(w) = &prim.shape else {
+                continue;
+            };
+            let radius = w.radius.value() * unit;
+            if radius.is_nan() || radius <= 0.0 {
+                continue;
+            }
+            let Some(pts) = wire_points(prim, cs) else {
+                continue;
+            };
+            if !pts.windows(2).any(|s| is_oblique(s[0], s[1])) {
+                continue;
+            }
+            let label = format!("wire {:?} primitive #{pi}", p.name);
+            let ow = ObliqueWire::new(
+                pts.iter().map(|q| [q[0] * unit, q[1] * unit, q[2] * unit]),
+                radius,
+            );
+            match ObliqueWires::new(grid, &vacuum, core::slice::from_ref(&ow), |_, _| false) {
+                Ok(_) => {
+                    set.wires.push(ow);
+                    set.labels.push(label);
+                    remove.push((pk, pi));
+                }
+                Err(e) => warnings.push(format!(
+                    "{label}: {e}; staircase without thin-wire correction"
+                )),
+            }
+        }
+    }
+    if remove.is_empty() {
+        return (set, None);
+    }
+    let mut stripped = model.clone();
+    for (pk, prop) in stripped.properties_mut().enumerate() {
+        let drop: Vec<usize> = remove.iter().filter(|r| r.0 == pk).map(|r| r.1).collect();
+        if drop.is_empty() {
+            continue;
+        }
+        let mut k = 0;
+        prop.primitives.retain(|_| {
+            let keep = !drop.contains(&k);
+            k += 1;
+            keep
+        });
+        set.removed
+            .entry(prop.name.clone())
+            .or_default()
+            .extend(drop);
+    }
+    (set, Some(stripped))
+}
+
+/// Builds the oblique wire operator for `set` with the compiled
+/// materials: wire ends on PEC edges, on lumped-element edges or on a PEC
+/// outer face are connected.
+pub(super) fn oblique_operator(
+    set: &ObliqueSet,
+    grid: &Grid,
+    materials: &EdgeMaterials,
+    lumped: &[LumpedEdge],
+    faces: &FaceConditions,
+    warnings: &mut Vec<String>,
+) -> Option<ObliqueWires> {
+    if set.wires.is_empty() {
+        return None;
+    }
+    let n = grid.nodes();
+    let lumped: BTreeSet<(usize, [usize; 3])> = lumped
+        .iter()
+        .map(|le| {
+            let idx = le.edge.index;
+            (
+                le.edge.dir,
+                [idx % n[0], (idx / n[0]) % n[1], idx / (n[0] * n[1])],
+            )
+        })
+        .collect();
+    let contact = |axis: Axis, node: [usize; 3]| {
+        let a = axis.index();
+        lumped.contains(&(a, node))
+            || Face::ALL.iter().any(|&f| {
+                let d = f.axis().index();
+                let at = if f.is_max() { n[d] - 1 } else { 0 };
+                d != a && node[d] == at && faces[f] == FaceCondition::Pec
+            })
+    };
+    match ObliqueWires::new(grid, materials, &set.wires, contact) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            warnings.push(format!(
+                "oblique thin wires ({}): {e}; ignored",
+                set.labels.join(", ")
+            ));
+            None
+        }
+    }
 }
