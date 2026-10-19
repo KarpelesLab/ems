@@ -37,6 +37,10 @@ the corresponding area of `ems`.
 * Comparing *outputs* of openEMS and `ems` on the same model, as a black box.
   The primary reference stays analytic results, though (see the validation
   plan in [docs/DESIGN.md](docs/DESIGN.md)).
+  The files openEMS writes (probe text files, HDF5 and VTK dumps) are
+  observable output and may be matched for compatibility. Use the oracle in
+  [scripts/openems-oracle](scripts/openems-oracle/README.md), which keeps
+  only the compiled tools.
 * Permissively licensed crates as dependencies.
 
 ## In practice

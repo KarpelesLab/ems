@@ -38,6 +38,12 @@ copied, by humans or by AI agents, not even "to check how they did it".
 - The **observable openEMS XML file format**, for interoperability. Element and
   attribute names are an interface; where the docs are silent, we choose the
   behaviour deliberately and document it in rustdoc.
+- **Black-box observation of a compiled openEMS** (the "oracle",
+  `scripts/openems-oracle/`): we run it on XML we wrote and read its console
+  output and the files it writes (probe text files, HDF5, VTK, statistics),
+  to match output formats and to compare numbers. Its sources, headers and
+  bundled scripts are deleted after the build and are never read.
+  Fixtures live in `tests/fixtures/openems/`.
 
 **Process**
 - Every non-trivial algorithm has a doc comment citing its literature source.
