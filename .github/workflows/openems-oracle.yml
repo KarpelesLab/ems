@@ -77,7 +77,7 @@ jobs:
           for s in scripts/openems-oracle/gen-*.sh; do
             [ -e "$s" ] || continue
             found=1
-            echo "::group::$s"; sh "$s"; echo "::endgroup::"
+            echo "::group::$s"; bash "$s"; echo "::endgroup::"
           done
           [ "$found" = 1 ] || echo "no gen-*.sh scripts yet"
           {

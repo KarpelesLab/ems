@@ -14,7 +14,10 @@ use std::path::{Path, PathBuf};
 
 use ems::Simulation;
 use ems::io::openems::dump::{DumpFileOptions, write_dump, write_sar};
-use hdf5rs::{File, Value};
+
+#[path = "common/h5cmp.rs"]
+mod h5cmp;
+use h5cmp::compare_h5;
 
 fn fixture(case: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -39,119 +42,6 @@ fn run_ems(case: &str, variant: &str, opts: &DumpFileOptions) -> PathBuf {
         write_sar(&out, s).unwrap();
     }
     out
-}
-
-// ---------------------------------------------------------------------
-// HDF5 comparison.
-
-/// A flattened HDF5 file: path → (kind/shape/datatype signature,
-/// attributes, numeric values).
-/// Attribute name → (type signature, values).
-type Attrs = BTreeMap<String, (String, Vec<Value>)>;
-
-#[derive(Debug, Default)]
-struct H5Tree {
-    objects: BTreeMap<String, (String, Attrs, Vec<f64>)>,
-}
-
-fn dtype_sig(dt: &hdf5rs::Datatype) -> String {
-    format!("{:?}/{}", dt.class, dt.size)
-}
-
-fn numbers(v: &[Value]) -> Vec<f64> {
-    let mut out = Vec::new();
-    for x in v {
-        match x {
-            Value::Float(f) => out.push(*f),
-            Value::Int(i) => out.push(*i as f64),
-            Value::UInt(u) => out.push(*u as f64),
-            Value::Complex { re, im } => out.extend([*re, *im]),
-            Value::Compound(m) => {
-                out.extend(numbers(&m.iter().map(|p| p.1.clone()).collect::<Vec<_>>()))
-            }
-            Value::Array(a) | Value::VarLen(a) => out.extend(numbers(a)),
-            _ => {}
-        }
-    }
-    out
-}
-
-fn read_tree(path: &Path) -> H5Tree {
-    let f = File::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let mut t = H5Tree::default();
-    fn attrs(o: &[hdf5rs::Attribute]) -> Attrs {
-        o.iter()
-            .map(|a| {
-                let sig = format!("{}{:?}", dtype_sig(a.datatype()), a.shape());
-                (a.name().to_string(), (sig, a.values().unwrap()))
-            })
-            .collect()
-    }
-    fn walk(t: &mut H5Tree, g: &hdf5rs::Group, path: &str) {
-        t.objects.insert(
-            path.to_string(),
-            ("group".into(), attrs(&g.attributes().unwrap()), Vec::new()),
-        );
-        for name in g.link_names().unwrap() {
-            let p = format!("{}/{name}", path.trim_end_matches('/'));
-            let o = g.object(&name).unwrap();
-            if let Some(sub) = o.as_group() {
-                walk(t, sub, &p);
-            } else if let Some(d) = o.as_dataset() {
-                let sig = format!("dataset {:?} {}", d.shape(), dtype_sig(d.datatype()));
-                let vals = numbers(&d.read_values().unwrap());
-                t.objects
-                    .insert(p, (sig, attrs(&d.attributes().unwrap()), vals));
-            }
-        }
-    }
-    walk(&mut t, &f.root().unwrap(), "/");
-    t
-}
-
-/// Compares two HDF5 files (structure asserted); returns the largest data
-/// difference relative to the largest |value| of the reference file, or
-/// the largest relative difference of a numeric attribute if larger. Attributes in `loose`
-/// are compared by type only.
-fn compare_h5(want: &Path, got: &Path, loose: &[&str]) -> f64 {
-    let (a, b) = (read_tree(want), read_tree(got));
-    let name = want.file_name().unwrap().to_string_lossy();
-    let ka: Vec<_> = a.objects.keys().collect();
-    let kb: Vec<_> = b.objects.keys().collect();
-    assert_eq!(ka, kb, "{name}: objects");
-    let (mut num, mut den, mut attr_err) = (0.0f64, 0.0f64, 0.0f64);
-    for (p, (sa, aa, va)) in &a.objects {
-        let (sb, ab, vb) = &b.objects[p];
-        assert_eq!(sa, sb, "{name}:{p}: kind/shape/type");
-        let an: Vec<_> = aa.keys().collect();
-        let bn: Vec<_> = ab.keys().collect();
-        assert_eq!(an, bn, "{name}:{p}: attribute names");
-        for (k, (ta, xa)) in aa {
-            let (tb, xb) = &ab[k];
-            assert_eq!(ta, tb, "{name}:{p}@{k}: attribute type");
-            if loose.contains(&k.as_str()) {
-                continue;
-            }
-            let (na, nb) = (numbers(xa), numbers(xb));
-            if na.is_empty() {
-                assert_eq!(format!("{xa:?}"), format!("{xb:?}"), "{name}:{p}@{k}");
-            } else {
-                assert_eq!(na.len(), nb.len(), "{name}:{p}");
-                for (x, y) in na.iter().zip(&nb) {
-                    let m = x.abs().max(y.abs());
-                    if m > 0.0 {
-                        attr_err = attr_err.max((x - y).abs() / m);
-                    }
-                }
-            }
-        }
-        assert_eq!(va.len(), vb.len(), "{name}:{p}: value count");
-        for (x, y) in va.iter().zip(vb) {
-            num = num.max((x - y).abs());
-            den = den.max(x.abs());
-        }
-    }
-    attr_err.max(if den > 0.0 { num / den } else { num })
 }
 
 // ---------------------------------------------------------------------
@@ -339,7 +229,9 @@ fn check(
                     "used_cubes",
                     "unused_cubes",
                 ],
+                &[],
             )
+            .worst()
         } else {
             compare_vtk(&f, &g)
         };
