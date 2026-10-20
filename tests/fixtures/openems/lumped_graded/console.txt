@@ -1,0 +1,12 @@
+Create FDTD operator
+FDTD simulation size: 21x19x21 --> 8379 FDTD cells 
+FDTD timestep is: 9.01147e-13 s; Nyquist rate: 110 timesteps @5.04408e+09 Hz
+Excitation signal length is: 1590 timesteps (1.43282e-09s)
+Max. number of timesteps: 3000 ( --> 1.88679 * Excitation signal length)
+openEMS::SetupFDTD: Warning, max. number of timesteps is smaller than three times the excitation. 
+	You may want to choose a higher number of max. timesteps... 
+Create FDTD engine
+Running FDTD engine... this may take a while... grab a cup of coffee?!?
+Exact-endcriteria: evaluating the end criteria every 110 timestep(s) (this excitation's Nyquist rate)
+RunFDTD: Warning: Max. number of timesteps was reached before the end-criteria of -300dB was reached... 
+	You may want to choose a higher number of max. timesteps... 

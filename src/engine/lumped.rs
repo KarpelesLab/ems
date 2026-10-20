@@ -330,8 +330,12 @@ struct Branch {
     q: Vec<f64>,
     /// `u^n` saved before the E update.
     u_prev: Vec<f64>,
-    /// `j̄ = (j^{n+1} + j^n)/2` of the last update, per edge.
+    /// `j̄ = (j^{n+1} + j^n)/2` of the last update, per edge (explicit
+    /// inductor: the current `j^{n+½}` of the last update).
     j_avg: Vec<f64>,
+    /// Explicit (leapfrog) inductor update instead of the trapezoidal
+    /// branch ([`LumpedElement::explicit_inductor`]).
+    explicit: bool,
 }
 
 /// Recorder of the element's terminal current (see the
@@ -369,6 +373,10 @@ struct Installed {
     terms: Vec<(Source, Vec<f64>)>,
     /// Scratch: source voltage per edge of the current step.
     v: Vec<f64>,
+    /// Branch drive sources ([`LumpedElement::branch_drive_source`]).
+    drive: Vec<(Source, Vec<f64>)>,
+    /// Scratch: branch drive voltage per edge of the current step.
+    vd: Vec<f64>,
     /// Whether the source drives the branch (series topology with branch).
     src_in_branch: bool,
     branch: Option<Branch>,
@@ -398,7 +406,9 @@ pub struct LumpedElement {
     topology: Topology,
     source: Option<Source>,
     edge_sources: Vec<(Source, Vec<f64>)>,
+    drive_sources: Vec<(Source, Vec<f64>)>,
     record: bool,
+    explicit_inductor: bool,
     state: Option<Installed>,
 }
 
@@ -438,7 +448,9 @@ impl LumpedElement {
             topology: Topology::Parallel,
             source: None,
             edge_sources: Vec::new(),
+            drive_sources: Vec::new(),
             record: false,
+            explicit_inductor: false,
             state: None,
         }
     }
@@ -486,7 +498,9 @@ impl LumpedElement {
             topology,
             source: None,
             edge_sources: Vec::new(),
+            drive_sources: Vec::new(),
             record: false,
+            explicit_inductor: false,
             state: None,
         })
     }
@@ -561,11 +575,43 @@ impl LumpedElement {
         self
     }
 
+    /// Adds a voltage `weights[e]·v(t)` \[V\] (sampled at `t = (n + ½)·dt`
+    /// for the E update `n → n+1`) subtracted from the drive of each
+    /// edge's branch only: from `ū` in a series branch, from `u^n` in an
+    /// [explicit inductor](Self::explicit_inductor), from `ū` in a
+    /// trapezoidal parallel inductor; folded resistors and capacitors do
+    /// not see it. This is not a circuit element of its own: it exists to
+    /// reproduce openEMS, whose lumped elements are driven by the edge
+    /// voltage without the soft excitation added to it (design §5.16.1).
+    /// Requires a branch (inductor or series RLC).
+    pub fn branch_drive_source(
+        mut self,
+        weights: Vec<f64>,
+        v: impl Fn(f64) -> f64 + Send + 'static,
+    ) -> Self {
+        self.drive_sources.push((Source::Fn(Box::new(v)), weights));
+        self
+    }
+
     /// Records the element's terminal current every step (see
     /// [Terminal current](self#terminal-current)); read it with
     /// [`current`](Self::current). Adds a `pre_e` and a `post_e` hook.
     pub fn record_current(mut self) -> Self {
         self.record = true;
+        self
+    }
+
+    /// Updates a parallel inductor explicitly (leapfrog) instead of with
+    /// the implicit trapezoidal branch: the inductor current lives at the
+    /// half steps, `j^{n+½} = j^{n−½} + (dt/L_e)·u^n`, and enters the E
+    /// update `n → n+1` like an H current, `u^{n+1} = u* − cb·j^{n+½}`
+    /// (the Yee-style scheme of Taflove & Hagness §15 for an inductor;
+    /// openEMS's update, established by black-box comparison, design
+    /// §5.16). Second order like the trapezoidal branch, but explicit: it
+    /// adds the edge's local resonance `1/√(L_e·C_e)` to the stability
+    /// limit (`dt < 2·√(L_e·C_e)` alone). Ignored for series elements.
+    pub fn explicit_inductor(mut self, on: bool) -> Self {
+        self.explicit_inductor = on;
         self
     }
 
@@ -693,7 +739,12 @@ impl LumpedElement {
             s.validate()?;
         }
         let ne = self.edge_nodes().len();
-        for (s, w) in &self.edge_sources {
+        if !self.drive_sources.is_empty() && !self.has_branch() {
+            return Err(Error::Invalid(
+                "a branch drive source needs an inductor or a series branch".into(),
+            ));
+        }
+        for (s, w) in self.edge_sources.iter().chain(&self.drive_sources) {
             s.validate()?;
             if w.len() != ne {
                 return Err(Error::Invalid(format!(
@@ -850,6 +901,7 @@ impl LumpedElement {
                 q: vec![0.0; ne],
                 u_prev: vec![0.0; ne],
                 j_avg: vec![0.0; ne],
+                explicit: self.explicit_inductor && self.topology == Topology::Parallel,
             };
             for &(_, _, br) in &parts {
                 let (r, l, c) = br.unwrap_or((0.0, 0.0, f64::INFINITY));
@@ -878,6 +930,7 @@ impl LumpedElement {
             terms.push((s, vec![1.0 / series as f64; ne]));
         }
         terms.append(&mut self.edge_sources);
+        let drive = std::mem::take(&mut self.drive_sources);
         self.state = Some(Installed {
             dt,
             edges,
@@ -887,6 +940,8 @@ impl LumpedElement {
             series,
             v: vec![0.0; if terms.is_empty() { 0 } else { ne }],
             terms,
+            vd: vec![0.0; if drive.is_empty() { 0 } else { ne }],
+            drive,
             src_in_branch,
             branch,
             record,
@@ -972,7 +1027,7 @@ impl LumpedElement {
         let (branch, source) = match &self.state {
             Some(s) => (
                 s.branch.is_some() || s.record.is_some(),
-                !s.terms.is_empty(),
+                !s.terms.is_empty() || !s.drive.is_empty(),
             ),
             None => (self.has_branch() || self.record, self.has_source()),
         };
@@ -1016,6 +1071,19 @@ impl LumpedElement {
                 }
             }
         }
+        let mut drive = false;
+        if !s.drive.is_empty() {
+            s.vd.fill(0.0);
+            for (src, w) in &s.drive {
+                let val = src.value(ctx.h_time(), s.dt);
+                if val != 0.0 {
+                    drive = true;
+                    for (v, &w) in s.vd.iter_mut().zip(w) {
+                        *v += w * val;
+                    }
+                }
+            }
+        }
         if active && !s.src_in_branch {
             for (e, &p) in s.edges.iter().enumerate() {
                 let add = s.cb[e] * s.g_src[e] * s.v[e];
@@ -1029,12 +1097,22 @@ impl LumpedElement {
             // Series source sits in the branch; parallel source is in the
             // folded resistor.
             for (e, (&p, &cb)) in s.edges.iter().zip(&s.cb).enumerate() {
-                let v_br = if active && s.src_in_branch {
+                let mut v_br = if active && s.src_in_branch {
                     s.v[e]
                 } else {
                     0.0
                 };
+                if drive {
+                    v_br += s.vd[e];
+                }
                 let u_star = fields.u.get(axis, p) as f64;
+                if b.explicit {
+                    // `two_l_dt = 2·L_e/dt`: `dt/L_e = 2/two_l_dt`.
+                    b.j[e] += 2.0 * (b.u_prev[e] - v_br) / b.two_l_dt[e];
+                    b.j_avg[e] = b.j[e];
+                    fields.u.set(axis, p, (u_star - cb * b.j[e]) as f32);
+                    continue;
+                }
                 let k = b.two_l_dt[e] * b.j[e] - b.q[e] * b.inv_c[e] - v_br + 0.5 * b.u_prev[e];
                 let z = b.z[e];
                 let u_new = (z * u_star - cb * k) / (z + 0.5 * cb);

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "lumped_exc": excitations over series and parallel R/L/C elements (openEMS: a plain soft source, with the element branch driven by the edge voltage without it), parallel inductors updated explicitly
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1500" endCriteria="1e-30">
+    <Excitation Type="0" f0="3e9" fc="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LumpedElement Name="sr" Direction="2" R="50" LEtype="1"><Primitives><Box Priority="5"><P1 X="4" Y="4" Z="9"/><P2 X="4" Y="4" Z="11"/></Box></Primitives></LumpedElement>
+      <Excitation Name="x_sr" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="9"/><P2 X="4" Y="4" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u_sr" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="9"/><P2 X="4" Y="4" Z="11"/></Box></Primitives></ProbeBox>
+      <LumpedElement Name="srlc" Direction="2" R="30" L="1e-9" C="1e-12" LEtype="1"><Primitives><Box Priority="5"><P1 X="9" Y="4" Z="9"/><P2 X="11" Y="4" Z="11"/></Box></Primitives></LumpedElement>
+      <Excitation Name="x_srlc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="9" Y="4" Z="9"/><P2 X="11" Y="4" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u_srlc" Type="0"><Primitives><Box Priority="0"><P1 X="10" Y="4" Z="9"/><P2 X="10" Y="4" Z="11"/></Box></Primitives></ProbeBox>
+      <LumpedElement Name="sl" Direction="0" L="2e-9" LEtype="1"><Primitives><Box Priority="5"><P1 X="15" Y="4" Z="10"/><P2 X="17" Y="4" Z="10"/></Box></Primitives></LumpedElement>
+      <Excitation Name="x_sl" Type="0" Excite="1,0,0"><Primitives><Box Priority="0"><P1 X="15" Y="4" Z="10"/><P2 X="17" Y="4" Z="10"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u_sl" Type="0"><Primitives><Box Priority="0"><P1 X="15" Y="4" Z="10"/><P2 X="17" Y="4" Z="10"/></Box></Primitives></ProbeBox>
+      <LumpedElement Name="pl" Direction="2" L="1e-9"><Primitives><Box Priority="5"><P1 X="4" Y="15" Z="9"/><P2 X="4" Y="15" Z="11"/></Box></Primitives></LumpedElement>
+      <Excitation Name="x_pl" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="4" Y="15" Z="9"/><P2 X="4" Y="15" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u_pl" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="15" Z="9"/><P2 X="4" Y="15" Z="11"/></Box></Primitives></ProbeBox>
+      <LumpedElement Name="prlc" Direction="2" R="50" L="1e-9" C="1e-12"><Primitives><Box Priority="5"><P1 X="9" Y="15" Z="9"/><P2 X="11" Y="15" Z="11"/></Box></Primitives></LumpedElement>
+      <Excitation Name="x_prlc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="9" Y="15" Z="9"/><P2 X="11" Y="15" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u_prlc" Type="0"><Primitives><Box Priority="0"><P1 X="10" Y="15" Z="9"/><P2 X="10" Y="15" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_prlc" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9" Y="15" Z="10"/><P2 X="11" Y="15" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ef" Type="2"><Primitives><Box Priority="0"><P1 X="12" Y="10" Z="10"/><P2 X="12" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

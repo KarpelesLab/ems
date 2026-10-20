@@ -607,11 +607,17 @@ impl Fdtd {
     /// * a [`Boundary::Pmc`] face holds the tangential H of the outermost
     ///   dual layer at zero (the magnetic wall half a cell inside the
     ///   domain, see [`Compiled::openems_pmc`](crate::compile::Compiled::openems_pmc));
-    /// * parallel lumped elements replace their edges' medium capacitance
-    ///   (`C`) and conductance (`R`), and an excitation over a parallel
-    ///   element acts like openEMS's soft source (see
-    ///   [`Simulation`](crate::Simulation), lumped elements and
-    ///   excitations).
+    /// * lumped elements follow openEMS (design §5.16.1): parallel elements
+    ///   replace their edges' medium capacitance (`C`) and conductance
+    ///   (`R`); a parallel R/C element without inductor is spread over its
+    ///   edges like a homogeneous material (per-edge `G`, `C` proportional
+    ///   to dual area over length), others in equal parts; parallel
+    ///   inductors are updated explicitly
+    ///   ([`LumpedElement::explicit_inductor`](crate::engine::LumpedElement::explicit_inductor),
+    ///   unless that would be unstable); an excitation over any element is
+    ///   a plain soft source, and the element's branch is driven by the
+    ///   edge voltage without it (see [`Simulation`](crate::Simulation),
+    ///   lumped elements and excitations).
     pub fn openems_run(mut self, on: bool) -> Self {
         self.openems_run = on;
         self

@@ -297,15 +297,34 @@ fn lumped_port() {
 
 #[test]
 fn lumped_rc() {
-    // The series RLC branch: ~1e-4 (trapezoidal vs openEMS's update).
+    // The series RLC branch is the same trapezoidal (bilinear) update in
+    // both codes; `urlc` over the low-impedance branch is ~1e-3 of the
+    // field around it, so f32 round-off limits it to ~1.3e-3 (with an
+    // excitation over the element, `lumped_exc`, 1e-6).
     Check::new("lumped_rc").per_probe(&[("urlc", 2e-3)]).check();
 }
 
 #[test]
 fn lumped_l() {
-    // Formulation-level: ems's trapezoidal inductor branch vs openEMS's
-    // (~0.5 % on the element voltage).
-    Check::new("lumped_l").tol(1e-2).check();
+    // openEMS's explicit inductor update (ems now uses it for files). The
+    // voltage over the inductor is ~2e-5 of the field around it (the
+    // inductor shorts the edge), so the f32 round-off of the neighbouring
+    // fields limits `ut` to ~5e-4.
+    Check::new("lumped_l").per_probe(&[("ut", 1.5e-3)]).check();
+}
+
+#[test]
+fn lumped_exc() {
+    // Excitations over series and parallel elements (plain soft source,
+    // branch driven without it) and explicit parallel inductors.
+    Check::new("lumped_exc").tol(1e-4).check();
+}
+
+#[test]
+fn lumped_graded() {
+    // R||C spread like a material over edges of different sizes; inductor
+    // and series element in equal parts.
+    Check::new("lumped_graded").tol(1e-4).check();
 }
 
 #[test]

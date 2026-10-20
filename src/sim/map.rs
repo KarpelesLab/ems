@@ -142,6 +142,101 @@ fn redistribute(g: &mut Group) {
     }
 }
 
+/// `A_e/l_e` of an E edge as openEMS weights it when it spreads a lumped
+/// element (black box, design §5.16.1): the dual face area over the edge
+/// length, with the dual extent of an outer mesh line taken as a full
+/// cell (openEMS's operator gives boundary edges the capacitance of a full
+/// dual cell) and, on a closed azimuth, the two stored copies of a seam
+/// edge counted once with the full `Δα`.
+fn openems_edge_geometry(grid: &crate::Grid, axis: Axis, node: [usize; 3]) -> f64 {
+    let mut area = grid.dual_face_area(axis, node);
+    let cyl = grid.is_cylindrical();
+    for t in Axis::ALL {
+        if t == axis {
+            continue;
+        }
+        let n = grid.lines(t).len();
+        let i = node[t.index()];
+        let outer = n > 1 && (i == 0 || i + 1 == n);
+        if !outer {
+            continue;
+        }
+        if cyl && t == Axis::X {
+            // ρ: the axis keeps its disc; elsewhere the clipped dual ring
+            // is extended by the missing half cell.
+            if i == 0 && grid.has_axis() {
+                continue;
+            }
+            if axis == Axis::Z {
+                let r = grid.lines(Axis::X);
+                let (lo, hi) = if i == 0 {
+                    (r[0], 0.5 * (r[0] + r[1]))
+                } else {
+                    (0.5 * (r[i - 1] + r[i]), r[i])
+                };
+                let (lo2, hi2) = if i == 0 {
+                    (2.0 * lo - hi, hi)
+                } else {
+                    (lo, 2.0 * hi - lo)
+                };
+                area *= (hi2 * hi2 - lo2 * lo2) / (hi * hi - lo * lo);
+                continue;
+            }
+        }
+        area *= 2.0;
+    }
+    area / grid.edge_length(axis, node)
+}
+
+/// Re-spreads a csx lumped element over its edges the way openEMS does
+/// (black box, design §5.16.1). A parallel R/C element without an
+/// inductor acts like a homogeneous material filling its edges
+/// (conductivity `κ`, permittivity `ε` uniform) rather than in equal parts
+/// per edge: with `g_e` the [`openems_edge_geometry`] of edge `e` and
+/// `S = Σ_k 1/Σ_{e∈k} g_e` (series positions `k` along the axis, edges `e`
+/// in parallel at each), every edge gets `G_e = g_e·S/R` and
+/// `C_e = g_e·C·S`, which keeps the element's total `R` and `C` (series sum
+/// of parallel sums). Elements with an inductor and series elements keep
+/// csx's equal parts (`R·p/s`, `L·p/s`, `C·s/p`). On a uniform mesh both
+/// are the same; on graded meshes and cylindrical grids (`g_e ∝ ρ` for a
+/// radial element) they differ. The element's values are recovered from
+/// csx's distribution over every edge it listed (copies included); the
+/// totals refer to the physical edges: openEMS counts the α = 2π copies of
+/// a closed azimuth as extra parallel edges (a 20 Ω ring on 16 α cells
+/// acts as 21.25 Ω there), ems keeps the nominal value.
+fn spread_like_openems(g: &mut Group, grid: &crate::Grid) {
+    let material = g.topology == Topology::Parallel && g.edges.iter().all(|e| e.l.is_none());
+    if g.edges.is_empty() || !material {
+        if grid.is_cylindrical() {
+            redistribute(g);
+        }
+        return;
+    }
+    let (s0, p0) = counts(g.axis, g.raw.iter().copied());
+    let a = g.axis.index();
+    let geo: Vec<f64> = g
+        .edges
+        .iter()
+        .map(|e| openems_edge_geometry(grid, g.axis, e.node))
+        .collect();
+    let mut per: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+    for (e, &w) in g.edges.iter().zip(&geo) {
+        *per.entry(e.node[a]).or_insert(0.0) += w;
+    }
+    let sum: f64 = per.values().map(|w| 1.0 / w).sum();
+    if !(sum.is_finite() && sum > 0.0) {
+        return;
+    }
+    // csx: R_e = R·p/s, L_e = L·p/s, C_e = C·s/p.
+    let first = g.edges[0];
+    let r = first.r.map(|v| v * s0 / p0);
+    let c = first.c.map(|v| v * p0 / s0);
+    for (e, &w) in g.edges.iter_mut().zip(&geo) {
+        e.r = r.map(|r| r / (w * sum));
+        e.c = c.map(|c| c * w * sum);
+    }
+}
+
 /// Positive finite value, or `None` (csx uses NaN for "unset").
 fn value(v: f64, what: &str, name: &str, warnings: &mut Vec<String>) -> Option<f64> {
     if v.is_nan() {
@@ -353,11 +448,9 @@ pub(crate) fn map_sources(
             groups.len() - 1
         });
         let grp = &mut groups[g];
-        if cylindrical {
-            grp.raw.push(raw_node);
-            if !placed.insert((g, axis, node)) {
-                continue;
-            }
+        grp.raw.push(raw_node);
+        if cylindrical && !placed.insert((g, axis, node)) {
+            continue;
         }
         if axis != grp.axis {
             warnings.push(format!(
@@ -392,16 +485,27 @@ pub(crate) fn map_sources(
         lumped_edge.insert((axis, node), (g, grp.edges.len()));
         grp.edges.push(ev);
     }
-    if cylindrical {
+    if fdtd.get_openems_run() {
+        for g in &mut groups {
+            spread_like_openems(g, &cyl_grid);
+        }
+    } else if cylindrical {
         for g in &mut groups {
             redistribute(g);
         }
     }
+    // openEMS semantics (black box, design §5.16.1): an excitation over a
+    // lumped element is a plain soft source on every element, and the
+    // element's branch (inductor, series RLC) sees the edge voltage
+    // without it; see the install below. ems semantics: a Thevenin source
+    // in series with the resistor or the series branch.
+    let openems = fdtd.get_openems_run();
     for g in &mut groups {
-        g.can_source = match g.topology {
-            Topology::Parallel => g.edges.first().is_some_and(|e| e.r.is_some()),
-            Topology::Series => !g.edges.is_empty(),
-        };
+        g.can_source = openems
+            || match g.topology {
+                Topology::Parallel => g.edges.first().is_some_and(|e| e.r.is_some()),
+                Topology::Series => !g.edges.is_empty(),
+            };
     }
 
     // ---- excitations.
@@ -474,9 +578,13 @@ pub(crate) fn map_sources(
                 };
                 grp.sources[pos].1[e] += weight;
                 thevenin += 1;
-                continue;
-            }
-            if kind == SourceKind::SoftE && lumped_edge.contains_key(&(axis, node)) {
+                // openEMS: a plain soft source, except on a parallel
+                // element with a resistor, where the element's Thevenin
+                // source reproduces it (see the install below).
+                if !openems || (grp.topology == Topology::Parallel && grp.edges[e].r.is_some()) {
+                    continue;
+                }
+            } else if kind == SourceKind::SoftE && lumped_edge.contains_key(&(axis, node)) {
                 warnings.push(format!(
                     "excitation {:?}: edge {axis}:{node:?} has a lumped element without \
                      resistance; excited as a plain soft source",
@@ -526,14 +634,13 @@ pub(crate) fn map_sources(
             replace_medium(engine, g.axis, &g.edges);
         }
         let ne = g.edges.len();
+        let has_l = g.edges.first().is_some_and(|e| e.l.is_some());
+        let has_r = g.edges.first().is_some_and(|e| e.r.is_some());
         // openEMS adds the excitation to the edge voltage after the update
-        // (a soft source). The element's Thevenin source adds
-        // `cb·g_e·v_e` per step instead, so `v_e = w/(cb·g_e)` gives the
-        // same voltage per step, with `cb = dt/(C + G·dt/2)` of the edge
-        // with the element folded in (see `Simulation`, lumped elements).
-        // Only with openEMS run semantics; otherwise `v_e = w` (ems
-        // Thevenin semantics).
-        let openems = fdtd.get_openems_run();
+        // (a soft source). On a parallel element with a resistor, the
+        // element's Thevenin source adds `cb·g_e·v_e` per step instead, so
+        // `v_e = w/(cb·g_e)` gives the same voltage per step, with
+        // `cb = dt/(C + G·dt/2)` of the edge with the element folded in.
         let gain: Vec<f64> = {
             let nodes = engine.grid().nodes();
             let co = engine.coefficients();
@@ -549,11 +656,7 @@ pub(crate) fn map_sources(
                         ge,
                         e.c.unwrap_or(0.0),
                     );
-                    if g.topology == Topology::Series || !openems {
-                        // A Thevenin source in the series branch (ems
-                        // semantics; openEMS differs, see the docs).
-                        1.0
-                    } else if ge > 0.0 {
+                    if ge > 0.0 {
                         1.0 / (f64::from(cb) * ge)
                     } else {
                         0.0
@@ -561,16 +664,85 @@ pub(crate) fn map_sources(
                 })
                 .collect()
         };
-        let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?.record_current();
+        let branch = match g.topology {
+            Topology::Parallel => has_l,
+            Topology::Series => g
+                .edges
+                .first()
+                .is_some_and(|e| e.l.is_some() || e.c.is_some()),
+        };
+        // openEMS updates a parallel inductor explicitly (leapfrog). That
+        // is only stable while the edge's own resonance is resolved,
+        // `dt²/(L_e·C_e) = dt·cb/L_e` small; beyond 1 (openEMS itself
+        // diverges well before the isolated limit 4) ems keeps its
+        // unconditionally stable trapezoidal branch.
+        let mut explicit = openems && g.topology == Topology::Parallel && has_l;
+        if explicit {
+            let nodes = engine.grid().nodes();
+            let co = engine.coefficients();
+            let worst = g
+                .edges
+                .iter()
+                .map(|e| {
+                    let i = (e.node[0] * nodes[1] + e.node[1]) * nodes[2] + e.node[2];
+                    let (_, cb) = crate::engine::fold_parallel(
+                        co.ca(g.axis)[i],
+                        co.cb(g.axis)[i],
+                        dt,
+                        e.r.map_or(0.0, |r| 1.0 / r),
+                        e.c.unwrap_or(0.0),
+                    );
+                    dt * f64::from(cb) / e.l.unwrap_or(f64::INFINITY)
+                })
+                .fold(0.0f64, f64::max);
+            if worst > 1.0 {
+                explicit = false;
+                warnings.push(format!(
+                    "lumped element {:?}: inductance too small for openEMS's explicit                      inductor update (dt²/(L·C) = {worst:.3} per edge > 1, where openEMS                      becomes unstable); the implicit trapezoidal update is used",
+                    g.name
+                ));
+            }
+        }
+        let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?
+            .record_current()
+            .explicit_inductor(explicit);
         for (k, weights) in g.sources {
             debug_assert_eq!(weights.len(), ne);
-            let weights: Vec<f64> = weights.iter().zip(&gain).map(|(w, k)| w * k).collect();
             let ex = &src.excitations[k];
             let wf = waveform.expect("sources only with a waveform").clone();
             // The element samples its source at `(n + ½)·dt` for the E
             // update to `(n + 1)·dt`, like a soft E source.
             let lag = openems_lag(SourceKind::SoftE, dt);
-            el = el.edge_source(weights, openems_signal(wf, ex.delay, lag, dt));
+            if !openems {
+                el = el.edge_source(weights, openems_signal(wf.clone(), ex.delay, lag, dt));
+                continue;
+            }
+            // openEMS: the excitation is a plain soft source (added with
+            // the other soft sources, after the element), and the element
+            // is driven by the edge voltage without it. The stored `u^n`
+            // holds the previous step's soft source `V^{n−1}`, so the
+            // drive loses `V^{n−1}` (explicit inductor, drive `u^n`) or
+            // `V^{n−1}/2` (series branch or resistor, drive `ū`): a source
+            // one step later, of full or half the voltage. A parallel
+            // resistor or capacitor is folded into the edge and sees the
+            // whole voltage, like any medium; with a resistor the plain
+            // soft source is the element's Thevenin source scaled by
+            // `gain` (so the element's current is the port current).
+            if has_r && g.topology == Topology::Parallel {
+                let scaled = weights.iter().zip(&gain).map(|(w, k)| w * k).collect();
+                el = el.edge_source(scaled, openems_signal(wf.clone(), ex.delay, lag, dt));
+            }
+            let signal = openems_signal(wf, ex.delay, lag + dt, dt);
+            match g.topology {
+                Topology::Parallel if branch => {
+                    el = el.branch_drive_source(weights, signal);
+                }
+                Topology::Parallel => {}
+                Topology::Series => {
+                    let half = weights.iter().map(|w| 0.5 * w).collect();
+                    el = el.edge_source(half, signal);
+                }
+            }
         }
         let h = el.add_to(engine)?;
         mapped.lumped.push((g.name, h));

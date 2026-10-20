@@ -67,10 +67,15 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///    transverse extent) are made PEC, i.e. metal end plates. Every
 ///    element records its terminal current
 ///    ([`Results::lumped_current`]). With [`Fdtd::openems_run`] (openEMS
-///    files) a parallel element's `C` *replaces* the capacitance of its
-///    edges' medium and its `R` the medium's conductance (openEMS
-///    behaviour, black-box comparison; otherwise the element adds to the
-///    medium).
+///    files) the elements behave like openEMS's (black-box comparison,
+///    design §5.16.1): a parallel element's `C` *replaces* the capacitance
+///    of its edges' medium and its `R` the medium's conductance (otherwise
+///    the element adds to the medium); a parallel R/C element without
+///    inductor is spread like a homogeneous material (per-edge `G`, `C`
+///    proportional to the edge's dual area over its length, same totals)
+///    instead of in equal parts; parallel inductors use the explicit
+///    update ([`LumpedElement::explicit_inductor`]) unless it would be
+///    unstable (warning).
 /// 2. **Excitations** (csx `Excitation`, only enabled ones), driven by the
 ///    settings' [`Waveform`](crate::Waveform) with openEMS's timing
 ///    (established by black-box comparison with openEMS v0.37, see
@@ -94,13 +99,13 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///      the same box is a resistive voltage source of `Σw = E·L` volts per
 ///      column — exactly the engine's [`LumpedPort`](crate::engine::LumpedPort)
 ///      model, so XML ports behave like native ones. With
-///      [`Fdtd::openems_run`], a parallel element's source voltage is
-///      scaled to `w·(C_e + G_e·dt/2)/(dt·g_e)` (`C_e`, `G_e` the edge's
-///      total capacitance and conductance, `g_e` the element's): then each
-///      step adds exactly `w·a` to the edge voltage, which is what openEMS
-///      does (a plain soft source after the element's update; agreement
-///      ~1e-7). A series element keeps the unscaled Thevenin source
-///      (openEMS's series elements with an excitation differ by ~30 %).
+///      [`Fdtd::openems_run`] the excitation is instead what openEMS does
+///      on every element: a plain soft source added after the element's
+///      update, with the element's branch driven by the edge voltage
+///      without it (the stored voltage minus the previous step's source:
+///      a [`LumpedElement::branch_drive_source`] for an inductor, a
+///      half-voltage source one step later for a series element; a
+///      folded parallel R/C sees the whole voltage). Agreement ~1e-6.
 ///    * `EFieldHard` overwrites the edge voltage (after the lumped
 ///      updates, so on a lumped element's edge the element has no effect:
 ///      warning), `HFieldSoft` / `HFieldHard` add to / overwrite the H

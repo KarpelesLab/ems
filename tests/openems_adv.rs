@@ -291,6 +291,29 @@ fn cylindrical_drude() {
     check("adv_cyl_drude", 4e-3);
 }
 
+/// A radial 20 Ω lumped resistor over the whole ring of a closed-azimuth
+/// coax (16 α cells, 12 radial edges): openEMS spreads it like a
+/// homogeneous conductivity (`R_e ∝ 1/ρ`, which ems now does for files)
+/// but normalises it over 17 α columns, counting the α = 2π copy of each
+/// edge, so its ring is 21.25 Ω. ems keeps the nominal 20 Ω (2–5e-2
+/// difference); with `R` = 20·17/16 the codes agree to ~1e-6.
+#[test]
+fn cylindrical_lumped_ring() {
+    let name = "adv_cyl_lumped_ring";
+    let res = run(name, &CompileOptions::default());
+    for (f, e) in compare(name, &res) {
+        assert!(e > 5e-3 && e < 0.1, "{name}/{f}: nominal R, {e:.3e}");
+    }
+    let xml = std::fs::read_to_string(fixture_dir(name).join("model.xml")).unwrap();
+    let scaled = xml.replace(r#"R="20""#, r#"R="21.25""#);
+    assert_ne!(scaled, xml);
+    let mut sim = Simulation::from_xml_str(&scaled).unwrap();
+    let res = sim.run().unwrap();
+    for (f, e) in compare(name, &res) {
+        assert!(e < 2e-5, "{name}/{f}: R·17/16, {e:.3e}");
+    }
+}
+
 // ------------------------------------------------------------ waveguide probes
 
 /// TE10 in a 20 × 10 mm guide (PEC, 1 mm cells, `sin(πx/20)`-weighted Ey
