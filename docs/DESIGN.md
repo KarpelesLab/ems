@@ -1120,7 +1120,11 @@ csx `PlaneWave` excitations (type 10) are injected with the TF/SF technique
   incident pulse through the box.
 - **Limitations.** Homogeneous isotropic background around the box
   (dispersive backgrounds not detected; lossy backgrounds not supported by
-  the periodic-cell variant), box clear of CPML/Mur.
+  the periodic-cell variant), box clear of CPML/Mur. Cartesian grids only:
+  on a cylindrical grid the excitation is dropped with a warning, as
+  openEMS ignores it there (§5.16.2); a TF/SF box in `(ρ, α, z)` would
+  need the incident field evaluated analytically at the edge positions
+  and was not built for lack of a reference to compare with.
 
 ### 5.12 SAR
 
