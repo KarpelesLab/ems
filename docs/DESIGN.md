@@ -2046,8 +2046,7 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
 - conducting sheets run there in openEMS (its shunt model); ems still
   uses PEC.
 
-**Lumped elements** (not changed here; shared with the Cartesian
-mapping). openEMS distributes a `LumpedElement`'s `R` differently from
+**Lumped elements** (see also §5.16.1; not reproduced). openEMS distributes a `LumpedElement`'s `R` differently from
 ems on edges whose dual faces are clipped or uneven: in a PMC-walled line
 with the element across the full width, its effective resistance is
 `R·N/Σ(w_e/Δ)` (N edges per row, `w_e` their in-domain dual widths), i.e.

@@ -45,9 +45,24 @@ case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
 the committed fixtures only; CI does not need the oracle.
 
-`gen-adv.sh` regenerates the `adv_*` cases (dispersive media, plane waves,
-waveguide probes, cylindrical grids, boundaries; `tests/openems_adv.rs`):
-it reruns openEMS (`--engine=basic`, deterministic) on each hand-written
-`model.xml` and copies back the files listed on the `keep:` line of the
-case's `meta.txt`. Run it from the repository root; `OPENEMS` overrides the
-oracle path.
+Three scripts regenerate the fixture sets; run them from the repository
+root (`OPENEMS` overrides the oracle path, `OEPY` its python). Each runs
+openEMS deterministically (single-threaded `--engine=basic`) on the
+hand-written `model.xml` of every case and records the oracle revision and
+command line in the case's `meta.txt`:
+
+- `gen-core.sh [CASE...]` regenerates the core-semantics cases (those whose
+  `model.xml` carries the "ems core parity fixture" comment: signals,
+  excitation kinds and delay, probe semantics, FD probes, time-step
+  methods, materials, lumped elements and ports, boundaries, end criteria;
+  `tests/openems_core.rs`). It keeps every file openEMS writes (probe
+  files, the excitation signals `et`/`ht`) and the console output
+  without banner and timing lines (`console.txt`).
+- `gen-adv.sh [CASE...]` regenerates the `adv_*` cases (dispersive media,
+  plane waves, waveguide probes, cylindrical grids, boundaries;
+  `tests/openems_adv.rs`), copying back the files listed on the `keep:`
+  line of the case's `meta.txt`.
+- `gen-dumps.sh` regenerates the `dump_*` cases (field dumps and SAR files
+  in VTK and HDF5; `tests/openems_dumps.rs`): all HDF5 files, a subset of
+  the VTK files, and `structure.txt`, the HDF5 structure listing of
+  `h5ls.py`.

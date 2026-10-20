@@ -348,10 +348,14 @@ pub struct ProbeSpec<T> {
     pub start: [usize; 3],
     /// Node indices of the opposite corner (may be below `start`).
     pub stop: [usize; 3],
-    /// The unsnapped box corners `[first, opposite]` in metres (radians
-    /// along α on a cylindrical grid; drawing units times the drawing unit, after the primitive's
-    /// transformation; the bounding box for non-box shapes). Dumps snap them with the openEMS rules of
-    /// [`io::openems::dump`](crate::io::openems::dump).
+    /// The unsnapped box corners `[first, opposite]` in the engine grid's
+    /// units: metres (drawing units times the drawing unit; radians along
+    /// `α` on a cylindrical grid, see [`grid_from_csx`]), after the
+    /// primitive's transformation; the bounding box for non-box shapes.
+    /// Dumps snap them with the openEMS rules of
+    /// [`io::openems::dump`](crate::io::openems::dump), probes with
+    /// openEMS's probe rules (dual-grid positions of H and current probes,
+    /// see [`Simulation`](crate::Simulation)).
     pub corners: [[f64; 3]; 2],
     /// Waveguide probes (`WaveguideVoltage` / `WaveguideCurrent`): the
     /// mode-weighted field entries `(axis, engine node, weight)` (see

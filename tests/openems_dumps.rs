@@ -5,10 +5,8 @@
 //! same structure (groups, datasets, shapes, datatypes, attributes; VTK
 //! element structure) and the same values within a float32 tolerance.
 //!
-//! Excitation timing: openEMS samples the excitation signal half a step
-//! earlier than ems for the same E update. Until the two agree, each case
-//! also runs with the custom signal delayed by `dt/2` and the better of
-//! the two runs must match.
+//! ems applies openEMS's excitation timing to models read from files
+//! (design §5.16.1), so the models run as written.
 #![cfg(all(feature = "xml", feature = "hdf5"))]
 
 use std::collections::BTreeMap;
@@ -24,32 +22,15 @@ fn fixture(case: &str) -> PathBuf {
         .join(case)
 }
 
-/// The model of `case`, optionally with every `*t)` of the custom signal
-/// delayed by half the `TimeStep`.
-fn model(case: &str, shift: bool) -> String {
-    let xml = std::fs::read_to_string(fixture(case).join("model.xml")).unwrap();
-    if !shift {
-        return xml;
-    }
-    let dt: f64 = xml
-        .split("TimeStep=\"")
-        .nth(1)
-        .and_then(|s| s.split('"').next())
-        .unwrap()
-        .parse()
-        .unwrap();
-    xml.replace("*t)", &format!("*(t-{:e}))", dt / 2.0))
-}
-
 /// Runs `case` with ems and writes all dumps into a fresh directory.
-fn run_ems(case: &str, variant: &str, shift: bool, opts: &DumpFileOptions) -> PathBuf {
+fn run_ems(case: &str, variant: &str, opts: &DumpFileOptions) -> PathBuf {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("openems_dumps")
         .join(case)
         .join(variant);
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).unwrap();
-    let mut sim = Simulation::from_xml_str(&model(case, shift)).unwrap();
+    let mut sim = Simulation::from_xml(fixture(case).join("model.xml")).unwrap();
     let res = sim.run().unwrap();
     for d in res.dumps() {
         write_dump(&out, d, opts).unwrap();
@@ -340,47 +321,38 @@ fn check(
     } else {
         fixture(case).join(sub)
     };
-    let mut best: Option<BTreeMap<String, f64>> = None;
-    for shift in [true, false] {
-        let out = run_ems(case, &format!("{sub}{shift}"), shift, &opts);
-        let mut errs = BTreeMap::new();
-        for f in fixture_files(&dir) {
-            let n = f.file_name().unwrap().to_string_lossy().to_string();
-            let g = out.join(&n);
-            assert!(g.exists(), "{case}: ems did not write {n}");
-            let e = if n.ends_with(".h5") {
-                compare_h5(
-                    &f,
-                    &g,
-                    &[
-                        "proc_time",
-                        "maxSAR",
-                        "maxSAR_idx",
-                        "valid_cubes",
-                        "used_cubes",
-                        "unused_cubes",
-                    ],
-                )
-            } else {
-                compare_vtk(&f, &g)
-            };
-            let e = if values_skip.iter().any(|s| n.starts_with(s)) {
-                0.0
-            } else {
-                e
-            };
-            errs.insert(n, e);
-        }
-        let worst = |m: &BTreeMap<String, f64>| m.values().fold(0.0f64, |a, &b| a.max(b));
-        eprintln!(
-            "{case}/{sub}: excitation shifted by dt/2 = {shift}: worst relative difference {:e}",
-            worst(&errs)
-        );
-        if best.as_ref().is_none_or(|b| worst(&errs) < worst(b)) {
-            best = Some(errs);
-        }
+    let out = run_ems(case, sub, &opts);
+    let mut errs = BTreeMap::new();
+    for f in fixture_files(&dir) {
+        let n = f.file_name().unwrap().to_string_lossy().to_string();
+        let g = out.join(&n);
+        assert!(g.exists(), "{case}: ems did not write {n}");
+        let e = if n.ends_with(".h5") {
+            compare_h5(
+                &f,
+                &g,
+                &[
+                    "proc_time",
+                    "maxSAR",
+                    "maxSAR_idx",
+                    "valid_cubes",
+                    "used_cubes",
+                    "unused_cubes",
+                ],
+            )
+        } else {
+            compare_vtk(&f, &g)
+        };
+        let e = if values_skip.iter().any(|s| n.starts_with(s)) {
+            0.0
+        } else {
+            e
+        };
+        errs.insert(n, e);
     }
-    best.unwrap()
+    let worst = errs.values().fold(0.0f64, |a, &b| a.max(b));
+    eprintln!("{case}/{sub}: worst relative difference {worst:e}");
+    errs
 }
 
 fn assert_close(case: &str, errs: &BTreeMap<String, f64>, tol: f64) {
