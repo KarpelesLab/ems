@@ -38,6 +38,19 @@
 //! `cb·s·(i_r − i_primary)` in `post_e` for edges on another region. Cut
 //! edges are updated by the operator only (every face around a cut edge is
 //! owned); their stored voltage is the sum of the piece voltages.
+//!
+//! # Stored copies (cylindrical grids)
+//!
+//! On a cylindrical grid an E edge on the seam of a closed azimuth or on
+//! the axis is stored more than once
+//! ([`e_edge_copies`](crate::engine::cylindrical::e_edge_copies)). A cut
+//! edge is one physical edge: its pieces are shared by all copies (listed
+//! once, under any copy), with the merged coefficients of the copies
+//! (`1/cb = Σ 1/cb_j`, `ca/cb = Σ ca_j/cb_j`, the periodic-merge rule);
+//! faces refer to it through any copy, the kernel leaves every copy at
+//! zero and the operator writes the piece sum into all of them, so the
+//! periodic and axis merges keep it. H faces stay per copy, as for the
+//! uncut grid. On a Cartesian grid every edge is its only copy.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -99,7 +112,13 @@ enum Ref {
 struct PieceInfo {
     ca: f64,
     cb: f64,
+    /// `cb` of the whole (merged) edge.
+    full: f64,
 }
+
+/// The stored copies of an E edge, the canonical one first (see the
+/// [module docs](self#stored-copies-cylindrical-grids)).
+pub(super) type Copies<'a> = dyn Fn(Axis, [usize; 3]) -> Vec<[usize; 3]> + 'a;
 
 #[derive(Debug, Clone)]
 struct PRegion {
@@ -122,8 +141,8 @@ struct PFace {
 #[derive(Debug, Clone)]
 pub(super) struct Prepared {
     pieces: Vec<PieceInfo>,
-    /// Cut edges and their piece ids.
-    cut: Vec<(Axis, [usize; 3], Vec<usize>)>,
+    /// Cut edges (all stored copies, canonical first) and their piece ids.
+    cut: Vec<(Axis, Vec<[usize; 3]>, Vec<usize>)>,
     faces: Vec<PFace>,
     regions: Vec<PRegion>,
     /// Region of `(face key, edge key, piece)`.
@@ -141,13 +160,16 @@ fn face_lr(co: &Coefficients, a: Axis, k: usize, dt: f64) -> (f64, f64) {
     }
 }
 
-/// Validates the sheet input on a grid with `n` nodes.
+/// Validates the sheet input on a grid with `n` nodes whose E edges have
+/// the stored `copies`.
 pub(super) fn validate(
     edges: &[SheetCutEdge],
     faces: &[SheetCutFace],
     n: [usize; 3],
+    copies: &Copies<'_>,
 ) -> Result<()> {
     let bad = |what: String| Err(Error::Invalid(format!("invalid conformal sheet {what}")));
+    let canon = |a: Axis, p: [usize; 3]| (a.index(), index(n, copies(a, p)[0]));
     let mut cuts: HashMap<Key, usize> = HashMap::new();
     for e in edges {
         let a = e.axis.index();
@@ -157,7 +179,7 @@ pub(super) fn validate(
             && e.cuts.len() < 255
             && e.cuts.iter().all(|t| *t > 0.0 && *t < 1.0)
             && e.cuts.windows(2).all(|w| w[0] < w[1]);
-        if !ok || cuts.insert((a, index(n, e.node)), e.cuts.len()).is_some() {
+        if !ok || cuts.insert(canon(e.axis, e.node), e.cuts.len()).is_some() {
             return bad(format!("edge {e:?}"));
         }
     }
@@ -172,7 +194,7 @@ pub(super) fn validate(
         let fe = face_edges(f.axis, f.node);
         let mut seen: [Vec<bool>; 4] = core::array::from_fn(|q| {
             let (a, p) = fe[q];
-            vec![false; cuts.get(&(a.index(), index(n, p))).map_or(1, |c| c + 1)]
+            vec![false; cuts.get(&canon(a, p)).map_or(1, |c| c + 1)]
         });
         for r in &f.regions {
             if !(0.0..=1.0).contains(&r.fraction) {
@@ -190,11 +212,13 @@ pub(super) fn validate(
             return bad(format!("face {f:?} (pieces not covered)"));
         }
     }
-    // Every face around a cut edge must be listed.
+    // Every face around (every copy of) a cut edge must be listed.
     for e in edges {
-        for (fa, q) in faces_of_edge(e.axis, e.node, n) {
-            if !listed.contains(&(fa.index(), index(n, q))) {
-                return bad(format!("edge {e:?}: face {fa:?} at {q:?} not listed"));
+        for c in copies(e.axis, e.node) {
+            for (fa, q) in faces_of_edge(e.axis, c, n) {
+                if !listed.contains(&(fa.index(), index(n, q))) {
+                    return bad(format!("edge {e:?}: face {fa:?} at {q:?} not listed"));
+                }
             }
         }
     }
@@ -226,21 +250,41 @@ fn faces_of_edge(a: Axis, p: [usize; 3], n: [usize; 3]) -> Vec<(Axis, [usize; 3]
 
 impl Prepared {
     /// Indexes the sheet input against the coefficients `co` (after the
-    /// volume edge scaling).
+    /// volume edge scaling); `copies` gives the stored copies of an edge.
     pub(super) fn new(
         edges: &[SheetCutEdge],
         faces: &[SheetCutFace],
         co: &Coefficients,
         n: [usize; 3],
         dt: f64,
+        copies: &Copies<'_>,
     ) -> Self {
         let idx = |p: [usize; 3]| index(n, p);
+        let canon = |a: Axis, p: [usize; 3]| (a.index(), idx(copies(a, p)[0]));
         let mut pieces = Vec::new();
         let mut cut = Vec::new();
         let mut cut_of: HashMap<Key, usize> = HashMap::new();
         for e in edges {
-            let k = idx(e.node);
-            let (ca, cb) = (co.ca(e.axis)[k] as f64, co.cb(e.axis)[k] as f64);
+            let all = copies(e.axis, e.node);
+            let (ca, cb) = if all.len() == 1 {
+                let k = idx(e.node);
+                (co.ca(e.axis)[k] as f64, co.cb(e.axis)[k] as f64)
+            } else {
+                // The merged edge: 1/cb = Σ 1/cb_j, ca/cb = Σ ca_j/cb_j.
+                let (mut w, mut wm) = (0.0, 0.0);
+                for c in &all {
+                    let (ca, cb) = (co.ca(e.axis)[idx(*c)] as f64, co.cb(e.axis)[idx(*c)] as f64);
+                    if cb > 0.0 {
+                        w += 1.0 / cb;
+                        wm += ca / cb;
+                    }
+                }
+                if w > 0.0 {
+                    (wm / w, 1.0 / w)
+                } else {
+                    (0.0, 0.0)
+                }
+            };
             let mut ids = Vec::with_capacity(e.cuts.len() + 1);
             let mut last = 0.0;
             for t in e.cuts.iter().copied().chain(core::iter::once(1.0)) {
@@ -248,11 +292,12 @@ impl Prepared {
                 pieces.push(PieceInfo {
                     ca,
                     cb: cb * (t - last),
+                    full: cb,
                 });
                 last = t;
             }
-            cut_of.insert((e.axis.index(), k), cut.len());
-            cut.push((e.axis, e.node, ids));
+            cut_of.insert(canon(e.axis, e.node), cut.len());
+            cut.push((e.axis, all, ids));
         }
         let mut out = Self {
             pieces,
@@ -273,7 +318,7 @@ impl Prepared {
                 let mut terms = Vec::with_capacity(reg.pieces.len());
                 for &(q, pk) in &reg.pieces {
                     let (ea, ep) = fe[q as usize];
-                    let ek = (ea.index(), idx(ep));
+                    let ek = canon(ea, ep);
                     let v = match cut_of.get(&ek) {
                         Some(&c) => Ref::Piece(out.cut[c].2[pk as usize]),
                         None => Ref::Main(ea.index(), ep),
@@ -325,8 +370,10 @@ impl Prepared {
         dt: f64,
         tau: f64,
         exclude: &HashSet<Key>,
+        copies: &Copies<'_>,
     ) -> Build {
         let idx = |p: [usize; 3]| index(n, p);
+        let canon = |a: Axis, p: [usize; 3]| (a.index(), idx(copies(a, p)[0]));
         let mut faces = self.faces.clone();
         let mut regions = self.regions.clone();
         let mut region_at = self.region_at.clone();
@@ -335,11 +382,10 @@ impl Prepared {
             Ref::Main(a, p) => co.cb(Axis::from_index(a).expect("axis"))[idx(p)] > 0.0,
             Ref::Piece(j) => self.pieces[j].cb > 0.0,
         };
-        let frac_ref = |v: Ref, ek: Key| match v {
+        let frac_ref = |v: Ref| match v {
             Ref::Main(..) => 1.0,
             Ref::Piece(j) => {
-                let (a, k) = ek;
-                let full = co.cb(Axis::from_index(a).expect("axis"))[k] as f64;
+                let full = self.pieces[j].full;
                 if full > 0.0 {
                     self.pieces[j].cb / full
                 } else {
@@ -388,12 +434,12 @@ impl Prepared {
                     let f = &faces[regions[m].face];
                     let (fa, fnode) = (f.axis, f.node);
                     for &(v, _, ek, pk) in &regions[m].terms {
-                        let fp = frac_ref(v, ek);
+                        let fp = frac_ref(v);
                         if fp <= 0.0 || !open_ref(v) {
                             continue;
                         }
                         for (e, q, nb) in in_plane_neighbours(fa, fnode, n) {
-                            if (e.index(), idx(q)) != ek {
+                            if canon(e, q) != ek {
                                 continue;
                             }
                             let nk = (fa.index(), idx(nb));
@@ -434,7 +480,7 @@ impl Prepared {
                         let ri = regions.len();
                         let mut terms = Vec::with_capacity(4);
                         for (q, (ea, ep)) in face_edges(fa, nb).into_iter().enumerate() {
-                            let ek = (ea.index(), idx(ep));
+                            let ek = canon(ea, ep);
                             terms.push((Ref::Main(ea.index(), ep), SIGNS[q] as f64, ek, 0));
                             region_at.insert(((fa.index(), k), ek, 0), ri);
                         }
@@ -636,11 +682,13 @@ pub(super) struct Build {
 impl Build {
     /// Kernel coefficients: cut edges zero, owned faces frozen.
     pub(super) fn apply_coefficients(&self, co: &mut Coefficients, n: [usize; 3]) {
-        for (a, p, _) in &self.op.cut {
+        for (a, ps, _) in &self.op.cut {
             let (ca, cb) = co.e_mut(*a);
-            let k = index(n, *p);
-            ca[k] = 0.0;
-            cb[k] = 0.0;
+            for p in ps {
+                let k = index(n, *p);
+                ca[k] = 0.0;
+                cb[k] = 0.0;
+            }
         }
         for &(a, k) in &self.owned {
             let (da, db) = co.h_mut(Axis::from_index(a).expect("axis"));
@@ -721,7 +769,7 @@ struct Correction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConformalSheets {
     pieces: Vec<Piece>,
-    cut: Vec<(Axis, [usize; 3], Vec<usize>)>,
+    cut: Vec<(Axis, Vec<[usize; 3]>, Vec<usize>)>,
     groups: Vec<SGroup>,
     corrections: Vec<Correction>,
     energy: f64,
@@ -776,9 +824,11 @@ impl Operator for ConformalSheets {
             let s: f64 = p.inc.iter().map(|&(g, s)| s * self.groups[g].i).sum();
             p.u = flush((p.ca * p.u + p.cb * s) as f32) as f64;
         }
-        for (a, node, ids) in &self.cut {
+        for (a, nodes, ids) in &self.cut {
             let s: f64 = ids.iter().map(|&j| self.pieces[j].u).sum();
-            f.u.set(*a, *node, s as f32);
+            for node in nodes {
+                f.u.set(*a, *node, s as f32);
+            }
         }
         // Energy at the new time: pieces plus ½·L·i^{n+½}·i^{n+3/2} with
         // the value the next post_h will compute.

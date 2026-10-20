@@ -43,10 +43,13 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 
 use super::{par, range};
+
+mod cyl;
 use crate::axis::Axis;
 use crate::engine::{SheetCutEdge, SheetCutFace, SheetRegion};
 use csx::primitives::{Primitive, Shape};
 use csx::{BoundingBox, CoordSystem, PropertyType, Transform, TypeMask, Vec3};
+pub(super) use cyl::geometry as cylindrical_geometry;
 
 /// Minimum distance of a cut from the edge ends and from other cuts
 /// (fraction of the edge).
@@ -531,6 +534,34 @@ fn face_regions(
     lc: f64,
     trace_metal: &dyn Fn((f64, f64), (f64, f64)) -> bool,
 ) -> Vec<SheetRegion> {
+    face_regions_with(
+        events,
+        cuts,
+        start_positive,
+        lb,
+        lc,
+        trace_metal,
+        &shoelace,
+        lb * lc,
+    )
+}
+
+/// The area of a face polygon (face coordinates).
+type AreaFn<'a> = dyn Fn(&[(f64, f64)]) -> f64 + 'a;
+
+/// [`face_regions`] with the polygon area `area_of` (face coordinates) and
+/// the face's total area `area` (a weighted area on cylindrical z faces).
+#[allow(clippy::too_many_arguments)]
+fn face_regions_with(
+    events: &[Vec<(f64, bool)>; 4],
+    cuts: [&[f64]; 4],
+    start_positive: bool,
+    lb: f64,
+    lc: f64,
+    trace_metal: &dyn Fn((f64, f64), (f64, f64)) -> bool,
+    area_of: &AreaFn<'_>,
+    area: f64,
+) -> Vec<SheetRegion> {
     let mut ev: Vec<(f64, bool)> = Vec::new();
     for (q, e) in events.iter().enumerate() {
         for &(t, m) in e {
@@ -565,7 +596,6 @@ fn face_regions(
     }
     // Arc sides: arc m − 1 holds the start corner; sides alternate.
     let positive = |j: usize| (j % 2 == 1) == start_positive;
-    let area = lb * lc;
     // Region of each arc: 0 = the negative (convex) side, else own.
     let mut region = vec![0usize; m];
     let mut fractions = vec![0.0];
@@ -580,7 +610,7 @@ fn face_regions(
             let mut poly = vec![uv(p0, lb, lc)];
             poly.extend(corners.iter().map(|&k| uv(k % 4.0, lb, lc)));
             poly.push(uv(p1, lb, lc));
-            let a = shoelace(&poly) / area;
+            let a = area_of(&poly) / area;
             let sep = ev[j].1 && ev[(j + 1) % m].1 && trace_metal(uv(p0, lb, lc), uv(p1, lb, lc));
             if sep {
                 region[j] = fractions.len();

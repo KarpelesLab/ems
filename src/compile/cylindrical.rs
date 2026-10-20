@@ -694,6 +694,38 @@ pub(super) fn openems_alpha_warnings(
     }
 }
 
+/// Drops the thin conformal sheets (design §5.13.1) when any of their cut
+/// edges lies inside the multigrid zones (§5.15.1), with a warning: the
+/// zone projection does not know the split edges. Solid conformal metal
+/// is kept.
+pub(super) fn conformal_sheets_in_zones(
+    grid: &Grid,
+    pec: crate::engine::ConformalPec,
+    warnings: &mut Vec<String>,
+) -> crate::engine::ConformalPec {
+    let zoned = grid.has_multigrid()
+        && pec.sheet_edges().iter().any(|e| {
+            let i = e.node[0];
+            grid.alpha_factor(i) > 1 || (i > 0 && grid.alpha_factor(i - 1) > 1)
+        });
+    if !zoned {
+        return pec;
+    }
+    warnings.push(format!(
+        "conformal PEC sheets: {} cut edge(s) inside the multigrid zones; the sheets are not \
+         modelled (keep sheets outside the zones)",
+        pec.sheet_edges().len()
+    ));
+    let mut out = crate::engine::ConformalPec::new();
+    for e in pec.edges() {
+        out.push_edge(*e);
+    }
+    for f in pec.faces() {
+        out.push_face(*f);
+    }
+    out
+}
+
 /// Drops (with a warning) the absorbing boundaries that a cylindrical
 /// grid ignores: on the α faces of a closed grid (periodic) and on the
 /// `ρ_min` face of a grid with an axis.

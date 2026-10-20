@@ -239,11 +239,11 @@ pub(super) fn geometry(
     warnings: &mut Vec<String>,
 ) -> Geometry {
     let mut out = solid_geometry(model, pec, threads);
-    if model.grid.coord_system == CoordSystem::Cylindrical {
-        // Thin conformal sheets need a Cartesian grid.
-        return out;
-    }
-    let (edges, faces) = sheets::geometry(model, snap, threads, warnings);
+    let (edges, faces) = if model.grid.coord_system == CoordSystem::Cylindrical {
+        sheets::cylindrical_geometry(model, snap, threads, warnings)
+    } else {
+        sheets::geometry(model, snap, threads, warnings)
+    };
     for e in edges {
         out.conformal.push_sheet_edge(e);
     }

@@ -295,7 +295,16 @@ impl ConformalPec {
     /// that do not exist on the grid.
     pub fn apply(&self, engine: &mut Engine) -> Result<ConformalReport> {
         let n = engine.grid().nodes();
-        self.validate(n)?;
+        let grid = engine.grid().clone();
+        let cyl = grid.is_cylindrical();
+        let copies = move |a: Axis, p: [usize; 3]| {
+            if cyl {
+                crate::engine::cylindrical::e_edge_copies(&grid, a, p)
+            } else {
+                vec![p]
+            }
+        };
+        self.validate(n, &copies)?;
         let dt = engine.dt();
         let mut co = engine.coefficients().clone();
         for e in &self.edges {
@@ -309,8 +318,9 @@ impl ConformalPec {
                 seeds.push((a.index(), index(n, p)));
             }
         }
-        let sheet = (!self.sheet_faces.is_empty())
-            .then(|| sheets::Prepared::new(&self.sheet_edges, &self.sheet_faces, &co, n, dt));
+        let sheet = (!self.sheet_faces.is_empty()).then(|| {
+            sheets::Prepared::new(&self.sheet_edges, &self.sheet_faces, &co, n, dt, &copies)
+        });
         if let Some(p) = &sheet {
             seeds.extend(p.seeds());
         }
@@ -324,7 +334,7 @@ impl ConformalPec {
         for round in 0..rounds {
             let built = sheet
                 .as_ref()
-                .map(|p| p.construct(&co, n, dt, tau, &volume_faces));
+                .map(|p| p.construct(&co, n, dt, tau, &volume_faces, &copies));
             let empty = HashSet::new();
             let owned = built.as_ref().map_or(&empty, |b| &b.owned);
             let (mut coeffs, groups, mut report) = self.construct(&co, n, dt, tau, owned);
@@ -364,7 +374,7 @@ impl ConformalPec {
         unreachable!("the last round returns")
     }
 
-    fn validate(&self, n: [usize; 3]) -> Result<()> {
+    fn validate(&self, n: [usize; 3], copies: &sheets::Copies<'_>) -> Result<()> {
         for e in &self.edges {
             let a = e.axis.index();
             if !(0.0..=1.0).contains(&e.fraction)
@@ -379,7 +389,7 @@ impl ConformalPec {
                 return Err(Error::Invalid(format!("invalid conformal face {f:?}")));
             }
         }
-        sheets::validate(&self.sheet_edges, &self.sheet_faces, n)
+        sheets::validate(&self.sheet_edges, &self.sheet_faces, n, copies)
     }
 
     /// Coefficients (edge scaling already in `co`), merge groups and

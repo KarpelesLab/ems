@@ -1101,7 +1101,12 @@ pub fn compile(
         for &(axis, k, v) in &geo.pec {
             materials.pec_mask_mut(axis)[k] = v;
         }
-        Some(geo.conformal.with_options(opts.conformal_options))
+        let pec = if cyl {
+            cylindrical::conformal_sheets_in_zones(&grid, geo.conformal, &mut warnings)
+        } else {
+            geo.conformal
+        };
+        Some(pec.with_options(opts.conformal_options))
     } else {
         None
     };
