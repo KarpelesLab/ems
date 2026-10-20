@@ -1025,6 +1025,30 @@ recorded near fields, by the surface equivalence principle (Balanis,
   of the strong reactive near field close to the source. It shrinks when
   the box is moved further out; the transform itself is exact for any
   closed surface.
+- **Cylindrical grids** (§5.15). The box is a node box in `(ρ, α, z)`:
+  the `ρ = const` side surfaces, the `z = const` caps and, for an annular
+  sector, the `α = const` faces; the inner side is left out when the box
+  reaches the axis, the α faces when it spans the full circle of a closed
+  grid (the seam is interior, so a sector may also start or end on it).
+  Fields are sampled at the face nodes as on Cartesian grids, rotated to
+  Cartesian components at each node, with the local outward normal
+  (`±ρ̂(α)`, `±α̂(α)`, `±ẑ`) and trapezoidal weights with the metric
+  (`ρ·Δα·Δz` sides, `ρ·Δρ·Δα` caps, `Δρ·Δz` α faces). Phase centre: centre
+  of the Cartesian bounding box (on the axis for a full cylinder). The
+  background is detected from the coefficients with the physical lengths
+  and areas. Mirrors are allowed normal to `z` only. Validation
+  (`src/nf2ff.rs` unit test, `tests/cylindrical_nf2ff.rs`): analytic
+  Hertzian-dipole fields given in `(ρ, α, z)` components on an annular
+  sector around an off-axis dipole (all six faces): `P_rad` within 2e-3,
+  `|rE_θ|` within 2e-3, `D = 1.5` within 5e-3; FDTD short dipole on the
+  axis (10 mm cells, 16 α cells, box `ρ ≤ 60 mm`, `|z| ≤ 60 mm`,
+  cylindrical PML on `ρ_max`): `D = 1.5016 / 1.4990` at 0.7 / 1 GHz,
+  `P_far/P_box = 1.0007 / 0.9987`, `P_box/P_Hertz = 1.002 / 1.005`, `sin²θ`
+  pattern without φ dependence to 1 %; monopole over a PEC `z` plane with
+  a `z` mirror `D = 3.005`. openEMS does write frequency-domain field
+  dumps on cylindrical grids (`dump_cyl`), but its far-field transform was
+  not compared (its nf2ff tool's input is not documented in its user
+  docs).
 - **Not done.** Lossy and inhomogeneous (layered) backgrounds.
   Frequency-dependent phase centres and openEMS's nf2ff file format are
   out of scope: openEMS's nf2ff code is GPL and was not consulted.
@@ -1133,6 +1157,31 @@ IEC/IEEE 62704-1 as publicly described:
 
 Deviations: no rotated/tilted cubes; step 3 simplifies the standards'
 surface treatment; non-biological lossy material counts as air.
+
+**Cylindrical grids** (§5.15). The voxels are the `(ρ, α, z)` cells, of
+volume `Δα·Δz·(ρ_{i+1}² − ρ_i²)/2` (`SarVolume::cylindrical`); the edge
+fields use the physical edge lengths and each edge's `|E|²` is weighted
+with the share of the cell volume its dual cell has there, as the edge
+conductances `κ·A*/l` count it (¼ for ρ edges, `ρ_e/(4ρ_{i+½})` for α
+edges, the half-annulus shares for z edges), so `Σ p·V` is again the
+discrete conduction loss. The compile step samples `κ` and density in
+`(ρ, α, z)` with `ρ`-weighted subsamples. Mass averaging is refused
+(`Error::Unsupported`; averaged dumps are dropped with a warning): the
+standard's cubes live in physical space and do not map onto annular
+cells. Validation (`tests/cylindrical_sar.rs`): a tissue ring in a closed
+circular PEC cavity with an axis (16 α cells), fed by a one-cell port in
+the tissue: absorbed power within 1.5e-5…2.2e-5 of the accepted power
+(0.5–1.5 GHz), tissue mass exact. openEMS-compatible files
+(`io::openems::dump`): openEMS writes local, raw and averaged SAR on
+cylindrical grids (`Mesh` `rho`/`alpha`/`z`, `.vts` for VTK); observed
+(`cyl_sar`): its cell volume is `ρ_i·Δα·Δρ·Δz` with the radius of the
+cell's *lower* line (so its `mass` attribute is first-order low: 3.223 g
+against 3.393 g for the exact sector), and it scales the α `CellWidth`s
+by the drawing unit. ems writes the same files with the same rules (local
+SAR within 3.5e-3 of openEMS's peak; the remainder is a 1e-4 difference of
+the two codes' cell fields on this model, both codes' local SAR being
+`κ|E|²/(2ρ)` of their raw files to 1e-7). openEMS's 1 g average on
+cylindrical grids was not reproduced (ems drops averaged dumps there).
 
 **Output.** `SarField`: per-voxel values plus how each was obtained
 (`VoxelClass`), the peak and its location, `.vtr` (cell data) and, with
@@ -1620,12 +1669,17 @@ Cartesian-style CPML layer, still available as `plane_rho_max()` for
 comparison, is alike).
 
 **Not available on cylindrical grids** (dropped with a warning or refused):
-plane waves (openEMS ignores them there too: no field at all, no message), SAR dumps, NF2FF boxes, the MSL, CPW, stripline and
-rectangular-waveguide port helpers (`Error::Unsupported`). Lumped ports,
-lumped elements, voltage, current and field probes, waveguide mode probes on
-a `z`-normal plane (the exact weights of `compile/mode.rs` with the `ρ·Δα`
-metric), field dumps (VTK and HDF5), dispersive materials (§5.16), conducting
-sheets on ρ, α and z surfaces (§5.9), the
+plane waves (openEMS ignores them there too: no field at all, no message;
+§5.16.2), mass-averaged SAR dumps (`SAR1g`, `SAR10g`: the averaging cubes
+are defined in physical coordinates; §5.12), conformal PEC (staircase with
+a warning), `CellConstantMaterial` (edge averaging with a warning), oblique
+thin wires, NF2FF mirrors not normal to `z`, and the MSL, CPW, stripline
+and rectangular-waveguide port helpers (`Error::Unsupported`). Lumped
+ports, lumped elements, voltage, current and field probes, waveguide mode
+probes on a `z`-normal plane (the exact weights of `compile/mode.rs` with
+the `ρ·Δα` metric), field dumps (VTK and HDF5), dispersive materials
+(§5.16), conducting sheets on ρ, α and z surfaces (§5.9), local and raw
+SAR dumps (§5.12), NF2FF boxes (cylinders and annular sectors, §5.10), the
 coaxial and circular-waveguide port helpers (`CoaxPort`,
 `CircWaveguidePort`, along `z` on the axis, §5.5) and `LumpedPort` /
 `CurvePort` work.
@@ -1893,6 +1947,8 @@ regeneration script and test file:
 - advanced physics (§5.16.2, `adv_*`): `gen-adv.sh`, `tests/openems_adv.rs`;
 - field dumps and SAR files (`dump_*`, `io::openems::dump`): `gen-dumps.sh`,
   `tests/openems_dumps.rs`;
+- cylindrical-grid features (`cyl_*`: conducting sheets, SAR files):
+  `gen-cyl.sh`, `tests/openems_cyl.rs`, `tests/openems_dumps.rs`;
 - the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
@@ -2080,16 +2136,21 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
   Drude-filled coax (static `ε` alone 1e-6);
+- plane waves: openEMS ignores a `PlaneWave` excitation on a cylindrical
+  grid (fields identically zero, no message; the same box on a Cartesian
+  mesh runs); ems drops it with a warning;
+- SAR dumps run there in openEMS; see §5.12 (`cyl_sar`);
 - conducting sheets (`cyl_sheet_*`, half-wave coaxial cavity of §5.9,
-  `Q` from the ring-down): openEMS's sheet model behaves as on Cartesian
-  grids. A thick lossy inner tube (`σ = 1e5 S/m`, `t = 100 µm`) gives
-  `Q = 397` (ems 195.6, analytic 195.9): half the surface loss, as for
-  copper on a Cartesian line. A thin resistive fin (`σt = 1e-4 S`) at
-  `α = π/2` detunes the mode by −13 % (`Q = 123`; ems: −0.0 %,
-  `Q = 57.7`, analytic 57.65): nearly reactive, as on Cartesian grids. The
-  same fin on the α = 0 seam has no effect in openEMS (`Q` and frequency of
-  the empty cavity). ems keeps the slab model (§5.9), so the codes do not
-  agree on sheets on any grid; `tests/openems_cyl.rs` records the ratios.
+  `Q` from the ring-down, same fit for both codes): openEMS's sheet model
+  behaves as on Cartesian grids. A thick lossy inner tube (`σ = 1e5 S/m`,
+  `t = 100 µm`) gives `Q = 403` (ems 195.4, analytic 195.9): half the
+  surface loss, as for copper on a Cartesian line. A thin resistive fin
+  (`σt = 1e-4 S`) at `α = π/2` detunes the mode by −13 % (`Q = 139`; ems:
+  no detuning, `Q = 57.7`, analytic 57.65): nearly reactive, as on
+  Cartesian grids. The same fin on the α = 0 seam has no effect in openEMS
+  (the frequency and `Q` of the empty cavity). ems keeps the slab model
+  (§5.9), so the codes do not agree on sheets on any grid;
+  `tests/openems_cyl.rs` records the ratios.
 
 **Lumped elements** (see also §5.16.1; not reproduced). openEMS distributes a `LumpedElement`'s `R` differently from
 ems on edges whose dual faces are clipped or uneven: in a PMC-walled line

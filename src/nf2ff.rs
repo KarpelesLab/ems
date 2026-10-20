@@ -109,6 +109,24 @@
 //! On a bare [`Engine`](crate::engine::Engine), register an [`Nf2ff`]
 //! operator (node indices) after all sources and read
 //! [`Nf2ff::result`].
+//!
+//! # Cylindrical grids
+//!
+//! On a cylindrical grid the "box" is a node box in `(ρ, α, z)`: a
+//! cylinder (or annular sector) whose faces are the `ρ = const` side
+//! surfaces, the `z = const` caps and, for a sector, the `α = const`
+//! half-planes. The fields are sampled at the face nodes as on Cartesian
+//! grids (cylindrical components, [`FieldSampler`]), rotated to Cartesian
+//! components `E_x = E_ρ cos α − E_α sin α`, `E_y = E_ρ sin α + E_α cos α`
+//! at each node, and the equivalent currents use the local outward normal
+//! (`±ρ̂(α)`, `±α̂(α)`, `±ẑ`). The trapezoidal node weights include the
+//! metric: `ρ·Δα·Δz` on a side surface, `ρ·Δρ·Δα` on a cap, `Δρ·Δz` on an
+//! α face. Faces that do not exist are left out: the inner side when the
+//! box reaches the axis (`ρ = 0`), and the α faces when the box spans the
+//! full circle of a closed grid (the seam is interior there, so a sector
+//! box may also start or end on it). The phase centre defaults to the
+//! centre of the box's Cartesian bounding box (on the axis for a full
+//! cylinder). Mirrors are allowed normal to `z` only.
 
 use core::f64::consts::PI;
 
@@ -177,6 +195,8 @@ pub struct Nf2ff {
     faces: Vec<FaceDft>,
     center: [f64; 3],
     medium: Medium,
+    /// `(ρ, α, z)` faces ([module docs](self#cylindrical-grids)).
+    cylindrical: bool,
 }
 
 /// Checks a lossless background.
@@ -212,7 +232,9 @@ impl Nf2ff {
     /// [`Error::Invalid`] if the box is flat along an axis or does not fit
     /// the grid, if a recorded face lies on an outer mesh plane, if no face
     /// is recorded, or if a frequency is not positive and finite (or none
-    /// is given).
+    /// is given). On a cylindrical grid the faces that do not exist (the
+    /// axis, the α faces of a full-circle box) are left out rather than
+    /// refused ([module docs](self#cylindrical-grids)).
     pub fn with_faces(
         grid: &Grid,
         a: [usize; 3],
@@ -244,6 +266,18 @@ impl Nf2ff {
                 )));
             }
         }
+        let cyl = grid.is_cylindrical();
+        let mut faces = faces;
+        if cyl {
+            // The axis is no face; nor are the α planes of a full circle.
+            if grid.has_axis() && lo[0] == 0 {
+                faces[Face::XMin.index()] = false;
+            }
+            if grid.is_closed() && lo[1] == 0 && hi[1] + 1 == n[1] {
+                faces[Face::YMin.index()] = false;
+                faces[Face::YMax.index()] = false;
+            }
+        }
         if !faces.contains(&true) {
             return Err(Error::Invalid("NF2FF box records no face".into()));
         }
@@ -254,7 +288,9 @@ impl Nf2ff {
             }
             let ax = face.axis().index();
             let plane = if face.is_max() { hi[ax] } else { lo[ax] };
-            if plane == 0 || plane + 1 >= n[ax] {
+            // (The α seam of a closed grid is interior.)
+            let seam = cyl && ax == 1 && grid.is_closed();
+            if !seam && (plane == 0 || plane + 1 >= n[ax]) {
                 return Err(Error::Invalid(format!(
                     "NF2FF face {face:?} lies on the outer mesh plane {plane}; \
                      move it inside the domain (and outside any PML)"
@@ -274,10 +310,14 @@ impl Nf2ff {
                 h: dft(DumpQuantity::H)?,
             });
         }
-        let center = Axis::ALL.map(|ax| {
-            let l = grid.lines(ax);
-            0.5 * (l[lo[ax.index()]] + l[hi[ax.index()]])
-        });
+        let center = if cyl {
+            cylindrical_center(grid, lo, hi)
+        } else {
+            Axis::ALL.map(|ax| {
+                let l = grid.lines(ax);
+                0.5 * (l[lo[ax.index()]] + l[hi[ax.index()]])
+            })
+        };
         Ok(Self {
             lo,
             hi,
@@ -285,6 +325,7 @@ impl Nf2ff {
             faces: out,
             center,
             medium: Medium::VACUUM,
+            cylindrical: cyl,
         })
     }
 
@@ -344,7 +385,7 @@ impl Nf2ff {
         let faces = self
             .faces
             .iter()
-            .map(|f| FaceData::new(f, self.freqs.len()))
+            .map(|f| FaceData::new(f, self.freqs.len(), self.cylindrical))
             .collect();
         Nf2ffResult {
             freqs: self.freqs.clone(),
@@ -352,7 +393,53 @@ impl Nf2ff {
             faces,
             mirrors: Vec::new(),
             medium: self.medium,
+            cylindrical: self.cylindrical,
         }
+    }
+}
+
+/// Centre of the Cartesian bounding box of the cylindrical node box
+/// `lo..=hi` (the extreme x and y of an annular sector are at its corners
+/// or where it crosses a multiple of π/2).
+fn cylindrical_center(grid: &Grid, lo: [usize; 3], hi: [usize; 3]) -> [f64; 3] {
+    let (r, a, z) = (
+        grid.lines(Axis::X),
+        grid.lines(Axis::Y),
+        grid.lines(Axis::Z),
+    );
+    let (a0, a1) = (a[lo[1]], a[hi[1]]);
+    let mut angles = vec![a0, a1];
+    let q = core::f64::consts::FRAC_PI_2;
+    let mut m = (a0 / q).ceil();
+    while m * q <= a1 {
+        angles.push(m * q);
+        m += 1.0;
+    }
+    let (mut xl, mut xh, mut yl, mut yh) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for rho in [r[lo[0]], r[hi[0]]] {
+        for &t in &angles {
+            let (sn, cs) = t.sin_cos();
+            xl = xl.min(rho * cs);
+            xh = xh.max(rho * cs);
+            yl = yl.min(rho * sn);
+            yh = yh.max(rho * sn);
+        }
+    }
+    let c = [
+        0.5 * (xl + xh),
+        0.5 * (yl + yh),
+        0.5 * (z[lo[2]] + z[hi[2]]),
+    ];
+    // Exactly on the axis for a full circle (no rounding residue).
+    if grid.is_closed() && lo[1] == 0 && hi[1] + 1 == a.len() {
+        [0.0, 0.0, c[2]]
+    } else {
+        c
     }
 }
 
@@ -469,18 +556,15 @@ impl Nf2ffBox {
         unit: f64,
         default_interval: u64,
     ) -> Result<(Nf2ff, Vec<Mirror>)> {
-        if grid.is_cylindrical() {
-            return Err(Error::Unsupported(
-                "NF2FF boxes need a Cartesian grid".into(),
-            ));
-        }
+        let cyl = grid.is_cylindrical();
         let snap = |ax: Axis, x: f64| -> Result<usize> {
             if !x.is_finite() {
                 return Err(Error::Invalid(format!(
                     "NF2FF box coordinate {x} along {ax}"
                 )));
             }
-            let xm = x * unit;
+            // Cylindrical α is in radians.
+            let xm = if cyl && ax == Axis::Y { x } else { x * unit };
             let (i, _) = grid
                 .lines(ax)
                 .iter()
@@ -500,6 +584,12 @@ impl Nf2ffBox {
         let mut faces = self.faces;
         let mut mirrors = Vec::new();
         for &(ax, pos, kind) in &self.mirrors {
+            if cyl && ax != Axis::Z {
+                return Err(Error::Unsupported(format!(
+                    "NF2FF mirror normal to {ax} on a cylindrical grid (only z mirrors are \
+                     supported there)"
+                )));
+            }
             let p = pos * unit;
             if !p.is_finite() {
                 return Err(Error::Invalid(format!("NF2FF mirror position {pos}")));
@@ -550,6 +640,8 @@ struct FaceData {
     points: Vec<[f64; 3]>,
     /// Trapezoidal area weights \[m²\].
     weights: Vec<f64>,
+    /// Outward unit normal per point (Cartesian).
+    normals: Vec<[f64; 3]>,
     /// `J = n̂ × H` per frequency and point.
     j: Vec<Vec<[Complex64; 3]>>,
     /// `M = −n̂ × E` per frequency and point.
@@ -584,7 +676,10 @@ fn normal(face: Face) -> [f64; 3] {
 }
 
 impl FaceData {
-    fn new(f: &FaceDft, nf: usize) -> Self {
+    fn new(f: &FaceDft, nf: usize, cylindrical: bool) -> Self {
+        if cylindrical {
+            return Self::cylindrical(f, nf);
+        }
         let s = f.e.sampler();
         let c = Axis::ALL.map(|a| s.coords(a));
         let w = Axis::ALL.map(|a| {
@@ -619,8 +714,89 @@ impl FaceData {
             .unzip();
         Self {
             face: f.face,
+            normals: vec![n; points.len()],
             points,
             weights,
+            j,
+            m,
+        }
+    }
+
+    /// A face of a cylindrical node box (see the
+    /// [module docs](self#cylindrical-grids)).
+    fn cylindrical(f: &FaceDft, nf: usize) -> Self {
+        let s = f.e.sampler();
+        let c = Axis::ALL.map(|a| s.coords(a));
+        let e: Vec<_> = (0..nf).map(|k| f.e.values(k)).collect();
+        let h: Vec<_> = (0..nf).map(|k| f.h.values(k)).collect();
+        Self::cylindrical_from(f.face, c, &e, &h)
+    }
+
+    /// The face `face` of a cylindrical node box from its node coordinates
+    /// `c` (`ρ` \[m\], `α` \[rad\], `z` \[m\]) and, per frequency, the
+    /// `(ρ, α, z)` components of E and H at the nodes (z fastest).
+    fn cylindrical_from(
+        face: Face,
+        c: [&[f64]; 3],
+        e: &[Vec<[Complex64; 3]>],
+        h: &[Vec<[Complex64; 3]>],
+    ) -> Self {
+        let ax = face.axis();
+        let w = Axis::ALL.map(|a| {
+            if a == ax {
+                vec![1.0]
+            } else {
+                trapezoid(c[a.index()])
+            }
+        });
+        let sign = if face.is_max() { 1.0 } else { -1.0 };
+        let [dx, dy, dz] = c.map(<[f64]>::len);
+        let len = dx * dy * dz;
+        let mut points = Vec::with_capacity(len);
+        let mut weights = Vec::with_capacity(len);
+        let mut normals = Vec::with_capacity(len);
+        let mut rot = Vec::with_capacity(len);
+        for p in 0..dx {
+            let rho = c[0][p];
+            for q in 0..dy {
+                let (sn, cs) = c[1][q].sin_cos();
+                for r in 0..dz {
+                    points.push([rho * cs, rho * sn, c[2][r]]);
+                    // Metric: ρ on the side surfaces and the caps.
+                    let metric = if ax == Axis::Y { 1.0 } else { rho };
+                    weights.push(metric * w[0][p] * w[1][q] * w[2][r]);
+                    normals.push(match ax {
+                        Axis::X => [sign * cs, sign * sn, 0.0],
+                        Axis::Y => [-sign * sn, sign * cs, 0.0],
+                        Axis::Z => [0.0, 0.0, sign],
+                    });
+                    rot.push((sn, cs));
+                }
+            }
+        }
+        let cart = |v: [Complex64; 3], (sn, cs): (f64, f64)| {
+            [v[0] * cs - v[1] * sn, v[0] * sn + v[1] * cs, v[2]]
+        };
+        let (j, m) = e
+            .iter()
+            .zip(h)
+            .map(|(e, h)| {
+                let mut j = Vec::with_capacity(e.len());
+                let mut m = Vec::with_capacity(e.len());
+                for (q, (&e, &h)) in e.iter().zip(h.iter()).enumerate() {
+                    let n = normals[q];
+                    let neg_n = n.map(|x| -x);
+                    j.push(cross(cart(h, rot[q]), neg_n));
+                    m.push(cross(cart(e, rot[q]), n));
+                }
+                (j, m)
+            })
+            .unzip();
+        Self {
+            face,
+            points,
+            weights,
+            normals,
             j,
             m,
         }
@@ -702,6 +878,8 @@ pub struct Nf2ffResult {
     faces: Vec<FaceData>,
     mirrors: Vec<Mirror>,
     medium: Medium,
+    /// Faces of a cylindrical node box (mirrors normal to z only).
+    cylindrical: bool,
 }
 
 /// Unit vectors `(r̂, θ̂, φ̂)`.
@@ -772,8 +950,16 @@ impl Nf2ffResult {
     ///
     /// # Errors
     /// [`Error::Invalid`] if a mirror normal to the same axis exists, or if
-    /// the plane cuts through the box.
+    /// the plane cuts through the box; [`Error::Unsupported`] for a mirror
+    /// not normal to z on a cylindrical grid.
     pub fn with_mirror(mut self, m: Mirror) -> Result<Self> {
+        if self.cylindrical && m.axis != Axis::Z {
+            return Err(Error::Unsupported(format!(
+                "NF2FF mirror normal to {} on a cylindrical grid (only z mirrors are supported \
+                 there)",
+                m.axis
+            )));
+        }
         if self.mirrors.iter().any(|o| o.axis == m.axis) {
             return Err(Error::Invalid(format!(
                 "NF2FF: a mirror normal to {} is already set",
@@ -912,8 +1098,8 @@ impl Nf2ffResult {
     pub fn radiated_power(&self, k: usize) -> f64 {
         let mut p = 0.0;
         for f in self.active() {
-            let n = normal(f.face);
             for (q, w) in f.weights.iter().enumerate() {
+                let n = f.normals[q];
                 // E_t = n̂ × M, and n̂·(E × H*) = −E_t·J*.
                 let m = f.m[k][q];
                 let et = cross(m, n).map(|x| -x);
@@ -1022,34 +1208,36 @@ mod tests {
         assert!(Nf2ff::with_faces(&g, [2, 2, 0], [8, 8, 8], [1e9], f).is_ok());
     }
 
+    /// Fields of a z-directed electric dipole `Il = 1` at the origin
+    /// (Balanis eq. 4-8a..c, 4-10a..c), `e^{jωt}`, wavenumber `kw`.
+    fn hertzian_fields(kw: f64, p: [f64; 3]) -> ([Complex64; 3], [Complex64; 3]) {
+        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        let (st, ct) = ((p[0] * p[0] + p[1] * p[1]).sqrt() / r, p[2] / r);
+        let phi = p[1].atan2(p[0]);
+        let j = Complex64::new(0.0, 1.0);
+        let g = Complex64::cis(-kw * r);
+        // jkr as a complex number.
+        let kr = Complex64::new(0.0, kw * r);
+        let er = g * (Z0 * ct / (2.0 * PI * r * r)) * (1.0 + 1.0 / kr);
+        let base = g * j * (Z0 * kw * st / (4.0 * PI * r));
+        let et = base * (1.0 + 1.0 / kr) - base * (1.0 / (kw * r * kw * r));
+        let hp = g * j * (kw * st / (4.0 * PI * r)) * (1.0 + 1.0 / kr);
+        let (sp, cp) = phi.sin_cos();
+        let rh = [st * cp, st * sp, ct];
+        let th = [ct * cp, ct * sp, -st];
+        let ph = [-sp, cp, 0.0];
+        let e = [0, 1, 2].map(|a| er * rh[a] + et * th[a]);
+        let h = [0, 1, 2].map(|a| hp * ph[a]);
+        (e, h)
+    }
+
     /// Analytic Hertzian dipole currents on a box: the transform must
     /// reproduce `E_θ = jηkIl sinθ/(4π)` and `D = 1.5`.
     #[test]
     fn analytic_hertzian_dipole() {
-        // Fields of a z-directed electric dipole Il = 1 at the origin
-        // (Balanis eq. 4-8a..c, 4-10a..c), e^{jωt}.
         let f = 1e9;
         let kw = 2.0 * PI * f / C0;
-        let fields = |p: [f64; 3]| -> ([Complex64; 3], [Complex64; 3]) {
-            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-            let (st, ct) = ((p[0] * p[0] + p[1] * p[1]).sqrt() / r, p[2] / r);
-            let phi = p[1].atan2(p[0]);
-            let j = Complex64::new(0.0, 1.0);
-            let g = Complex64::cis(-kw * r);
-            // jkr as a complex number.
-            let kr = Complex64::new(0.0, kw * r);
-            let er = g * (Z0 * ct / (2.0 * PI * r * r)) * (1.0 + 1.0 / kr);
-            let base = g * j * (Z0 * kw * st / (4.0 * PI * r));
-            let et = base * (1.0 + 1.0 / kr) - base * (1.0 / (kw * r * kw * r));
-            let hp = g * j * (kw * st / (4.0 * PI * r)) * (1.0 + 1.0 / kr);
-            let (sp, cp) = phi.sin_cos();
-            let rh = [st * cp, st * sp, ct];
-            let th = [ct * cp, ct * sp, -st];
-            let ph = [-sp, cp, 0.0];
-            let e = [0, 1, 2].map(|a| er * rh[a] + et * th[a]);
-            let h = [0, 1, 2].map(|a| hp * ph[a]);
-            (e, h)
-        };
+        let fields = |p: [f64; 3]| hertzian_fields(kw, p);
         // A 0.4 m cube sampled every 10 mm (λ/30).
         let n = 41;
         let xs: Vec<f64> = (0..n)
@@ -1065,6 +1253,7 @@ mod tests {
                 face,
                 points: Vec::new(),
                 weights: Vec::new(),
+                normals: Vec::new(),
                 j: vec![Vec::new()],
                 m: vec![Vec::new()],
             };
@@ -1078,6 +1267,7 @@ mod tests {
                     let (e, h) = fields(pt);
                     fd.points.push(pt);
                     fd.weights.push(wt[p] * wt[q]);
+                    fd.normals.push(nn);
                     fd.j[0].push(cross(h, nn.map(|x| -x)));
                     fd.m[0].push(cross(e, nn));
                 }
@@ -1090,6 +1280,7 @@ mod tests {
             faces,
             mirrors: Vec::new(),
             medium: Medium::VACUUM,
+            cylindrical: false,
         };
         // P_rad of the dipole: η (kIl)²/(12π).
         let p_exact = Z0 * kw * kw / (12.0 * PI);
@@ -1110,5 +1301,88 @@ mod tests {
         let d = res.max_directivity(0);
         assert!((d.directivity - 1.5).abs() < 5e-3, "{d:?}");
         assert!((d.theta - PI / 2.0).abs() < 1e-2, "{d:?}");
+    }
+
+    /// Analytic Hertzian dipole fields on the faces of a cylindrical node
+    /// box: an annular sector (two side surfaces, two caps, two α faces)
+    /// around a dipole off the axis, fields given in `(ρ, α, z)`
+    /// components, so the metric weights, the local normals and the
+    /// rotation to Cartesian components are all exercised.
+    #[test]
+    fn analytic_hertzian_dipole_on_a_cylindrical_sector() {
+        let f = 1e9;
+        let kw = 2.0 * PI * f / C0;
+        let (r0, a0): (f64, f64) = (0.3, 0.4);
+        let p0 = [r0 * a0.cos(), r0 * a0.sin(), 0.0];
+        let lin = |lo: f64, hi: f64, n: usize| -> Vec<f64> {
+            (0..n)
+                .map(|i| lo + (hi - lo) * i as f64 / (n - 1) as f64)
+                .collect()
+        };
+        // ρ 0.15 … 0.45 m, α a0 ± 0.6 rad, z ± 0.2 m, about λ/30 or finer.
+        let c = [
+            lin(0.15, 0.45, 41),
+            lin(a0 - 0.6, a0 + 0.6, 49),
+            lin(-0.2, 0.2, 41),
+        ];
+        let mut faces = Vec::new();
+        for face in Face::ALL {
+            let ax = face.axis().index();
+            let mut cc: [Vec<f64>; 3] = c.clone();
+            let v = if face.is_max() {
+                c[ax][c[ax].len() - 1]
+            } else {
+                c[ax][0]
+            };
+            cc[ax] = vec![v];
+            let mut e = Vec::new();
+            let mut h = Vec::new();
+            for &rho in &cc[0] {
+                for &al in &cc[1] {
+                    let (sn, cs) = al.sin_cos();
+                    for &z in &cc[2] {
+                        let p = [rho * cs - p0[0], rho * sn - p0[1], z - p0[2]];
+                        let (ec, hc) = hertzian_fields(kw, p);
+                        let cyl = |v: [Complex64; 3]| {
+                            [v[0] * cs + v[1] * sn, v[1] * cs - v[0] * sn, v[2]]
+                        };
+                        e.push(cyl(ec));
+                        h.push(cyl(hc));
+                    }
+                }
+            }
+            faces.push(FaceData::cylindrical_from(
+                face,
+                [&cc[0], &cc[1], &cc[2]],
+                &[e],
+                &[h],
+            ));
+        }
+        let res = Nf2ffResult {
+            freqs: vec![f],
+            center: p0,
+            faces,
+            mirrors: Vec::new(),
+            medium: Medium::VACUUM,
+            cylindrical: true,
+        };
+        let p_exact = Z0 * kw * kw / (12.0 * PI);
+        let p_box = res.radiated_power(0);
+        assert!((p_box / p_exact - 1.0).abs() < 2e-3, "{p_box} vs {p_exact}");
+        for &(t, ph) in &[(0.3, 0.7), (PI / 2.0, 2.0), (2.2, 4.0)] {
+            let ff = res.far_field(0, t, ph);
+            let want = Z0 * kw * t.sin() / (4.0 * PI);
+            assert!(
+                (ff.e_theta.norm() / want - 1.0).abs() < 2e-3,
+                "{t}: {:?} vs {want}",
+                ff.e_theta
+            );
+            assert!(ff.e_phi.norm() < 1e-3 * want);
+        }
+        let d = res.max_directivity(0);
+        assert!((d.directivity - 1.5).abs() < 5e-3, "{d:?}");
+        // Mirrors only along z.
+        let m = Mirror::new(Axis::Y, -1.0, MirrorKind::Pec);
+        assert!(matches!(res.with_mirror(m), Err(Error::Unsupported(_))));
     }
 }

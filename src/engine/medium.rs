@@ -103,15 +103,11 @@ impl Medium {
     ///
     /// # Errors
     /// [`Error::Invalid`] if the box does not fit the grid or the surface
-    /// is not homogeneous and isotropic (relative tolerance 1e-4);
-    /// [`Error::Unsupported`] on a cylindrical grid.
+    /// is not homogeneous and isotropic (relative tolerance 1e-4). On a
+    /// cylindrical grid the coefficients are read with the physical edge
+    /// lengths and areas.
     pub fn of_box_surface(engine: &Engine, lo: [usize; 3], hi: [usize; 3]) -> Result<Option<Self>> {
         let grid = engine.grid();
-        if grid.is_cylindrical() {
-            return Err(Error::Unsupported(
-                "background detection needs a Cartesian grid".into(),
-            ));
-        }
         let n = grid.nodes();
         if (0..3).any(|a| lo[a] > hi[a] || hi[a] >= n[a]) {
             return Err(Error::Invalid(format!(
@@ -165,8 +161,9 @@ fn index(n: [usize; 3], [i, j, k]: [usize; 3]) -> usize {
     (i * n[1] + j) * n[2] + k
 }
 
-/// Media reconstructed from the update coefficients (Cartesian grid):
-/// `C = (1 + ca)·dt/(2cb)`, `G = (1 − ca)/cb`, and alike for H.
+/// Media reconstructed from the update coefficients:
+/// `C = (1 + ca)·dt/(2cb)`, `G = (1 − ca)/cb`, and alike for H, with the
+/// physical edge lengths and areas of a cylindrical grid (§5.15).
 pub(crate) struct CoefficientMedia<'a> {
     pub grid: &'a Grid,
     pub co: &'a Coefficients,
@@ -185,8 +182,12 @@ impl EdgeMedia for CoefficientMedia<'_> {
         }
         let (b, c) = axis.others();
         let g = self.grid;
-        let geo = g.dual_delta(b, p[b.index()]) * g.dual_delta(c, p[c.index()])
-            / g.delta(axis, p[axis.index()]);
+        let geo = if g.is_cylindrical() {
+            g.dual_face_area(axis, p) / g.edge_length(axis, p)
+        } else {
+            g.dual_delta(b, p[b.index()]) * g.dual_delta(c, p[c.index()])
+                / g.delta(axis, p[axis.index()])
+        };
         let cap = (1.0 + ca) * self.dt / (2.0 * cb);
         let cond = (1.0 - ca) / cb;
         Some((cap / (EPS0 * geo), (cond / geo).max(0.0)))
@@ -202,8 +203,12 @@ impl EdgeMedia for CoefficientMedia<'_> {
         }
         let (b, c) = axis.others();
         let g = self.grid;
-        let geo = g.delta(b, q[b.index()]) * g.delta(c, q[c.index()])
-            / g.dual_delta(axis, q[axis.index()]);
+        let geo = if g.is_cylindrical() {
+            g.face_area(axis, q) / g.dual_edge_length(axis, q)
+        } else {
+            g.delta(b, q[b.index()]) * g.delta(c, q[c.index()])
+                / g.dual_delta(axis, q[axis.index()])
+        };
         let ind = (1.0 + da) * self.dt / (2.0 * db);
         let res = (1.0 - da) / db;
         Some((ind / (MU0 * geo), (res / geo).max(0.0)))

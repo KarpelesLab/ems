@@ -475,8 +475,9 @@ impl Simulation {
     ///
     /// # Errors
     /// See [`Nf2ff::with_faces`](crate::nf2ff::Nf2ff::with_faces);
-    /// [`Error::Unsupported`](crate::Error::Unsupported) on a cylindrical
-    /// grid or in a lossy background.
+    /// [`Error::Unsupported`](crate::Error::Unsupported) in a lossy
+    /// background, or for a mirror not normal to z on a cylindrical grid
+    /// (cylindrical boxes: [`crate::nf2ff#cylindrical-grids`]).
     pub fn add_nf2ff(&mut self, b: &Nf2ffBox) -> Result<Nf2ffHandle> {
         if self.bloch.is_some() {
             return Err(crate::Error::Unsupported(
