@@ -43,7 +43,10 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::fdtd::{Boundaries, Boundary, Cpml, EndCriteria, Face, Fdtd, Mur};
     pub use crate::nf2ff::{MirrorKind, Nf2ffBox, Nf2ffResult};
-    pub use crate::port::{LumpedPort, MslPort, RectWaveguidePort};
+    pub use crate::port::{
+        CircMode, CircWaveguidePort, CoaxPort, CpwPort, CurvePort, LumpedPort, MslPort,
+        RectWaveguidePort, StriplinePort,
+    };
     pub use crate::post::{Complex64, PortResult};
     pub use crate::sim::{Results, Simulation};
     pub use crate::waveform::{ExpressionWaveform, Waveform};
