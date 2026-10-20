@@ -257,7 +257,7 @@ fn csx_absorbing_bc_maps_to_sheet() {
     use csx_model::*;
     use ems::{Boundary, Simulation};
 
-    let m = model(120, Some((100.0, abc(true, AbcType::Mur1st))));
+    let m = model(120, Some((100.0, abc(false, AbcType::Mur1st))));
     let sim = Simulation::new(&m, &fdtd(Boundary::Pec)).unwrap();
     let h = &sim.boundaries().abc;
     assert_eq!(h.len(), 1);
@@ -293,7 +293,7 @@ fn csx_absorbing_bc_warnings() {
     use csx_model::*;
     use ems::{Boundary, Simulation};
 
-    let mut m = model(40, Some((20.0, abc(false, AbcType::Mur1stSa))));
+    let mut m = model(40, Some((20.0, abc(true, AbcType::Mur1stSa))));
     let p = m.add_property(Property::absorbing_bc("vol", abc(true, AbcType::Mur1st)));
     m.add_primitive(
         p,
@@ -317,7 +317,7 @@ fn xml_absorbing_bc_round_trip() {
     use csx_model::*;
     use ems::{Boundary, Simulation};
 
-    let model = model(120, Some((100.0, abc(true, AbcType::Mur1st))));
+    let model = model(120, Some((100.0, abc(false, AbcType::Mur1st))));
     // A file means openEMS semantics.
     let fdtd = fdtd(Boundary::Pec).file_equivalent();
     let direct = probe(Simulation::new(&model, &fdtd).unwrap());

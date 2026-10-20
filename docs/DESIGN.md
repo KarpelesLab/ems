@@ -665,7 +665,11 @@ openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
 - **AbsorbingBC sheets** (csx `AbsorbingBC`, implemented,
   `engine::boundary::abc::AbsorbingSheet`): the same first-order Mur update
   on the tangential E of a rectangle on an interior mesh plane, against the
-  neighbour one node behind the outward normal (`NormalSignPositive`).
+  neighbour one node behind the outward normal. The file's
+  `NormalSignPositive` is the sign of the opposite (inward) normal: `1`
+  absorbs waves travelling along `−a`, as in openEMS, with which the
+  probes then agree to 1e-6 (§5.16.3; MUR_1ST_SA gives openEMS's output
+  of MUR_1ST bit for bit at normal incidence).
   - One-way: waves travelling along the outward normal are absorbed (−58 dB
     at normal incidence, the same as the Mur face on the same mesh). The
     region behind the sheet still exists: the sheet drives it like a hard

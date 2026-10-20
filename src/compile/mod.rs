@@ -94,8 +94,11 @@
 //! the sheet normal; anything else (a volume, a line, a point) is ignored
 //! with a warning, as is a box that was not flat before snapping (it is
 //! still used, flattened by the snap, with a warning). `NormalSignPositive`
-//! gives the outward normal, i.e. the direction of the waves the sheet
-//! absorbs ([`AbcSheet::positive`]). `PhaseVelocity` > 0 is used as given;
+//! is the sign of the normal pointing *into* the region the sheet
+//! terminates, i.e. against the waves it absorbs: `1` absorbs waves
+//! travelling along `−a`, `0` along `+a` ([`AbcSheet::positive`] is the
+//! opposite sign; as openEMS, whose probes ems then reproduces to 1e-6,
+//! fixture `sweep_abc_line`). `PhaseVelocity` > 0 is used as given;
 //! 0 (csx's "speed of light") selects the local medium velocity
 //! `c0/√(ε_r·μ_r)` per edge ([`SheetVelocity::Local`]), which is `c0` in
 //! vacuum; negative or non-finite values fall back to it with a warning.
@@ -940,7 +943,7 @@ fn abc_specs(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) -> Ve
                 sheet: AbcSheet {
                     normal,
                     plane: start[d],
-                    positive: abc.normal_sign_positive,
+                    positive: !abc.normal_sign_positive,
                     start,
                     stop,
                 },
