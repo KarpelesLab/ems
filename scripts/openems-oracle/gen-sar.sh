@@ -13,6 +13,10 @@
 # * sar_calc_block: sar-synth.py writes raw.h5 (a synthetic tissue block,
 #   two frequencies); sar_calc averages it over 0.05 g (SIMPLE and
 #   IEEE_62704).
+# * sar_calc_synth: sar-synth.py writes blob.h5 (graded mesh, random
+#   density, irregular tissue), slab.h5 (a thin slab: face cubes only) and
+#   aniso.h5 (1 x 1 x 3 mm cells); sar_calc averages them with each
+#   method, cube statistics, light and heavy masses and the -a auto range.
 #
 # sar_calc runs single-threaded (-n 1); its output is deterministic but for
 # the @proc_time attribute.
@@ -64,4 +68,26 @@ echo "input: sar-synth.py raw.h5" >> "$d/meta.txt"
 sarcalc "$d" raw.h5 simple.h5 -m 0.05
 sarcalc "$d" raw.h5 ieee62704.h5 -m 0.05 --method IEEE_62704
 (cd "$d" && "$OEPY" -I "$H5LS" simple.h5 > structure.txt)
+
+# --- sar_calc_synth
+d=$FIX/sar_calc_synth
+mkdir -p "$d"
+rm -f "$d"/*.h5
+header > "$d/meta.txt"
+for c in blob slab aniso; do
+    "$OEPY" -I scripts/openems-oracle/sar-synth.py $c "$d/$c.h5"
+    echo "input: sar-synth.py $c $c.h5" >> "$d/meta.txt"
+done
+sarcalc "$d" blob.h5 blob_simple.h5 -m 0.05 -e
+sarcalc "$d" blob.h5 blob_c95.h5 -m 0.05 --method IEEE_C95_3 -e
+sarcalc "$d" blob.h5 blob_62704.h5 -m 0.05 --method IEEE_62704 -e
+sarcalc "$d" blob.h5 blob_light.h5 -m 0.005
+sarcalc "$d" blob.h5 blob_heavy.h5 -m 0.2 --method IEEE_C95_3
+sarcalc "$d" blob.h5 blob_auto.h5 -m 0.05 -a 1
+sarcalc "$d" blob.h5 blob_auto62704.h5 -m 0.05 --method IEEE_62704 -a 1.5 -e
+sarcalc "$d" slab.h5 slab_c95.h5 -m 0.05 --method IEEE_C95_3 -e
+sarcalc "$d" slab.h5 slab_62704.h5 -m 0.05 --method IEEE_62704 -e
+sarcalc "$d" aniso.h5 aniso_simple.h5 -m 0.064 -e
+sarcalc "$d" aniso.h5 aniso_small.h5 -m 0.0034 -e
+(cd "$d" && "$OEPY" -I "$H5LS" blob_auto62704.h5 > structure.txt)
 echo "fixtures written to $FIX/sar_calc_*"

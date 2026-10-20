@@ -3,13 +3,12 @@
 //!
 //! openEMS writes raw SAR dumps (`DumpType` 29, see [`super::dump`]) and
 //! averages them with a separate program, `sar_calc -i raw.h5 -o out.h5
-//! -m <grams> [--method SIMPLE|IEEE_C95_3|IEEE_62704]`. This module reads
-//! the same raw files (openEMS's or ems's), averages with
-//! [`AveragingMethod`] and writes the same output layout; [`run`] is what
-//! the `ems-sar-calc` binary does. The layouts were observed on a
-//! black-box openEMS v0.37 (no openEMS source consulted); the averaged
-//! values follow ems's cube solver, see [`AveragingMethod`] for how they
-//! compare with openEMS's.
+//! -m <grams> [--method SIMPLE|IEEE_C95_3|IEEE_62704] [-a <dB>] [-e]`.
+//! This module reads the same raw files (openEMS's or ems's), averages
+//! like openEMS ([`SarVolume::averaged_openems`], rules in
+//! [`AveragingMethod`]) and writes the same output layout; [`run`] is what
+//! the `ems-sar-calc` binary does. Layouts and rules were observed on a
+//! black-box openEMS v0.37 (no openEMS source consulted).
 //!
 //! # Input (raw dump)
 //!
@@ -22,8 +21,10 @@
 //! ```
 //!
 //! Per cell the absorbed power density is `p = ½·κ·|E|²`. The averaging
-//! uses the cells of the given widths; the totals use the `Volume`
-//! dataset: mass `Σ ρ·V`, absorbed power `Σ p·V`.
+//! uses the cells of the given widths, each weighted with its `Volume`
+//! (as openEMS does, so the single-precision rounding of the volumes is
+//! part of the result); the totals use the `Volume` dataset: mass `Σ ρ·V`,
+//! absorbed power `Σ p·V`.
 //!
 //! # Output
 //!
@@ -32,17 +33,25 @@
 //!                         (@legacy_fmt u8 1 with --legacyHDF5Dumps)
 //! /Mesh                   @mesh_scaling f64 1, @mesh_type i32 0; x, y, z as in the input
 //! /FieldData/FD           @frequency f32 [nf], @valid_cubes, @used_cubes,
-//!                         @unused_cubes, @air_cubes u64 (of the first frequency)
+//!                         @unused_cubes, @air_cubes u64 (of the first frequency);
+//!                         with -a: @autorange f64 (dB), @autorange_padding f64 [m]
 //! /FieldData/FD/f%d       f32 [nx, ny, nz] ("XYZ"; legacy [nz, ny, nx] "ZYX"),
-//!                         @frequency f32, @maxSAR f32, @maxSAR_idx u32 [3], @power f32
+//!                         @frequency f32, @maxSAR f32, @maxSAR_idx u32 [3], @power f32;
+//!                         with -a: @autorange_threshold f32 [W/kg]
 //! /FieldData/FD/f0_Cube{Mass, Type, Vol}   with -e and one frequency:
-//!                         cube mass and volume (f32), type (u8: 7 centred
-//!                         cube, 8 maximum of the cubes reaching the voxel,
-//!                         5 face cube, 0 none / no tissue)
+//!                         cube mass and volume (f32; the volume within the
+//!                         domain, air included), type (u8: 7 valid centred
+//!                         cube, 8 maximum of the valid cubes reaching the
+//!                         voxel, 1…6 face cube extending along +x, −x, +y,
+//!                         −y, +z, −z, 0 none / no tissue)
 //! ```
 //!
-//! `maxSAR_idx` is the voxel holding the f32 maximum: the first centred
-//! cube among equal values, else the first in data order.
+//! The counts: *valid* voxels have their own cube, *used* ones the maximum
+//! of others, *unused* ones a face cube or none, *air* the rest. With `-a`
+//! only the [`AutoRange`] cells are written (mesh, datasets, counts and
+//! peak; the averages see the whole domain). `maxSAR_idx` is the voxel
+//! holding the f32 maximum: the first centred cube among equal values,
+//! else the first in data order.
 
 use std::path::{Path, PathBuf};
 
@@ -206,6 +215,9 @@ pub struct SarCalcOptions {
     pub export_cube_stats: bool,
     /// `--legacyHDF5Dumps`.
     pub legacy: bool,
+    /// `-a`: write only the cells within this many dB of the peak local
+    /// SAR ([`AutoRange`]).
+    pub autorange: Option<f64>,
 }
 
 /// The averaged SAR of one frequency.
@@ -213,85 +225,202 @@ pub struct SarCalcOptions {
 pub struct SarCalcFrequency {
     /// Frequency \[Hz\].
     pub frequency: f64,
-    /// The averaged field.
+    /// The averaged field (the [`AutoRange`] cells with `-a`).
     pub field: SarField,
-    /// Absorbed power `Σ p·V` \[W\].
+    /// Absorbed power `Σ p·V` \[W\] (all cells).
     pub power: f64,
     /// Peak value and its cell (see the [module docs](self#output)).
     pub max: (f64, [usize; 3]),
     /// `[valid, used, unused, air]` voxel counts.
     pub cubes: [u64; 4],
+    /// The auto-range threshold \[W/kg\] (with `-a`).
+    pub threshold: Option<f64>,
 }
 
-/// The openEMS cube type code of a voxel class (`-e` output).
-pub fn cube_type(c: VoxelClass) -> u8 {
+/// The cells `sar_calc -a <dB>` writes (observed): the bounding box of the
+/// tissue cells whose local SAR is at least `10^{−dB/10}` times the peak
+/// local SAR, at any frequency, widened by `padding` (half the side of
+/// the averaging cube of the lightest tissue, `(m/ρ_min)^{1/3}/2`) and
+/// extended to the cells that contain the widened box's faces. The
+/// averages themselves see the whole domain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoRange {
+    /// The `-a` value \[dB\].
+    pub db: f64,
+    /// Padding \[m\].
+    pub padding: f64,
+    /// First cell per axis.
+    pub start: [usize; 3],
+    /// One past the last cell per axis.
+    pub stop: [usize; 3],
+    /// Threshold \[W/kg\] per frequency.
+    pub thresholds: Vec<f64>,
+}
+
+impl AutoRange {
+    /// The range of `raw` for averaging mass `mass` \[kg\] (`None` without
+    /// tissue).
+    pub fn new(raw: &RawSar, mass: f64, db: f64) -> Option<Self> {
+        let dims = raw.dims();
+        let lines = raw.lines();
+        let rho_min = raw
+            .density
+            .iter()
+            .copied()
+            .filter(|&r| r > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        if !rho_min.is_finite() {
+            return None;
+        }
+        let padding = 0.5 * (mass / rho_min).cbrt();
+        let mut lo = [usize::MAX; 3];
+        let mut hi = [0usize; 3];
+        let mut thresholds = Vec::with_capacity(raw.frequencies.len());
+        for k in 0..raw.frequencies.len() {
+            let local: Vec<f64> = raw
+                .power_density(k)
+                .iter()
+                .zip(&raw.density)
+                .map(|(&p, &r)| if r > 0.0 { p / r } else { 0.0 })
+                .collect();
+            let top = local.iter().copied().fold(0.0, f64::max);
+            let th = top * 10f64.powf(-db / 10.0);
+            thresholds.push(th);
+            for (i, &l) in local.iter().enumerate() {
+                if raw.density[i] > 0.0 && l >= th {
+                    let c = [
+                        i / (dims[1] * dims[2]),
+                        (i / dims[2]) % dims[1],
+                        i % dims[2],
+                    ];
+                    for a in 0..3 {
+                        lo[a] = lo[a].min(c[a]);
+                        hi[a] = hi[a].max(c[a]);
+                    }
+                }
+            }
+        }
+        if lo[0] == usize::MAX {
+            return None;
+        }
+        let start = core::array::from_fn(|a| {
+            let x = lines[a][lo[a]] - padding;
+            lines[a].partition_point(|&l| l <= x).max(1) - 1
+        });
+        let stop = core::array::from_fn(|a| {
+            let x = lines[a][hi[a] + 1] + padding;
+            lines[a].partition_point(|&l| l < x).min(dims[a])
+        });
+        Some(Self {
+            db,
+            padding,
+            start,
+            stop,
+            thresholds,
+        })
+    }
+}
+
+/// The openEMS cube type code of a voxel class (`-e` output): 7 centred
+/// cube, 8 maximum of the valid cubes reaching the voxel, `face` (1…6,
+/// [`SarField::cube_faces`]) for a face cube, 0 otherwise.
+pub fn cube_type(c: VoxelClass, face: u8) -> u8 {
     match c {
         VoxelClass::Centered => 7,
         VoxelClass::Covered => 8,
-        VoxelClass::Boundary => 5,
+        VoxelClass::Boundary => face,
         _ => 0,
     }
+}
+
+/// The cube counts and the peak of a field (see the
+/// [module docs](self#output)).
+fn summary(field: &SarField) -> ((f64, [usize; 3]), [u64; 4]) {
+    let dims = field.cells();
+    let mut cubes = [0u64; 4];
+    for c in field.classes() {
+        match c {
+            VoxelClass::Centered => cubes[0] += 1,
+            VoxelClass::Covered => cubes[1] += 1,
+            VoxelClass::Boundary | VoxelClass::Unresolved => cubes[2] += 1,
+            _ => cubes[3] += 1,
+        }
+    }
+    // The f32 maximum; among equal values the first centred-cube voxel,
+    // else the first voxel (data order), like openEMS.
+    let top = field.values().iter().fold(0.0f32, |m, &v| m.max(v as f32));
+    let pick = |centred: bool| {
+        field
+            .values()
+            .iter()
+            .zip(field.classes())
+            .position(|(&v, &c)| {
+                v > 0.0 && v as f32 == top && (!centred || c == VoxelClass::Centered)
+            })
+    };
+    let max = match pick(true).or_else(|| pick(false)) {
+        Some(i) => (
+            field.values()[i],
+            [
+                i / (dims[1] * dims[2]),
+                (i / dims[2]) % dims[1],
+                i % dims[2],
+            ],
+        ),
+        None => (0.0, [0; 3]),
+    };
+    (max, cubes)
 }
 
 /// Averages every frequency of `raw` over `mass` \[kg\] with `method`.
 ///
 /// # Errors
-/// Invalid masses or meshes ([`SarVolume::new`], [`SarVolume::averaged_with`]).
+/// Invalid masses or meshes ([`SarVolume::new`],
+/// [`SarVolume::averaged_openems`]).
 pub fn average(
     raw: &RawSar,
     mass: f64,
     method: AveragingMethod,
     threads: usize,
 ) -> Result<Vec<SarCalcFrequency>> {
-    let dims = raw.dims();
+    Ok(average_range(raw, mass, method, threads, None)?.0)
+}
+
+/// [`average`], keeping only the cells of `sar_calc -a <dB>` when
+/// `autorange` is set ([`AutoRange`]).
+///
+/// # Errors
+/// As [`average`].
+pub fn average_range(
+    raw: &RawSar,
+    mass: f64,
+    method: AveragingMethod,
+    threads: usize,
+    autorange: Option<f64>,
+) -> Result<(Vec<SarCalcFrequency>, Option<AutoRange>)> {
     let lines = raw.lines();
+    let range = autorange.and_then(|db| AutoRange::new(raw, mass, db));
     let mut out = Vec::with_capacity(raw.frequencies.len());
     for (k, &frequency) in raw.frequencies.iter().enumerate() {
         let pd = raw.power_density(k);
         let power = pd.iter().zip(&raw.volume).map(|(p, v)| p * v).sum();
-        let v = SarVolume::new(lines.clone(), pd, raw.density.clone())?;
-        let field = v.averaged_with(mass, &method.options(threads))?;
-        let mut cubes = [0u64; 4];
-        for c in field.classes() {
-            match c {
-                VoxelClass::Centered => cubes[0] += 1,
-                VoxelClass::Covered => cubes[1] += 1,
-                VoxelClass::Boundary | VoxelClass::Unresolved => cubes[2] += 1,
-                _ => cubes[3] += 1,
-            }
+        let v = SarVolume::new(lines.clone(), pd, raw.density.clone())?
+            .with_cell_volumes(raw.volume.clone())?;
+        let mut field = v.averaged_openems(mass, method, threads)?;
+        if let Some(r) = &range {
+            field = field.crop(r.start, r.stop)?;
         }
-        // The f32 maximum; among equal values the first centred-cube
-        // voxel, else the first voxel (data order), like openEMS.
-        let top = field.values().iter().fold(0.0f32, |m, &v| m.max(v as f32));
-        let pick = |centred: bool| {
-            field
-                .values()
-                .iter()
-                .zip(field.classes())
-                .position(|(&v, &c)| {
-                    v > 0.0 && v as f32 == top && (!centred || c == VoxelClass::Centered)
-                })
-        };
-        let max = match pick(true).or_else(|| pick(false)) {
-            Some(i) => (
-                field.values()[i],
-                [
-                    i / (dims[1] * dims[2]),
-                    (i / dims[2]) % dims[1],
-                    i % dims[2],
-                ],
-            ),
-            None => (0.0, [0; 3]),
-        };
+        let (max, cubes) = summary(&field);
         out.push(SarCalcFrequency {
             frequency,
             field,
             power,
             max,
             cubes,
+            threshold: range.as_ref().map(|r| r.thresholds[k]),
         });
     }
-    Ok(out)
+    Ok((out, range))
 }
 
 mod h5 {
@@ -310,10 +439,12 @@ mod h5 {
         f: &mut FileWriter<S>,
         raw: &RawSar,
         res: &[SarCalcFrequency],
+        range: Option<&AutoRange>,
         opts: &SarCalcOptions,
         proc_time: f64,
     ) -> hdf5rs::Result<()> {
-        let dims = raw.dims();
+        let (start, stop) = range.map_or(([0; 3], raw.dims()), |r| (r.start, r.stop));
+        let dims: [usize; 3] = core::array::from_fn(|a| stop[a] - start[a]);
         let mut root = f.root();
         if opts.legacy {
             root.set_attr("legacy_fmt", &1u8)?;
@@ -326,9 +457,10 @@ mod h5 {
             mesh.set_attr("mesh_scaling", &1.0f64)?;
             mesh.set_attr("mesh_type", &0i32)?;
             for (a, n) in ["x", "y", "z"].into_iter().enumerate() {
+                let m = &raw.mesh[a][start[a]..stop[a]];
                 mesh.new_dataset::<f64>(n)
-                    .shape(&[raw.mesh[a].len() as u64])
-                    .write(&raw.mesh[a])?;
+                    .shape(&[m.len() as u64])
+                    .write(m)?;
             }
         }
         let mut fdg = root.create_group("FieldData")?;
@@ -336,6 +468,10 @@ mod h5 {
         let fr: Vec<f32> = res.iter().map(|r| r.frequency as f32).collect();
         let cubes = res.first().map_or([0; 4], |r| r.cubes);
         g.set_attr("air_cubes", &cubes[3])?;
+        if let Some(r) = range {
+            g.set_attr("autorange", &r.db)?;
+            g.set_attr("autorange_padding", &r.padding)?;
+        }
         g.set_attr("frequency", &fr[..])?;
         g.set_attr("unused_cubes", &cubes[2])?;
         g.set_attr("used_cubes", &cubes[1])?;
@@ -364,6 +500,9 @@ mod h5 {
                 .new_dataset::<f32>(&format!("f{k}"))
                 .shape(&shape)
                 .write(&order(r.field.values()))?;
+            if let Some(t) = r.threshold {
+                ds.set_attr("autorange_threshold", &(t as f32))?;
+            }
             ds.set_attr("d_order", if opts.legacy { "ZYX" } else { "XYZ" })?;
             ds.set_attr("frequency", &(r.frequency as f32))?;
             ds.set_attr("maxSAR", &(r.max.0 as f32))?;
@@ -379,7 +518,8 @@ mod h5 {
                 .field
                 .classes()
                 .iter()
-                .map(|&c| f64::from(cube_type(c)))
+                .zip(r.field.cube_faces())
+                .map(|(&c, &k)| f64::from(cube_type(c, k)))
                 .collect();
             let types: Vec<u8> = order(&types).into_iter().map(|x| x as u8).collect();
             g.new_dataset::<u8>("f0_CubeType")
@@ -394,33 +534,61 @@ mod h5 {
 }
 
 /// The output file of an averaging in memory (see the
-/// [module docs](self#output)).
+/// [module docs](self#output)); `range` the [`AutoRange`] of `-a`.
 ///
 /// # Errors
 /// Encoding errors ([`Error::Io`]).
 pub fn output_bytes(
     raw: &RawSar,
     res: &[SarCalcFrequency],
+    range: Option<&AutoRange>,
     opts: &SarCalcOptions,
     proc_time: f64,
 ) -> Result<Vec<u8>> {
     let mut f = hdf5rs::write::FileWriter::new(Vec::new(), h5::options()).map_err(h5err)?;
-    h5::fill(&mut f, raw, res, opts, proc_time).map_err(h5err)?;
+    h5::fill(&mut f, raw, res, range, opts, proc_time).map_err(h5err)?;
     f.finish().map_err(h5err)
+}
+
+/// The result of [`run`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SarCalcRun {
+    /// The input.
+    pub raw: RawSar,
+    /// Per frequency.
+    pub frequencies: Vec<SarCalcFrequency>,
+    /// The cells written with `-a`.
+    pub range: Option<AutoRange>,
 }
 
 /// Reads `opts.input`, averages and writes `opts.output` like
 /// `sar_calc`.
 ///
 /// # Errors
-/// I/O, format and averaging errors.
-pub fn run(opts: &SarCalcOptions) -> Result<(RawSar, Vec<SarCalcFrequency>)> {
+/// I/O, format and averaging errors; [`Error::Invalid`] for a
+/// non-positive `-a`.
+pub fn run(opts: &SarCalcOptions) -> Result<SarCalcRun> {
+    if let Some(db) = opts.autorange
+        && !(db > 0.0 && db.is_finite())
+    {
+        return Err(invalid(format!("the auto range must be > 0 dB, got {db}")));
+    }
     let raw = RawSar::read(&opts.input)?;
     let t0 = std::time::Instant::now();
-    let res = average(&raw, opts.mass_g * 1e-3, opts.method, opts.threads)?;
+    let (frequencies, range) = average_range(
+        &raw,
+        opts.mass_g * 1e-3,
+        opts.method,
+        opts.threads,
+        opts.autorange,
+    )?;
     let proc_time = t0.elapsed().as_secs_f64();
-    let bytes = output_bytes(&raw, &res, opts, proc_time)?;
+    let bytes = output_bytes(&raw, &frequencies, range.as_ref(), opts, proc_time)?;
     std::fs::write(&opts.output, bytes)
         .map_err(|e| Error::Io(format!("{}: {e}", opts.output.display())))?;
-    Ok((raw, res))
+    Ok(SarCalcRun {
+        raw,
+        frequencies,
+        range,
+    })
 }

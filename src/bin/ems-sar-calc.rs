@@ -15,7 +15,8 @@ Options:
   -o [ --output ] arg         pathname for output hdf5 file
   --method arg (=SIMPLE)      set SAR method: IEEE_C95_3, IEEE_62704, SIMPLE
   -m [ --mass ] arg           averaging mass in g
-  -a [ --autorange ] arg      autorange (not supported by ems)
+  -a [ --autorange ] arg      autorange, limit the calculation to cells within
+                              N dB of the peak local SAR (>0)
   -n [ --numThreads ] arg     number of threads
   -v [ --verbose ]            verbose
   -p [ --progress ]           show progress
@@ -114,9 +115,15 @@ fn main_inner(args: &[String]) -> Result<(), String> {
     let method_name = get("method").unwrap_or("SIMPLE");
     let method = AveragingMethod::from_name(method_name)
         .ok_or_else(|| format!("ems-sar-calc: {method_name} is an unknown averaging method"))?;
-    if get("autorange").is_some() {
-        return Err("ems-sar-calc: --autorange is not supported".into());
-    }
+    let autorange = match get("autorange") {
+        Some(a) => Some(
+            a.parse::<f64>()
+                .ok()
+                .filter(|a| *a > 0.0 && a.is_finite())
+                .ok_or_else(|| format!("ems-sar-calc: invalid auto range {a}"))?,
+        ),
+        None => None,
+    };
     let threads = match get("numThreads") {
         Some(n) => n
             .parse()
@@ -132,20 +139,44 @@ fn main_inner(args: &[String]) -> Result<(), String> {
         verbose: get("verbose").is_some(),
         export_cube_stats: get("export_cube_stats").is_some(),
         legacy: get("legacyHDF5Dumps").is_some(),
+        autorange,
     };
     if o.verbose {
         println!("Averaging method: {}", method.name());
         println!("Input file: {input}");
         println!("Averaging mass: {}", mass_g * 1e-3);
     }
-    let (raw, res) = run(&o).map_err(|e| format!("ems-sar-calc: {e}"))?;
+    let out = run(&o).map_err(|e| format!("ems-sar-calc: {e}"))?;
+    let (raw, res) = (&out.raw, &out.frequencies);
+    if let (Some(db), Some(r)) = (autorange, &out.range) {
+        if o.verbose {
+            println!("Calculate auto range with {db}dB from the local SAR max.");
+            println!("Auto range: padded by {}m", r.padding);
+            for a in 0..3 {
+                println!(
+                    "SetSubRange: Dir {a} Start {} Stop {}",
+                    r.start[a], r.stop[a]
+                );
+            }
+        }
+        for f in res {
+            if let Some(t) = f.threshold.filter(|&t| t > f.max.0) {
+                println!(
+                    "Warning, the auto range threshold ({t} W/kg) is above the peak SAR that was \
+                     found ({} W/kg) at f={}Hz. The true peak may be outside of the evaluated \
+                     range, increase the auto range (dB) or disable it...",
+                    f.max.0, f.frequency
+                );
+            }
+        }
+    }
     if o.export_cube_stats && res.len() > 1 {
         println!("Unable to store cube statistics for more than one frequency of interest!!");
     }
     println!("Output file: {output}");
     let mass = raw.total_mass();
     println!("Total mass: {mass}");
-    for r in &res {
+    for r in res {
         println!("********");
         println!("Frequency: {}", r.frequency);
         println!("Total power: {}", r.power);

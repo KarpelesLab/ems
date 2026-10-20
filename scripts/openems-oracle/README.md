@@ -101,4 +101,7 @@ command line in the case's `meta.txt`:
   (`console:`).
 - `gen-sar.sh` regenerates the `sar_calc_*` cases of the `sar_calc` tool
   (`tests/openems_sar_calc.rs`), from the raw SAR dump of `dump_sar` and
-  from the synthetic tissue block of `sar-synth.py`.
+  from the synthetic raw files of `sar-synth.py` (a tissue block; a
+  graded-mesh blob, a thin slab and anisotropic cells), with each
+  averaging method, cube statistics (`-e`) and the auto range (`-a`); the
+  test replays every `command:` line of the cases' `meta.txt`.

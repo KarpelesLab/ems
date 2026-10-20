@@ -1,0 +1,19 @@
+openEMS oracle:
+  openEMS-Project e89286f (2026-10-18)
+   openEMS c3a956b (v0.37.0-19)
+   CSXCAD f90b407 (v0.7.0-1)
+   fparser 4b9c845
+input: sar-synth.py blob blob.h5
+input: sar-synth.py slab slab.h5
+input: sar-synth.py aniso aniso.h5
+command: sar_calc -n 1 -i blob.h5 -o blob_simple.h5 -m 0.05 -e
+command: sar_calc -n 1 -i blob.h5 -o blob_c95.h5 -m 0.05 --method IEEE_C95_3 -e
+command: sar_calc -n 1 -i blob.h5 -o blob_62704.h5 -m 0.05 --method IEEE_62704 -e
+command: sar_calc -n 1 -i blob.h5 -o blob_light.h5 -m 0.005
+command: sar_calc -n 1 -i blob.h5 -o blob_heavy.h5 -m 0.2 --method IEEE_C95_3
+command: sar_calc -n 1 -i blob.h5 -o blob_auto.h5 -m 0.05 -a 1
+command: sar_calc -n 1 -i blob.h5 -o blob_auto62704.h5 -m 0.05 --method IEEE_62704 -a 1.5 -e
+command: sar_calc -n 1 -i slab.h5 -o slab_c95.h5 -m 0.05 --method IEEE_C95_3 -e
+command: sar_calc -n 1 -i slab.h5 -o slab_62704.h5 -m 0.05 --method IEEE_62704 -e
+command: sar_calc -n 1 -i aniso.h5 -o aniso_simple.h5 -m 0.064 -e
+command: sar_calc -n 1 -i aniso.h5 -o aniso_small.h5 -m 0.0034 -e

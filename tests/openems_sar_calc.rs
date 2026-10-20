@@ -2,21 +2,21 @@
 //! `ems-sar-calc`): the fixtures in `tests/fixtures/openems/sar_calc_*`
 //! were written by the black-box `sar_calc` tool
 //! (`scripts/openems-oracle/gen-sar.sh`) from openEMS's raw SAR dump of
-//! the `dump_sar` fixture and from a synthetic tissue block.
+//! the `dump_sar` fixture and from synthetic raw files (`sar-synth.py`).
 //!
-//! The file layout must match exactly. The values: method `SIMPLE` (also
-//! openEMS's in-run method) equals openEMS where the centred cube is a
-//! cube of uniform tissue clear of air and of the domain boundary, and is
-//! within a few percent elsewhere (openEMS solves the cube size to ±5 % of
-//! the mass only); the IEEE methods use ems's own procedure, which agrees
-//! with openEMS on most voxels of the block but not at a thin tissue
-//! block's surface (see `ems::post::sar::AveragingMethod`).
+//! Every `command:` line of a case's `meta.txt` is replayed with
+//! `ems-sar-calc` (same options) and the whole output file is compared:
+//! structure, every attribute but `@proc_time`, every dataset to float
+//! precision. One known exception: the IEEE C95.3 face cubes of
+//! `dump_sar`, whose six orientations have equal volumes there and are
+//! ordered by openEMS's rounding (see `ems::post::sar::AveragingMethod`).
 #![cfg(feature = "hdf5")]
 
 #[path = "common/h5cmp.rs"]
 mod h5cmp;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use ems::io::openems::sar_calc::{SarCalcOptions, run};
 use ems::post::sar::AveragingMethod;
@@ -37,174 +37,148 @@ fn tmp_dir(name: &str) -> PathBuf {
     d
 }
 
-fn opts(input: PathBuf, output: PathBuf, mass_g: f64, method: AveragingMethod) -> SarCalcOptions {
-    SarCalcOptions {
-        input,
-        output,
-        mass_g,
-        method,
-        threads: 1,
+/// The `sar_calc` command lines of a fixture case (arguments after
+/// `sar_calc`).
+fn commands(case: &str) -> Vec<Vec<String>> {
+    let meta = std::fs::read_to_string(fixture(case).join("meta.txt")).unwrap();
+    meta.lines()
+        .filter_map(|l| l.strip_prefix("command: sar_calc "))
+        .map(|l| l.split_whitespace().map(String::from).collect())
+        .collect()
+}
+
+/// Number of voxels of dataset `p` that differ by more than `tol` of the
+/// largest value.
+fn differing(want: &Path, got: &Path, p: &str, tol: f64) -> usize {
+    let (a, b) = (read_tree(want), read_tree(got));
+    let (x, y) = (&a.objects[p].2, &b.objects[p].2);
+    let m = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    x.iter()
+        .zip(y)
+        .filter(|(a, b)| (*a - *b).abs() > tol * m)
+        .count()
+}
+
+/// Replays the commands of `case` with `ems-sar-calc` and compares the
+/// outputs; `loose` lists (file, largest number of differing voxels of
+/// `f0`) for the known exceptions.
+fn replay(case: &str, loose: &[(&str, usize)]) {
+    let dir = fixture(case);
+    let out = tmp_dir(case);
+    let exe = env!("CARGO_BIN_EXE_ems-sar-calc");
+    let cmds = commands(case);
+    assert!(!cmds.is_empty(), "{case}: no commands in meta.txt");
+    for args in cmds {
+        let mut args = args.clone();
+        let mut file = String::new();
+        for i in 0..args.len() {
+            match args[i].as_str() {
+                "-i" => args[i + 1] = dir.join(&args[i + 1]).display().to_string(),
+                "-o" => {
+                    file = args[i + 1].clone();
+                    args[i + 1] = out.join(&file).display().to_string();
+                }
+                _ => {}
+            }
+        }
+        let st = Command::new(exe).args(&args).output().unwrap();
+        assert!(st.status.success(), "{case} {args:?}: {st:?}");
+        let (want, got) = (dir.join(&file), out.join(&file));
+        let limit = loose.iter().find(|(f, _)| *f == file).map(|l| l.1);
+        let skip: &[&str] = if limit.is_some() {
+            &["/FieldData/FD/f0"]
+        } else {
+            &[]
+        };
+        let d = compare_h5(&want, &got, &["proc_time"], skip);
+        eprintln!("{case}/{file}: {d:?}");
+        assert!(d.attrs < 1e-6, "{case}/{file}: attributes {d:?}");
+        // 62704 solves the cube masses to 1e-6: an iterate on either side
+        // of that tolerance can end both codes on different iterates.
+        assert!(d.data < 2e-6, "{case}/{file}: data {d:?}");
+        if let Some(n) = limit {
+            let k = differing(&want, &got, "/FieldData/FD/f0", 1e-6);
+            eprintln!("{case}/{file}: {k} voxels differ");
+            assert!(k <= n, "{case}/{file}: {k} voxels differ");
+        }
+    }
+}
+
+/// The raw SAR dump openEMS wrote for `dump_sar` (7×7×6 tissue cells of
+/// 2 mm, 1 g: every cube clipped by air, touching faces).
+#[test]
+fn raw_dump_matches_openems() {
+    replay("sar_calc_dump", &[("c95.h5", 16)]);
+}
+
+/// A uniform synthetic tissue block (1 mm cells, 0.05 g, two
+/// frequencies).
+#[test]
+fn tissue_block_matches_openems() {
+    replay("sar_calc_block", &[]);
+}
+
+/// Synthetic raw files of `sar-synth.py` (graded meshes, random
+/// densities, irregular tissue, thin slabs with face cubes only,
+/// anisotropic and small cubes, `-a` auto range).
+#[test]
+fn synthetic_cases_match_openems() {
+    replay("sar_calc_synth", &[]);
+}
+
+/// The library entry point writes what the binary writes.
+#[test]
+fn library_matches_binary() {
+    let raw = fixture("sar_calc_block").join("raw.h5");
+    let out = tmp_dir("lib");
+    let o = SarCalcOptions {
+        input: raw.clone(),
+        output: out.join("lib.h5"),
+        mass_g: 0.05,
+        method: AveragingMethod::IeeeC95_3,
+        threads: 3,
         verbose: false,
         export_cube_stats: false,
         legacy: false,
-    }
-}
-
-/// Values of dataset `p` of both files, and the reference maximum.
-fn values(want: &Path, got: &Path, p: &str) -> (Vec<f64>, Vec<f64>, f64) {
-    let (a, b) = (read_tree(want), read_tree(got));
-    let x = a.objects[p].2.clone();
-    let y = b.objects[p].2.clone();
-    let m = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    (x, y, m)
-}
-
-const CUBE_COUNTS: [&str; 4] = ["valid_cubes", "used_cubes", "unused_cubes", "air_cubes"];
-
-#[test]
-fn raw_dump_layouts_and_simple_values() {
-    let dir = fixture("sar_calc_dump");
-    let raw = fixture("dump_sar").join("sar_raw.h5");
-    let out = tmp_dir("dump");
-    for (file, method, cubes, legacy) in [
-        ("simple.h5", AveragingMethod::Simple, false, false),
-        ("simple_e.h5", AveragingMethod::Simple, true, false),
-        ("legacy.h5", AveragingMethod::Simple, false, true),
-        ("ieee62704.h5", AveragingMethod::Ieee62704, false, false),
-        ("c95.h5", AveragingMethod::IeeeC95_3, false, false),
-    ] {
-        let mut o = opts(raw.clone(), out.join(file), 1.0, method);
-        o.export_cube_stats = cubes;
-        o.legacy = legacy;
-        run(&o).unwrap();
-        let want = dir.join(file);
-        if method == AveragingMethod::Simple {
-            // Same structure, totals and cube counts; values within 3 %.
-            let d = compare_h5(
-                &want,
-                &o.output,
-                &["proc_time", "maxSAR"],
-                &["/FieldData/FD/f0"],
-            );
-            assert!(d.attrs < 1e-6, "{file}: {d:?}");
-            let (x, y, m) = values(&want, &o.output, "/FieldData/FD/f0");
-            let worst = x
-                .iter()
-                .zip(&y)
-                .fold(0.0f64, |w, (a, b)| w.max((a - b).abs()));
-            eprintln!("{file}: SIMPLE differs by {:e} of the peak", worst / m);
-            assert!(worst < 0.03 * m, "{file}: {}", worst / m);
-        } else {
-            let mut loose = vec!["proc_time", "maxSAR", "maxSAR_idx"];
-            loose.extend(CUBE_COUNTS);
-            compare_h5(&want, &o.output, &loose, &["/FieldData/FD/f0"]);
-        }
-    }
-}
-
-#[test]
-fn tissue_block_simple_is_exact_inside() {
-    let dir = fixture("sar_calc_block");
-    let raw = dir.join("raw.h5");
-    let out = tmp_dir("block");
-    let o = opts(
-        raw.clone(),
-        out.join("simple.h5"),
-        0.05,
-        AveragingMethod::Simple,
-    );
-    run(&o).unwrap();
-    let want = dir.join("simple.h5");
-    // The f1 peak is at the surface: maxSAR (and its voxel) may differ.
-    let d = compare_h5(
-        &want,
-        &o.output,
-        &["proc_time", "maxSAR", "maxSAR_idx"],
-        &["/FieldData/FD/f0", "/FieldData/FD/f1"],
-    );
-    assert!(d.attrs < 1e-6, "{d:?}");
-    // 12 x 12 x 10 cells, tissue block 1..=10 x 1..=10 x 1..=8, cubes of
-    // 50 cells (half side 1.84 cells): unclipped for 3..=8 x 3..=8 x 3..=6.
-    let inside = |i: usize| {
-        let (x, y, z) = (i / 120, (i / 10) % 12, i % 10);
-        (3..=8).contains(&x) && (3..=8).contains(&y) && (3..=6).contains(&z)
+        autorange: Some(3.0),
     };
-    for f in ["/FieldData/FD/f0", "/FieldData/FD/f1"] {
-        let (x, y, m) = values(&want, &o.output, f);
-        let (mut interior, mut all) = (0.0f64, 0.0f64);
-        let mut n = 0;
-        for (i, (a, b)) in x.iter().zip(&y).enumerate() {
-            let e = (a - b).abs() / m;
-            all = all.max(e);
-            if inside(i) {
-                interior = interior.max(e);
-                n += 1;
-            }
-        }
-        eprintln!("{f}: SIMPLE interior {interior:e}, all {all:e}");
-        assert_eq!(n, 144);
-        assert!(interior < 1e-6, "{f}: {interior}");
-        assert!(all < 0.02, "{f}: {all}");
-    }
-    // IEEE_62704: same cube counts and peak voxel; most voxels agree.
-    let o = opts(
-        raw,
-        out.join("ieee62704.h5"),
-        0.05,
-        AveragingMethod::Ieee62704,
-    );
-    run(&o).unwrap();
-    let want = dir.join("ieee62704.h5");
-    compare_h5(
-        &want,
-        &o.output,
-        &["proc_time", "maxSAR"],
-        &["/FieldData/FD/f0", "/FieldData/FD/f1"],
-    );
-    for f in ["/FieldData/FD/f0", "/FieldData/FD/f1"] {
-        let (x, y, m) = values(&want, &o.output, f);
-        let same = x
-            .iter()
-            .zip(&y)
-            .filter(|(a, b)| (*a - *b).abs() <= 1e-6 * m)
-            .count();
-        eprintln!("{f}: IEEE_62704 equal on {same}/{}", x.len());
-        assert!(same * 100 >= 95 * x.len(), "{f}: {same}");
-    }
-}
-
-/// The binary takes `sar_calc`'s command line.
-#[test]
-fn command_line() {
-    let raw = fixture("sar_calc_block").join("raw.h5");
-    let out = tmp_dir("cli");
+    let r = run(&o).unwrap();
+    assert!(r.range.is_some());
     let exe = env!("CARGO_BIN_EXE_ems-sar-calc");
-    let o = out.join("cli.h5");
-    let st = std::process::Command::new(exe)
-        .args(["-n", "1", "--method=SIMPLE", "-m", "0.05", "-i"])
+    let cli = out.join("cli.h5");
+    let st = Command::new(exe)
+        .args([
+            "-n",
+            "1",
+            "--method=IEEE_C95_3",
+            "-m",
+            "0.05",
+            "-a",
+            "3",
+            "-i",
+        ])
         .arg(&raw)
         .arg("--output")
-        .arg(&o)
+        .arg(&cli)
         .output()
         .unwrap();
     assert!(st.status.success(), "{st:?}");
-    let lib = out.join("lib.h5");
-    run(&opts(
-        raw.clone(),
-        lib.clone(),
-        0.05,
-        AveragingMethod::Simple,
-    ))
-    .unwrap();
-    let d = compare_h5(&lib, &o, &["proc_time"], &[]);
-    assert_eq!(d.worst(), 0.0);
+    let d = compare_h5(&o.output, &cli, &["proc_time"], &[]);
+    assert_eq!(d.worst(), 0.0, "{d:?}");
+}
+
+/// The binary rejects bad command lines.
+#[test]
+fn command_line_errors() {
+    let exe = env!("CARGO_BIN_EXE_ems-sar-calc");
     for bad in [
         vec!["-o", "x.h5", "-m", "1"],
         vec!["-i", "x.h5", "-m", "1"],
         vec!["-i", "x.h5", "-o", "y.h5", "-m", "1", "--method", "FOO"],
         vec!["-i", "x.h5", "-o", "y.h5", "-m", "1", "--bogus"],
+        vec!["-i", "x.h5", "-o", "y.h5", "-m", "1", "-a", "0"],
     ] {
-        let st = std::process::Command::new(exe).args(&bad).output().unwrap();
+        let st = Command::new(exe).args(&bad).output().unwrap();
         assert!(!st.status.success(), "{bad:?}");
     }
 }

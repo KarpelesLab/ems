@@ -1,0 +1,30 @@
+# blob_auto62704.h5
+//
+  @mass: float64 () = 0.000436943
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 586
+      @autorange: float64 () = 1.5
+      @autorange_padding: float64 () = 0.00218119
+      @frequency: float32 (1,) = [1e+09]
+      @unused_cubes: uint64 () = 108
+      @used_cubes: uint64 () = 204
+      @valid_cubes: uint64 () = 92
+      f0: dataset (10, 11, 9) float32
+        @autorange_threshold: float32 () = 0.0163407
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 0.00951095
+        @maxSAR_idx: uint32 (3,) = [5, 5, 1]
+        @power: float32 () = 3.13127e-06
+      f0_CubeMass: dataset (10, 11, 9) float32
+      f0_CubeType: dataset (10, 11, 9) uint8
+      f0_CubeVol: dataset (10, 11, 9) float32
+  Mesh/
+    @mesh_scaling: float64 () = 1
+    @mesh_type: int32 () = 0
+    x: dataset (10,) float64
+    y: dataset (11,) float64
+    z: dataset (9,) float64
