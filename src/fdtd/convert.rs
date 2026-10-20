@@ -48,7 +48,7 @@ impl Fdtd {
     /// | `excitation` (`<Excitation>`) | [`waveform`](Fdtd::waveform) via [`Waveform::from_csx`] |
     /// | `boundary.faces` (`<BoundaryCond>`) | PEC / PMC / Mur / `PML_n` → [`Boundary`] with [`Cpml::cells`]`(n)` and default grading; absent → all PEC |
     /// | `boundary.mur_phase_velocity` | [`Mur::phase_velocity`] of every Mur face |
-    /// | `boundary.pml_grading` | warning: grading expressions are not evaluated, the default polynomial grading is used |
+    /// | `boundary.pml_grading` | warning: ignored (openEMS v0.37 ignores the attribute as well), the default polynomial grading is used |
     /// | unknown attributes | warning each |
     pub fn from_csx(s: &FdtdSettings) -> Result<(Fdtd, Vec<String>)> {
         let mut warn = Vec::new();
@@ -291,8 +291,12 @@ fn boundaries_from_csx(b: &BoundaryConditions, warn: &mut Vec<String>) -> Bounda
     }
     if let Some(g) = &b.pml_grading {
         if has_pml {
+            // openEMS v0.37 ignores the attribute too: its PML operator is
+            // the same with any expression, even an invalid one (black
+            // box, design §5.16.1).
             warn.push(format!(
-                "BoundaryCond PML_Grading={g:?} not evaluated; using the default polynomial grading"
+                "BoundaryCond PML_Grading={g:?} ignored (as by openEMS); using the default \
+                 polynomial grading"
             ));
         } else {
             warn.push("BoundaryCond PML_Grading ignored: no PML face".into());

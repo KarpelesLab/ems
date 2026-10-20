@@ -245,6 +245,41 @@ fn pml_reflection_differs() {
     }
 }
 
+/// openEMS ignores `PML_Grading` on `<BoundaryCond>`: the same vacuum
+/// line with `PML_Grading="1e9*D"` gives bit-identical probe files (its
+/// operator dump is unchanged too, for any expression, even one with
+/// unknown variables). ems ignores it as well, with a warning, and gives
+/// the same signals as without it.
+#[test]
+fn pml_grading_is_ignored() {
+    let (a, b) = ("adv_pml_grading", "adv_pml_vacuum");
+    for f in ["ut_a", "ut_c"] {
+        let rows = |c: &str| -> Vec<String> {
+            std::fs::read_to_string(fixture_dir(c).join(f))
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('%'))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(rows(a), rows(b), "{f}");
+    }
+    let path = fixture_dir(a).join("model.xml");
+    let sim = Simulation::from_xml(&path).unwrap();
+    assert!(
+        sim.warnings().iter().any(|w| w.contains("PML_Grading")),
+        "{:?}",
+        sim.warnings()
+    );
+    let (ra, rb) = (
+        run(a, &CompileOptions::default()),
+        run(b, &CompileOptions::default()),
+    );
+    for f in ["ut_a", "ut_c"] {
+        assert_eq!(ra.probe(f).unwrap().values(), rb.probe(f).unwrap().values());
+    }
+}
+
 // ------------------------------------------------------------ cylindrical grids
 
 // `CoordSystem="1"` grids with `CylinderCoords="1"` on `<FDTD>` (openEMS's
