@@ -240,9 +240,10 @@ impl FieldProbe {
 
 impl Operator for FieldProbe {
     fn hooks(&self) -> Hooks {
-        match self.sampler.quantity() {
-            DumpQuantity::E => Hooks::POST_E,
-            DumpQuantity::H => Hooks::POST_H,
+        if self.sampler.quantity().from_currents() {
+            Hooks::POST_H
+        } else {
+            Hooks::POST_E
         }
     }
 

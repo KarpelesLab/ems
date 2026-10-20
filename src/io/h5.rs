@@ -124,6 +124,12 @@ fn quantity_unit(q: DumpQuantity, freq: bool) -> &'static str {
         (DumpQuantity::H, false) => "A/m",
         (DumpQuantity::E, true) => "V*s/m",
         (DumpQuantity::H, true) => "A*s/m",
+        (DumpQuantity::J | DumpQuantity::RotH, false) => "A/m^2",
+        (DumpQuantity::J | DumpQuantity::RotH, true) => "A*s/m^2",
+        (DumpQuantity::D, false) => "C/m^2",
+        (DumpQuantity::D, true) => "C*s/m^2",
+        (DumpQuantity::B, false) => "T",
+        (DumpQuantity::B, true) => "T*s",
     }
 }
 
@@ -147,6 +153,7 @@ fn dump_header<S: WriteAt>(
         match s.position() {
             DumpPosition::Nodes => "nodes",
             DumpPosition::CellCenters => "cell_centers",
+            DumpPosition::Native => "native",
         },
     )?;
     root.set_attr("unit", quantity_unit(s.quantity(), freq))?;

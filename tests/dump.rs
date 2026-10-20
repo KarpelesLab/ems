@@ -100,8 +100,8 @@ fn node_rule_pos(g: &Grid, q: DumpQuantity, a: Axis, node: [usize; 3]) -> [f64; 
     Axis::ALL.map(|b| {
         let (i, n) = (node[b.index()], g.nodes()[b.index()]);
         let interp = match q {
-            DumpQuantity::E => a == b,
             DumpQuantity::H => a != b,
+            _ => a == b,
         };
         if interp && i == 0 {
             mid_mm(g, b, 0)
@@ -149,8 +149,8 @@ fn node_values_are_converted_and_interpolated() {
                     for a in Axis::ALL {
                         let p = node_rule_pos(&g, q, a, [i, j, k]);
                         let want = match q {
-                            DumpQuantity::E => e_field(a, p),
                             DumpQuantity::H => h_field(a, p),
+                            _ => e_field(a, p),
                         };
                         close(v[a.index()], want, &format!("{q:?}{a} at [{i},{j},{k}]"));
                     }
@@ -180,8 +180,8 @@ fn cell_centre_values_are_exact_for_linear_fields() {
                     ];
                     for a in Axis::ALL {
                         let want = match q {
-                            DumpQuantity::E => e_field(a, p),
                             DumpQuantity::H => h_field(a, p),
+                            _ => e_field(a, p),
                         };
                         close(
                             v[a.index()],

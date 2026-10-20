@@ -179,8 +179,8 @@ pub use conformal::{
 };
 pub use dispersive::{Dispersive, EdgePole, Pole};
 pub use dump::{
-    DumpPosition, DumpQuantity, DumpRegion, DumpSink, FieldSampler, FreqDump, MemorySink, Schedule,
-    Snapshot, TimeDump, VtrSeries,
+    DumpPosition, DumpQuantity, DumpRegion, DumpSink, DumpTiming, FieldSampler, FinalSample,
+    FreqDump, MemorySink, Schedule, Snapshot, TimeDump, VtrSeries,
 };
 pub use edge_dft::{CellBox, EdgeDft};
 pub use edge_material::EdgeMaterials;
