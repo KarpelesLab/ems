@@ -1237,43 +1237,93 @@ meshes), a linear gradient to the centre value (1e-12), the air rule and
 boundary cubes on a half-space and a one-voxel slab, results independent of
 the thread count.
 
-**openEMS methods** (`post::sar::AveragingMethod`; black-box openEMS v0.37,
-no source consulted). openEMS's in-run averaged dumps (DumpType 21/22) are
-identical to `sar_calc --method SIMPLE` on the raw dump (no DumpBox
-attribute selecting another method was found). Observed, with synthetic
-raw dumps fed to `sar_calc`:
+**openEMS methods** (`SarVolume::averaged_openems`, `post::sar::openems`,
+`post::sar::AveragingMethod`; black-box openEMS v0.37, no source
+consulted). openEMS's in-run averaged dumps (DumpType 21/22) are identical
+to `sar_calc --method SIMPLE` on the raw dump (no DumpBox attribute
+selecting another method was found). Identified with synthetic raw files
+fed to `sar_calc -e -v` (the `-e` cube mass and volume give each voxel's
+final cube side; a power gradient along one axis gives the cube's extent
+along it; the `-v` counters "invalid cubes case 1/2" separate the
+validity rules):
 
-- *Cubes.* Centred on the voxel centre, clipped by the domain; air
-  (`ρ = 0`) and the outside count as no mass; voxels are weighted by the
-  product of their per-axis overlap fractions (and the `Volume` dataset).
-  The average is the tissue power over the tissue mass of that cube.
-- *Size.* openEMS solves the cube size only to ±5 % of the mass (starting
-  from the analytic size `(m/ρ_voxel)^{1/3}`, at least two voxels wide,
-  then secant-type steps whose exact start for clipped cubes was not
-  identified), so its averages are exact where the first size is (uniform
-  tissue clear of air and of the boundary) and slightly off elsewhere.
-  ems solves the mass exactly.
-- *SIMPLE*: every tissue voxel gets its centred cube, whatever the air;
-  no cube of the mass → 0. *IEEE_C95_3*/*IEEE_62704*: a centred cube is
-  valid when inside the domain and, it seems, with no face in air (an air
-  pocket inside is allowed, 5 % air at a face is not); invalid voxels take
-  the maximum of the valid cubes overlapping (C95.3) or containing (62704)
-  them; 62704's remaining voxels use a cube with the voxel at a face. ems
-  implements SIMPLE with this rule and both IEEE methods with its own
-  procedure above.
-- Agreement (`tests/openems_sar_calc.rs`, `gen-sar.sh`): SIMPLE equal to
-  6e-8 on the voxels with an unclipped cube, within 1 % (tissue block) and
-  2.9 % (the 7×7×6-voxel `dump_sar` block, all cubes clipped) of the peak
-  elsewhere; same cube counts. IEEE_62704 on the block: same counts, 97 %
-  of the voxels equal.
+- *Weights.* A voxel inside a cube counts with the product of its
+  per-axis overlap fractions times its volume — in `sar_calc` the raw
+  file's `Volume` dataset (doubling it changes the cubes; its float32
+  rounding, 2.8e-8 low for 1 mm and 2 mm cells, makes a cube whose face
+  should lie exactly on a tissue boundary a little larger, which decides
+  that face's validity: `dump_sar`'s 18 such cubes are invalid). Outside
+  the domain counts as nothing, air (`ρ = 0`) as no mass and no power
+  (lossy air does not count). Quirk: a voxel the cube cuts on *both*
+  sides along an axis gets the square of that fraction (seen in the
+  reported volumes of cubes thinner than a 3 mm cell: `V = s²·3·(s/3)²`).
+- *Cube solver.* `s₀ = (m/ρ_v)^{1/3}`, `a = s₀/2`; `ρ̄ = M(a)/a³` (the
+  full geometric volume, also when clipped); `b = max((m/ρ̄)^{1/3},
+  2·min(Δx, Δy, Δz))`; then secant steps through the last two points
+  from `(a, M(a))`, `(b, M(b))` until `|M − m| ≤ tol·m`, `tol` = 5 %
+  (`SIMPLE`, `IEEE_C95_3`, inclusive, e.g. a first point at −4.55 % is
+  kept and the switch is at exactly −5 %) or 1e-6 (`IEEE_62704`). How it
+  was found: clipped uniform cubes give rational sides (`120/19` mm for a
+  6 mm cube 2.5 mm from the domain edge = the secant through the masses at
+  3 and 6 mm); a lone voxel of density `q` in uniform tissue gives a
+  first point accepted without iteration with `ρ̄ − 1 ∝ q(q−1)/8` (the
+  mean density of the half-size cube); thin lines of tissue (mass linear
+  in `s`) make every secant exact and expose the start points; the
+  anisotropic and sub-2-cell cases fixed the minimum (`2·min Δ`, the
+  squared fractions in the half-size cube).
+- *SIMPLE*: each tissue voxel gets the average (tissue power over tissue
+  mass) of its centred cube; no cube → 0 (counted unused).
+- *IEEE_C95_3 / IEEE_62704 validity* of a centred cube: inside the
+  domain, and no face entirely in air (the voxel layer containing the
+  face must hold a tissue voxel over the face's extent; 2 % of a face in
+  tissue suffices, an air pocket inside or a corner in air is fine);
+  `IEEE_62704` also rejects more than 10 % air (by volume, `1 −
+  V_tissue/s³`; random-density blobs separate cleanly at 0.0991 / 0.1006).
+  Invalid voxels take the maximum average of the valid cubes that
+  *overlap* them with positive volume (C95.3) or *contain* them entirely
+  (62704; touching counts). The rest (62704's "unused", also C95.3 where
+  no valid cube overlaps, e.g. thin slabs) take a face cube: the cube
+  extending from one of the voxel's six faces (`-e` type 1…6: +x from the
+  lower x face, −x from the upper one, …), centred across, solved with
+  the method's tolerance; 62704 takes, among those whose volume within the
+  domain is at most 1.05 × the smallest, the largest average (4064 voxels
+  of random blocks: 0 mismatches; air fraction, side or air volume do not
+  separate); C95.3 the smallest volume.
+- *Counts* (`@valid/used/unused/air_cubes`): own valid cube / maximum of
+  others / face cube or none / not tissue. `maxSAR_idx`: the f32 maximum,
+  first centred cube among equal values.
+- *Auto range* (`-a N`): the output holds only the cells of the bounding
+  box of the tissue cells with local SAR ≥ `10^{−N/10}` × the peak local
+  SAR (at any frequency), widened by `(m/ρ_min)^{1/3}/2` (lightest
+  tissue) and extended to the cells holding the widened faces (Mesh and
+  datasets cropped, counts and peak over the box; FD `@autorange`,
+  `@autorange_padding`, `f%d@autorange_threshold`); the averages see the
+  whole domain (equal to the cropped full computation, also the IEEE
+  coverage). A threshold above the averaged peak prints openEMS's
+  warning.
+- *Agreement* (`tests/openems_sar_calc.rs` replays every `sar_calc`
+  command of the fixtures, `gen-sar.sh`): every file equal to float
+  precision (data ≤ 1e-6 of the peak, 2e-6 for 62704 whose cube masses
+  agree to its 1e-6 tolerance) on `dump_sar` (2 mm cells, 1 g, all cubes
+  clipped, touching faces; before: SIMPLE 2.9 %, IEEE up to 78 % of the
+  peak), the uniform block (before: 1 %) and `sar_calc_synth` (graded
+  mesh, random density and irregular tissue with each method, light and
+  heavy masses, `-a`; a thin slab of face cubes; 1×1×3 mm cells). Known
+  differences: C95.3 face cubes of equal volume (openEMS orders them by
+  its rounding; 16 of 294 voxels on `dump_sar`); cubes below ~0.85 cell
+  (not identified, the squared fractions make the mass non-monotonic);
+  on graded meshes the C95.3/62704 validity of some cubes of about two
+  cells (openEMS rejects ~10 % more although their faces touch tissue;
+  not identified).
 
 `io::openems::sar_calc` and the binary `ems-sar-calc` (feature `hdf5`) take
-`sar_calc`'s command line (`-i -o -m --method -n -v -e
---legacyHDF5Dumps`; `-a` is not supported) and write its output layout:
+`sar_calc`'s command line (`-i -o -m --method -a -n -v -e
+--legacyHDF5Dumps`) and write its output layout:
 root `@mass`, `@proc_time`; `/Mesh` copied; `/FieldData/FD` with
 `@frequency` (f32), the cube counts and `f%d` (f32, `@maxSAR`,
-`@maxSAR_idx`, `@power`); `-e` adds `f0_Cube{Mass,Type,Vol}`; the legacy
-layout is `[nz, ny, nx]` with `@legacy_fmt`.
+`@maxSAR_idx`, `@power`); `-e` adds `f0_Cube{Mass,Type,Vol}`; `-a` the
+auto-range attributes; the legacy layout is `[nz, ny, nx]` with
+`@legacy_fmt`.
 
 ### 5.13 Conformal PEC
 
@@ -2053,7 +2103,8 @@ regeneration script and test file:
 - the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`;
 - the `nf2ff` tool (`nf2ff_*`, §5.10): `gen-nf2ff.sh`,
   `tests/openems_nf2ff.rs`;
-- the `sar_calc` tool (`sar_calc_*`, §5.12): `gen-sar.sh`,
+- the `sar_calc` tool (`sar_calc_*`: openEMS's raw dump, synthetic raw
+  files of `sar-synth.py`, §5.12): `gen-sar.sh`,
   `tests/openems_sar_calc.rs`;
 - the XML feature-coverage sweep (§5.16.3, `sweep_*`): `gen-sweep.sh`,
   `tests/openems_sweep.rs`.
@@ -2623,10 +2674,8 @@ zlib-compressed binary arrays, time steps `_%010d`, frequency files
 H `(n+½)·dt`, intervals `⌊N/OverSampling⌋` and `min(N, ⌊1/(2f·dt)⌋)`,
 FD normalisation `2·Σ x·e^{−jωt}·K·dt`, start/stop window, the step after
 the last one); dump types J, rot H, D and B are implemented. ems output
-agrees with the fixtures to ≲ 1e-6 relative (float32), except mass-averaged
-SAR where the averaging cube is clipped by air or the box (method `SIMPLE`
-as openEMS, but openEMS's cube size is only solved to ±5 % of the mass,
-§5.12: 2.9 % of the peak on `dump_sar`).
+agrees with the fixtures to ≲ 1e-6 relative (float32), mass-averaged SAR
+included (openEMS's `SIMPLE` cube solver, §5.12).
 The module docs hold the full description.
 
 ### 7.2 The `ems` command-line program (openEMS drop-in)
@@ -2944,8 +2993,9 @@ Remaining:
 - From the sweep: openEMS's polyhedron and polygon-vertex surface ties,
   tie round-off (csx tolerance), σ_m averaging, current probes exactly
   between lines.
-- SAR averaging where cubes reach air or the domain edge (SIMPLE within
-  ~3 %, IEEE validity rules partly reproduced), `sar_calc -a`; parallel
+- SAR averaging: cubes smaller than about 0.85 cell, the IEEE validity
+  of some cubes of about two cells on graded meshes, and openEMS choices
+  decided by its rounding (§5.12); parallel
   R‖L with an excitation on graded meshes (0.6–3 %); the cylindrical axis
   E_z update and multigrid (ems keeps its own, more accurate, schemes).
 - On cylindrical grids: mass-averaged SAR, thin conformal sheets, oblique
