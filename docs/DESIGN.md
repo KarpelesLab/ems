@@ -1272,12 +1272,13 @@ cubes nor of constant physical size (at `u` = 1 mm and ρ = 20 mm, a
 1 g cube spans about 20 α cells of 0.2 mm "width"). Its `sar_calc` output
 of a cylindrical dump has a Cartesian `/Mesh` (`x, y, z` = the raw `rho`,
 `alpha`, `z`, `@mesh_type` 0). ems reproduces this for openEMS files
-(`SarVolume::openems_cylindrical`: the Cartesian view with the power and
-density per cell scaled by `V/(w_ρ·w_α·w_z)`, so masses and powers are
-openEMS's; used by the in-run dumps of `io::openems::dump` and by
-`ems-sar-calc` on cylindrical raw dumps): the 1 g dump within 0.93 % of
-openEMS's peak, `ems-sar-calc` on openEMS's raw file within 1.06 %
-(openEMS's ±5 % cube mass, as on Cartesian cells). Rust-built models
+(the widths stacked from 0 as Cartesian lines, `SarVolume::with_cell_volumes`
+with openEMS's volumes, then openEMS's averaging `averaged_openems`; used
+by the in-run dumps of `io::openems::dump` and by `ems-sar-calc` on
+cylindrical raw dumps): `ems-sar-calc` on openEMS's raw file equals
+openEMS's 1 g file to 5e-8 of the peak; ems's own in-run 1 g dump is
+within 4.5e-3, the field difference of the two codes on that model (as
+its local SAR). Rust-built models
 (`SarResult::field`) use ems's physical cubes.
 
 **Output.** `SarField`: per-voxel values plus how each was obtained
