@@ -13,6 +13,8 @@
 
 use super::fields::{Block, FieldStore, read, write};
 use super::rows::CoeffRows;
+use super::run::EnergyMeasure;
+use crate::constants::{EPS0, MU0};
 
 /// Rounds subnormal results to zero (`|x| ≲ 2^-126`), keeping normal
 /// values (absolute error ≤ 2^-126).
@@ -53,7 +55,8 @@ fn weight(a: f32, p: f64, b: f32) -> f64 {
 
 /// [`h_row`] that also returns the row's share of the leapfrog energy
 /// invariant, `Σ (1 + da)/db · h_old · h_new` (entries with `db = 0`
-/// skipped), and writes the new values only if `COMMIT`.
+/// skipped), or with `OE` of openEMS's measure `Σ h_new²` (every entry),
+/// and writes the new values only if `COMMIT`.
 ///
 /// `h_new` is computed by exactly the same expression as in [`h_row`], so
 /// the committed values are bit-identical to a plain update. The sum uses
@@ -62,7 +65,7 @@ fn weight(a: f32, p: f64, b: f32) -> f64 {
 /// the accumulators map onto one vector.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-fn h_row_energy<const COMMIT: bool>(
+fn h_row_energy<const COMMIT: bool, const OE: bool>(
     h: &mut [f32],
     da: &[f32],
     db: &[f32],
@@ -77,7 +80,11 @@ fn h_row_energy<const COMMIT: bool>(
     let mut one = |k: usize, acc: &mut f64| {
         let old = h[k];
         let new = flush(da[k] * old - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
-        *acc += weight(da[k], old as f64 * new as f64, db[k]);
+        *acc += if OE {
+            new as f64 * new as f64
+        } else {
+            weight(da[k], old as f64 * new as f64, db[k])
+        };
         if COMMIT {
             h[k] = new;
         }
@@ -97,7 +104,7 @@ fn h_row_energy<const COMMIT: bool>(
 /// One H row, plain ([`h_row`], returns 0) or with energy
 /// ([`h_row_energy`]).
 #[inline(always)]
-fn hrow<const ENERGY: bool, const COMMIT: bool>(
+fn hrow<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     h: &mut [f32],
     da: &[f32],
     db: &[f32],
@@ -107,7 +114,7 @@ fn hrow<const ENERGY: bool, const COMMIT: bool>(
     d: &[f32],
 ) -> f64 {
     if ENERGY {
-        h_row_energy::<COMMIT>(h, da, db, a, b, c, d)
+        h_row_energy::<COMMIT, OE>(h, da, db, a, b, c, d)
     } else {
         h_row(h, da, db, a, b, c, d);
         0.0
@@ -115,11 +122,12 @@ fn hrow<const ENERGY: bool, const COMMIT: bool>(
 }
 
 /// Adds `(1 + ca)/cb · u²` of one row to the plane accumulators,
-/// skipping `cb = 0` (PEC and padding edges). Entry `k` of the row has
+/// skipping `cb = 0` (PEC and padding edges), or with `OE` plain `u²`
+/// (every edge). Entry `k` of the row has
 /// in-plane index `r + k` and goes to accumulator `(r + k) & 3`, so a plane
 /// fed row by row in order sums in a fixed order.
 #[allow(clippy::needless_range_loop)]
-fn e_energy_row(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f32], cb: &[f32]) {
+fn e_energy_row<const OE: bool>(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f32], cb: &[f32]) {
     let n = u.len();
     let (ca, cb) = (&ca[..n], &cb[..n]);
     // `loc[l]` is accumulator `(r + l) & 3`, so entry k adds to `loc[k & 3]`.
@@ -127,7 +135,11 @@ fn e_energy_row(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f32], cb: &[f32])
     let mut loc: [f64; 4] = core::array::from_fn(|l| acc[(s + l) & 3]);
     let one = |k: usize, acc: &mut f64| {
         let x = u[k] as f64;
-        *acc += weight(ca[k], x * x, cb[k]);
+        *acc += if OE {
+            x * x
+        } else {
+            weight(ca[k], x * x, cb[k])
+        };
     };
     let full = n & !3;
     for k0 in (0..full).step_by(4) {
@@ -161,7 +173,7 @@ fn plane(v: &[f32], local: usize, p: usize) -> &[f32] {
 /// Faraday update of all H dual edges in the x-planes of slab `s`:
 /// `i ← da·i − db·∮u` around the primary face each dual edge pierces.
 pub(crate) fn update_h_slab(store: &FieldStore, co: &CoeffRows<'_>, s: usize) {
-    h_slab::<false, true>(store, co, s, &mut |_, _| {});
+    h_slab::<false, true, false>(store, co, s, &mut |_, _| {});
 }
 
 /// [`update_h_slab`] that also evaluates, for every x-plane `gi` of the
@@ -175,16 +187,24 @@ pub(crate) fn update_h_slab(store: &FieldStore, co: &CoeffRows<'_>, s: usize) {
 /// and passes it to `sink(gi, value)`. Each plane's value is summed in a
 /// fixed order, independent of the slab partition. With `COMMIT = false`
 /// the currents are left unchanged (read-only evaluation of `i^{n+½}`).
+///
+/// With [`EnergyMeasure::OpenEms`] the plane value is instead openEMS's
+/// measure `ε0·Σ (u^n)² + μ0·Σ (i^{n+½})²` over every edge \[J/m\] (see
+/// [`EnergyMeasure`]).
 pub(crate) fn energy_h_slab<const COMMIT: bool>(
     store: &FieldStore,
     co: &CoeffRows<'_>,
     s: usize,
+    measure: EnergyMeasure,
     sink: &mut dyn FnMut(usize, f64),
 ) {
-    h_slab::<true, COMMIT>(store, co, s, sink);
+    match measure {
+        EnergyMeasure::Invariant => h_slab::<true, COMMIT, false>(store, co, s, sink),
+        EnergyMeasure::OpenEms => h_slab::<true, COMMIT, true>(store, co, s, sink),
+    }
 }
 
-fn h_slab<const ENERGY: bool, const COMMIT: bool>(
+fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     store: &FieldStore,
     co: &CoeffRows<'_>,
     s: usize,
@@ -213,7 +233,7 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
         let m = nz - 1;
         for j in 0..ny - 1 {
             let r = j * nz;
-            wh += hrow::<ENERGY, COMMIT>(
+            wh += hrow::<ENERGY, COMMIT, OE>(
                 &mut ix[r..r + m],
                 co.row(6, gi, j),
                 co.row(9, gi, j),
@@ -235,7 +255,7 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
             // y: curl_y = (ux[k+1] − ux[k]) − (uz[i+1] − uz[i]).
             for j in 0..ny {
                 let r = j * nz;
-                wh += hrow::<ENERGY, COMMIT>(
+                wh += hrow::<ENERGY, COMMIT, OE>(
                     &mut iy[r..r + m],
                     co.row(7, gi, j),
                     co.row(10, gi, j),
@@ -248,7 +268,7 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
             // z: curl_z = (uy[i+1] − uy[i]) − (ux[j+1] − ux[j]).
             for j in 0..ny - 1 {
                 let r = j * nz;
-                wh += hrow::<ENERGY, COMMIT>(
+                wh += hrow::<ENERGY, COMMIT, OE>(
                     &mut iz[r..r + nz],
                     co.row(8, gi, j),
                     co.row(11, gi, j),
@@ -266,11 +286,11 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool>(
                 for j in 0..ny {
                     let r = j * nz;
                     let (ca, cb) = (co.row(a, gi, j), co.row(3 + a, gi, j));
-                    e_energy_row(&mut acc, r, &uc[r..r + nz], ca, cb);
+                    e_energy_row::<OE>(&mut acc, r, &uc[r..r + nz], ca, cb);
                 }
                 we += (acc[0] + acc[1]) + (acc[2] + acc[3]);
             }
-            sink(gi, we + wh);
+            sink(gi, if OE { EPS0 * we + MU0 * wh } else { we + wh });
         }
     }
 }

@@ -196,7 +196,7 @@ pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
 pub use planewave::{PlaneWave, PlaneWaveSpec};
 pub use port::LumpedPort;
 pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
-pub use run::{Progress, RunLimits, RunOutcome, StopReason};
+pub use run::{EnergyMeasure, Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 pub use timestep::TimestepMethod;
@@ -584,7 +584,32 @@ impl Engine {
     ///
     /// The result is bit-identical for any thread count.
     pub fn energy(&self) -> f64 {
-        self.shared.current_energy(self.dt) + self.operator_energy()
+        self.shared
+            .current_energy(self.dt, EnergyMeasure::Invariant)
+            + self.operator_energy()
+    }
+
+    /// The energy measure openEMS uses for its end criteria \[J/m\],
+    /// [`EnergyMeasure::OpenEms`]: `ε0·Σ (u^n)² + μ0·Σ (i^{n+½})²` over
+    /// every edge, with no material or cell-size weighting and no operator
+    /// state; `i^{n+½}` is evaluated as in [`energy`](Self::energy). Not
+    /// conserved on graded meshes or in media, but it is what openEMS
+    /// compares against its end criterion (established by black-box
+    /// comparison, design §5.16.1).
+    pub fn energy_openems(&self) -> f64 {
+        self.shared.current_energy(self.dt, EnergyMeasure::OpenEms)
+    }
+
+    /// The energy of the current state in `measure`
+    /// ([`energy`](Self::energy) or [`energy_openems`](Self::energy_openems)),
+    /// evaluated by all engine threads in parallel (bit-identical to the
+    /// serial forms).
+    pub fn energy_in(&mut self, measure: EnergyMeasure) -> f64 {
+        let w = pool::energy(self.pool.as_mut(), &self.shared, self.dt, measure);
+        match measure {
+            EnergyMeasure::Invariant => w + self.operator_energy(),
+            EnergyMeasure::OpenEms => w,
+        }
     }
 
     /// Sum of [`Operator::energy`] over the registered operators, in

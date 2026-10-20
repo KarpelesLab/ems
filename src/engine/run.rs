@@ -40,6 +40,25 @@ pub struct RunLimits {
     /// `false`). This is openEMS's schedule: with `K` its Nyquist interval
     /// the run stops after a multiple of `K` steps.
     pub check_after_interval: bool,
+    /// The energy the criterion compares (default
+    /// [`EnergyMeasure::Invariant`]).
+    pub energy_measure: EnergyMeasure,
+}
+
+/// What the energy end criterion measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum EnergyMeasure {
+    /// The leapfrog energy invariant [`Engine::energy`] (fields weighted
+    /// by their edge capacitances and inductances, plus operator state).
+    #[default]
+    Invariant,
+    /// openEMS's measure [`Engine::energy_openems`]:
+    /// `ε0·Σ u² + μ0·Σ i²` over every edge, unweighted, with `u` at `n·dt`
+    /// and `i` at `(n + ½)·dt`. It is evaluated on the state (an extra
+    /// read-only H pass) also without
+    /// [`check_after_interval`](RunLimits::check_after_interval).
+    OpenEms,
 }
 
 impl RunLimits {
@@ -50,7 +69,14 @@ impl RunLimits {
             end_criteria: None,
             excitation_end: None,
             check_after_interval: false,
+            energy_measure: EnergyMeasure::Invariant,
         }
+    }
+
+    /// Builder: sets [`energy_measure`](Self::energy_measure).
+    pub fn energy_measure(mut self, m: EnergyMeasure) -> Self {
+        self.energy_measure = m;
+        self
     }
 
     /// Builder: sets [`check_after_interval`](Self::check_after_interval).
@@ -224,9 +250,10 @@ pub(crate) trait Stepper {
     fn step_with_energy(&mut self) -> f64;
     /// `n` steps without energy evaluation.
     fn run(&mut self, n: u64);
-    /// The energy invariant of the current state without stepping, if the
-    /// stepper supports it.
-    fn energy_now(&mut self) -> Option<f64> {
+    /// The energy of the current state in `measure` without stepping, if
+    /// the stepper supports it.
+    fn energy_now(&mut self, measure: EnergyMeasure) -> Option<f64> {
+        let _ = measure;
         None
     }
 }
@@ -250,8 +277,8 @@ impl Stepper for Engine {
     fn run(&mut self, n: u64) {
         Engine::run(self, n);
     }
-    fn energy_now(&mut self) -> Option<f64> {
-        Some(Engine::energy(self))
+    fn energy_now(&mut self, measure: EnergyMeasure) -> Option<f64> {
+        Some(self.energy_in(measure))
     }
 }
 
@@ -267,7 +294,11 @@ where
     let cells = s.cells();
     let start = Instant::now();
     let (mut steps, mut w, mut w_max) = (0u64, 0.0f64, 0.0f64);
-    let after = limits.check_after_interval && s.energy_now().is_some();
+    // The openEMS measure needs the state's own evaluation.
+    let measure = limits.energy_measure;
+    let supported = s.energy_now(measure).is_some();
+    let after = limits.check_after_interval && supported;
+    let before = !after && measure != EnergyMeasure::Invariant && supported;
     let reason = loop {
         if steps >= max {
             break StopReason::MaxTimesteps;
@@ -281,7 +312,12 @@ where
                 continue;
             }
             n = s.timestep();
-            w = s.energy_now().expect("checked above");
+            w = s.energy_now(measure).expect("checked above");
+        } else if before {
+            n = s.timestep();
+            w = s.energy_now(measure).expect("checked above");
+            s.run(1);
+            steps += 1;
         } else {
             n = s.timestep();
             w = s.step_with_energy();

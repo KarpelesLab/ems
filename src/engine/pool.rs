@@ -17,6 +17,7 @@ use super::coeffs::Coefficients;
 use super::fields::{FieldStore, read, write};
 use super::kernel::{energy_h_slab, update_e_slab, update_h_slab};
 use super::rows::KernelCoeffs;
+use super::run::EnergyMeasure;
 use super::slab::{SlabContext, SlabHooks, SlabMut, SlabRef};
 
 /// The slab hooks of all registered operators, in registration order.
@@ -56,6 +57,8 @@ pub(crate) struct Shared {
     energy_first: AtomicBool,
     gap_a: AtomicBool,
     gap_b: AtomicBool,
+    /// Measure of a [`CMD_ENERGY`] phase (`true`: openEMS).
+    energy_oe: AtomicBool,
 }
 
 /// Where the caller must stop the workers to run serial hooks.
@@ -92,6 +95,8 @@ pub(crate) enum Gap {
 
 const CMD_EXIT: u8 = 0;
 const CMD_RUN: u8 = 1;
+/// Evaluate the energy of the current state on every slab (read-only).
+const CMD_ENERGY: u8 = 2;
 
 impl Shared {
     pub(crate) fn new(store: FieldStore, coeffs: Coefficients, threads: usize) -> Self {
@@ -115,6 +120,7 @@ impl Shared {
             energy_first: AtomicBool::new(false),
             gap_a: AtomicBool::new(false),
             gap_b: AtomicBool::new(false),
+            energy_oe: AtomicBool::new(false),
         }
     }
 
@@ -162,9 +168,15 @@ impl Shared {
         let kc = read(&self.kernel);
         let rows = kc.view(&co);
         if energy {
-            energy_h_slab::<true>(&self.store, &rows, s, &mut |gi, w| {
-                self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
-            });
+            energy_h_slab::<true>(
+                &self.store,
+                &rows,
+                s,
+                EnergyMeasure::Invariant,
+                &mut |gi, w| {
+                    self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
+                },
+            );
         } else {
             update_h_slab(&self.store, &rows, s);
         }
@@ -239,27 +251,72 @@ impl Shared {
     /// per-plane sums combined in plane order (independent of the
     /// partition), times `dt/4`.
     pub(crate) fn recorded_energy(&self, dt: f64) -> f64 {
-        let s: f64 = self
-            .plane_energy
-            .iter()
-            .map(|w| f64::from_bits(w.load(Ordering::Relaxed)))
-            .sum();
-        0.25 * dt * s
+        self.plane_sum(dt, EnergyMeasure::Invariant)
     }
 
-    /// The energy invariant of the current state without changing it
+    /// The energy of the current state without changing it, in `measure`
     /// (calling thread only; the workers must be idle).
-    pub(crate) fn current_energy(&self, dt: f64) -> f64 {
+    pub(crate) fn current_energy(&self, dt: f64, measure: EnergyMeasure) -> f64 {
         self.refresh_kernel();
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
         let rows = kc.view(&co);
         let mut planes = vec![0.0f64; self.store.layout.n[0]];
         for s in 0..self.store.layout.slabs() {
-            energy_h_slab::<false>(&self.store, &rows, s, &mut |gi, w| planes[gi] = w);
+            energy_h_slab::<false>(&self.store, &rows, s, measure, &mut |gi, w| planes[gi] = w);
         }
-        0.25 * dt * planes.iter().sum::<f64>()
+        scale_energy(planes.iter().sum::<f64>(), dt, measure)
     }
+
+    /// Records the energy share of slab `s` of the current state in
+    /// `plane_energy` (read-only pass).
+    fn energy_slab(&self, s: usize, measure: EnergyMeasure) {
+        let co = read(&self.coeffs);
+        let kc = read(&self.kernel);
+        let rows = kc.view(&co);
+        energy_h_slab::<false>(&self.store, &rows, s, measure, &mut |gi, w| {
+            self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    /// The per-plane sums of `plane_energy` in plane order, scaled for
+    /// `measure`.
+    fn plane_sum(&self, dt: f64, measure: EnergyMeasure) -> f64 {
+        let s: f64 = self
+            .plane_energy
+            .iter()
+            .map(|w| f64::from_bits(w.load(Ordering::Relaxed)))
+            .sum();
+        scale_energy(s, dt, measure)
+    }
+}
+
+/// The kernel's plane sums are in units of `dt/4` for the invariant and
+/// final for openEMS's measure.
+fn scale_energy(sum: f64, dt: f64, measure: EnergyMeasure) -> f64 {
+    match measure {
+        EnergyMeasure::Invariant => 0.25 * dt * sum,
+        EnergyMeasure::OpenEms => sum,
+    }
+}
+
+/// [`Shared::current_energy`] evaluated by all threads, each on its own
+/// slab (the same per-plane sums in the same order: bit-identical to the
+/// serial evaluation).
+pub(crate) fn energy(pool: Option<&mut Pool>, sh: &Shared, dt: f64, measure: EnergyMeasure) -> f64 {
+    let Some(p) = pool else {
+        return sh.current_energy(dt, measure);
+    };
+    sh.refresh_kernel();
+    p.busy = true;
+    sh.energy_oe
+        .store(measure == EnergyMeasure::OpenEms, Ordering::Relaxed);
+    sh.cmd.store(CMD_ENERGY, Ordering::Release);
+    sh.barrier.wait();
+    sh.energy_slab(0, measure);
+    sh.barrier.wait();
+    p.busy = false;
+    sh.plane_sum(dt, measure)
 }
 
 /// Sense-free generation barrier: spins briefly (cheap for the short
@@ -360,8 +417,19 @@ impl StartGate {
 fn worker(sh: Arc<Shared>, s: usize) {
     loop {
         sh.barrier.wait();
-        if sh.cmd.load(Ordering::Acquire) != CMD_RUN {
-            return;
+        match sh.cmd.load(Ordering::Acquire) {
+            CMD_RUN => {}
+            CMD_ENERGY => {
+                let m = if sh.energy_oe.load(Ordering::Relaxed) {
+                    EnergyMeasure::OpenEms
+                } else {
+                    EnergyMeasure::Invariant
+                };
+                sh.energy_slab(s, m);
+                sh.barrier.wait();
+                continue;
+            }
+            _ => return,
         }
         let p = sh.plan();
         let ops = read(&sh.slab_ops).clone();

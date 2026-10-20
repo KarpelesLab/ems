@@ -19,7 +19,7 @@ use crate::compile::{BoundaryHandles, CompileOptions, Compiled, ModelSources, No
 use crate::engine::boundary::periodic::{BlochCoupling, BlochStepper};
 use crate::engine::run::drive;
 use crate::engine::{
-    BlochPair, EdgeSource, Engine, FreqDump, Grid, LumpedElement, OperatorHandle,
+    BlochPair, EdgeSource, EnergyMeasure, Engine, FreqDump, Grid, LumpedElement, OperatorHandle,
     PeriodicPlaneWave, PlaneWave, Progress, RunLimits, RunOutcome, TimeDump, WavePart,
 };
 use crate::fdtd::Fdtd;
@@ -605,7 +605,8 @@ impl Simulation {
             let k = self.fdtd.openems_nyquist_interval(dt);
             return RunLimits::new(self.fdtd.timestep_limit(dt))
                 .end_criteria(self.fdtd.get_end_criteria().map(|c| c.check_interval(k)))
-                .check_after_interval(true);
+                .check_after_interval(true)
+                .energy_measure(EnergyMeasure::OpenEms);
         }
         RunLimits::new(self.fdtd.timestep_limit(dt))
             .end_criteria(self.fdtd.get_end_criteria().copied())
