@@ -231,8 +231,12 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
     if opts.verbose > 0 {
         println!("Reading the openEMS file {} ...", file.display());
     }
-    let mut doc = csx::OpenEmsDocument::read_file(file)
+    // openEMS's reading rules (boundary names, DumpMode default, ...).
+    let (mut doc, read_warnings) = ems::io::openems::read_model(file)
         .map_err(|err| format!("cannot load {}: {err}", file.display()))?;
+    for w in &read_warnings {
+        eprintln!("Warning: {w}");
+    }
     // --disable-dumps: the dumps are not compiled, but their boxes are
     // still reported (as openEMS does), from a model of the grid and the
     // dumps only.

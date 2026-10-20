@@ -40,9 +40,11 @@ impl Fdtd {
 }
 
 impl Simulation {
-    /// Reads the openEMS XML file at `path` (via
-    /// [`OpenEmsDocument::read_file`]) and compiles it; see
-    /// [`from_document`](Self::from_document).
+    /// Reads the openEMS XML file at `path` with openEMS's reading rules
+    /// ([`read_model`](crate::io::openems::read_model): boundary names,
+    /// `DumpMode` default, anisotropic lists, probe boxes) and compiles
+    /// it; see [`from_document`](Self::from_document). The warnings of the
+    /// reading rules come first in [`warnings`](Self::warnings).
     ///
     /// ```no_run
     /// let mut sim = ems::Simulation::from_xml("patch.xml")?;
@@ -57,19 +59,27 @@ impl Simulation {
     /// I/O and XML parse errors ([`Error::Csx`](crate::Error::Csx)) and
     /// those of [`from_document`](Self::from_document).
     pub fn from_xml(path: impl AsRef<Path>) -> Result<Self> {
-        let doc = OpenEmsDocument::read_file(path)?;
-        Self::from_document(&doc)
+        let (doc, w) = crate::io::openems::read_model(path)?;
+        Ok(Self::from_document(&doc)?.with_leading_warnings(w))
     }
 
-    /// Parses an openEMS XML document from a string and compiles it; see
-    /// [`from_document`](Self::from_document).
+    /// Parses an openEMS XML document from a string with openEMS's
+    /// reading rules ([`parse_model`](crate::io::openems::parse_model))
+    /// and compiles it; see [`from_xml`](Self::from_xml).
     ///
     /// # Errors
     /// XML parse errors ([`Error::Csx`](crate::Error::Csx)) and those of
     /// [`from_document`](Self::from_document).
     pub fn from_xml_str(xml: &str) -> Result<Self> {
-        let doc = OpenEmsDocument::from_xml_str(xml)?;
-        Self::from_document(&doc)
+        let (doc, w) = crate::io::openems::parse_model(xml)?;
+        Ok(Self::from_document(&doc)?.with_leading_warnings(w))
+    }
+
+    /// Puts `w` in front of the warnings.
+    fn with_leading_warnings(mut self, mut w: Vec<String>) -> Self {
+        w.append(&mut self.warnings);
+        self.warnings = w;
+        self
     }
 
     /// Compiles a parsed openEMS document with the default

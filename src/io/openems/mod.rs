@@ -19,6 +19,9 @@
 //! * [`signal`]: the excitation signal files `et` / `ht` and the signal
 //!   length openEMS reports.
 //! * [`stats`]: the `--dump-statistics` files.
+//! * `model` (feature `xml`): reading model files with openEMS's reading
+//!   rules (boundary names, `DumpMode` default, anisotropic lists, probe
+//!   boxes), `read_model`.
 //! * [`debug`]: the `--debug-material`, `--debug-operator`, `--debug-PEC`
 //!   and `--debug-boxes` files.
 //!
@@ -27,6 +30,8 @@
 
 pub mod debug;
 pub mod dump;
+#[cfg(feature = "xml")]
+pub mod model;
 #[cfg(feature = "hdf5")]
 pub mod nf2ff;
 pub mod probes;
@@ -35,6 +40,8 @@ pub mod sar_calc;
 pub mod signal;
 pub mod stats;
 
+#[cfg(feature = "xml")]
+pub use model::{parse_model, read_model};
 pub use probes::{
     ProbeDomain, ProbeFile, ProbeFileKind, read_probe_file, write_probe, write_probes,
 };
