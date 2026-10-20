@@ -795,7 +795,7 @@ impl Engine {
             let mg_e = multigrid.as_ref().filter(|_| post_e);
             let mg_h = multigrid.as_ref().filter(|_| mid);
             if let Some(p) = periodic {
-                p.merge(&mut f, &co);
+                p.merge_cached(&mut f, &co, shared.coeff_gen());
             }
             if let Some(a) = axis {
                 a.merge(&mut f, &co);
@@ -818,7 +818,7 @@ impl Engine {
             }
             if post_e_ops {
                 if let Some(p) = periodic {
-                    p.merge(&mut f, &co);
+                    p.merge_cached(&mut f, &co, shared.coeff_gen());
                 }
                 if let Some(a) = axis {
                     a.merge(&mut f, &co);

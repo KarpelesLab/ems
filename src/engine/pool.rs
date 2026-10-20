@@ -40,6 +40,9 @@ pub(crate) struct Shared {
     kernel: RwLock<KernelCoeffs>,
     /// Set when `coeffs` may have been modified since `kernel` was built.
     kernel_stale: AtomicBool,
+    /// Incremented whenever `coeffs` may have been modified (caches keyed
+    /// on the coefficients, e.g. the periodic merge table).
+    coeff_gen: AtomicU64,
     threads: usize,
     /// Zero plane (`ny·nz`) for out-of-domain neighbours.
     pub(crate) zero: Vec<f32>,
@@ -108,6 +111,7 @@ impl Shared {
             coeffs: RwLock::new(coeffs),
             kernel: RwLock::new(kernel),
             kernel_stale: AtomicBool::new(false),
+            coeff_gen: AtomicU64::new(0),
             threads,
             zero,
             slab_ops: RwLock::new(SlabOps::default()),
@@ -127,6 +131,12 @@ impl Shared {
     /// to `coeffs`).
     pub(crate) fn coeffs_changed(&self) {
         self.kernel_stale.store(true, Ordering::Relaxed);
+        self.coeff_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The coefficient generation (see `coeff_gen`).
+    pub(crate) fn coeff_gen(&self) -> u64 {
+        self.coeff_gen.load(Ordering::Relaxed)
     }
 
     /// Rebuilds the kernel view if stale (workers idle).

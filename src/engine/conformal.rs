@@ -275,7 +275,7 @@ type Stencil = Vec<(Key, [usize; 3], f64)>;
 
 /// A circulation term at a located field position: `(axis, (slab,
 /// offset), weight)`.
-type FlatTerm = (usize, (usize, usize), f64);
+type FlatTerm = (Axis, (usize, usize), f64);
 
 impl ConformalPec {
     /// Empty geometry with default options.
@@ -1388,7 +1388,7 @@ pub struct MergedFaces {
     /// Field positions of the circulation terms (per group: axis, slab,
     /// offset, weight) and of the driven faces, filled on first use.
     flat_terms: Vec<Vec<FlatTerm>>,
-    flat_faces: Vec<(usize, (usize, usize))>,
+    flat_faces: Vec<(Axis, (usize, usize))>,
     /// CPML corrections of merged faces in absorbing layers.
     pml: Vec<PmlTerm>,
 }
@@ -1445,24 +1445,21 @@ impl MergedFaces {
             .map(|g| {
                 g.terms
                     .iter()
-                    .map(|&(a, p, w)| (a.index(), f.u.locate(p), w))
+                    .map(|&(a, p, w)| (a, f.u.layout().locate(p), w))
                     .collect()
             })
             .collect();
         self.flat_faces = self
             .faces
             .iter()
-            .map(|(a, p, _)| (a.index(), f.i.locate(*p)))
+            .map(|(a, p, _)| (*a, f.i.layout().locate(*p)))
             .collect();
     }
 
     fn circulations(&mut self, f: &Fields<'_>) {
         self.locate(f);
         for (c, t) in self.circ.iter_mut().zip(&self.flat_terms) {
-            *c = t
-                .iter()
-                .map(|&(a, at, w)| w * f.u.get_at(a, at) as f64)
-                .sum();
+            *c = t.iter().map(|&(a, at, w)| w * f.u.at(a, at) as f64).sum();
         }
     }
 
@@ -1496,11 +1493,14 @@ impl Operator for MergedFaces {
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         self.circulations(f);
         for t in &mut self.pml {
-            let at = *t
-                .at
-                .get_or_insert_with(|| [f.u.locate(t.nodes[0]), f.u.locate(t.nodes[1])]);
-            let o = t.other.index();
-            let d = t.sign * (f.u.get_at(o, at[0]) as f64 - f.u.get_at(o, at[1]) as f64);
+            let at = *t.at.get_or_insert_with(|| {
+                [
+                    f.u.layout().locate(t.nodes[0]),
+                    f.u.layout().locate(t.nodes[1]),
+                ]
+            });
+            let o = t.other;
+            let d = t.sign * (f.u.at(o, at[0]) as f64 - f.u.at(o, at[1]) as f64);
             t.psi = t.b * t.psi + t.a * d;
             self.circ[t.group] += t.k * d + t.psi;
         }

@@ -100,6 +100,31 @@ fn pair_weights(wl: f64, wh: f64) -> Option<(f64, f64)> {
 pub(crate) struct Periodic {
     axes: [bool; 3],
     n: [usize; 3],
+    /// [`merge_cached`](Self::merge_cached)'s table.
+    cache: MergeCache,
+}
+
+/// One pair of copies of the merge, precomputed: the component, the two
+/// copies' storage locations `(slab, offset)` and the normalised weights
+/// `w_lo/(w_lo + w_hi)`, `w_hi/(w_lo + w_hi)` (`None`: the edge is PEC,
+/// both copies are set to 0).
+#[derive(Debug, Clone, Copy)]
+struct PairEntry {
+    axis: Axis,
+    lo: (usize, usize),
+    hi: (usize, usize),
+    w: Option<(f64, f64, f64)>,
+}
+
+/// The pair table of the coefficient generation it was built for.
+#[derive(Debug, Default)]
+struct MergeCache(std::sync::Mutex<Option<(u64, Vec<PairEntry>)>>);
+
+impl Clone for MergeCache {
+    /// A clone starts empty (rebuilt on first use).
+    fn clone(&self) -> Self {
+        Self::default()
+    }
 }
 
 impl Periodic {
@@ -121,7 +146,11 @@ impl Periodic {
             }
             axes[a.index()] = lo;
         }
-        Ok(axes.iter().any(|&p| p).then_some(Self { axes, n }))
+        Ok(axes.iter().any(|&p| p).then_some(Self {
+            axes,
+            n,
+            cache: MergeCache::default(),
+        }))
     }
 
     fn index(&self, [i, j, k]: [usize; 3]) -> usize {
@@ -190,24 +219,42 @@ impl Periodic {
     }
 
     /// Replaces both copies of every tangential E edge on the periodic
-    /// faces by their `1/cb`-weighted mean (see the
-    /// [module docs](self)). Deterministic: the same arithmetic in a fixed
-    /// order, independent of the thread count.
-    pub(crate) fn merge(&self, f: &mut Fields<'_>, co: &Coefficients) {
-        self.pairs(co, |_, axis, lo, hi, wl, wh| {
-            let v = match pair_weights(wl, wh) {
+    /// faces by their `1/cb`-weighted mean `(w_lo·u_lo + w_hi·u_hi)/(w_lo +
+    /// w_hi)` (both 0 where an edge is PEC; see the [module docs](self)),
+    /// with the pairs, their storage locations and weights precomputed once
+    /// per coefficient generation `generation`. Deterministic: the same
+    /// arithmetic in a fixed order, independent of the thread count.
+    pub(crate) fn merge_cached(&self, f: &mut Fields<'_>, co: &Coefficients, generation: u64) {
+        let mut guard = self.cache.0.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().is_none_or(|(g, _)| *g != generation) {
+            let lay = f.u.layout();
+            let mut v = Vec::new();
+            self.pairs(co, |_, axis, lo, hi, wl, wh| {
+                v.push(PairEntry {
+                    axis,
+                    lo: lay.locate(lo),
+                    hi: lay.locate(hi),
+                    w: pair_weights(wl, wh).map(|(wl, wh)| (wl, wh, wl + wh)),
+                });
+            });
+            *guard = Some((generation, v));
+        }
+        let (_, table) = guard.as_ref().expect("built above");
+        for e in table {
+            let v = match e.w {
                 None => 0.0,
-                Some((wl, wh)) => {
-                    let (ul, uh) = (f.u.get(axis, lo) as f64, f.u.get(axis, hi) as f64);
-                    ((wl * ul + wh * uh) / (wl + wh)) as f32
+                Some((wl, wh, w)) => {
+                    let ul = f.u.at(e.axis, e.lo) as f64;
+                    let uh = f.u.at(e.axis, e.hi) as f64;
+                    ((wl * ul + wh * uh) / w) as f32
                 }
             };
-            f.u.set(axis, lo, v);
-            f.u.set(axis, hi, v);
-        });
+            f.u.set_at(e.axis, e.lo, v);
+            f.u.set_at(e.axis, e.hi, v);
+        }
     }
 
-    /// [`merge`](Self::merge) on `f64` arrays in field layout (`u[a]` the
+    /// The periodic merge on `f64` arrays in field layout (`u[a]` the
     /// E component `a`), for the stability estimate of
     /// [`cylindrical`](crate::engine::cylindrical).
     pub(crate) fn merge_f64(&self, u: &mut [Vec<f64>; 3], co: &Coefficients) {
@@ -228,7 +275,7 @@ impl Periodic {
     /// are replaced by the weighted mean taken at the low copy,
     /// `U = (w_lo·u_lo + w_hi·u_hi·e^{jψ}) / (w_lo + w_hi)`, i.e.
     /// `u_lo = U`, `u_hi = U·e^{−jψ}`. With `ψ = 0` and `im = 0` this is
-    /// [`merge`](Self::merge) bit for bit.
+    /// the periodic merge bit for bit.
     fn merge_bloch(
         &self,
         re: &mut Fields<'_>,
