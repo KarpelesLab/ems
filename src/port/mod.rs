@@ -21,7 +21,10 @@
 //!   V/I probes in a rectangular waveguide.
 //! * [`CurvePort`]: a lumped port whose terminals are joined by a PEC
 //!   polyline (a one-cell feed edge plus a csx `Curve` or `Wire`).
+//! * [`CoaxPort`]: a coaxial-line port (Cartesian or cylindrical grids),
+//!   analysed like the microstrip port.
 
+mod coax;
 pub mod cpw;
 mod curve;
 mod elliptic;
@@ -29,6 +32,7 @@ mod line;
 pub mod msl;
 pub mod stripline;
 
+pub use coax::{CoaxPort, CoaxPortProperties};
 pub use cpw::{CpwPort, CpwPortProperties};
 pub use curve::{CurvePort, CurvePortProperties};
 pub use line::LinePortResult;

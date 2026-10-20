@@ -504,6 +504,54 @@ which must be a mesh line.
 | strip over the full width between PMC side walls (two parallel-plate halves, `Z = η0·b/(4w√ε_r)` exactly) | `Z` and `β` (1-D Yee) to round-off (≤ 0.36 of the `1e-6 + 5e-8/(βd)²` tolerance), `|S11|` −85 dB |
 | `w/b` = 1, ε_r = 2.2, `b` = 2 mm, half model (PMC through the strip), thirds rule, `Δ` = 0.5 / 0.25 / 0.125 mm across the strip (`dz` = 0.25 / 0.25 / 0.125) | `Z` +0.18 / −1.18 / −0.57 % vs Cohn (44.06 Ω), `ε_eff` = 2.201, `|S11|` ≤ −66 dB. The 0.5 mm value benefits from a cancellation; the refined meshes converge from below (fast test: 0.5 mm, 2 s in debug) |
 
+**Coaxial port** (`ems::port::CoaxPort`, inner radius `a`, outer radius
+`b`, TEM `Z0 = η0/(2π√ε_r)·ln(b/a)`, Pozar §2.2). Same line analysis as
+the MSL port (shared code in `src/port/line.rs`): three radial voltage
+probes at equally spaced mesh lines, two H loops around the inner
+conductor on the dual planes between them, `γ` and `Z_L` extracted,
+waves moved to the reference plane. Design choices:
+- The port writes the conductors over its length (plus an optional
+  `feed_extension` behind the feed), optionally a shield (`b` to
+  `r_shield`) and a dielectric filling. The feed is a soft E excitation
+  over the annulus with the TEM profile `E_ρ = V/(ρ·ln(b/a))` (csx
+  weighting functions masked with `if()` to `a < ρ < b`); without a feed
+  resistor the line behind the feed must end in a PML.
+- **Cylindrical grids** (`dir = z`, axis at `ρ = 0`): conductors are
+  `(ρ, α, z)` boxes, or the `ρ_min`/`ρ_max` PEC faces; a radial feed
+  resistor over the full circle is available (Thevenin source with the
+  excitation). The current loop box runs from the first `ρ` line to the
+  last line `≤ a` over **all** `α` lines: on a closed azimuth the `H_α`
+  edges on `α = 0` and `α = 2π` are two stored copies, each with half of
+  the dual length (`Grid::dual_delta` is halved at the ends), so both are
+  needed (leaving one out read `Z_L` 6.7 % high, i.e. `1/(2N)` of the
+  current missing). The loop's radial sides do not cancel at the seam,
+  but they lie in or on the inner conductor, where `H_ρ = 0`.
+- **Cartesian grids** (any `dir`): the voltage path runs from the node
+  nearest the axis to the first line at `ρ ≥ b` (or the middle of the
+  shield); the current loop is the smallest box of lines containing every
+  node within `a` of the axis, and must fit inside `b`. The conductors are
+  written as **whole mesh cells** (cells whose centre is inside), not as
+  csx `Cylinder`s: csx marks an edge PEC when its centre is in metal, so a
+  curved primitive leaves nodes at the conductor potential with a free
+  longitudinal edge, which is incompatible with a TEM field. With a
+  `Cylinder` the measured line had `ε_eff` 12 % high and `Z` 3 % high
+  (frequency independent); with whole cells it is exactly TEM.
+- Limits: the staircase acts like conductor surfaces about `0.2·Δ`
+  outside the nominal radii (`Z_L` −5.9 % at 6 cells per inner radius,
+  −3.4 % at 12; first order). The feed's near field decays over a few
+  `b − a`: `β` off by 7e-4 with the middle probe 7 mm (5.4·(b−a)) past the
+  feed, 4e-5 at 10 mm; keep about `8·(b − a)`. Sectors (open azimuth)
+  measure the sector's current (the impedance of the sector line).
+
+`tests/validation_coax.rs` (ε_r = 2, `a` = 1 mm, `b` = 2.3 mm, through
+line of two ports, PML ends, 2–8 GHz):
+
+| case | result |
+|---|---|
+| cylindrical, `Δρ` = 0.1 mm, 8 α cells, PEC `ρ` faces as conductors | `Z_L` within 7.2e-5 of the discrete TEM value `η/(2π)·Σ Δρ/ρ_{i+½}` (4.4e-4 of `Z0` = 35.31 Ω), `β` within 3.7e-5 of the 1-D Yee wavenumber, `|S11|` ≤ −80.6 dB, `|S21 − e^{−jβL}|` ≤ 8e-5 |
+| cylindrical, port-written inner conductor and shield, 35 Ω Thevenin feed resistor | `Z_L` within 1.1e-3 of discrete, `|S11|` ≤ −59.9 dB |
+| Cartesian staircase, `a` = 1.5 mm, `b` = 3.45 mm, 0.25 mm cells, shield to 4 mm | `ε_eff` = 2.0002–2.0022 (Yee dispersion), `Z_L` = 33.21 Ω vs `Z0` = 35.31 Ω (−5.9 %), `|S11|` ≤ −86 dB |
+
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
 openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
@@ -1464,7 +1512,8 @@ conducting sheets (PEC instead), dispersive poles (static values only), plane
 waves, SAR dumps, NF2FF boxes, MSL and rectangular-waveguide port helpers
 (`Error::Unsupported`). Lumped ports, lumped elements, voltage, current and
 field probes, waveguide mode probes on a `z`-normal plane (the weights of
-`compile/mode.rs` with the `ρ·Δα` metric), field dumps (VTK and HDF5) work.
+`compile/mode.rs` with the `ρ·Δα` metric), field dumps (VTK and HDF5) and
+the coaxial port helper (`CoaxPort` along `z`, §5.5) work.
 
 **Validation.**
 
