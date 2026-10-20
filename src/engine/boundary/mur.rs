@@ -634,7 +634,17 @@ impl Operator for MurBoundary {
 
     /// Slab mode where possible (see the [module docs](self#threads)).
     fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {
-        if !self.slab_ok || self.slabs.is_some() {
+        // A clone of a registered operator: take its edges back first.
+        if let Some(sl) = self.slabs.take() {
+            for m in &sl.slabs {
+                let s = lock(m);
+                self.edges.extend(s.edges.iter().cloned());
+                self.corners.extend(s.corners.iter().cloned());
+            }
+            self.edges.sort_by_key(|e| e.order);
+            self.corners.sort_by_key(|c| c.order);
+        }
+        if !self.slab_ok {
             return None;
         }
         let slab_of = |i: usize| (0..part.slabs()).find(|&s| part.planes(s).contains(&i));
