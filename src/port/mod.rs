@@ -4,6 +4,11 @@
 //! * [`LumpedPort`]: a resistive port between two terminals.
 //! * [`MslPort`]: a microstrip-line port, with the line's propagation
 //!   constant and impedance extracted from its probes ([`MslPortResult`]).
+//! * [`CpwPort`]: a coplanar-waveguide port (centre strip, gaps, coplanar
+//!   grounds) with the same line analysis ([`LinePortResult`]) and a
+//!   quasi-static conformal-mapping reference (Wen, Simons).
+//! * [`StriplinePort`]: a symmetric strip-line port with the same line
+//!   analysis and Cohn's exact zero-thickness impedance.
 //!
 //! Not to be confused with the engine-level
 //! [`engine::LumpedPort`](crate::engine::LumpedPort), an operator installed
@@ -17,13 +22,18 @@
 //! * [`CurvePort`]: a lumped port whose terminals are joined by a PEC
 //!   polyline (a one-cell feed edge plus a csx `Curve` or `Wire`).
 
+pub mod cpw;
 mod curve;
+mod elliptic;
 mod line;
 pub mod msl;
+pub mod stripline;
 
+pub use cpw::{CpwPort, CpwPortProperties};
 pub use curve::{CurvePort, CurvePortProperties};
 pub use line::LinePortResult;
 pub use msl::{MslPort, MslPortProperties, MslPortResult};
+pub use stripline::{StriplinePort, StriplinePortProperties};
 
 use csx::primitives::BoxShape;
 use csx::properties::{Excitation, LumpedElement, ProbeBox, ProbeType};

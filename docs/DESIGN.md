@@ -432,6 +432,78 @@ not share a mesh line, joined by a polyline (the parity item for openEMS's
   overestimate a bent wire's inductance (9.3 nH instead of 5.6 nH at
   `r0 ≈ r_eq`), so the plain `Curve` is preferable there.
 
+**Coplanar waveguide port** (`ems::port::CpwPort`). A csx-emitting line
+port with the analysis of the microstrip port (shared in `port::line`):
+three equally spaced strip-to-ground voltages, two H loops, `γ` and `Z_L`
+from the exact exponential-mode relations, waves moved to the reference
+plane. Geometry and design choices:
+- The box spans the whole metal along the width axis. The centre strip `S`
+  is centred, the gaps `W` sit on both sides, and the grounds fill the
+  rest. All three are zero-thickness boxes on the metal plane
+  (`stop[height]`) over the port length. `start[height]` is the far side
+  of the substrate. The substrate and an optional backing ground are part
+  of the model.
+- Feed: two line excitations across the gaps at the feed plane, directed
+  from the strip to each ground (`amplitude/W` V/m): `port_excite_<n>A`
+  (`+width` gap) and `B`. With `feed_resistance(R)` there are two `2R`
+  line resistors `port_resist_<n>A/B` across the gaps, i.e. a Thevenin
+  source of `amplitude` behind `R`. A line primitive covers the edges
+  whose midpoints lie in the gap, which are exactly the edges the metal
+  boxes leave free, so the feed matches the metal with or without lines on
+  the edges.
+- Voltages run from the strip centre line to the first line on the
+  `+width` ground. The loops go around the centre strip only.
+- Reference (`CpwPort::quasi_static`, `quasi_static_of`): Wen (1969) and
+  Simons (2001) conformal mapping, zero thickness, infinite grounds,
+  `K(k)` by the AGM (`port::elliptic`). Conventional CPW:
+  `k1 = sinh(πS/4h)/sinh(π(S+2W)/4h)`,
+  `ε_eff = 1 + (ε_r−1)/2·K(k1)K(k0')/(K(k1')K(k0))`,
+  `Z0 = (η0/4)/√ε_eff·K(k0')/K(k0)`. Conductor-backed:
+  `k3 = tanh(πS/4h)/tanh(π(S+2W)/4h)`, `q = K(k3)K(k0')/(K(k3')K(k0))`,
+  `ε_eff = (1+ε_r·q)/(1+q)`,
+  `Z0 = (η0/2)/√ε_eff/(K(k0)/K(k0') + K(k3)/K(k3'))`.
+- Limits. The feed's near field (the cut-off modes of the shield or box
+  around the line) decays with the lowest cutoff of the cross section. In
+  a 6 mm wide box it decays with `α ≈ 0.57/mm`: probes 7.5 / 10.5 /
+  12.5 / 15 mm from the feed read `β` +0.9 / +0.17 / +0.05 / +0.02 %
+  high. A CPML 4 mm above an open CPW (graded cells) gave ±1 % ripples
+  in `Z_L` and `−35 dB` S11, from the line's near field reaching the
+  layer; at 8 mm they are gone (−66 dB). The port is not available on
+  cylindrical grids.
+
+`tests/validation_cpw.rs` (`S` = 1 mm, `W` = 0.5 mm, grounds to PEC side
+walls at `|y|` = 3 mm, thirds rule at all four edges with `dy` = 0.214 mm,
+probes 15 mm from the feed, through line between two ports):
+
+| case | result |
+|---|---|
+| air, PEC covers at `z = ±1` mm (exact TEM; reference `(η0/4)·K(k3')/K(k3)`), 1 mm cells along the line | `Z_L` = 92.74 Ω vs 93.22 Ω (−0.51 %), `β` = 1-D Yee wavenumber within 1.5e-4, `|S11|` ≤ −68 dB; the passive port's `Z_L` is constant to 1e-6 (debug 16 s) |
+| conductor-backed, ε_r = 4.4, h = 0.5 mm, CPML 8 mm above (ignored) | `Z_L` −0.47 %, `ε_eff` −1.0 % vs Simons (1–3 GHz), `|S11|` ≤ −66 dB |
+| conventional, same substrate, CPML 8 mm above and below (ignored) | `Z_L` −1.0 %, `ε_eff` +0.7 % vs Wen/Simons, `|S11|` ≤ −60 dB |
+
+**Stripline port** (`ems::port::StriplinePort`). It works like the
+microstrip port, but the grounds are at `start[height]` and
+`stop[height]` (part of the model) and the strip is on the mid-plane,
+which must be a mesh line.
+- Feed: two boxes from the strip to each ground, with excitations
+  `port_excite_<n>A/B` (`amplitude/(b/2)` V/m, pointing away from the
+  strip) and optional `2R` resistors `port_resist_<n>A/B` (a source `R`).
+- Voltage from the strip to the lower ground. The loops go around the
+  strip.
+- Reference (`StriplinePort::z0`, `z0_of`): Cohn's (1954) exact
+  zero-thickness result `Z0 = η0/(4√ε_r)·K(k)/K(k')`, `k = sech(πw/2b)`,
+  `k' = tanh(πw/2b)` (both computed directly, and the ratio as
+  `AGM(1,k)/AGM(1,k')`). For a strip of finite thickness, Wheeler's
+  formula is the usual closed form. The port's strip is a sheet, so it is
+  not used.
+
+`tests/validation_stripline.rs`:
+
+| case | result |
+|---|---|
+| strip over the full width between PMC side walls (two parallel-plate halves, `Z = η0·b/(4w√ε_r)` exactly) | `Z` and `β` (1-D Yee) to round-off (≤ 0.36 of the `1e-6 + 5e-8/(βd)²` tolerance), `|S11|` −85 dB |
+| `w/b` = 1, ε_r = 2.2, `b` = 2 mm, half model (PMC through the strip), thirds rule, `Δ` = 0.5 / 0.25 / 0.125 mm across the strip (`dz` = 0.25 / 0.25 / 0.125) | `Z` +0.18 / −1.18 / −0.57 % vs Cohn (44.06 Ω), `ε_eff` = 2.201, `|S11|` ≤ −66 dB. The 0.5 mm value benefits from a cancellation; the refined meshes converge from below (fast test: 0.5 mm, 2 s in debug) |
+
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
 openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
