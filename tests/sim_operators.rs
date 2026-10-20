@@ -240,8 +240,10 @@ fn line_model() -> ContinuousStructure {
 
 /// Hard E source: the edge voltages are overwritten with `E·l·a((n+1)·dt)`
 /// after every step, and an E-field probe at the shared node of two driven
-/// edges reads exactly `E·a(t)`. Soft E source: the first sample is
-/// `E·l·a(dt/2)`. Hard H source: the dual-edge current is `H·l*·a`.
+/// edges reads exactly `E·a(t)`. Soft E source, sampled at `n·dt`
+/// (openEMS timing): the first sample is `E·l·a(0) = 0` for a sinusoid, so
+/// the second is exactly `E·l·a(dt)`. Hard H source: the dual-edge current
+/// is `H·l*·a`.
 #[test]
 fn hard_and_soft_sources_and_field_probe() {
     let f0 = 1e9;
@@ -291,11 +293,15 @@ fn hard_and_soft_sources_and_field_probe() {
 
     let soft = run(ExcitationType::EFieldSoft);
     let v = soft.probe("v").unwrap().scalar().unwrap();
-    let want = 2.0 * amp * 1e-3 * wave.value(0.5 * dt, dt);
+    // Sampled at n·dt: the first update adds a(0) = 0 (sinusoid), the
+    // second a(dt) to the still-undisturbed edges.
+    assert_eq!(wave.value(0.0, dt), 0.0);
+    assert!(v[0].abs() < 1e-12, "{}", v[0]);
+    let want = 2.0 * amp * 1e-3 * wave.value(dt, dt);
     assert!(
-        (v[0] - want).abs() < 1e-6 * want.abs(),
+        (v[1] - want).abs() < 1e-6 * want.abs(),
         "{} vs {want}",
-        v[0]
+        v[1]
     );
     // A soft source radiates: later samples differ from the hard ones.
     let vh = hard.probe("v").unwrap().scalar().unwrap();
