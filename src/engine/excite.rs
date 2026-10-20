@@ -11,18 +11,15 @@ pub type Amplitude = Box<dyn Fn(f64) -> f64 + Send>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SourceKind {
     /// Additive ("soft") source on E edges (default): after the E update
-    /// of step `n` (`u^n → u^{n+1}`), `u += w·a(t)` with `t = n·dt`, the
-    /// start of that update. This is openEMS's timing (design §5.7):
-    /// with the same time step, ems and openEMS probe signals agree to
-    /// 1e-6, against 7e-2 for `t = (n + ½)·dt`.
+    /// of step `n`, `u += w·a(t)` with `t = (n + ½)·dt`, the centre of
+    /// that E update (design §5.7).
     #[default]
     SoftE,
     /// Hard source on E edges: after the E update of step `n`,
     /// `u = w·a(t)` with `t = (n + 1)·dt`, the time of the updated `u`.
     HardE,
-    /// Additive source on H dual edges: after the H update of step `n`
-    /// (`i^{n−½} → i^{n+½}`), `i += w·a(t)` with `t = (n − ½)·dt`, the
-    /// start of that update (openEMS's timing, like [`SoftE`](Self::SoftE)).
+    /// Additive source on H dual edges: after the H update of step `n`,
+    /// `i += w·a(t)` with `t = n·dt`, the centre of that H update.
     SoftH,
     /// Hard source on H dual edges: after the H update of step `n`,
     /// `i = w·a(t)` with `t = (n + ½)·dt`, the time of the updated `i`.
@@ -46,8 +43,8 @@ impl SourceKind {
 /// By default ([`SourceKind::SoftE`]) it adds `weight · amplitude(t)` to the
 /// voltage `u` of each listed edge after every E update ("soft" or additive
 /// source, Taflove & Hagness, *Computational Electrodynamics*, 3rd ed.,
-/// ch. 5 on source conditions). The amplitude is sampled at `t = n·dt`,
-/// the start of the E update it is applied with, as openEMS does
+/// ch. 5 on source conditions). The amplitude is sampled at
+/// `t = (n + ½)·dt`, the centre of the E update it is applied with
 /// (design §5.7). See [`SourceKind`] for hard sources and H sources and
 /// their sample times.
 ///
@@ -127,7 +124,7 @@ impl Operator for EdgeSource {
 
     fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let t = match self.kind {
-            SourceKind::SoftH => ctx.time() - 0.5 * ctx.dt,
+            SourceKind::SoftH => ctx.time(),
             SourceKind::HardH => ctx.h_time(),
             _ => return,
         };
@@ -136,7 +133,7 @@ impl Operator for EdgeSource {
 
     fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let t = match self.kind {
-            SourceKind::SoftE => ctx.time(),
+            SourceKind::SoftE => ctx.h_time(),
             SourceKind::HardE => ctx.e_time(),
             _ => return,
         };
