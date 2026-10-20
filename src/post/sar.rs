@@ -113,6 +113,8 @@ use crate::io::{Layout, VtrWriter};
 use crate::post::Complex64;
 use crate::{Error, Result};
 
+mod openems;
+
 /// Absorbed power density and mass density per voxel; see the
 /// [module docs](self).
 ///
@@ -124,6 +126,9 @@ pub struct SarVolume {
     density: Vec<f64>,
     /// `(ρ, α, z)` cells ([`SarVolume::cylindrical`]).
     cylindrical: bool,
+    /// Cell volumes replacing the geometric ones in the openEMS-compatible
+    /// averaging ([`SarVolume::with_cell_volumes`]).
+    volumes: Option<Vec<f64>>,
 }
 
 /// How a voxel's value in a [`SarField`] was obtained.
@@ -171,25 +176,31 @@ impl Default for AveragingOptions {
 /// The averaging methods of openEMS's `sar_calc --method` (and of its
 /// in-run SAR dumps, which use [`Simple`](Self::Simple)).
 ///
-/// ems implements them on its own cube solver (exact cube mass, see the
-/// [module docs](self#mass-averaging)); what openEMS does was observed on
-/// a black-box openEMS v0.37:
+/// [`SarVolume::averaged_openems`] reproduces them as observed on a
+/// black-box openEMS v0.37 (no openEMS source consulted):
 ///
+/// * the cube side is solved by a secant iteration on the mass, to 5 %
+///   (`SIMPLE`, `IEEE_C95_3`) or 1e-6 (`IEEE_62704`), started from the
+///   voxel's analytic size `s₀ = (m/ρ)^{1/3}`: the first points are
+///   `s₀/2` and the size of the mean density of that half-size cube, at
+///   least twice the voxel's smallest width;
 /// * `SIMPLE`: every tissue voxel gets the average of the cube centred on
-///   it, clipped by the domain, whatever the air inside; no tissue cube of
-///   the mass exists → 0. openEMS solves the cube size only to ±5 % of the
-///   mass (an iterative solver started from the size `(m/ρ)^{1/3}` of the
-///   voxel's density), so its values equal ems's where that first size is
-///   exact (a cube of uniform tissue clear of air and of the domain
-///   boundary, at least two voxels wide) and differ by up to the effect of
-///   a 5 % mass error elsewhere.
-/// * `IEEE_C95_3`, `IEEE_62704`: valid centred cubes, then the maximum of
-///   the valid cubes reaching a voxel, then cubes at a face. ems uses its
-///   own IEEE 62704-1 procedure (10 % air) for both; openEMS's rules
-///   differ in detail (a centred cube is invalid when a face lies in air or
-///   outside the domain, even with little air inside, and valid with an
-///   air pocket inside; `IEEE_C95_3` takes the maximum over the valid cubes
-///   that overlap a voxel, `IEEE_62704` over those that contain it).
+///   it, clipped by the domain, whatever the air inside; no cube found →
+///   0;
+/// * `IEEE_C95_3`, `IEEE_62704`: a centred cube is valid when it lies in
+///   the domain, none of its faces lies entirely in air and (62704 only)
+///   at most 10 % of it is air; an invalid voxel takes the maximum of the
+///   valid cubes that overlap it (C95.3) or contain it (62704), and one
+///   that none reaches a cube with the voxel at the centre of a face: of
+///   the six, the smallest (C95.3), or the largest average among those
+///   within 5 % of the smallest volume (62704).
+///
+/// Details in the docs of the implementation (`post::sar::openems`) and in
+/// `docs/DESIGN.md` §5.12, with the known differences (cubes smaller
+/// than a voxel, IEEE validity of cubes of about two cells on graded
+/// meshes, and choices that openEMS's rounding decides).
+/// [`options`](Self::options) maps a method to ems's own cube procedure
+/// instead (exact masses, 10 % air rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AveragingMethod {
     /// `SIMPLE`: centred cubes only (openEMS's default and in-run method).
@@ -218,7 +229,8 @@ impl AveragingMethod {
             .find(|m| m.name() == s)
     }
 
-    /// The [`AveragingOptions`] ems uses for the method.
+    /// The [`AveragingOptions`] of ems's own procedure
+    /// ([`SarVolume::averaged_with`]) closest to the method.
     pub fn options(self, threads: usize) -> AveragingOptions {
         AveragingOptions {
             max_air_fraction: if self == Self::Simple { 1.0 } else { 0.1 },
@@ -247,6 +259,9 @@ pub struct SarField {
     mass: Option<f64>,
     cube_mass: Vec<f64>,
     cube_volume: Vec<f64>,
+    /// openEMS face-cube code (1…6) per voxel, 0 otherwise; empty unless
+    /// from [`SarVolume::averaged_openems`].
+    cube_face: Vec<u8>,
 }
 
 fn cells_of(lines: &[Vec<f64>; 3]) -> [usize; 3] {
@@ -294,6 +309,7 @@ impl SarVolume {
             power,
             density,
             cylindrical: false,
+            volumes: None,
         })
     }
 
@@ -658,6 +674,7 @@ impl SarVolume {
             mass: None,
             cube_mass: Vec::new(),
             cube_volume: Vec::new(),
+            cube_face: Vec::new(),
         }
     }
 
@@ -698,6 +715,72 @@ impl SarVolume {
             )));
         }
         Ok(Averager::new(self, mass, opts).run())
+    }
+
+    /// The same volume whose openEMS-compatible averaging
+    /// ([`averaged_openems`](Self::averaged_openems)) weights each cell
+    /// with `volumes[i]` \[m³\] instead of its geometric volume (openEMS's
+    /// `sar_calc` uses the `Volume` dataset of the raw file, stored in
+    /// single precision). The cell geometry, the totals and ems's own
+    /// averaging are unchanged.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for a wrong length or negative or non-finite
+    /// volumes.
+    pub fn with_cell_volumes(mut self, volumes: Vec<f64>) -> Result<Self> {
+        if volumes.len() != self.density.len() {
+            return Err(Error::Invalid(format!(
+                "SAR volume: {} cells but {} cell volumes",
+                self.density.len(),
+                volumes.len()
+            )));
+        }
+        if let Some(x) = volumes.iter().find(|x| !(x.is_finite() && **x >= 0.0)) {
+            return Err(Error::Invalid(format!(
+                "SAR volume: cell volumes must be finite and non-negative, got {x}"
+            )));
+        }
+        self.volumes = Some(volumes);
+        Ok(self)
+    }
+
+    /// SAR averaged over `mass` \[kg\] as openEMS does it with `method`
+    /// (`sar_calc --method`, and its in-run averaged dumps with
+    /// [`AveragingMethod::Simple`]); see [`AveragingMethod`] for the rules.
+    /// [`SarField::cube_faces`] holds the orientation of the face cubes.
+    /// `threads` as [`AveragingOptions::threads`].
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for a mass that is not positive and finite;
+    /// [`Error::Unsupported`] for [cylindrical](Self::cylindrical) cells.
+    pub fn averaged_openems(
+        &self,
+        mass: f64,
+        method: AveragingMethod,
+        threads: usize,
+    ) -> Result<SarField> {
+        if self.cylindrical {
+            return Err(Error::Unsupported(
+                "mass-averaged SAR on a cylindrical grid: the averaging cubes are defined in \
+                 physical (Cartesian) coordinates, not on (rho, alpha, z) cells; use the local \
+                 SAR"
+                .into(),
+            ));
+        }
+        if !(mass.is_finite() && mass > 0.0) {
+            return Err(Error::Invalid(format!(
+                "SAR averaging mass must be positive, got {mass}"
+            )));
+        }
+        let geometric;
+        let volumes = match &self.volumes {
+            Some(v) => v.as_slice(),
+            None => {
+                geometric = self.cell_volumes();
+                geometric.as_slice()
+            }
+        };
+        Ok(openems::average(self, volumes, mass, method, threads))
     }
 }
 
@@ -752,6 +835,52 @@ impl SarField {
     /// that cube, like [`cube_masses`](Self::cube_masses).
     pub fn cube_volumes(&self) -> &[f64] {
         &self.cube_volume
+    }
+
+    /// Per voxel, the openEMS code (1…6) of the face cube of a
+    /// [`VoxelClass::Boundary`] voxel from
+    /// [`SarVolume::averaged_openems`]: the cube extends from the voxel's
+    /// lower x face along `+x` (1), from its upper x face along `−x` (2),
+    /// then likewise along y (3, 4) and z (5, 6); 0 for other voxels.
+    /// Empty for other fields.
+    pub fn cube_faces(&self) -> &[u8] {
+        &self.cube_face
+    }
+
+    /// The cells `start[a]..stop[a]` of the field (values, classes and
+    /// cube statistics; the lines of those cells).
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for an empty or out-of-range box.
+    pub fn crop(&self, start: [usize; 3], stop: [usize; 3]) -> Result<SarField> {
+        let c = self.cells();
+        if (0..3).any(|a| start[a] >= stop[a] || stop[a] > c[a]) {
+            return Err(Error::Invalid(format!(
+                "SAR crop {start:?}..{stop:?} outside the {c:?} cells"
+            )));
+        }
+        fn pick<T: Copy>(v: &[T], c: [usize; 3], start: [usize; 3], stop: [usize; 3]) -> Vec<T> {
+            let mut o = Vec::new();
+            if v.is_empty() {
+                return o;
+            }
+            for i in start[0]..stop[0] {
+                for j in start[1]..stop[1] {
+                    let b = (i * c[1] + j) * c[2];
+                    o.extend_from_slice(&v[b + start[2]..b + stop[2]]);
+                }
+            }
+            o
+        }
+        Ok(SarField {
+            lines: core::array::from_fn(|a| self.lines[a][start[a]..=stop[a]].to_vec()),
+            values: pick(&self.values, c, start, stop),
+            classes: pick(&self.classes, c, start, stop),
+            mass: self.mass,
+            cube_mass: pick(&self.cube_mass, c, start, stop),
+            cube_volume: pick(&self.cube_volume, c, start, stop),
+            cube_face: pick(&self.cube_face, c, start, stop),
+        })
     }
 
     /// The SAR at cell `[i, j, k]`.
@@ -1254,6 +1383,7 @@ impl<'a> Averager<'a> {
             mass: Some(self.mass),
             cube_mass,
             cube_volume,
+            cube_face: Vec::new(),
         }
     }
 }

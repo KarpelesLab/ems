@@ -300,13 +300,11 @@ fn cylindrical_dumps() {
     assert_close("dump_cyl/native", &e, 1e-5);
 }
 
-/// SAR files: local and raw SAR match; the 1 g average uses openEMS's
-/// `SIMPLE` rule, but openEMS solves the cube size only to ±5 % of the
-/// mass (all cubes of this small block are clipped: within 2.9 % of the
-/// peak, `tests/openems_sar_calc.rs`), so only its structure is compared.
+/// SAR files: local, raw and 1 g averaged SAR (openEMS's `SIMPLE` cube
+/// solver, every cube of this small block clipped by air) match.
 #[test]
 fn sar_dumps() {
-    let e = check("dump_sar", "", DumpFileOptions::new(), &["sar_1g"]);
+    let e = check("dump_sar", "", DumpFileOptions::new(), &[]);
     assert_close("dump_sar", &e, 1e-5);
 }
 

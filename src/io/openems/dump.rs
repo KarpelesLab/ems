@@ -84,12 +84,11 @@
 //!   `sar_calc --method SIMPLE` on the raw dump; no DumpBox attribute
 //!   selects another one): each tissue voxel gets the average over the
 //!   cube of the averaging mass centred on it, clipped by the box and
-//!   whatever the air inside
-//!   ([`AveragingMethod::Simple`](crate::post::sar::AveragingMethod::Simple),
-//!   over the real cells). openEMS solves the cube size to ±5 % of the
-//!   mass only: its values are the same as ems's for cubes of uniform
-//!   tissue clear of air and of the box boundary, and within a few percent
-//!   elsewhere (2.9 % of the peak on the `dump_sar` fixture);
+//!   whatever the air inside, its side solved like openEMS to 5 % of the
+//!   mass ([`SarVolume::averaged_openems`](crate::post::sar::SarVolume::averaged_openems)
+//!   with [`AveragingMethod::Simple`](crate::post::sar::AveragingMethod::Simple),
+//!   over the real cells; the `dump_sar` fixture agrees to the float32
+//!   output);
 //! * HDF5 (`FileType` 1): root `@mass` (not raw), `@proc_time`; `/Mesh`
 //!   the cell centres; `/FieldData/FD` with `@frequency`,
 //!   `@valid_cubes`, `@used_cubes`, `@unused_cubes`, `@air_cubes` (u64)
@@ -950,7 +949,7 @@ impl OpenEmsSar {
             }
         }
         let v = SarVolume::new(self.lines.clone(), power, density)?;
-        let f = v.averaged_with(mass, &AveragingMethod::Simple.options(0))?;
+        let f = v.averaged_openems(mass, AveragingMethod::Simple, 0)?;
         let mut out = vec![0.0; self.density.len()];
         let mut cubes = [0u64; 4];
         for i in 0..c[0] {
