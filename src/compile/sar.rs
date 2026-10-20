@@ -64,6 +64,25 @@ pub struct SarSpec {
     pub sigma: Vec<[f64; 3]>,
     /// Mass density per cell \[kg/m³\].
     pub density: Vec<f64>,
+    /// The cells of the openEMS-compatible SAR files (see
+    /// [`io::openems::dump`](crate::io::openems::dump#sar-dumps)); `None`
+    /// on cylindrical grids.
+    pub openems: Option<OpenEmsSarCells>,
+}
+
+/// The cells of an openEMS SAR dump: the box corners snapped to the nodes
+/// `lo ..= hi` (openEMS rule, see
+/// [`sample_indices`](crate::io::openems::dump::sample_indices)), each
+/// node `j` standing for the cell starting there; `j = n − 1` is the
+/// virtual cell beyond the mesh (no material).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenEmsSarCells {
+    /// Cell indices per axis.
+    pub indices: [Vec<usize>; 3],
+    /// Conductivity per cell \[S/m\] (mean over the axes), z fastest.
+    pub sigma: Vec<f64>,
+    /// Mass density per cell \[kg/m³\], z fastest.
+    pub density: Vec<f64>,
 }
 
 /// The SAR specs of the SAR dumps among `dumps`. Dumps without
@@ -126,9 +145,81 @@ pub(super) fn sar_specs(
             cells,
             sigma,
             density,
+            openems: openems_cells(model, index, d, subsampling.max(1)),
         });
     }
     out
+}
+
+/// The openEMS SAR cells of dump `d` (see [`OpenEmsSarCells`]).
+fn openems_cells(
+    model: &csx::ContinuousStructure,
+    index: &csx::structure::SpatialIndex<'_>,
+    d: &ProbeSpec<csx::properties::DumpBox>,
+    n: usize,
+) -> Option<OpenEmsSarCells> {
+    if model.grid.coord_system == CoordSystem::Cylindrical {
+        return None;
+    }
+    let du = model.grid.delta_unit;
+    let mut indices: [Vec<usize>; 3] = Default::default();
+    for (a, ind) in indices.iter_mut().enumerate() {
+        let l = model.grid.lines(a);
+        if l.len() < 2 {
+            return None;
+        }
+        *ind = crate::io::openems::dump::sample_indices(
+            l,
+            (l[0], l[l.len() - 1]),
+            d.corners[0][a] / du,
+            d.corners[1][a] / du,
+            1,
+            None,
+        )?;
+    }
+    let nodes = [0, 1, 2].map(|a| model.grid.lines(a).len());
+    // The real cells among the indices.
+    let lo = [0, 1, 2].map(|a| indices[a][0].min(nodes[a] - 2));
+    let hi = [0, 1, 2].map(|a| {
+        indices[a]
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .min(nodes[a] - 2)
+            .max(lo[a])
+    });
+    let cells = CellBox::new(lo, hi.map(|h| h + 1));
+    let (s, r) = cell_media(model, index, &cells, n);
+    let c = cells.cells();
+    let dims = indices.clone().map(|v| v.len());
+    let mut sigma = Vec::with_capacity(dims.iter().product());
+    let mut density = Vec::with_capacity(sigma.capacity());
+    for &i in &indices[0] {
+        for &j in &indices[1] {
+            for &k in &indices[2] {
+                let p = [i, j, k];
+                if (0..3).any(|a| p[a] + 1 >= nodes[a]) {
+                    sigma.push(0.0);
+                    density.push(0.0);
+                    continue;
+                }
+                let q = [0, 1, 2].map(|a| p[a] - lo[a]);
+                let m = (q[0] * c[1] + q[1]) * c[2] + q[2];
+                let v = s[m];
+                sigma.push(if v.iter().all(|x| x.is_finite()) {
+                    (v[0] + v[1] + v[2]) / 3.0
+                } else {
+                    0.0
+                });
+                density.push(r[m]);
+            }
+        }
+    }
+    Some(OpenEmsSarCells {
+        indices,
+        sigma,
+        density,
+    })
 }
 
 /// Cell-averaged conductivity and density over `cells` (see the module

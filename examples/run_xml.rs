@@ -1,8 +1,12 @@
 //! Runs an openEMS XML model file and writes its probe and dump results.
 //!
 //! ```text
-//! cargo run --release --example run_xml -- model.xml [--threads N] [--out DIR] [--conformal]
+//! cargo run --release --example run_xml -- model.xml [--threads N] [--out DIR] [--conformal] [--openems]
 //! ```
+//!
+//! `--openems` writes the dumps (and SAR dumps) as the files openEMS writes
+//! for their `FileType` (`ems::io::openems::dump`: VTK, or HDF5 with the
+//! `hdf5` feature) instead of the ems formats described below.
 //!
 //! `--conformal` resolves solid metal below the cell size (conformal PEC,
 //! `ems::CompileOptions::conformal`) instead of the staircase mask.
@@ -45,16 +49,18 @@ struct Args {
     threads: Option<usize>,
     out: Option<PathBuf>,
     conformal: bool,
+    openems: bool,
 }
 
 fn usage() -> String {
-    "usage: run_xml MODEL.xml [--threads N] [--out DIR] [--conformal]".into()
+    "usage: run_xml MODEL.xml [--threads N] [--out DIR] [--conformal] [--openems]".into()
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let (mut model, mut threads, mut out) = (None, None, None);
     let mut conformal = false;
+    let mut openems = false;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--threads" | "-j" => {
@@ -67,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--out" | "-o" => out = Some(PathBuf::from(it.next().ok_or_else(usage)?)),
             "--conformal" => conformal = true,
+            "--openems" => openems = true,
             "--help" | "-h" => return Err(usage()),
             _ if a.starts_with('-') => return Err(format!("unknown option {a:?}\n{}", usage())),
             _ if model.is_none() => model = Some(PathBuf::from(a)),
@@ -78,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
         threads,
         out,
         conformal,
+        openems,
     })
 }
 
@@ -212,6 +220,20 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let path = out.join("probes.h5");
         ems::io::h5::write_probes(&path, res.probes().iter().chain(res.lumped_currents()))?;
         println!("wrote {}", path.display());
+    }
+    if args.openems {
+        let opts = ems::io::openems::dump::DumpFileOptions::new();
+        for d in res.dumps() {
+            for p in d.write_openems(&out, &opts)? {
+                println!("wrote {}", p.display());
+            }
+        }
+        for d in res.sar_dumps() {
+            for p in d.write_openems(&out)? {
+                println!("wrote {}", p.display());
+            }
+        }
+        return Ok(());
     }
     for d in res.dumps() {
         let base = file_stem(d.name());

@@ -27,7 +27,6 @@ fn encode_group(input: &[u8]) -> [u8; 4] {
 }
 
 /// Encodes `input` as a base64 string.
-#[cfg(test)]
 pub(crate) fn encode(input: &[u8]) -> String {
     let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
     let mut enc = Encoder::new(&mut out);

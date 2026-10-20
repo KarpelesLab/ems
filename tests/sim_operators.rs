@@ -420,9 +420,20 @@ fn frequency_and_time_dumps() {
     assert!(w.is_empty(), "{w:?}");
     let res = sim.run().unwrap();
     let pe = res.probe("e").unwrap();
-    let probe = pe.dft_vector(pe.frequencies()).unwrap()[0][2];
     let d = res.dump("fd").unwrap();
     let fdump = d.freq().unwrap();
+    // The dump samples every K-th step (openEMS rule); the same DFT of
+    // the probe series (E at n·dt).
+    let dt = res.dt();
+    let k = (fdump.sample_interval() / dt).round() as u64;
+    assert!(k > 1);
+    let probe = pe
+        .times()
+        .iter()
+        .zip(pe.vector().unwrap())
+        .filter(|(t, _)| ((**t / dt).round() as u64).is_multiple_of(k))
+        .map(|(t, x)| Complex64::cis(-std::f64::consts::TAU * f * t) * x[2] * (k as f64 * dt))
+        .fold(Complex64::ZERO, |a, b| a + b);
     assert_eq!(fdump.sampler().dims(), [5, 5, 1]);
     // Node (3, 5, 4) is sample (1, 3, 0).
     let v = fdump.values(0)[5 + 3][2];
@@ -538,15 +549,12 @@ fn field_probe_centre_dump_window_and_warnings() {
     }
     let snaps = res.dump("td").unwrap().snapshots().unwrap();
     let dt = res.dt();
-    let want = (0..=60u64)
-        .filter(|&m| {
-            let t = m as f64 * dt;
-            t >= t0 && t <= t1
-        })
-        .count();
-    assert!(want > 5);
-    assert_eq!(snaps.len(), want);
-    assert!(snaps.iter().all(|s| s.time >= t0 && s.time <= t1));
+    // openEMS window: (n + 1)·dt ≥ start and (n − 1)·dt < stop.
+    let want: Vec<u64> = (0..=60u64)
+        .filter(|&n| (n + 1) as f64 * dt >= t0 && (n as f64 - 1.0) * dt < t1)
+        .collect();
+    assert!(want.len() > 5);
+    assert_eq!(snaps.iter().map(|s| s.step).collect::<Vec<_>>(), want);
 
     // A hard E source on a lumped element's edges overrides it: warning.
     let mut m = line_model();

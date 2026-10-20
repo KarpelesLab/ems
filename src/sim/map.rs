@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use csx::properties::{DumpMode, DumpType, ExcitationType, LumpedElementType, ProbeType};
+use csx::properties::{DumpMode, ExcitationType, LumpedElementType, ProbeType};
 
 use super::results::ProbeKind;
 use crate::Result;
@@ -13,11 +13,12 @@ use crate::compile::{ModelSources, NodeMap};
 use crate::engine::cylindrical;
 use crate::engine::port::loop_entries;
 use crate::engine::{
-    DumpPosition, DumpQuantity, DumpRegion, EdgeDft, EdgeSource, EdgeValues, Engine, FieldProbe,
+    DumpPosition, DumpQuantity, DumpTiming, EdgeDft, EdgeSource, EdgeValues, Engine, FieldProbe,
     FieldSampler, FreqDump, LumpedElement, OperatorHandle, PeriodicPlaneWave, PlaneWave, Probe,
     ProbeQuantity, Schedule, SourceKind, TimeDump, Topology, WavePart,
 };
 use crate::fdtd::Fdtd;
+use crate::io::openems::dump as oe;
 
 /// The engine operator behind a model probe.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +58,7 @@ pub(crate) struct DumpEntry {
     pub name: String,
     pub id: u32,
     pub file_type: csx::properties::DumpFileType,
+    pub dump_type: csx::properties::DumpType,
     pub op: DumpOp,
 }
 
@@ -65,6 +67,8 @@ pub(crate) struct DumpEntry {
 pub(crate) struct SarEntry {
     pub spec: usize,
     pub op: OperatorHandle<EdgeDft>,
+    /// The cell-interpolated E DFT of the openEMS SAR files.
+    pub oe: Option<OperatorHandle<FreqDump>>,
 }
 
 /// Everything [`map_sources`] registered.
@@ -161,6 +165,74 @@ pub(crate) fn dump_interval(fdtd: &Fdtd, dt: f64) -> u64 {
     } else {
         1
     }
+}
+
+/// The openEMS Nyquist step count of dumps: from the excitation's highest
+/// frequency (`f0 + fc` for a Gaussian, `f0` for sinusoids and custom
+/// signals; openEMS ignores the `<FDTD f_max>` attribute here), else the
+/// explicit maximum frequency; 1 without either.
+fn openems_nyquist(fdtd: &Fdtd, dt: f64) -> u64 {
+    let f = fdtd
+        .get_waveform()
+        .and_then(|w| match w {
+            crate::Waveform::Expression(e) if e.f0() > 0.0 => Some(e.f0()),
+            w => w.max_frequency(),
+        })
+        .or_else(|| fdtd.get_explicit_max_frequency())
+        .filter(|f| f.is_finite() && *f > 0.0);
+    f.map_or(1, |f| oe::nyquist_steps(f, dt))
+}
+
+/// The sample indices of a dump along each axis (openEMS snapping, see
+/// [`oe::sample_indices`]); `None` if the box is outside the mesh.
+fn dump_indices(
+    grid: &crate::Grid,
+    d: &crate::compile::ProbeSpec<csx::properties::DumpBox>,
+    pos: DumpPosition,
+    delta_unit: f64,
+) -> Option<[Vec<usize>; 3]> {
+    let s = &d.settings;
+    let mut out: [Vec<usize>; 3] = Default::default();
+    for a in Axis::ALL {
+        let i = a.index();
+        let l = grid.lines(a);
+        let n = l.len();
+        let cand: Vec<f64> = if pos == DumpPosition::CellCenters {
+            (0..n)
+                .map(|j| {
+                    if j + 1 < n {
+                        0.5 * (l[j] + l[j + 1])
+                    } else if n >= 2 {
+                        l[n - 1] + 0.5 * (l[n - 1] - l[n - 2])
+                    } else {
+                        l[0]
+                    }
+                })
+                .collect()
+        } else {
+            l.to_vec()
+        };
+        let stride = s.sub_sampling.map_or(1, |v| v[i].max(1) as usize);
+        let unit = if grid.is_cylindrical() && a == Axis::Y {
+            1.0
+        } else {
+            delta_unit
+        };
+        let res = s
+            .opt_resolution
+            .as_ref()
+            .map(|r| r[i].value() * unit)
+            .filter(|r| r.is_finite() && *r > 0.0);
+        out[i] = oe::sample_indices(
+            &cand,
+            (l[0], l[n - 1]),
+            d.corners[0][i],
+            d.corners[1][i],
+            stride,
+            res,
+        )?;
+    }
+    Some(out)
 }
 
 /// The engine of a Bloch run being mapped: which part of the complex field
@@ -543,51 +615,59 @@ pub(crate) fn map_sources(
         });
     }
 
-    // ---- dumps.
+    // ---- dumps (openEMS sampling rules, see `io::openems::dump`).
     let k = dump_interval(fdtd, dt);
+    let nyquist = openems_nyquist(fdtd, dt);
+    let td_interval = oe::time_domain_interval(nyquist, fdtd.get_oversampling().unwrap_or(4));
     for d in &src.dumps {
         let s = &d.settings;
-        let (q, fd) = match s.dump_type {
-            DumpType::EField => (DumpQuantity::E, false),
-            DumpType::HField => (DumpQuantity::H, false),
-            DumpType::EFieldFd => (DumpQuantity::E, true),
-            DumpType::HFieldFd => (DumpQuantity::H, true),
-            // Reported by the compile step.
+        let id = s.dump_type.id();
+        let fd = (10..=15).contains(&id);
+        let q = match id {
+            0 | 10 => DumpQuantity::E,
+            1 | 11 => DumpQuantity::H,
+            2 | 12 => DumpQuantity::J,
+            3 | 13 => DumpQuantity::RotH,
+            4 | 14 => DumpQuantity::D,
+            5 | 15 => DumpQuantity::B,
+            // SAR dumps below; unknown types are reported by the compile step.
             _ => continue,
         };
         if fd && s.probe.frequencies.is_empty() {
             continue;
         }
-        let stride = s
-            .sub_sampling
-            .map_or([1; 3], |v| v.map(|x| x.max(1) as usize));
-        let region = DumpRegion::new(d.start, d.stop).stride(stride);
         let pos = match s.dump_mode {
             DumpMode::Cell => DumpPosition::CellCenters,
+            DumpMode::NoInterpolation => DumpPosition::Native,
             _ => DumpPosition::Nodes,
         };
-        let sampler = FieldSampler::new(&grid, region, q, pos)?;
-        // StartTime ≤ 0: from the start (including the initial state, whose
-        // H time is −dt/2); StopTime ≤ 0: no limit.
-        let t0 = Some(s.probe.start_time.value())
-            .filter(|&t| t > 0.0)
-            .unwrap_or(f64::NEG_INFINITY);
-        let t1 = s.probe.stop_time.value();
+        let Some(indices) = dump_indices(&grid, d, pos, src.delta_unit) else {
+            warnings.push(format!(
+                "dump {:?}: box is outside the mesh; disabled",
+                d.name
+            ));
+            continue;
+        };
+        let sampler = FieldSampler::openems(&grid, indices, q, pos)?.timing(DumpTiming::OpenEms);
+        let (first, last) =
+            oe::step_window(s.probe.start_time.value(), s.probe.stop_time.value(), dt);
         let op = if fd {
+            let kf = oe::frequency_domain_interval(nyquist, &s.probe.frequencies, dt);
             let op = FreqDump::new(sampler, s.probe.frequencies.clone())
-                .interval(k)
-                .window(t0, t1);
+                .interval(kf)
+                .step_window(first, last);
             DumpOp::Freq(engine.add_operator(op))
         } else {
             let op = TimeDump::new(sampler)
-                .schedule(Schedule::Every(k))
-                .window(t0, t1);
+                .schedule(Schedule::Every(td_interval))
+                .step_window(first, last);
             DumpOp::Time(engine.add_operator(op))
         };
         mapped.dumps.push(DumpEntry {
             name: d.name.clone(),
             id: d.id,
             file_type: s.file_type,
+            dump_type: s.dump_type,
             op,
         });
     }
@@ -602,9 +682,35 @@ pub(crate) fn map_sources(
             continue;
         }
         let op = EdgeDft::new(s.cells, s.frequencies.clone()).interval(k);
+        let oe = match &s.openems {
+            Some(c) => {
+                let sampler = FieldSampler::openems(
+                    &grid,
+                    c.indices.clone(),
+                    DumpQuantity::E,
+                    DumpPosition::CellCenters,
+                )?
+                .timing(DumpTiming::OpenEms);
+                let (first, last) =
+                    src.dumps
+                        .iter()
+                        .find(|d| d.id == s.id)
+                        .map_or((0, None), |d| {
+                            let p = &d.settings.probe;
+                            oe::step_window(p.start_time.value(), p.stop_time.value(), dt)
+                        });
+                let kf = oe::frequency_domain_interval(nyquist, &s.frequencies, dt);
+                let f = FreqDump::new(sampler, s.frequencies.clone())
+                    .interval(kf)
+                    .step_window(first, last);
+                Some(engine.add_operator(f))
+            }
+            None => None,
+        };
         mapped.sar.push(SarEntry {
             spec,
             op: engine.add_operator(op),
+            oe,
         });
     }
     Ok(mapped)

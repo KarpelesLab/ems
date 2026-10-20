@@ -130,25 +130,31 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///    `FD_Samples` frequencies are available through
 ///    [`ProbeResult::spectrum`]; any other frequency through
 ///    [`ProbeResult::dft`].
-/// 4. **Dumps** (csx `DumpBox`): `EField`/`HField` → in-memory
-///    [`TimeDump`], `EFieldFD`/`HFieldFD` → [`FreqDump`] at the property's
-///    frequencies; `DumpMode` `Cell` → cell centres, otherwise nodes;
-///    `SubSampling` → stride. Both sample every `K` steps, with `K` the
-///    Nyquist interval of [`Fdtd::get_max_frequency`] divided by the
-///    oversampling factor ([`Fdtd::get_oversampling`], default 4); `K = 1`
-///    without a maximum frequency. The probe settings' `StartTime` /
-///    `StopTime` restrict the recorded states (by the quantity's own time;
-///    `StartTime ≤ 0`: from the start, `StopTime ≤ 0`: no limit; see
-///    [`TimeDump::window`]). Write VTR files with
-///    [`DumpResult::write_vtr`].
+/// 4. **Dumps** (csx `DumpBox`): `DumpType` 0–5 (E, H, J, rot H, D, B)
+///    → in-memory [`TimeDump`], 10–15 → [`FreqDump`] at the property's
+///    frequencies, sampled with the openEMS rules of
+///    [`io::openems::dump`](crate::io::openems::dump): box snapping,
+///    `DumpMode` (0 raw edge values, 1 nodes, 2 cell centres),
+///    `SubSampling`, `OptResolution`, openEMS step timing
+///    ([`DumpTiming::OpenEms`](crate::engine::DumpTiming)), the time-domain
+///    interval `⌊N/OverSampling⌋` and frequency-domain interval
+///    `min(N, ⌊1/(2·f·dt)⌋)` for the Nyquist step count `N` of the
+///    excitation, and the `StartTime` / `StopTime` step window. [`run`](Self::run)
+///    adds the step after the last one like openEMS. Write openEMS files
+///    with [`DumpResult::write_openems`] (frequency-domain values there are
+///    twice [`FreqDump::values`], the openEMS normalisation), ems VTR files
+///    with [`DumpResult::write_vtr`].
 /// 5. **SAR dumps** (csx `DumpBox` of type `SARLocal`, `SAR1g`, `SAR10g`,
 ///    `SARRaw`): an [`EdgeDft`](crate::engine::EdgeDft) of the E edges of
-///    the box's cells at the property's frequencies (same interval `K`),
-///    with the cell conductivity and density sampled from the model
-///    ([`compile::sar`](crate::compile::sar)). They are reported in
+///    the box's cells at the property's frequencies (interval `K` of
+///    [`Fdtd::get_max_frequency`] and the oversampling factor), with the
+///    cell conductivity and density sampled from the model
+///    ([`compile::sar`](crate::compile::sar)), plus the openEMS-style
+///    cell-centre E DFT for the openEMS SAR files
+///    ([`SarResult::write_openems`]). They are reported in
 ///    [`Results::sar_dumps`] (not in [`Results::dumps`]) as
 ///    [`SarResult`]s; see [`post::sar`](crate::post::sar) for the
-///    evaluation. Other dump types are not supported (warning).
+///    evaluation. Other dump types are ignored (warning).
 ///
 /// # Bloch mode
 ///
@@ -580,9 +586,40 @@ impl Simulation {
     {
         let limits = self.run_limits();
         let outcome = self.run_engines(&limits, progress)?;
+        self.finish_dumps();
         let mut r = self.results();
         r.outcome = Some(outcome);
         Ok(r)
+    }
+
+    /// Records the last openEMS dump step of a run (the state after the
+    /// last step, with the H of one more H update evaluated locally; see
+    /// [`FreqDump::final_sample`]), as openEMS does. Not in Bloch runs.
+    fn finish_dumps(&mut self) {
+        if self.bloch.is_some() {
+            return;
+        }
+        for s in &self.mapped.sar {
+            if let Some(h) = s.oe
+                && let Some(f) = self.engine.operator(&h).final_sample(&self.engine)
+            {
+                self.engine.operator_mut(&h).apply_final(f);
+            }
+        }
+        for d in &self.mapped.dumps {
+            match d.op {
+                DumpOp::Time(h) => {
+                    if let Some(s) = self.engine.operator(&h).final_sample(&self.engine) {
+                        self.engine.operator_mut(&h).apply_final(s);
+                    }
+                }
+                DumpOp::Freq(h) => {
+                    if let Some(s) = self.engine.operator(&h).final_sample(&self.engine) {
+                        self.engine.operator_mut(&h).apply_final(s);
+                    }
+                }
+            }
+        }
     }
 
     /// The run loop: the engine's, or that of both engines of a Bloch run
@@ -719,8 +756,12 @@ impl Simulation {
                     name: d.name.clone(),
                     id: d.id,
                     file_type: d.file_type,
+                    dump_type: d.dump_type,
                     data,
                     imag,
+                    delta_unit: self.delta_unit(),
+                    cylindrical: self.engine.grid().is_cylindrical(),
+                    dt,
                 }
             })
             .collect();
@@ -750,6 +791,16 @@ impl Simulation {
                     file_type: spec.file_type,
                     frequencies: spec.frequencies.clone(),
                     volumes,
+                    openems: e.oe.zip(spec.openems.as_ref()).map(|(h, c)| {
+                        crate::io::openems::dump::OpenEmsSar::new(
+                            self.engine.operator(&h).clone(),
+                            c.sigma.clone(),
+                            c.density.clone(),
+                            self.engine.grid(),
+                            &c.indices,
+                        )
+                    }),
+                    delta_unit: self.delta_unit(),
                 }
             })
             .collect();

@@ -162,7 +162,7 @@ use crate::{Error, Result};
 use csx::discretize::{
     DiscretizeOptions, ExcitationField, LumpedEdge, MaterialGrid, SheetInfo, discretize,
 };
-use csx::properties::{AbcType, DumpMode, DumpType, ExcitationType, ProbeType};
+use csx::properties::{AbcType, DumpType, ExcitationType, ProbeType};
 use csx::{CoordSystem, PropertyKind};
 
 /// Options of [`compile`].
@@ -316,6 +316,9 @@ pub struct ModelSources {
     /// The SAR dumps among [`dumps`](Self::dumps), with their cells and
     /// per-cell materials ([`sar`]).
     pub sar: Vec<sar::SarSpec>,
+    /// The drawing unit of the model \[m\] (lengths of property settings,
+    /// e.g. a dump's `OptResolution`, are in drawing units).
+    pub delta_unit: f64,
 }
 
 /// A ProbeBox or DumpBox property (`T`) with its box snapped to mesh
@@ -332,6 +335,11 @@ pub struct ProbeSpec<T> {
     pub start: [usize; 3],
     /// Node indices of the opposite corner (may be below `start`).
     pub stop: [usize; 3],
+    /// The unsnapped box corners `[first, opposite]` in metres (radians
+    /// along α on a cylindrical grid; drawing units times the drawing unit, after the primitive's
+    /// transformation; the bounding box for non-box shapes). Dumps snap them with the openEMS rules of
+    /// [`io::openems::dump`](crate::io::openems::dump).
+    pub corners: [[f64; 3]; 2],
     /// Waveguide probes (`WaveguideVoltage` / `WaveguideCurrent`): the
     /// mode-weighted field entries `(axis, engine node, weight)` (see
     /// [Waveguide probes](self#waveguide-probes)); empty otherwise.
@@ -573,27 +581,26 @@ fn property_warnings(model: &csx::ContinuousStructure, out: &mut Vec<String>) {
                 _ => "unknown probe type; ignored",
             },
             PropertyKind::DumpBox(d) => match d.dump_type {
-                DumpType::EField | DumpType::HField => continue,
-                DumpType::EFieldFd
-                | DumpType::HFieldFd
-                | DumpType::SarLocal
-                | DumpType::Sar1g
-                | DumpType::Sar10g
-                | DumpType::SarRaw
-                    if d.probe.frequencies.is_empty() =>
-                {
+                DumpType::EField
+                | DumpType::HField
+                | DumpType::Current
+                | DumpType::TotalCurrentDensity
+                | DumpType::DField
+                | DumpType::BField => continue,
+                t if t.is_frequency_domain() && d.probe.frequencies.is_empty() => {
                     "frequency-domain dump without frequencies; ignored"
                 }
                 DumpType::EFieldFd
                 | DumpType::HFieldFd
+                | DumpType::CurrentFd
+                | DumpType::TotalCurrentDensityFd
+                | DumpType::DFieldFd
+                | DumpType::BFieldFd
                 | DumpType::SarLocal
                 | DumpType::Sar1g
                 | DumpType::Sar10g
                 | DumpType::SarRaw => continue,
-                _ => {
-                    "only E/H field dumps (time or frequency domain) and SAR dumps are \
-                     supported; ignored"
-                }
+                _ => "unknown dump type; ignored",
             },
             _ => continue,
         };
@@ -635,7 +642,13 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                 p.primitives.len()
             ));
         }
-        let (start, stop) = snap_primitive(&model.grid, prim, "probe/dump", &p.name, warnings);
+        let (start, stop, corners) =
+            snap_primitive_corners(&model.grid, prim, "probe/dump", &p.name, warnings);
+        let du = model.grid.delta_unit;
+        // Cylindrical grids keep α in radians.
+        let cyl = grid.is_cylindrical();
+        let corners =
+            corners.map(|c| [0, 1, 2].map(|a| if cyl && a == 1 { c[a] } else { c[a] * du }));
         match &p.kind {
             PropertyKind::ProbeBox(pb) => {
                 let waveguide = matches!(
@@ -665,31 +678,19 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                     settings: pb.clone(),
                     start,
                     stop,
+                    corners,
                     mode_entries,
                 })
             }
-            PropertyKind::DumpBox(d) => {
-                if d.dump_mode == DumpMode::NoInterpolation {
-                    warnings.push(format!(
-                        "dump {:?}: NoInterpolation is dumped at the nodes (Node mode)",
-                        p.name
-                    ));
-                }
-                if d.opt_resolution.is_some() {
-                    warnings.push(format!(
-                        "dump {:?}: OptResolution is not supported; full resolution used",
-                        p.name
-                    ));
-                }
-                dumps.push(ProbeSpec {
-                    name: p.name.clone(),
-                    id: p.id(),
-                    settings: d.clone(),
-                    start,
-                    stop,
-                    mode_entries: Vec::new(),
-                })
-            }
+            PropertyKind::DumpBox(d) => dumps.push(ProbeSpec {
+                name: p.name.clone(),
+                id: p.id(),
+                settings: d.clone(),
+                start,
+                stop,
+                corners,
+                mode_entries: Vec::new(),
+            }),
             _ => {}
         }
     }
@@ -704,6 +705,19 @@ fn snap_primitive(
     name: &str,
     warnings: &mut Vec<String>,
 ) -> ([usize; 3], [usize; 3]) {
+    let (s, e, _) = snap_primitive_corners(grid, prim, what, name, warnings);
+    (s, e)
+}
+
+/// [`snap_primitive`] plus the unsnapped corners (drawing units, after
+/// the primitive's transformation).
+fn snap_primitive_corners(
+    grid: &csx::RectilinearGrid,
+    prim: &csx::Primitive,
+    what: &str,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> ([usize; 3], [usize; 3], [[f64; 3]; 2]) {
     // Box and point values are used as given when they are in the grid's
     // coordinate system (the default for primitives without their own).
     let gcs = grid.coord_system;
@@ -753,7 +767,7 @@ fn snap_primitive(
             "{what} {name:?}: box corners snapped to the nearest mesh lines"
         ));
     }
-    (start, stop)
+    (start, stop, [a.0, b.0])
 }
 
 /// Snaps the AbsorbingBC primitives of `model` to its grid (see
@@ -1037,6 +1051,7 @@ pub fn compile(
             dumps,
             plane_waves,
             sar,
+            delta_unit: model.grid.delta_unit,
         },
         warnings,
     })

@@ -222,8 +222,12 @@ pub struct DumpResult {
     pub(crate) name: String,
     pub(crate) id: u32,
     pub(crate) file_type: csx::properties::DumpFileType,
+    pub(crate) dump_type: csx::properties::DumpType,
     pub(crate) data: DumpData,
     pub(crate) imag: Option<Vec<Snapshot>>,
+    pub(crate) delta_unit: f64,
+    pub(crate) cylindrical: bool,
+    pub(crate) dt: f64,
 }
 
 impl DumpResult {
@@ -244,6 +248,41 @@ impl DumpResult {
     /// `write_h5`).
     pub fn file_type(&self) -> csx::properties::DumpFileType {
         self.file_type
+    }
+
+    /// The `DumpType` of the DumpBox.
+    pub fn dump_type(&self) -> csx::properties::DumpType {
+        self.dump_type
+    }
+
+    /// The model's drawing unit \[m\] (the openEMS `mesh_scaling`).
+    pub fn delta_unit(&self) -> f64 {
+        self.delta_unit
+    }
+
+    /// Whether the dump is on a cylindrical grid (sample coordinates
+    /// `(ρ, α, z)`, components `(ρ, α, z)`).
+    pub fn is_cylindrical(&self) -> bool {
+        self.cylindrical
+    }
+
+    /// The engine time step \[s\].
+    pub fn dt(&self) -> f64 {
+        self.dt
+    }
+
+    /// Writes the dump the way openEMS does for its `FileType` (see
+    /// [`io::openems::dump`](crate::io::openems::dump)) into `dir`;
+    /// returns the written paths.
+    ///
+    /// # Errors
+    /// See [`write_dump`](crate::io::openems::dump::write_dump).
+    pub fn write_openems(
+        &self,
+        dir: impl AsRef<Path>,
+        opts: &crate::io::openems::dump::DumpFileOptions,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        crate::io::openems::dump::write_dump(dir, self, opts)
     }
 
     /// The data.
@@ -329,6 +368,8 @@ pub struct SarResult {
     pub(crate) file_type: csx::properties::DumpFileType,
     pub(crate) frequencies: Vec<f64>,
     pub(crate) volumes: Vec<SarVolume>,
+    pub(crate) openems: Option<crate::io::openems::dump::OpenEmsSar>,
+    pub(crate) delta_unit: f64,
 }
 
 impl SarResult {
@@ -363,6 +404,27 @@ impl SarResult {
     /// If `k` is out of range.
     pub fn volume(&self, k: usize) -> &SarVolume {
         &self.volumes[k]
+    }
+
+    /// The model's drawing unit \[m\].
+    pub fn delta_unit(&self) -> f64 {
+        self.delta_unit
+    }
+
+    /// The openEMS-compatible SAR data (cell-interpolated E DFT and cell
+    /// materials, see [`io::openems::dump`](crate::io::openems::dump#sar-dumps));
+    /// `None` on cylindrical grids and in Bloch runs.
+    pub fn openems(&self) -> Option<&crate::io::openems::dump::OpenEmsSar> {
+        self.openems.as_ref()
+    }
+
+    /// Writes the dump like openEMS into `dir`; see
+    /// [`write_sar`](crate::io::openems::dump::write_sar).
+    ///
+    /// # Errors
+    /// See [`write_sar`](crate::io::openems::dump::write_sar).
+    pub fn write_openems(&self, dir: impl AsRef<Path>) -> Result<Vec<std::path::PathBuf>> {
+        crate::io::openems::dump::write_sar(dir, self)
     }
 
     /// All volumes, one per frequency.
