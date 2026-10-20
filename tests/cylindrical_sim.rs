@@ -164,12 +164,12 @@ fn absorbing_faces_that_do_not_exist_are_dropped() {
 fn cartesian_only_features_are_refused() {
     let mut m = cavity();
     let mut sim = Simulation::new(&m, &fdtd().max_timesteps(10)).unwrap();
-    // NF2FF boxes work (a sector box here, design §5.10), but mirrors only
-    // along z.
+    // NF2FF boxes work (a sector box here, design §5.10); a mirror plane
+    // through the box is refused.
     let b = ems::nf2ff::Nf2ffBox::new([1.0, 0.5, 1.0], [8.0, 6.0, 14.0], [10e9]);
     assert!(sim.add_nf2ff(&b).is_ok());
     let b = b.mirror(Axis::X, 0.0, ems::nf2ff::MirrorKind::Pec);
-    assert!(matches!(sim.add_nf2ff(&b), Err(ems::Error::Unsupported(_))));
+    assert!(matches!(sim.add_nf2ff(&b), Err(ems::Error::Invalid(_))));
     let port = ems::port::MslPort::new(
         1,
         [0.0, 0.0, 0.0],

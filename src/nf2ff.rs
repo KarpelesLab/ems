@@ -598,6 +598,24 @@ impl Nf2ffBox {
                 // only if it passes through the axis.
                 let scale = grid.lines(Axis::X)[hi[0]].max(1e-30);
                 let al = grid.lines(Axis::Y);
+                // The plane must not cut the box (its node positions).
+                let (mut mn, mut mx) = (f64::INFINITY, f64::NEG_INFINITY);
+                for &r in &grid.lines(Axis::X)[lo[0]..=hi[0]] {
+                    for &a in &al[lo[1]..=hi[1]] {
+                        let v = if ax == Axis::X {
+                            r * a.cos()
+                        } else {
+                            r * a.sin()
+                        };
+                        mn = mn.min(v);
+                        mx = mx.max(v);
+                    }
+                }
+                if p > mn + 1e-9 * scale && p < mx - 1e-9 * scale {
+                    return Err(Error::Invalid(format!(
+                        "NF2FF mirror plane {ax} = {p} m cuts the box ({mn} .. {mx} m)"
+                    )));
+                }
                 for (max, node) in [(false, lo[1]), (true, hi[1])] {
                     let (s, c) = al[node].sin_cos();
                     let across = if ax == Axis::X { c } else { s };
