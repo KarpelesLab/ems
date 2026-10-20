@@ -17,7 +17,7 @@
 //! * The incident wave is `Excite·a(t − t_lag − ξ/v)` with `ξ` the
 //!   distance along `PropDir` from the box corner the wave enters first
 //!   (see [`crate::engine::planewave`]) and `t_lag` one time step plus the
-//!   travel time across the box's first cell ([`openems_lag`]): openEMS's
+//!   travel time across the box's first cell (`openems_lag`): openEMS's
 //!   phase reference, measured from its output (design §5.16; the
 //!   polarisation and direction conventions agree). The excitation's
 //!   `Delay` is ignored with a warning, as openEMS ignores it for plane
