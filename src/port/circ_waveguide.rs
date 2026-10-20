@@ -106,9 +106,17 @@ pub struct CircWaveguidePortProperties {
 ///   a `radius` tuned to the effective radius of the staircase (from its
 ///   measured cutoff) removes most of that mismatch.
 /// * **Cylindrical grids**: the guide is coaxial with the grid, `start`
-///   and `stop` must lie on the axis (`ρ = 0`), the propagation axis is
-///   `z` and the azimuth must be closed (`2π`). The wall can be the
-///   `ρ_max` PEC face (`radius` = the last `ρ` line) or metal.
+///   and `stop` must lie on the axis (`ρ = 0`) and the propagation axis is
+///   `z`. The wall can be the `ρ_max` PEC face (`radius` = the last `ρ`
+///   line) or metal. The azimuth is closed (`2π`), or a **sector** whose
+///   two α faces are symmetry planes of the mode (a half or quarter
+///   model): on each face either the tangential E of the mode vanishes
+///   (`cos(n(α − φ0)) = 0`, or a TE0m mode; the face must be a PEC wall)
+///   or its tangential H does (`sin(n(α − φ0)) = 0`, or a TM0m mode; a PMC
+///   wall). [`sector_walls`](Self::sector_walls) tells which; the port
+///   cannot check the boundary settings. The mode function is then
+///   normalised over the sector, so `V`, `I` and the power are those of
+///   the modelled part (S-parameters equal the full guide's).
 /// * As for the rectangular port, the excitation is a soft source that
 ///   radiates both ways (end the guide behind it in a PML), the two planes
 ///   must differ, and the reference plane should be at least one cell
@@ -164,6 +172,9 @@ pub struct CircWaveguidePort {
     priority: i32,
     /// `k_c` \[1/m\], set by `add_to`.
     kc: Option<f64>,
+    /// Sector grids: the walls (`true` PEC, `false` PMC) at `α_min`,
+    /// `α_max`, and the sector's fraction of the circle; set by `add_to`.
+    sector: Option<([bool; 2], f64)>,
     props: Option<CircWaveguidePortProperties>,
 }
 
@@ -185,6 +196,7 @@ impl CircWaveguidePort {
             delay: 0.0,
             priority: 0,
             kc: None,
+            sector: None,
             props: None,
         }
     }
@@ -249,6 +261,24 @@ impl CircWaveguidePort {
         C0 / (self.eps_r * self.mu_r).sqrt()
     }
 
+    /// On a sector grid (after [`add_to`](Self::add_to)): the boundary the
+    /// `α_min` and `α_max` faces must have for the mode ([`Boundary::Pec`]
+    /// or [`Boundary::Pmc`]); `None` on a closed azimuth or a Cartesian
+    /// grid.
+    ///
+    /// [`Boundary::Pec`]: crate::Boundary::Pec
+    /// [`Boundary::Pmc`]: crate::Boundary::Pmc
+    pub fn sector_walls(&self) -> Option<[crate::Boundary; 2]> {
+        let (w, _) = self.sector?;
+        Some(w.map(|pec| {
+            if pec {
+                crate::Boundary::Pec
+            } else {
+                crate::Boundary::Pmc
+            }
+        }))
+    }
+
     /// Cutoff wavenumber `k_c` \[1/m\] (after [`add_to`](Self::add_to)).
     pub fn cutoff_wavenumber(&self) -> Option<f64> {
         self.kc
@@ -287,8 +317,8 @@ impl CircWaveguidePort {
     /// coincide or differ along more than one axis, non-finite or
     /// non-positive values, a port already added, or a property name
     /// already present in the model. [`Error::Unsupported`] on a
-    /// cylindrical grid if the port is not on the axis along `z` or the
-    /// azimuth is not closed.
+    /// cylindrical grid if the port is not on the axis along `z`, or on a
+    /// sector whose α faces are not symmetry planes of the mode.
     pub fn add_to(mut self, model: &mut ContinuousStructure) -> Result<Self> {
         let num = self.number;
         if self.props.is_some() {
@@ -348,9 +378,28 @@ impl CircWaveguidePort {
                 _ => 0.0,
             };
             if (span - 2.0 * PI).abs() > 1e-9 * 2.0 * PI {
-                return Err(Error::Unsupported(format!(
-                    "port {num}: a circular waveguide port needs a closed azimuth (2π)"
-                )));
+                // A sector: both α faces must be symmetry planes.
+                let (n, _) = self.mode.indices();
+                let te = self.mode.is_te();
+                let mut walls = [true; 2];
+                for (w, &aw) in walls.iter_mut().zip([al[0], al[al.len() - 1]].iter()) {
+                    let x = f64::from(n) * (aw - self.phi0);
+                    let (pec, pmc) = if n == 0 {
+                        (te, !te)
+                    } else {
+                        (x.cos().abs() < 1e-9, x.sin().abs() < 1e-9)
+                    };
+                    if !(pec || pmc) {
+                        return Err(Error::Unsupported(format!(
+                            "port {num}: the alpha face at {aw} rad is not a symmetry plane of \
+                             {} (polarization {} rad); a sector port needs both faces to be \
+                             PEC or PMC planes of the mode",
+                            self.mode, self.phi0
+                        )));
+                    }
+                    *w = pec;
+                }
+                self.sector = Some((walls, span / (2.0 * PI)));
             }
             Axis::Z
         } else {
@@ -482,7 +531,10 @@ impl CircWaveguidePort {
         let nf = f64::from(n);
         let a_m = self.radius * unit;
         let kc = p / a_m;
-        let ang = if n == 0 { 2.0 * PI } else { PI };
+        // ∫ of the azimuthal factor squared (over the sector's share of
+        // the circle on a sector grid, whose faces are zeros or extrema).
+        let frac = self.sector.map_or(1.0, |(_, f)| f);
+        let ang = if n == 0 { 2.0 * PI } else { PI } * frac;
         let rad = if self.mode.is_te() {
             0.5 * a_m * a_m * (1.0 - nf * nf / (p * p)) * bessel::jn(n as i32, p).powi(2)
         } else {
@@ -823,5 +875,34 @@ mod tests {
             p([0., 0., 2.], [0., 0., 5.], 5.0, te).add_to(&mut c),
             Err(Error::Unsupported(_))
         ));
+        // Half and quarter sectors: the faces must be symmetry planes.
+        use crate::Boundary::{Pec, Pmc};
+        let walls = |lines: &[f64], mode: CircMode, phi0: f64| {
+            let mut c = cyl_model();
+            c.grid.set_lines(1, lines.iter().copied()).unwrap();
+            CircWaveguidePort::new(1, [0., 0., 2.], [0., 0., 5.], 5.0, mode)
+                .polarization(phi0)
+                .add_to(&mut c)
+                .map(|p| p.sector_walls())
+        };
+        let half = [0.0, PI / 2.0, PI];
+        let quarter = [0.0, PI / 4.0, PI / 2.0];
+        assert_eq!(walls(&half, te, PI / 2.0).unwrap(), Some([Pec, Pec]));
+        assert_eq!(walls(&half, te, 0.0).unwrap(), Some([Pmc, Pmc]));
+        assert_eq!(walls(&quarter, te, 0.0).unwrap(), Some([Pmc, Pec]));
+        assert!(walls(&quarter, te, 0.3).is_err());
+        assert_eq!(
+            walls(&half, CircMode::Te(0, 1), 0.0).unwrap(),
+            Some([Pec, Pec])
+        );
+        assert_eq!(
+            walls(&half, CircMode::Tm(0, 1), 0.0).unwrap(),
+            Some([Pmc, Pmc])
+        );
+        assert_eq!(
+            walls(&quarter, CircMode::Tm(2, 1), PI / 4.0).unwrap(),
+            Some([Pec, Pec])
+        );
+        assert_eq!(walls(&[0.0, PI, 2.0 * PI], te, 0.0).unwrap(), None);
     }
 }

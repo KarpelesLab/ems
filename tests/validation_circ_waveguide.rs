@@ -41,6 +41,9 @@ const A: f64 = 10.0;
 enum Mesh {
     /// Cylindrical: `nr` radial cells over `a`, `na` azimuthal cells.
     Cyl { nr: usize, na: usize },
+    /// Cylindrical half guide `α ∈ [0, π]` (`na` cells) with PEC α faces
+    /// (the plane `y = 0`), ports polarised along y (`φ0 = π/2`).
+    CylHalf { nr: usize, na: usize },
     /// Cartesian cells of `d` mm, wall staircased or conformal.
     Cart { d: f64, conformal: bool },
 }
@@ -78,15 +81,22 @@ fn run_with(
         .map(|i| i as f64 * dz)
         .collect();
     let mut opts = CompileOptions::default();
+    let mut phi0 = 0.0;
     match mesh {
-        Mesh::Cyl { nr, na } => {
+        Mesh::Cyl { nr, na } | Mesh::CylHalf { nr, na } => {
+            let span = if matches!(mesh, Mesh::CylHalf { .. }) {
+                phi0 = PI / 2.0;
+                PI
+            } else {
+                TAU
+            };
             m.coord_system = CoordSystem::Cylindrical;
             m.grid.coord_system = CoordSystem::Cylindrical;
             m.grid
                 .set_lines(0, (0..=nr).map(|i| A * i as f64 / nr as f64))
                 .unwrap();
             m.grid
-                .set_lines(1, (0..=na).map(|j| j as f64 * TAU / na as f64))
+                .set_lines(1, (0..=na).map(|j| j as f64 * span / na as f64))
                 .unwrap();
         }
         Mesh::Cart { d, conformal } => {
@@ -116,11 +126,16 @@ fn run_with(
     let z1 = (pml as f64 + 2.0) * dz;
     let (r1, r2) = (z1 + 4.0 * dz, len - z1 - 4.0 * dz);
     let p1 = CircWaveguidePort::new(1, [0., 0., z1], [0., 0., r1], pr, mode)
+        .polarization(phi0)
         .excite(1.0)
         .add_to(&mut m)
         .unwrap();
+    if matches!(mesh, Mesh::CylHalf { .. }) {
+        assert_eq!(p1.sector_walls(), Some([Boundary::Pec, Boundary::Pec]));
+    }
     let p2 = (!shorted).then(|| {
         CircWaveguidePort::new(2, [0., 0., len - z1], [0., 0., r2], pr, mode)
+            .polarization(phi0)
             .add_to(&mut m)
             .unwrap()
     });
@@ -236,6 +251,43 @@ fn te11_matched_cylindrical() {
     // high at 10 GHz; the effective cutoff is the sharper check.
     let (_, kc_err, spread) = check_matched(&r, -30.0, 0.04, 0.02);
     assert!(kc_err.abs() < 0.015 && spread < 2e-3, "{kc_err} ± {spread}");
+}
+
+/// TE11 in the half guide `α ∈ [0, π]` with PEC α walls (8 × 6 cells,
+/// the same α spacing as the full 8 × 12 grid): a sector port, polarised
+/// along y, normalised over the half section. The half model is the
+/// symmetric half of the full guide's y-polarised mode (the 12-cell grid
+/// maps onto itself under a quarter turn), so the S-parameters are the
+/// full guide's.
+#[test]
+fn te11_half_guide_sector_port() {
+    let freqs = [10e9, 11e9, 12e9, 13e9];
+    let full = run(
+        Mesh::Cyl { nr: 8, na: 12 },
+        CircMode::Te(1, 1),
+        &freqs,
+        11.5e9,
+        50.0,
+        false,
+    );
+    let half = run(
+        Mesh::CylHalf { nr: 8, na: 6 },
+        CircMode::Te(1, 1),
+        &freqs,
+        11.5e9,
+        50.0,
+        false,
+    );
+    let (s21f, s21h) = (full.s21.as_ref().unwrap(), half.s21.as_ref().unwrap());
+    let mut worst = 0.0f64;
+    for k in 0..freqs.len() {
+        worst = worst
+            .max((half.s11[k] - full.s11[k]).norm())
+            .max((s21h[k] - s21f[k]).norm());
+    }
+    eprintln!("half guide vs full guide: S-parameters within {worst:.2e}");
+    assert!(worst < 1e-4, "{worst}");
+    check_matched(&half, -30.0, 0.04, 0.02);
 }
 
 /// TE11 on a finer cylindrical grid (20 × 32 cells).

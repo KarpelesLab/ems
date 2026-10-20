@@ -156,6 +156,12 @@ pub struct CoaxPortProperties {
 ///   two stored copies of one edge, each holding half of its dual length,
 ///   so the loop must contain both; its radial sides, which do not cancel
 ///   at the seam, lie inside or on the inner conductor where `H_ρ = 0`.
+/// * Sector grids (an α range below 2π, e.g. a quarter model): the α
+///   faces must be PMC walls, the symmetry planes of the TEM mode. The
+///   port then works on that sector of the line: the extracted `Z_L` and
+///   [`z0`](Self::z0) are the sector line's (`2π/Δα` times the full
+///   line's), `β` and the S-parameters those of the full line (quarter
+///   sector: `Z_L` within 1e-4 of the discrete value, `|S11|` ≤ −83 dB).
 ///
 /// # Mesh requirements
 ///
@@ -212,6 +218,9 @@ pub struct CoaxPort {
     extension: f64,
     props: Option<CoaxPortProperties>,
     layout: Option<Layout>,
+    /// The share of the full circle the grid's α range covers (1 on a
+    /// Cartesian grid or a closed azimuth), set by `add_to`.
+    sector: f64,
 }
 
 impl CoaxPort {
@@ -246,6 +255,7 @@ impl CoaxPort {
             extension: 0.0,
             props: None,
             layout: None,
+            sector: 1.0,
         }
     }
 
@@ -343,9 +353,11 @@ impl CoaxPort {
         self.layout.map(|l| l.v_pos)
     }
 
-    /// Analytic TEM impedance `Z0 = η0/(2π·√ε_r)·ln(b/a)` \[Ω\].
+    /// Analytic TEM impedance `Z0 = η0/(2π·√ε_r)·ln(b/a)` \[Ω\]; on a
+    /// sector grid (after [`add_to`](Self::add_to)) that of the modelled
+    /// sector line, `Z0·2π/Δα`.
     pub fn z0(&self) -> f64 {
-        Z0 / (TAU * self.eps_r.sqrt()) * (self.r_outer / self.r_inner).ln()
+        Z0 / (TAU * self.eps_r.sqrt()) * (self.r_outer / self.r_inner).ln() / self.sector
     }
 
     /// The coordinates (drawing units, per axis index) that should be mesh
@@ -480,7 +492,12 @@ impl CoaxPort {
                 ))
             })?;
         let geo = if cyl {
-            cylindrical_geometry(model, a, b, self.shield, self.start[1], n)?
+            let g = cylindrical_geometry(model, a, b, self.shield, self.start[1], n)?;
+            let span = g.alpha_span.1 - g.alpha_span.0;
+            if (span - TAU).abs() > 1e-9 * TAU {
+                self.sector = span / TAU;
+            }
+            g
         } else {
             cartesian_geometry(
                 model,

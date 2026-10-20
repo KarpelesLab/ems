@@ -131,6 +131,79 @@ fn coax_port_cylindrical_matched_line() {
     assert!(s21 < 1e-3, "S21 error {s21}");
 }
 
+/// The same line on a quarter sector `α ∈ [0, π/2]` with PMC α faces
+/// (symmetry planes of the TEM mode): the port extracts the sector line,
+/// whose impedance is 4 × the full line's (`z0` reports it), with the same
+/// `β` and matched S-parameters.
+#[test]
+fn coax_port_cylindrical_quarter_sector() {
+    let (a, b, dr, dz) = (1.0, 2.3, 0.1, 0.5);
+    let mut m = ContinuousStructure::new();
+    m.coord_system = CoordSystem::Cylindrical;
+    m.grid.coord_system = CoordSystem::Cylindrical;
+    m.grid.delta_unit = 1e-3;
+    m.grid.set_lines(0, lines(a, b, dr)).unwrap();
+    m.grid
+        .set_lines(1, (0..=2).map(|j| j as f64 * TAU / 8.0))
+        .unwrap();
+    m.grid.set_lines(2, lines(0.0, 60.0, dz)).unwrap();
+    let sub = m.add_property(Property::material("fill", Material::new(EPS_R, 0.0)));
+    m.add_primitive(
+        sub,
+        Primitive::new(BoxShape::new([a, 0.0, 0.0], [b, TAU / 4.0, 60.0])),
+    )
+    .unwrap();
+    let p1 = CoaxPort::new(1, [0.0, 0.0, 6.0], [0.0, 0.0, 26.0], Axis::Z, a, b)
+        .eps_r(EPS_R)
+        .excite(1.0)
+        .add_to(&mut m)
+        .unwrap();
+    let p2 = CoaxPort::new(2, [0.0, 0.0, 54.0], [0.0, 0.0, 34.0], Axis::Z, a, b)
+        .eps_r(EPS_R)
+        .add_to(&mut m)
+        .unwrap();
+    let fdtd = Fdtd::new()
+        .waveform(Waveform::gaussian(5e9, 4e9))
+        .boundaries(Boundaries::all(Boundary::Pec))
+        .boundary(Face::YMin, Boundary::Pmc)
+        .boundary(Face::YMax, Boundary::Pmc)
+        .boundary(Face::ZMin, Boundary::pml(8))
+        .boundary(Face::ZMax, Boundary::pml(8))
+        .end_criteria(EndCriteria::energy_decay_db(-80.0))
+        .max_timesteps(30_000);
+    let res = run(&m, &fdtd);
+    let freqs = linspace(2e9, 8e9, 7);
+    let r1 = p1.analyze(&res, &freqs).unwrap();
+    let r2 = p2.analyze(&res, &freqs).unwrap();
+    let z_disc: f64 = lines(a, b, dr)
+        .windows(2)
+        .map(|w| (w[1] - w[0]) / (0.5 * (w[0] + w[1])))
+        .sum::<f64>()
+        * Z0
+        / (TAU * EPS_R.sqrt())
+        * 4.0;
+    assert!((p1.z0() / (4.0 * Z0 / (TAU * EPS_R.sqrt()) * 2.3f64.ln()) - 1.0).abs() < 1e-12);
+    let dt = res.dt();
+    let (mut ez, mut eb) = (0.0f64, 0.0f64);
+    for (k, &f) in freqs.iter().enumerate() {
+        let k_yee = yee_k(f, dt, dz * 1e-3, EPS_R, 0.0).re / (dz * 1e-3);
+        for r in [&r1, &r2] {
+            let (z, beta) = (r.z_line()[k], r.beta()[k]);
+            ez = ez.max((z - z_disc).norm() / z_disc);
+            eb = eb.max((beta / k_yee - 1.0).abs());
+        }
+    }
+    let (s11, s21) = through(&r1, &r2, 8e-3);
+    println!(
+        "quarter-sector coax: discrete {z_disc:.3} Ω; |Z_L − discrete| ≤ {ez:.2e}, β vs Yee ≤ \
+         {eb:.2e}; |S11| ≤ {s11:.1} dB, |ΔS21| ≤ {s21:.2e}"
+    );
+    assert!(ez < 2e-4, "Z vs discrete {ez}");
+    assert!(eb < 2e-4, "β vs Yee {eb}");
+    assert!(s11 < -60.0, "|S11| = {s11} dB");
+    assert!(s21 < 1e-3, "S21 error {s21}");
+}
+
 /// Cartesian staircased coax along z: a = 1.5 mm, b = 3.45 mm (50 Ω in
 /// air ×1/√ε_r), 0.25 mm cells, a shield to 4 mm.
 #[test]
