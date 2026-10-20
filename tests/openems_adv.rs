@@ -11,11 +11,70 @@
 //! openEMS build; the numbers are in each test's doc comment.
 #![cfg(feature = "xml")]
 
-#[path = "common/oe_probe.rs"]
-mod oe_probe;
+use std::path::{Path, PathBuf};
 
+use ems::io::openems::{ProbeFile, read_probe_file};
 use ems::{CompileOptions, Results, Simulation};
-use oe_probe::{OeProbe, fixture_dir, meta, meta_dt, rel_l2};
+
+/// Directory of fixture case `name`.
+fn fixture_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/openems")
+        .join(name)
+}
+
+/// The `key: value` entries of a case's `meta.txt` with key `key`.
+fn meta(name: &str, key: &str) -> Vec<String> {
+    let p = fixture_dir(name).join("meta.txt");
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let pre = format!("{key}:");
+    text.lines()
+        .filter_map(|l| l.strip_prefix(&pre).map(|v| v.trim().to_string()))
+        .collect()
+}
+
+/// The openEMS time step recorded in a case's `meta.txt`.
+fn meta_dt(name: &str) -> f64 {
+    meta(name, "dt")[0].parse().expect("dt in meta.txt")
+}
+
+/// An openEMS probe file of case `name` (the public reader,
+/// `ems::io::openems::read_probe_file`).
+fn oe_probe(name: &str, file: &str) -> ProbeFile {
+    let path = fixture_dir(name).join(file);
+    read_probe_file(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Samples the ems series `(times, values)` at the openEMS sample times
+/// `t` (linear interpolation; the sample times coincide when the time
+/// steps agree) and returns the relative L2 difference
+/// `‖ems − oe‖ / ‖oe‖` and the largest time mismatch to the nearest ems
+/// sample, in units of `dt`.
+fn rel_l2(t: &[f64], oe: &[f64], ems_t: &[f64], ems: &[f64], dt: f64) -> (f64, f64) {
+    let (mut num, mut den, mut worst) = (0.0f64, 0.0f64, 0.0f64);
+    for (&ti, &vi) in t.iter().zip(oe) {
+        if ti > *ems_t.last().unwrap() + 1e-6 * dt {
+            break;
+        }
+        let k = ems_t.partition_point(|&x| x < ti);
+        let v = if k == 0 {
+            // Before the first ems sample: the field is still zero.
+            worst = worst.max((ems_t[0] - ti) / dt * if vi == 0.0 { 0.0 } else { 1.0 });
+            0.0
+        } else if k >= ems_t.len() {
+            ems[ems_t.len() - 1]
+        } else {
+            let (t0, t1) = (ems_t[k - 1], ems_t[k]);
+            let d = (ti - t0).min(t1 - ti);
+            worst = worst.max(d / dt);
+            let w = (ti - t0) / (t1 - t0);
+            ems[k - 1] * (1.0 - w) + ems[k] * w
+        };
+        num += (v - vi) * (v - vi);
+        den += vi * vi;
+    }
+    ((num / den.max(1e-300)).sqrt(), worst)
+}
 
 /// Runs fixture `name` in ems and checks the time step against the one
 /// openEMS reported.
@@ -37,11 +96,17 @@ fn run(name: &str, opts: &CompileOptions) -> Results {
 fn compare(name: &str, res: &Results) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     for f in meta(name, "keep")[0].split_whitespace() {
-        let oe = OeProbe::read(fixture_dir(name).join(f));
+        let oe = oe_probe(name, f);
         let p = res
             .probe(f)
             .unwrap_or_else(|| panic!("{name}: no ems probe {f}"));
-        let (e, dt_off) = rel_l2(&oe.t, oe.values(), p.times(), p.scalar().unwrap(), res.dt());
+        let (e, dt_off) = rel_l2(
+            &oe.abscissa(),
+            &oe.column(0),
+            p.times(),
+            p.scalar().unwrap(),
+            res.dt(),
+        );
         assert!(
             dt_off < 1e-3,
             "{name}/{f}: sample times differ by {dt_off} dt"
@@ -235,7 +300,48 @@ fn cylindrical_drude() {
 /// (`compile/mode.rs`). Measured 2.8–3.5e-7.
 #[test]
 fn waveguide_probes_te10() {
-    check("adv_wg_te10", 2e-5);
+    let name = "adv_wg_te10";
+    let res = run(name, &CompileOptions::default());
+    for (f, e) in compare(name, &res) {
+        assert!(e < 2e-5, "{name}/{f}: relative L2 {e:.3e} > 2e-5");
+    }
+    // Purity: 1 for the matched mode (voltage; the current's half-cell
+    // offset gives 0.9945), 0.8497 / 0.6536 against `1` / `x`.
+    check_mode_files(name, &res, 1e-4);
+}
+
+/// The mode-matching files of every kept probe of `name`, written by
+/// ems (`ems::io::openems`), against openEMS's: kind, columns, position
+/// lines, and the `mode_purity` column at the samples where the probe's
+/// value is above 1 % of its peak (the purity of a vanishing field is
+/// the ratio of round-off terms), to `tol` absolute. Measured: ≤ 1e-5
+/// (2e-7 and less for most probes).
+fn check_mode_files(name: &str, res: &Results, tol: f64) {
+    let dir = std::env::temp_dir().join(format!("ems-adv-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    ems::io::openems::write_probes(res, &dir).unwrap();
+    for f in meta(name, "keep")[0].split_whitespace() {
+        let oe = oe_probe(name, f);
+        let ours = read_probe_file(dir.join(f)).unwrap();
+        assert!(oe.kind.is_mode_matching(), "{name}/{f}: {:?}", oe.kind);
+        assert_eq!(ours.kind, oe.kind, "{name}/{f}");
+        assert_eq!(ours.location, oe.location, "{name}/{f}: position lines");
+        let (vo, po) = (oe.column(0), oe.mode_purity().unwrap());
+        let (ve, pe) = (ours.column(0), ours.mode_purity().unwrap());
+        let peak = vo.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let mut worst = 0.0f64;
+        for k in 0..vo.len().min(ve.len()) {
+            if vo[k].abs() > 1e-2 * peak {
+                worst = worst.max((pe[k] - po[k]).abs());
+            }
+        }
+        eprintln!(
+            "{name}/{f}: mode purity {:.6} (max |Δ| {worst:.1e})",
+            po[po.len() / 2]
+        );
+        assert!(worst < tol, "{name}/{f}: mode purity off by {worst:e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A TE11-like field on a graded mesh (0.5…1.5 mm cells around the node
@@ -252,6 +358,7 @@ fn waveguide_probes_graded() {
         let tol = if f == "wv_node" { 3e-3 } else { 1e-4 };
         assert!(e < tol, "{name}/{f}: relative L2 {e:.3e} > {tol:e}");
     }
+    check_mode_files(name, &res, 1e-4);
 }
 
 // ------------------------------------------------------------ sheets
@@ -259,17 +366,18 @@ fn waveguide_probes_graded() {
 /// ems's signal of `name`'s probe `f` at the openEMS sample times of the
 /// fixture (they coincide: same `dt`).
 fn at_oe_times(name: &str, f: &str, res: &Results) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let oe = OeProbe::read(fixture_dir(name).join(f));
+    let oe = oe_probe(name, f);
     let p = res.probe(f).unwrap();
     let (t, v) = (p.times(), p.scalar().unwrap());
-    let ems =
-        oe.t.iter()
-            .map(|&x| {
-                let k = t.partition_point(|&y| y < x - 1e-3 * res.dt());
-                if k < t.len() { v[k] } else { 0.0 }
-            })
-            .collect();
-    (oe.t.clone(), oe.values().to_vec(), ems)
+    let oe_t = oe.abscissa();
+    let ems = oe_t
+        .iter()
+        .map(|&x| {
+            let k = t.partition_point(|&y| y < x - 1e-3 * res.dt());
+            if k < t.len() { v[k] } else { 0.0 }
+        })
+        .collect();
+    (oe_t, oe.column(0), ems)
 }
 
 /// openEMS's `ConductingSheet` is a different (fitted) model: a 35 µm

@@ -79,6 +79,11 @@ pub struct ProbeResult {
     pub(crate) values: ProbeValues,
     pub(crate) imag: Option<ProbeValues>,
     pub(crate) location: Option<ProbeLocation>,
+    pub(crate) mode_purity: Option<Vec<f64>>,
+    /// H-type probes after a run: openEMS's sample after the last step
+    /// (time, values, mode purity), written to the openEMS probe files
+    /// only.
+    pub(crate) final_sample: Option<(f64, Vec<f64>, Option<f64>)>,
 }
 
 impl ProbeResult {
@@ -103,10 +108,26 @@ impl ProbeResult {
         self.kind
     }
 
-    /// The snapped position of a model probe (`None` for lumped-element
-    /// currents and waveguide probes).
+    /// The snapped position of a model probe, as openEMS reports it in
+    /// its probe files (`None` for lumped-element currents and for
+    /// waveguide probes on cylindrical grids). For waveguide probes it is
+    /// the range of openEMS's sample nodes (see
+    /// [`mode_purity`](Self::mode_purity)).
     pub fn location(&self) -> Option<&ProbeLocation> {
         self.location.as_ref()
+    }
+
+    /// Waveguide (mode-matching) probes (`WaveguideVoltage` /
+    /// `WaveguideCurrent`): the mode purity at each sample, parallel to
+    /// [`times`](Self::times) — the squared normalised overlap
+    /// `(Σ F_t·f·A)² / (Σ |F_t|²·A · Σ |f_t|²·A)` of the transverse field
+    /// `F_t` (E or H) with the mode function `f` over openEMS's sample
+    /// points, 1 when the field has the mode's shape, multiplied by the
+    /// probe weight as openEMS does (see
+    /// [`compile`](crate::compile#waveguide-probes)). NaN on cylindrical
+    /// grids (not identified there); `None` for every other probe.
+    pub fn mode_purity(&self) -> Option<&[f64]> {
+        self.mode_purity.as_deref()
     }
 
     /// The property's frequencies for frequency-domain output \[Hz\]

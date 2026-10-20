@@ -41,8 +41,15 @@ pub(crate) struct ProbeEntry {
     pub frequencies: Vec<f64>,
     pub start_time: f64,
     pub stop_time: f64,
-    /// Snapped position as openEMS reports it (none for waveguide probes).
+    /// Snapped position as openEMS reports it (waveguide probes: the
+    /// range of openEMS's samples; none on cylindrical grids).
     pub location: Option<ProbeLocation>,
+    /// A waveguide (mode-matching) probe, which records the mode purity
+    /// too.
+    pub waveguide: bool,
+    /// H-type probes after a run: the sample at `(N + ½)·dt` openEMS
+    /// records after the last step `N` (time, values, mode purity).
+    pub final_sample: Option<(f64, Vec<f64>, Option<f64>)>,
 }
 
 /// The engine operator behind a model dump.
@@ -634,6 +641,16 @@ pub(crate) fn map_sources(
                 for &(axis, node, w) in &p.mode_entries {
                     pr = pr.entry(axis, node, w * weight);
                 }
+                if let Some(samples) = &p.mode_samples {
+                    pr = pr.mode_purity(samples.clone(), weight);
+                }
+                let at = |idx: [usize; 3]| Axis::ALL.map(|a| grid.lines(a)[idx[a.index()]]);
+                let location = p.mode_range.map(|(start, stop)| ProbeLocation {
+                    start,
+                    stop,
+                    start_coords: at(start),
+                    stop_coords: at(stop),
+                });
                 mapped.probes.push(ProbeEntry {
                     name: p.name.clone(),
                     id: p.id,
@@ -643,7 +660,9 @@ pub(crate) fn map_sources(
                     frequencies: s.frequencies.clone(),
                     start_time: s.start_time.value(),
                     stop_time: s.stop_time.value(),
-                    location: None,
+                    location,
+                    waveguide: true,
+                    final_sample: None,
                 });
                 continue;
             }
@@ -776,6 +795,8 @@ pub(crate) fn map_sources(
             start_time: s.start_time.value(),
             stop_time: s.stop_time.value(),
             location: Some(location),
+            waveguide: false,
+            final_sample: None,
         });
     }
 

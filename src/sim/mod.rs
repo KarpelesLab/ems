@@ -627,8 +627,10 @@ impl Simulation {
         F: FnMut(&Progress) -> core::ops::ControlFlow<()>,
     {
         let limits = self.run_limits();
+        self.clear_final_probe_samples();
         let outcome = self.run_engines(&limits, progress)?;
         self.finish_dumps();
+        self.finish_probes();
         let mut r = self.results();
         r.outcome = Some(outcome);
         Ok(r)
@@ -664,6 +666,41 @@ impl Simulation {
         }
     }
 
+    /// Records, for the H-type probes (current, H field), the sample at
+    /// `(N + ½)·dt` after the last step `N` that openEMS writes to its
+    /// probe files (the H update of step `N` evaluated locally, see
+    /// [`Probe::lookahead`](crate::engine::Probe::lookahead)); it is not
+    /// part of [`ProbeResult::values`], only of the openEMS probe files
+    /// ([`io::openems::probes`](crate::io::openems::probes)). Not in Bloch
+    /// runs.
+    fn finish_probes(&mut self) {
+        if self.bloch.is_some() {
+            return;
+        }
+        let engine = &self.engine;
+        for p in &mut self.mapped.probes {
+            p.final_sample = match p.op {
+                ProbeOp::Scalar(h) => engine
+                    .operator(&h)
+                    .lookahead(engine)
+                    .map(|(t, v, q)| (t, vec![v], q)),
+                ProbeOp::Native(hs) => {
+                    let s: Option<Vec<_>> = hs
+                        .iter()
+                        .map(|h| engine.operator(h).lookahead(engine))
+                        .collect();
+                    s.map(|s| (s[0].0, s.iter().map(|x| x.1).collect(), None))
+                }
+            };
+        }
+    }
+
+    fn clear_final_probe_samples(&mut self) {
+        for p in &mut self.mapped.probes {
+            p.final_sample = None;
+        }
+    }
+
     /// The run loop: the engine's, or that of both engines of a Bloch run
     /// (energy summed over both).
     fn run_engines<F>(&mut self, limits: &RunLimits, progress: F) -> Result<RunOutcome>
@@ -686,6 +723,7 @@ impl Simulation {
     /// Advances `n` steps (both engines in a Bloch run), without end
     /// criteria.
     pub fn step(&mut self, n: u64) {
+        self.clear_final_probe_samples();
         match &mut self.bloch {
             None => self.engine.run(n),
             Some(b) => {
@@ -733,6 +771,20 @@ impl Simulation {
                     }
                 };
                 let imag = imag.map(|(e, m)| window(probe_series(e, &m.probes[q]).1));
+                let mode_purity = match p.op {
+                    ProbeOp::Scalar(h) if p.waveguide => {
+                        Some(match self.engine.operator(&h).purity() {
+                            Some(v) => v[lo..hi].to_vec(),
+                            // Not identified (cylindrical grids).
+                            None => vec![f64::NAN; hi - lo],
+                        })
+                    }
+                    _ => None,
+                };
+                // The openEMS final sample, inside the recording window.
+                let final_sample = p.final_sample.clone().filter(|(t, ..)| {
+                    *t >= p.start_time - eps && (p.stop_time <= 0.0 || *t <= p.stop_time + dt + eps)
+                });
                 ProbeResult {
                     name: p.name.clone(),
                     id: p.id,
@@ -744,6 +796,8 @@ impl Simulation {
                     values: window(values),
                     imag,
                     location: p.location,
+                    mode_purity,
+                    final_sample,
                 }
             })
             .collect();
@@ -769,6 +823,8 @@ impl Simulation {
                     values: results::ProbeValues::Scalar(op.current().to_vec()),
                     imag,
                     location: None,
+                    mode_purity: None,
+                    final_sample: None,
                 }
             })
             .collect();

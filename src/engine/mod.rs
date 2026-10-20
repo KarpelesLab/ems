@@ -195,7 +195,7 @@ pub use oblique_wire::{ObliqueWire, ObliqueWires};
 pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
 pub use planewave::{PlaneWave, PlaneWaveSpec};
 pub use port::LumpedPort;
-pub use probe::{FieldProbe, Probe, ProbeQuantity};
+pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
 pub use run::{Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};

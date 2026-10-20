@@ -131,7 +131,10 @@
 //! normalised by the probe itself, `V = w·Σ E_t·f·A/√(Σ f²·A)` over the
 //! plane's nodes, the current over its cells with `f` at the cell centre),
 //! or with the attribute `emsModeSampling="exact"` the plain overlap
-//! integrals `V = w·∫E_t·f dA`, `I = w·∫H_t·f dA`.
+//! integrals `V = w·∫E_t·f dA`, `I = w·∫H_t·f dA`. The mode purity
+//! openEMS writes next to the value (`w·(Σ E_t·f·A)²/(Σ|E_t|²A·Σ|f|²A)`,
+//! with openEMS's samples) comes from [`ProbeSpec::mode_samples`] (not
+//! on cylindrical grids).
 //!
 //! # SAR dumps
 //!
@@ -361,6 +364,15 @@ pub struct ProbeSpec<T> {
     /// mode-weighted field entries `(axis, engine node, weight)` (see
     /// [Waveguide probes](self#waveguide-probes)); empty otherwise.
     pub mode_entries: Vec<(Axis, [usize; 3], f64)>,
+    /// Waveguide probes on Cartesian grids: the sample points of the mode
+    /// purity ([`Probe::mode_purity`](crate::engine::Probe::mode_purity),
+    /// openEMS's sampling); `None` otherwise.
+    pub mode_samples: Option<Vec<crate::engine::ModeSample>>,
+    /// Waveguide probes on Cartesian grids: the first and last node of
+    /// openEMS's samples (the box without the outermost mesh lines; for
+    /// the current, the lower corners of the box's cells), the position
+    /// openEMS reports in its probe files; `None` otherwise.
+    pub mode_range: Option<([usize; 3], [usize; 3])>,
 }
 
 /// An absorbing sheet from a csx `AbsorbingBC` primitive (see
@@ -720,7 +732,7 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                     pb.probe_type,
                     ProbeType::WaveguideVoltage | ProbeType::WaveguideCurrent
                 );
-                let mode_entries = if waveguide {
+                let mode = if waveguide {
                     match mode::mode_entries(
                         model,
                         p,
@@ -735,7 +747,11 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                         None => continue,
                     }
                 } else {
-                    Vec::new()
+                    mode::ModeProbe {
+                        entries: Vec::new(),
+                        samples: None,
+                        range: None,
+                    }
                 };
                 probes.push(ProbeSpec {
                     name: p.name.clone(),
@@ -744,7 +760,9 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                     start,
                     stop,
                     corners,
-                    mode_entries,
+                    mode_entries: mode.entries,
+                    mode_samples: mode.samples,
+                    mode_range: mode.range,
                 })
             }
             PropertyKind::DumpBox(d) => dumps.push(ProbeSpec {
@@ -755,6 +773,8 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                 stop,
                 corners,
                 mode_entries: Vec::new(),
+                mode_samples: None,
+                mode_range: None,
             }),
             _ => {}
         }

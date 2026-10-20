@@ -897,40 +897,13 @@ impl FieldSampler {
             s.prepare(engine.grid(), &engine.coefficients(), engine.dt());
             &s
         };
-        let g = engine.grid();
-        if this.quantity.from_currents()
-            && ((g.is_cylindrical() && (g.has_axis() || g.is_closed()))
-                || g.has_multigrid()
-                || engine.periodic.is_some())
-        {
-            return None;
-        }
-        let co = engine.coefficients();
-        let fields = engine.shared.store.lock();
         let mut out = vec![[0.0f64; 3]; this.len()];
         if !this.quantity.from_currents() {
+            let fields = engine.shared.store.lock();
             this.sample_with(&fields, |i, v| out[i] = v);
             return Some(out);
         }
-        let n = g.nodes();
-        let (u, i) = (&fields.u, &fields.i);
-        // u_c at p + â (0 outside the domain).
-        let up = |c: Axis, mut p: [usize; 3], a: Axis| -> f32 {
-            p[a.index()] += 1;
-            if p[a.index()] < n[a.index()] {
-                u.get(c, p)
-            } else {
-                0.0
-            }
-        };
-        let get = |c: Axis, p: [usize; 3]| -> f64 {
-            let (a, b) = c.others();
-            let idx = g.index(p);
-            let curl = (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p));
-            let (da, db) = (co.da(c)[idx], co.db(c)[idx]);
-            f64::from(da * i.get(c, p) - db * curl)
-        };
-        this.sample_from(get, |k, v| out[k] = v);
+        with_lookahead_currents(engine, |get| this.sample_from(get, |k, v| out[k] = v))?;
         Some(out)
     }
 
@@ -1672,4 +1645,45 @@ impl Operator for FreqDump {
             DumpTiming::OpenEms => Hooks::POST_H,
         }
     }
+}
+
+/// Runs `f` with the dual-edge currents `i^{N+½}` of the H update of
+/// step `N` of an engine that has completed `N` steps, evaluated locally
+/// from the current fields and coefficients (`i' = da·i − db·curl u`)
+/// without running the step (see [`FieldSampler::sample_lookahead`]);
+/// `None` on periodic and multigrid grids and on cylindrical grids with
+/// the axis or a closed azimuth, where the H update has extra terms.
+/// Operators acting on H (CPML, H sources) are not applied.
+pub(crate) fn with_lookahead_currents<R>(
+    engine: &Engine,
+    f: impl FnOnce(&dyn Fn(Axis, [usize; 3]) -> f64) -> R,
+) -> Option<R> {
+    let g = engine.grid();
+    if (g.is_cylindrical() && (g.has_axis() || g.is_closed()))
+        || g.has_multigrid()
+        || engine.periodic.is_some()
+    {
+        return None;
+    }
+    let co = engine.coefficients();
+    let fields = engine.shared.store.lock();
+    let n = g.nodes();
+    let (u, i) = (&fields.u, &fields.i);
+    // u_c at p + â (0 outside the domain).
+    let up = |c: Axis, mut p: [usize; 3], a: Axis| -> f32 {
+        p[a.index()] += 1;
+        if p[a.index()] < n[a.index()] {
+            u.get(c, p)
+        } else {
+            0.0
+        }
+    };
+    let get = |c: Axis, p: [usize; 3]| -> f64 {
+        let (a, b) = c.others();
+        let idx = g.index(p);
+        let curl = (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p));
+        let (da, db) = (co.da(c)[idx], co.db(c)[idx]);
+        f64::from(da * i.get(c, p) - db * curl)
+    };
+    Some(f(&get))
 }

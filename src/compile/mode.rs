@@ -39,9 +39,17 @@
 //!   and `H` makes `I` of an exactly matched TE10 mode 0.3 % low at 20
 //!   cells across the guide.
 //!
-//! openEMS also writes a third column, the mode purity
-//! `(Σ E_t·f·A)² / (Σ |E_t|²·A · Σ |f_t|²·A)` (the same sums); ems does
-//! not record it.
+//! openEMS also writes a third column, the **mode purity**
+//! `w · (Σ E_t·f·A)² / (Σ |E_t|²·A · Σ |f_t|²·A)` (the same samples and
+//! areas; `H_t` for the current), i.e. the squared normalised overlap of
+//! the sampled field with the mode function, 1 for a field of the mode's
+//! shape, scaled by the ProbeBox weight `w` like the value (identified on
+//! the `adv_wg_*` fixtures: TE10 against `sin`, `1` and `x` mode functions,
+//! partial boxes, weights 3 and −2). ems records it with the same samples
+//! ([`ModeSample`], [`Probe::mode_purity`](crate::engine::Probe::mode_purity)),
+//! also for probes with the exact sampling below. The probe files report
+//! the sample range as the probe's position: the box's nodes (voltage) or
+//! cell corners (current) without the outermost mesh lines.
 //!
 //! # Exact sampling (`emsModeSampling = "exact"`)
 //!
@@ -111,10 +119,21 @@ use csx::expr::{CompiledExpr, Expr};
 use csx::properties::{ProbeBox, ProbeType, WEIGHT_VARS, weight_vars};
 
 use crate::axis::Axis;
-use crate::engine::Grid;
+use crate::engine::{Grid, ModeSample};
 
 /// One probe entry: component, engine node, weight.
 pub(crate) type Entry = (Axis, [usize; 3], f64);
+
+/// The discretised waveguide probe.
+pub(crate) struct ModeProbe {
+    /// The value's probe entries.
+    pub entries: Vec<Entry>,
+    /// The mode-purity samples (openEMS sampling; `None` on cylindrical
+    /// grids, where it is not identified).
+    pub samples: Option<Vec<ModeSample>>,
+    /// The first and last sample node (openEMS's reported position).
+    pub range: Option<([usize; 3], [usize; 3])>,
+}
 
 /// User attribute of a waveguide probe property selecting the sampling:
 /// `"exact"` for ems's exact sampling, anything else (or absent) for
@@ -134,7 +153,7 @@ pub(super) fn mode_entries(
     start: [usize; 3],
     stop: [usize; 3],
     warnings: &mut Vec<String>,
-) -> Option<Vec<Entry>> {
+) -> Option<ModeProbe> {
     let name = &prop.name;
     let mut funcs: Vec<CompiledExpr> = Vec::with_capacity(3);
     let mut any = false;
@@ -196,11 +215,32 @@ pub(super) fn mode_entries(
     };
     // openEMS's sampling is only identified on Cartesian grids; cylindrical
     // grids always sample exactly.
-    Some(if cyl || prop.attribute(SAMPLING_ATTR) == Some("exact") {
-        exact_entries(&ctx, name, warnings)
+    if cyl {
+        return Some(ModeProbe {
+            entries: exact_entries(&ctx, name, warnings),
+            samples: None,
+            range: None,
+        });
+    }
+    let oe = openems_entries(&ctx, name, warnings);
+    let entries = if prop.attribute(SAMPLING_ATTR) == Some("exact") {
+        exact_entries(&ctx, name, &mut Vec::new())
     } else {
-        openems_entries(&ctx, name, warnings)
+        oe.entries
+    };
+    Some(ModeProbe {
+        entries,
+        samples: Some(oe.samples),
+        range: oe.range,
     })
+}
+
+/// openEMS's sampling of a probe: the value's entries, the purity
+/// samples and the sample range.
+struct OpenEmsSampling {
+    entries: Vec<Entry>,
+    samples: Vec<ModeSample>,
+    range: Option<([usize; 3], [usize; 3])>,
 }
 
 /// What both samplings need.
@@ -343,7 +383,7 @@ fn exact_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<Ent
 }
 
 /// openEMS's sampling (see the module docs).
-fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<Entry> {
+fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> OpenEmsSampling {
     let Ctx {
         pb,
         grid,
@@ -399,16 +439,32 @@ fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<E
             samples.push(([i, j], [eval(a, p), eval(b, p)], area));
         }
     }
+    let range = {
+        let (ra, rb) = (range(a), range(b));
+        (!ra.is_empty() && !rb.is_empty()).then(|| {
+            let mut lo = [k; 3];
+            let mut hi = [k; 3];
+            (lo[a], hi[a]) = (*ra.start(), *ra.end());
+            (lo[b], hi[b]) = (*rb.start(), *rb.end());
+            (lo, hi)
+        })
+    };
     let norm2: f64 = samples
         .iter()
         .map(|(_, f, area)| (f[0] * f[0] + f[1] * f[1]) * area)
         .sum();
+    // The field at each sample (purity), from the same interpolation.
+    let mut purity: Vec<ModeSample> = Vec::with_capacity(samples.len());
     if !(norm2 > 0.0 && norm2.is_finite()) {
         warnings.push(format!(
             "waveguide probe {name:?}: the mode function is zero (or not finite) on the \
              probe plane; it reads 0"
         ));
-        return Vec::new();
+        return OpenEmsSampling {
+            entries: Vec::new(),
+            samples: purity,
+            range,
+        };
     }
     let scale = 1.0 / norm2.sqrt();
     let mut out = Vec::new();
@@ -426,13 +482,11 @@ fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<E
     };
     for &([i, j], f, area) in &samples {
         let w = area * scale;
+        let mut field: [Vec<Entry>; 2] = Default::default();
         for (c, (t, o)) in [(ta, tb), (tb, ta)].into_iter().enumerate() {
             let (ti, oi) = (t.index(), o.index());
             let (it, io) = if c == 0 { (i, j) } else { (j, i) };
             let fc = f[c] * w;
-            if fc == 0.0 {
-                continue;
-            }
             let mut node = [0; 3];
             node[n] = k;
             node[oi] = io;
@@ -444,7 +498,11 @@ fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<E
                         node[ti] = it;
                         node[oi] = oc;
                         node[n] = kp;
-                        push(t, node, fc * 0.5 * wp / grid.dual_delta(t, it));
+                        let coef = 0.5 * wp / grid.dual_delta(t, it);
+                        field[c].push((t, node, coef));
+                        if fc != 0.0 {
+                            push(t, node, fc * 0.5 * wp / grid.dual_delta(t, it));
+                        }
                     }
                 }
             } else {
@@ -453,13 +511,28 @@ fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<E
                 let (dl, dh) = (grid.delta(t, it - 1), grid.delta(t, it));
                 let (wl, wh) = (dh / (dl + dh), dl / (dl + dh));
                 node[ti] = it - 1;
-                push(t, node, fc * wl / dl);
+                field[c].push((t, node, wl / dl));
+                if fc != 0.0 {
+                    push(t, node, fc * wl / dl);
+                }
                 node[ti] = it;
-                push(t, node, fc * wh / dh);
+                field[c].push((t, node, wh / dh));
+                if fc != 0.0 {
+                    push(t, node, fc * wh / dh);
+                }
             }
         }
+        purity.push(ModeSample {
+            area,
+            mode: f,
+            field,
+        });
     }
-    out
+    OpenEmsSampling {
+        entries: out,
+        samples: purity,
+        range,
+    }
 }
 
 #[cfg(test)]
@@ -497,7 +570,9 @@ mod tests {
             unreachable!()
         };
         let mut w = Vec::new();
-        let e = mode_entries(&m, prop, pb, &grid, 1e-3, [0, 0, 1], [3, 2, 1], &mut w).unwrap();
+        let e = mode_entries(&m, prop, pb, &grid, 1e-3, [0, 0, 1], [3, 2, 1], &mut w)
+            .unwrap()
+            .entries;
         assert!(w.is_empty(), "{w:?}");
         (e, grid)
     }
@@ -583,7 +658,9 @@ mod tests {
                 _ => unreachable!(),
             };
             let mut w = Vec::new();
-            let e = mode_entries(&m, &p, &pb, &grid, 1e-3, [0, 0, 1], [3, na, 1], &mut w).unwrap();
+            let e = mode_entries(&m, &p, &pb, &grid, 1e-3, [0, 0, 1], [3, na, 1], &mut w)
+                .unwrap()
+                .entries;
             assert!(w.is_empty(), "{w:?}");
             // Unit field: u_ρ = Δρ, i_α = ρ_{i+½}·Δα* (the stored value).
             let s: f64 = e

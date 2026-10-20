@@ -17,11 +17,30 @@ pub enum ProbeQuantity {
     Current,
 }
 
+/// One sample point of a mode-purity measurement ([`Probe::mode_purity`]):
+/// the two tangential components of the field at the point, as weighted
+/// sums of edge values, the mode function there and the area the point
+/// stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModeSample {
+    /// Area weight `A` \[m²\].
+    pub area: f64,
+    /// The two tangential components of the mode function at the point
+    /// (any scale).
+    pub mode: [f64; 2],
+    /// The two tangential field components at the point (V/m or A/m):
+    /// `Σ c·x` over the entries `(axis, node, c)` of the sampled quantity.
+    pub field: [Vec<(Axis, [usize; 3], f64)>; 2],
+}
+
 /// Records the weighted sum `Σ w·x` of a set of field entries every
 /// `interval` steps, with the exact sample times.
 ///
 /// With unit weights along a chain of E edges this is the line integral of
 /// E (a voltage); along a loop of H dual edges, the enclosed current.
+///
+/// With [`mode_purity`](Self::mode_purity) it also records, at the same
+/// samples, how much of the sampled transverse field is the mode.
 #[derive(Debug, Clone)]
 pub struct Probe {
     quantity: ProbeQuantity,
@@ -29,6 +48,8 @@ pub struct Probe {
     interval: u64,
     times: Vec<f64>,
     values: Vec<f64>,
+    purity: Option<(Vec<ModeSample>, f64)>,
+    purity_values: Vec<f64>,
 }
 
 impl Probe {
@@ -40,6 +61,8 @@ impl Probe {
             interval: 1,
             times: Vec::new(),
             values: Vec::new(),
+            purity: None,
+            purity_values: Vec::new(),
         }
     }
 
@@ -66,6 +89,31 @@ impl Probe {
         self
     }
 
+    /// Also records the mode purity at every sample, scaled by `weight`:
+    ///
+    /// ```text
+    /// p = weight · (Σ_s A_s·F_s·f_s)² / (Σ_s A_s·|F_s|² · Σ_s A_s·|f_s|²)
+    /// ```
+    ///
+    /// over the `samples` `s` (field `F_s`, mode function `f_s`, area
+    /// `A_s`; two tangential components each): the squared normalised
+    /// overlap of the sampled field with the mode, 1 for a field of the
+    /// mode's shape and 0 for one orthogonal to it (or no field) — by
+    /// the Cauchy–Schwarz inequality it lies in `[0, 1]` before scaling.
+    /// This is the `mode_purity` column of openEMS's waveguide probe files
+    /// (see [`compile`](crate::compile#waveguide-probes)), which is scaled
+    /// by the probe weight like the value.
+    pub fn mode_purity(mut self, samples: Vec<ModeSample>, weight: f64) -> Self {
+        self.purity = Some((samples, weight));
+        self
+    }
+
+    /// The recorded mode purity, parallel to [`times`](Self::times)
+    /// (`None` without [`mode_purity`](Self::mode_purity)).
+    pub fn purity(&self) -> Option<&[f64]> {
+        self.purity.as_ref().map(|_| self.purity_values.as_slice())
+    }
+
     /// The sampled quantity.
     pub fn quantity(&self) -> ProbeQuantity {
         self.quantity
@@ -90,6 +138,54 @@ impl Probe {
             .sum();
         self.times.push(t);
         self.values.push(v);
+        let get = |a, n| f64::from(f.get(a, n));
+        if let Some(p) = self.purity_with(&get) {
+            self.purity_values.push(p);
+        }
+    }
+
+    /// The weighted mode purity of the field values `get` (`None` without
+    /// [`mode_purity`](Self::mode_purity)).
+    fn purity_with(&self, get: &dyn Fn(Axis, [usize; 3]) -> f64) -> Option<f64> {
+        let (samples, weight) = self.purity.as_ref()?;
+        let (mut dot, mut ff, mut mm) = (0.0f64, 0.0f64, 0.0f64);
+        for s in samples {
+            let mut e = [0.0f64; 2];
+            for (c, terms) in e.iter_mut().zip(&s.field) {
+                *c = terms.iter().map(|&(a, n, w)| w * get(a, n)).sum();
+            }
+            dot += s.area * (e[0] * s.mode[0] + e[1] * s.mode[1]);
+            ff += s.area * (e[0] * e[0] + e[1] * e[1]);
+            mm += s.area * (s.mode[0] * s.mode[0] + s.mode[1] * s.mode[1]);
+        }
+        let p = if ff > 0.0 && mm > 0.0 {
+            dot * dot / (ff * mm)
+        } else {
+            0.0
+        };
+        Some(weight * p)
+    }
+
+    /// The sample a current probe would record at `(N + ½)·dt` for an
+    /// engine that has completed `N` steps, from the H update of step `N`
+    /// evaluated locally ([`FieldSampler::sample_lookahead`]'s rules:
+    /// without CPML and H-source corrections, `None` where unavailable),
+    /// without running it: `(time, value, mode purity)`. openEMS records
+    /// this state at the end of a run. `None` for voltage probes and when
+    /// step `N` is not a sampling step.
+    pub fn lookahead(&self, engine: &super::Engine) -> Option<(f64, f64, Option<f64>)> {
+        let n = engine.timestep();
+        if self.quantity != ProbeQuantity::Current || !n.is_multiple_of(self.interval) {
+            return None;
+        }
+        super::dump::with_lookahead_currents(engine, |get| {
+            let v = self
+                .entries
+                .iter()
+                .map(|&(a, node, w)| w * get(a, node))
+                .sum();
+            ((n as f64 + 0.5) * engine.dt(), v, self.purity_with(get))
+        })
     }
 }
 

@@ -17,8 +17,8 @@
 //!
 //! * The first line names the domain (`time-domain` / `frequency-domain`)
 //!   and the probe kind (`voltage integration`, `current integration`,
-//!   `electric field probe`, `magnetic field probe`), then the program
-//!   and a date. ems writes `by ems v<version> @<date>`; readers should not
+//!   `electric field probe`, `magnetic field probe`, `voltage mode
+//!   matching`, `current mode matching`), then the program and a date. ems writes `by ems v<version> @<date>`; readers should not
 //!   rely on that line beyond its first words.
 //! * The coordinate lines give the snapped probe corners in metres and
 //!   their mesh indices ([`ProbeLocation`]: primary node indices for
@@ -29,8 +29,23 @@
 //!   coordinates with 6 (`%g`).
 //! * Time-domain columns: `t/s` and `voltage` / `current`, or the three
 //!   field components `Ex/(V/m) Ey/(V/m) Ez/(V/m)` (`Hx/(A/m)` …).
+//!   Waveguide probes (`ProbeBox` types 10 and 11, "mode matching") have
+//!   two: `voltage` / `current` and `mode_purity` (see
+//!   [`ProbeResult::mode_purity`]); their coordinate lines give the range
+//!   of the probe's sample nodes.
 //!   Frequency-domain files have a second header line `%\treal\timag` and
-//!   a real and an imaginary column per quantity after `f/Hz`.
+//!   a real and an imaginary column per quantity after `f/Hz` (for
+//!   waveguide probes also the transform of the purity series, as openEMS
+//!   writes it), e.g.
+//!
+//! ```text
+//! % frequency-domain voltage mode matching by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 13:34:58 2026
+//! % start-coordinates: (0.001,0.001,0.005) m -> [1,1,5]
+//! % stop-coordinates: (0.007,0.007,0.005) m -> [7,7,5]
+//! % f/Hz    voltage        mode_purity
+//! %    real    imag    real    imag
+//! 3e+09    6.34924e-25    2.20337e-24    -2.44807e-27    -8.49551e-27
+//! ```
 //!
 //! # Sampling (what the values are)
 //!
@@ -39,9 +54,13 @@
 //! E-type probes (voltage, E field) at `t = k·dt` from `k = 0`, H-type
 //! probes (current, H field) at `t = (k + ½)·dt`, for `k` a multiple of
 //! `K_t`. ems records every step and writes the same rows: the E-type
-//! initial state (all zero) is written as the row at `t = 0`. ems has no
-//! H state after the last step, so an H-type file ends one row earlier
-//! than openEMS's when the step count is a multiple of `K_t`.
+//! initial state (all zero) is written as the row at `t = 0`. openEMS's
+//! H-type files also have the state after the last step `N`, at
+//! `(N + ½)·dt` (when `N` is a multiple of `K_t`); after
+//! [`Simulation::run`](crate::Simulation::run) ems evaluates that H update
+//! locally (without CPML and H-source corrections, not in Bloch runs and
+//! where [`Probe::lookahead`](crate::engine::Probe::lookahead) has no
+//! value) and writes it as well, so the files have the same rows.
 //!
 //! The frequency-domain value at `f` is
 //!
@@ -83,6 +102,12 @@ pub enum ProbeFileKind {
     EField,
     /// `magnetic field probe` \[A/m\], three components.
     HField,
+    /// `voltage mode matching` (waveguide voltage probe): the voltage
+    /// \[V\] and the mode purity.
+    VoltageModeMatching,
+    /// `current mode matching` (waveguide current probe): the current
+    /// \[A\] and the mode purity.
+    CurrentModeMatching,
 }
 
 impl ProbeFileKind {
@@ -92,7 +117,27 @@ impl ProbeFileKind {
             ProbeFileKind::Current => "current integration",
             ProbeFileKind::EField => "electric field probe",
             ProbeFileKind::HField => "magnetic field probe",
+            ProbeFileKind::VoltageModeMatching => "voltage mode matching",
+            ProbeFileKind::CurrentModeMatching => "current mode matching",
         }
+    }
+
+    /// The file kind of a probe result (mode matching for probes with a
+    /// [mode purity](ProbeResult::mode_purity)).
+    pub fn of(p: &ProbeResult) -> Self {
+        match (p.kind(), p.mode_purity().is_some()) {
+            (ProbeKind::Voltage, true) => ProbeFileKind::VoltageModeMatching,
+            (ProbeKind::Current, true) => ProbeFileKind::CurrentModeMatching,
+            (k, _) => k.into(),
+        }
+    }
+
+    /// Whether this is a waveguide probe file (value and mode purity).
+    pub fn is_mode_matching(self) -> bool {
+        matches!(
+            self,
+            ProbeFileKind::VoltageModeMatching | ProbeFileKind::CurrentModeMatching
+        )
     }
 
     fn columns(self) -> &'static [&'static str] {
@@ -101,17 +146,22 @@ impl ProbeFileKind {
             ProbeFileKind::Current => &["current"],
             ProbeFileKind::EField => &["Ex/(V/m)", "Ey/(V/m)", "Ez/(V/m)"],
             ProbeFileKind::HField => &["Hx/(A/m)", "Hy/(A/m)", "Hz/(A/m)"],
+            ProbeFileKind::VoltageModeMatching => &["voltage", "mode_purity"],
+            ProbeFileKind::CurrentModeMatching => &["current", "mode_purity"],
         }
     }
 
-    /// Number of quantities per row (1 or 3).
+    /// Number of quantities per row (1, 2 for mode matching, or 3).
     pub fn components(self) -> usize {
         self.columns().len()
     }
 
     /// Whether the quantity lives at the H times `(k + ½)·dt`.
     pub fn is_magnetic(self) -> bool {
-        matches!(self, ProbeFileKind::Current | ProbeFileKind::HField)
+        matches!(
+            self,
+            ProbeFileKind::Current | ProbeFileKind::HField | ProbeFileKind::CurrentModeMatching
+        )
     }
 }
 
@@ -170,6 +220,8 @@ impl ProbeFile {
             ProbeFileKind::Current,
             ProbeFileKind::EField,
             ProbeFileKind::HField,
+            ProbeFileKind::VoltageModeMatching,
+            ProbeFileKind::CurrentModeMatching,
         ]
         .into_iter()
         .find(|k| head.contains(k.title()))
@@ -241,16 +293,23 @@ impl ProbeFile {
     }
 
     /// Time-domain values as [`ProbeValues`] (`None` for a frequency-domain
-    /// file).
+    /// file; for a waveguide probe the voltage or current, see
+    /// [`mode_purity`](Self::mode_purity)).
     pub fn values(&self) -> Option<ProbeValues> {
         if self.domain != ProbeDomain::Time {
             return None;
         }
-        Some(if self.kind.components() == 1 {
-            ProbeValues::Scalar(self.column(0))
-        } else {
+        Some(if self.kind.components() == 3 {
             ProbeValues::Vector(self.rows.iter().map(|r| [r[1], r[2], r[3]]).collect())
+        } else {
+            ProbeValues::Scalar(self.column(0))
         })
+    }
+
+    /// The `mode_purity` column of a time-domain waveguide probe file
+    /// (`None` for other files).
+    pub fn mode_purity(&self) -> Option<Vec<f64>> {
+        (self.domain == ProbeDomain::Time && self.kind.is_mode_matching()).then(|| self.column(1))
     }
 
     /// Frequency-domain values: per row, the frequency and the complex
@@ -335,7 +394,7 @@ impl ProbeFile {
     /// The time-domain file of `p` with openEMS's sampling every
     /// `interval` steps (see the [module docs](self#sampling-what-the-values-are)).
     pub fn time_domain(p: &ProbeResult, interval: u64) -> Self {
-        let kind = ProbeFileKind::from(p.kind());
+        let kind = ProbeFileKind::of(p);
         let samples = samples(p);
         let interval = interval.max(1);
         let rows = samples
@@ -364,7 +423,7 @@ impl ProbeFile {
         if p.frequencies().is_empty() {
             return None;
         }
-        let kind = ProbeFileKind::from(p.kind());
+        let kind = ProbeFileKind::of(p);
         let n = nyquist.max(1);
         let picked: Vec<_> = samples(p).into_iter().filter(|s| s.0 % n == 0).collect();
         let w = 2.0 * n as f64 * p.dt();
@@ -401,20 +460,30 @@ impl ProbeFile {
 /// E-type initial state at `t = 0` added when the recording starts at the
 /// first step.
 fn samples(p: &ProbeResult) -> Vec<(u64, f64, Vec<f64>)> {
-    let kind = ProbeFileKind::from(p.kind());
+    let kind = ProbeFileKind::of(p);
     let dt = p.dt();
     let offset = if kind.is_magnetic() { 0.5 } else { 0.0 };
-    let vals: Vec<Vec<f64>> = match p.values() {
-        ProbeValues::Scalar(v) => v.iter().map(|&x| vec![x]).collect(),
-        ProbeValues::Vector(v) => v.iter().map(|x| x.to_vec()).collect(),
+    let vals: Vec<Vec<f64>> = match (p.values(), p.mode_purity()) {
+        (ProbeValues::Scalar(v), Some(q)) => v.iter().zip(q).map(|(&x, &q)| vec![x, q]).collect(),
+        (ProbeValues::Scalar(v), None) => v.iter().map(|&x| vec![x]).collect(),
+        (ProbeValues::Vector(v), _) => v.iter().map(|x| x.to_vec()).collect(),
     };
-    let mut out = Vec::with_capacity(vals.len() + 1);
+    let mut out = Vec::with_capacity(vals.len() + 2);
     let step = |t: f64| (t / dt - offset).round().max(0.0) as u64;
     if !kind.is_magnetic() && p.times().first().is_some_and(|&t| step(t) == 1) {
         out.push((0, 0.0, vec![0.0; kind.components()]));
     }
     for (&t, v) in p.times().iter().zip(vals) {
         out.push((step(t), t, v));
+    }
+    if let Some((t, v, q)) = &p.final_sample
+        && out.last().is_none_or(|l| step(*t) > l.0)
+    {
+        let mut v = v.clone();
+        if kind.is_mode_matching() {
+            v.push(q.unwrap_or(f64::NAN));
+        }
+        out.push((step(*t), *t, v));
     }
     out
 }
@@ -484,7 +553,19 @@ fn parse_location(v: &str) -> Result<([f64; 3], [usize; 3])> {
 
 /// C `printf("%.{prec}g")`: `prec` significant digits, trailing zeros
 /// removed, exponent form for exponents `< −4` or `≥ prec` (two-digit
-/// exponent with sign, e.g. `1e+09`).
+/// exponent with sign, e.g. `1e+09`), the number format of openEMS's text
+/// files and console.
+///
+/// ```
+/// use ems::io::openems::probes::format_g;
+/// assert_eq!(format_g(1.92583319e-12, 6), "1.92583e-12");
+/// assert_eq!(format_g(2.5e9, 6), "2.5e+09");
+/// assert_eq!(format_g(0.012, 6), "0.012");
+/// ```
+pub fn format_g(v: f64, prec: usize) -> String {
+    fmt_g(v, prec)
+}
+
 pub(crate) fn fmt_g(v: f64, prec: usize) -> String {
     if v == 0.0 {
         return if v.is_sign_negative() { "-0" } else { "0" }.into();
@@ -667,6 +748,31 @@ mod tests {
         assert_eq!(s[0].0, 1e9);
         assert_eq!(s[0].1[2], Complex64::new(-3.19582e-12, -1.11103e-12));
         assert_eq!(f.to_text(), fd);
+        let wg = "% time-domain current mode matching by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 10:05:47 2026\n\
+% start-coordinates: (0.001,0.001,0.03) m -> [1,1,30]\n\
+% stop-coordinates: (0.019,0.009,0.03) m -> [19,9,30]\n\
+% t/s\tcurrent\tmode_purity\n\
+9e-13\t0\t0\n\
+4.41e-11\t-1.59924365831e-18\t0.994456340029\n";
+        let f = ProbeFile::parse(wg).unwrap();
+        assert_eq!(f.kind, ProbeFileKind::CurrentModeMatching);
+        assert!(f.kind.is_magnetic() && f.kind.is_mode_matching());
+        assert_eq!(f.mode_purity().unwrap(), vec![0.0, 0.994456340029]);
+        assert_eq!(
+            f.values(),
+            Some(ProbeValues::Scalar(vec![0.0, -1.59924365831e-18]))
+        );
+        assert_eq!(f.to_text(), wg);
+        let wfd = "% frequency-domain voltage mode matching by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 13:34:58 2026\n\
+% start-coordinates: (0.001,0.001,0.005) m -> [1,1,5]\n\
+% stop-coordinates: (0.007,0.007,0.005) m -> [7,7,5]\n\
+% f/Hz\tvoltage\t\tmode_purity\t\n\
+%\treal\timag\treal\timag\n\
+3e+09\t6.34924e-25\t2.20337e-24\t-2.44807e-27\t-8.49551e-27\n";
+        let f = ProbeFile::parse(wfd).unwrap();
+        assert_eq!(f.kind, ProbeFileKind::VoltageModeMatching);
+        assert_eq!(f.spectrum().unwrap()[0].1.len(), 2);
+        assert_eq!(f.to_text(), wfd);
         assert!(ProbeFile::parse("% hello\n").is_err());
         assert!(ProbeFile::parse(&text.replace("\t0\n", "\t0\t1\n")).is_err());
     }
