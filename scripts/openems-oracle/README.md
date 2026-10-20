@@ -44,3 +44,10 @@ Fixtures generated with the oracle live in `tests/fixtures/openems/`, each
 case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
 the committed fixtures only; CI does not need the oracle.
+
+`gen-adv.sh` regenerates the `adv_*` cases (dispersive media, plane waves,
+waveguide probes, cylindrical grids, boundaries; `tests/openems_adv.rs`):
+it reruns openEMS (`--engine=basic`, deterministic) on each hand-written
+`model.xml` and copies back the files listed on the `keep:` line of the
+case's `meta.txt`. Run it from the repository root; `OPENEMS` overrides the
+oracle path.
