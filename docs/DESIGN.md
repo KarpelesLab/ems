@@ -401,6 +401,37 @@ In `tests/validation_waveguide.rs` (1 mm cells, 20 × 10 mm guide):
   dispersion.
 - A short gives `|S11| = 1 ± 1e-3` with the right round-trip phase.
 
+**Curve port** (`ems::port::CurvePort`): a lumped port whose terminals do
+not share a mesh line, joined by a polyline (the parity item for openEMS's
+"curve" port helper, designed here from what such a port must do):
+- The vertices are snapped to the nearest mesh nodes. The **feed edge** is
+  the first cell of the curve (from the first node, one cell along the
+  axis on which the first segment advances most). On it the port is
+  exactly a `LumpedPort` (resistor, Thevenin excitation, voltage probe,
+  element current, same names); the rest of the polyline is a PEC csx
+  `Curve` (staircased by csx through the nearest nodes) or, with
+  `wire_radius`, a csx `Wire` (thin-wire / oblique-wire model, §5.14).
+- The curve carries no voltage, so `V` along the whole curve equals the
+  feed-edge voltage and the current is the series current through it; the
+  reference plane is the feed edge and the curve's inductance belongs to
+  the structure. A resistor spread over the staircase was rejected: csx
+  lumped elements act on one direction per box, and the series
+  connection is equivalent at the terminals while keeping the
+  second-order `LumpedPort` reference plane.
+- Validation (`tests/validation_curve.rs`, 1 mm cells, PEC box 16 × 8 ×
+  8 mm): a loop over the ground into a 100 Ω load reads `Re Z_in` = 100.07
+  / 100.27 / 101.07 Ω at 0.1 / 0.2 / 0.4 GHz (the rise is the loop's stray
+  capacitance, `≈ 2ω²LC`) and a constant `L` = 5.61 nH (straight runs),
+  5.06 nH (with a staircased diagonal). As an oblique thin wire of
+  `r0` = Δ/10 and Δ/20 the loop gains 2.10 / 4.04 nH, vs the wire-over-
+  ground estimate `(μ0/2π)·ln(r_eq/r0)·ℓ` = 1.71 / 3.44 nH (+23 / +17 %;
+  ratio 1.92 vs 2.01). The port is bit-identical to a hand-built
+  `LumpedPort` plus `Curve`.
+- Limit: an all-axis-aligned polyline with `wire_radius` becomes separate
+  straight thin wires meeting at the bends (warned); their end corrections
+  overestimate a bent wire's inductance (9.3 nH instead of 5.6 nH at
+  `r0 ≈ r_eq`), so the plain `Curve` is preferable there.
+
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
 openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.

@@ -14,10 +14,14 @@
 //! * [`LumpedPort`]: a resistor with a Thevenin source and V/I probes.
 //! * [`RectWaveguidePort`]: a TE_mn mode excitation and mode-matching
 //!   V/I probes in a rectangular waveguide.
+//! * [`CurvePort`]: a lumped port whose terminals are joined by a PEC
+//!   polyline (a one-cell feed edge plus a csx `Curve` or `Wire`).
 
+mod curve;
 mod line;
 pub mod msl;
 
+pub use curve::{CurvePort, CurvePortProperties};
 pub use line::LinePortResult;
 pub use msl::{MslPort, MslPortProperties, MslPortResult};
 
