@@ -45,8 +45,9 @@ case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
 the committed fixtures only; CI does not need the oracle.
 
-The `gen-*.sh` scripts regenerate the fixture sets; run them from the repository
-root (`OPENEMS` overrides the oracle path, `OEPY` its python). Each runs
+The `gen-*.sh` scripts regenerate the fixture sets; run them from the
+repository root (`OPENEMS` overrides the oracle path, `OEPY` its python).
+Each runs
 openEMS deterministically (single-threaded `--engine=basic`) on the
 hand-written `model.xml` of every case and records the oracle revision and
 command line in the case's `meta.txt`:

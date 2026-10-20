@@ -220,6 +220,7 @@ cases! {
     bc_spellings: 1e-4;
     abc_line_s0_t0: 1e-5;           // (1e-6)
     abc_line_s1_t1: 1e-5;
+    lumped_on_cyl: 1e-4;
     fdtd_odd: 1e-4;
 }
 

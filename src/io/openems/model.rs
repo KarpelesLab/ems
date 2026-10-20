@@ -31,6 +31,9 @@
 //!   ignored (the box of its untransformed coordinates is used); a
 //!   voltage probe whose primitive is not a `Box` is skipped (openEMS:
 //!   "Probe primitive type or dimension not suitable").
+//! * **Lumped elements**: primitives other than `Box` are skipped (openEMS:
+//!   "Primitives other than boxes are not supported for lumped
+//!   elements").
 //!
 //! Each rewrite that changes the meaning of the file adds a warning.
 
@@ -349,6 +352,24 @@ fn fix_box(el: &Element, warnings: &mut Vec<String>) -> Vec<Element> {
     out
 }
 
+fn fix_lumped(el: &mut Element, warnings: &mut Vec<String>) {
+    let name = el.attr("Name").unwrap_or("").to_string();
+    let Some(p) = child_mut(el, "Primitives") else {
+        return;
+    };
+    p.children.retain(|n| match n {
+        Node::Element(e) if e.name != "Box" => {
+            warnings.push(format!(
+                "lumped element {name:?}: a {} primitive is not supported by openEMS (boxes \
+                 only); skipped, as openEMS does",
+                e.name
+            ));
+            false
+        }
+        _ => true,
+    });
+}
+
 fn fix_structure(cs: &mut Element, warnings: &mut Vec<String>) {
     let Some(props) = child_mut(cs, "Properties") else {
         return;
@@ -363,6 +384,10 @@ fn fix_structure(cs: &mut Element, warnings: &mut Vec<String>) {
                 }
                 "ProbeBox" | "DumpBox" => {
                     children.extend(fix_box(&e, warnings).into_iter().map(Node::Element));
+                }
+                "LumpedElement" => {
+                    fix_lumped(&mut e, warnings);
+                    children.push(Node::Element(e));
                 }
                 _ => children.push(Node::Element(e)),
             },
@@ -460,14 +485,17 @@ mod tests {
                <ProbeBox Name="c"><Primitives><Cylinder Radius="0"><P1 X="0" Y="0" Z="0"/><P2 X="0" Y="0" Z="1"/></Cylinder></Primitives></ProbeBox>
                <ProbeBox Name="e" Type="2"><Primitives><Box><P1 X="0" Y="0" Z="0"/><P2 X="0" Y="0" Z="0"/><Transformation><Translate Argument="1,1,1"/></Transformation></Box></Primitives></ProbeBox>
                <DumpBox Name="d" DumpType="1"><Primitives>{}</Primitives></DumpBox>
-               <DumpBox Name="s" DumpType="20"><Primitives>{}</Primitives></DumpBox>"#,
+               <DumpBox Name="s" DumpType="20"><Primitives>{}</Primitives></DumpBox>
+               <LumpedElement Name="r" Direction="2" R="50"><Primitives>{}<Sphere Radius="1"><Center X="0" Y="0" Z="0"/></Sphere></Primitives></LumpedElement>"#,
             b(0.0),
             b(1.0),
+            b(0.0),
             b(0.0),
             b(0.0)
         ));
         let names: Vec<&str> = s.properties().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["u_0", "u_1", "e", "d", "s"]);
+        assert_eq!(names, ["u_0", "u_1", "e", "d", "s", "r"]);
+        assert_eq!(s.properties()[5].primitives.len(), 1);
         assert!(s.properties()[2].primitives[0].transform.is_empty());
         let PropertyKind::DumpBox(d) = &s.properties()[3].kind else {
             panic!()
@@ -477,6 +505,6 @@ mod tests {
             panic!()
         };
         assert_eq!(d.dump_mode, DumpMode::Node);
-        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w.len(), 4, "{w:?}");
     }
 }
