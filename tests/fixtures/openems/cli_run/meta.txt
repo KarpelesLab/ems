@@ -1,0 +1,11 @@
+# openEMS command-line fixture for ems tests; regenerate with
+# scripts/openems-oracle/gen-cli.sh cli_run
+revision: openEMS-Project e89286f (2026-10-18)
+revision:  openEMS c3a956b (v0.37.0-19)
+revision:  CSXCAD f90b407 (v0.7.0-1)
+revision:  fparser 4b9c845
+command: openEMS model.xml --engine=basic --dump-statistics --debug-boxes --showProbeDiscretization
+args: --engine=basic --dump-statistics --debug-boxes --showProbeDiscretization
+keep: ut1 ut1_FD it1 it1_FD ef hf wv wv_FD wi et ht box_dump_*.vtk Et_0000000000.vtr Et_0000000120.vtr Hf.h5 openEMS_run_stats.txt openEMS_stats.txt
+exit: 0
+files: Et_0000000000.vtr Et_0000000012.vtr Et_0000000024.vtr Et_0000000036.vtr Et_0000000048.vtr Et_0000000060.vtr Et_0000000072.vtr Et_0000000084.vtr Et_0000000096.vtr Et_0000000108.vtr Et_0000000120.vtr Et_0000000132.vtr Et_0000000144.vtr Et_0000000156.vtr Et_0000000168.vtr Et_0000000180.vtr Et_0000000192.vtr Et_0000000204.vtr Et_0000000216.vtr Et_0000000228.vtr Et_0000000240.vtr Hf.h5 box_dump_.vtk box_dump_Et.vtk box_dump_Hf.vtk ef et hf ht it1 it1_FD openEMS_run_stats.txt openEMS_stats.txt ut1 ut1_FD wi wv wv_FD

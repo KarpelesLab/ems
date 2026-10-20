@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<VTKFile type="RectilinearGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <RectilinearGrid WholeExtent="0 10 0 0 0 12">
+  <Piece Extent="0 10 0 0 0 12">
+    <PointData>
+      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0">
+        AQAAAACAAAC0BgAAFgAAAA==eJxjYBgFo2AUjIJRMAqGBgAABrQAAQ==
+        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
+          <Value index="0">
+            0
+          </Value>
+          <Value index="1">
+            0
+          </Value>
+        </InformationKey>
+      </DataArray>
+    </PointData>
+    <CellData>
+    </CellData>
+    <Coordinates>
+      <DataArray type="Float64" Name="Array 0x5555591b8600" format="binary" RangeMin="0" RangeMax="0.01">
+        AQAAAACAAABYAAAARAAAAA==eJxjYICAPys/XvJNCrCH0An2v+qy9pRMzoDyC+yrRda5P6wqgYpX2Fe+VDPkWFMDlW+wt7nv3zs9rwmqrsUeAPeeKbo=
+      </DataArray>
+      <DataArray type="Float64" Name="Array 0x5555591b88a0" format="binary" RangeMin="0.003" RangeMax="0.003">
+        AQAAAACAAAAIAAAAEAAAAA==eJz7VZe1p2Ryhj0AFgoETQ==
+      </DataArray>
+      <DataArray type="Float64" Name="Array 0x5555591b8b30" format="binary" RangeMin="0" RangeMax="0.012">
+        AQAAAACAAABoAAAATwAAAA==eJxjYICAPys/XvJNCrCH0An2v+qy9pRMzoDyC+yrRda5P6wqgYpX2Fe+VDPkWFMDlW+wt7nv3zs9rwmqrsV+lycPk3Z7G1R9hz0AyZowrg==
+      </DataArray>
+    </Coordinates>
+  </Piece>
+  </RectilinearGrid>
+</VTKFile>

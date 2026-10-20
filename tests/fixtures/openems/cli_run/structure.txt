@@ -1,0 +1,17 @@
+# Hf.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (1,) = [3e+09]
+      f0: dataset (3, 11, 7, 1) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 3e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (11,) float64
+    y: dataset (7,) float64
+    z: dataset (1,) float64

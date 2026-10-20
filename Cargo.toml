@@ -29,6 +29,12 @@ hdf5rs = { version = "0.0.1", default-features = false, optional = true }
 name = "run_xml"
 required-features = ["xml"]
 
+# Drop-in replacement for the `openEMS` executable (design §7.2).
+[[bin]]
+name = "ems"
+path = "src/bin/ems/main.rs"
+required-features = ["xml"]
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

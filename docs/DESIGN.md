@@ -1866,7 +1866,8 @@ regeneration script and test file:
 - core XML semantics (§5.16.1): `gen-core.sh`, `tests/openems_core.rs`;
 - advanced physics (§5.16.2, `adv_*`): `gen-adv.sh`, `tests/openems_adv.rs`;
 - field dumps and SAR files (`dump_*`, `io::openems::dump`): `gen-dumps.sh`,
-  `tests/openems_dumps.rs`.
+  `tests/openems_dumps.rs`;
+- the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
 ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
@@ -2017,7 +2018,17 @@ mesh; TE11-like field on a graded mesh), with mode functions `sin`, `1`,
   the outermost mesh lines; voltage: `f` at the node, dual area, `E`
   linearly interpolated from the two edge midpoints; current: `f` at the
   cell centre, cell area, `H` the plain mean of the dual edges at the
-  cell's lower corner node. A third file column is the mode purity.
+  cell's lower corner node. A third file column is the **mode purity**
+  `w·(Σ E_t·f·A)²/(Σ|E_t|²A·Σ|f_t|²A)` over the same samples (`H_t` for the
+  current; scaled by the ProbeBox weight `w` like the value): 1 for a field
+  of the mode's shape, less otherwise (0.8497 for TE10
+  against `f = 1` over 19 interior nodes, 0.6536 against `x`; the
+  current's half-cell offset gives 0.9945 for TE10 against `sin`); weights
+  3 and −2 scale it by 3 and −2. The frequency-domain file transforms the
+  purity series like the value. The position lines report the sample
+  range (box without the outermost lines; current: cell corners). ems
+  records it (`ProbeResult::mode_purity`; agreement 2e-7…1e-5 absolute on
+  `adv_wg_*`) and `io::openems` writes and reads the format.
 - ems implements this as the default sampling (agreement 3e-7 uniform,
   4e-6 graded; a single-node indicator in a TE11 null 5e-4 from
   cancellation). The quirk of the current (`f` half a cell off `H`)
@@ -2238,6 +2249,62 @@ agrees with the fixtures to ≲ 1e-6 relative (float32), except mass-averaged
 SAR at tissue surfaces (openEMS's in-run `SIMPLE` rule is not reproduced).
 The module docs hold the full description.
 
+### 7.2 The `ems` command-line program (openEMS drop-in)
+
+`src/bin/ems/` (binary `ems`, feature `xml`; HDF5 dumps with `hdf5`)
+replaces the `openEMS` executable: `ems <FDTD_XML_FILE> [<options>...]`
+with the options of `openEMS --help` (v0.37) and its syntaxes
+(`--opt=value`, `--opt value`, unique prefixes such as `--no-sim`, `-v`,
+`-vv`, `-vvv`, `-v2`, `--verbose[=N]`), writing openEMS's files to the
+current directory. Everything below was observed on the black-box oracle
+(fixtures `tests/fixtures/openems/cli_*`, `scripts/openems-oracle/gen-cli.sh`,
+`tests/cli.rs`, which runs the built binary):
+
+| option | openEMS | ems |
+|---|---|---|
+| (none) | probe files, dumps, `et`/`ht` | same (`io::openems::{probes, dump, signal}`) |
+| `--disable-dumps` | no field dumps (SAR too); their boxes still reported; v0.37 then fails at the end with an internal error (status 1) | dumps not compiled, boxes still reported, status 0 |
+| `--debug-material` | `material_dump.vtr`: `epsilon`, `mue`, `kappa`, `sigma` per edge | same layout, ems's averaged edge materials (`io::openems::debug`; `σ_m` differs at interfaces) |
+| `--debug-operator` | `operator_dump.vtr`: `exc_volt`, `vv`, `vi`, `iv`, `ii` | same arrays, ems's coefficients (lumped elements and boundaries other than PEC are separate operators in ems) |
+| `--debug-PEC` | `PEC_dump.vtp`: one line per PEC edge | identical points and lines |
+| `--debug-boxes` | `box_dump_<dump>.vtk`; current and waveguide probes all as `box_dump_.vtk` | identical files |
+| `--debug-CSX` | `debugCSX.xml` (`<ContinuousStructure>`) | csx's XML writer |
+| `--engine=…` | `fastest`, `basic`, `sse`, `sse-compressed`, `multithreaded`, `gpu`, `gpu-reference`; unknown names ignored | accepted; one engine: `basic`/`sse`/`sse-compressed` on one thread |
+| `--numThreads=N` | engine threads | same (0: automatic) |
+| `--no-simulation` | set-up only (`et`/`ht`, debug files), status 1 | same |
+| `--dump-statistics` | `openEMS_run_stats.txt` (row per progress report), `openEMS_stats.txt` | same layout (`io::openems::stats`) |
+| `--exact-endcriteria` | end criteria every Nyquist interval for the whole run | accepted: ems always does |
+| `--showProbeDiscretization` | `<name>: snapped primary/dual coords: (…) -> (…)   [i,j,k] -> [i,j,k]` | same lines |
+| `--nativeFieldDumps`, `--legacyHDF5Dumps` | dump variants | `DumpFileOptions` |
+| `-v`…`-vvv` | more output | operator summary, probe sampling, properties |
+
+- **Exit status:** 0 after a run; 1 for a model that cannot be read or set
+  up and with `--no-simulation`; 255 without arguments; 0 for `--help`;
+  134 for command-line errors (unknown or ambiguous option, invalid or
+  missing value, value for a flag), where openEMS aborts on an uncaught
+  exception (`SIGABRT`). ems takes the first non-option argument as the
+  model; openEMS takes the first argument, whatever it is.
+- **Console:** the key lines keep openEMS's form (`FDTD simulation size:
+  11x7x13 --> 1001 FDTD cells` — openEMS counts mesh nodes as cells, also
+  in its statistics —, `FDTD timestep is: … s; Nyquist rate: N timesteps
+  @f Hz` with `f = 1/(2N·dt)`, `Excitation signal length is: L timesteps
+  (…s)` or `… period is: P timesteps` for a sinusoid, `Max. number of
+  timesteps: M ( --> M/L * Excitation signal length)`, progress reports
+  every 4 s, `Time for … iterations with … cells : … sec`, `Speed: …
+  MCells/s`); banner and remaining wording are ems's own; warnings go to
+  stderr.
+- **Signal length:** Gaussian `⌊2T/dt⌋ + 1` samples (cut to `M`),
+  sinusoid one period `P` (two written), Dirac and step 2, custom `M`.
+- **Probe files after the run:** openEMS's H-type files (current, H field,
+  waveguide current) end with the state after the last step `N`, at
+  `(N + ½)·dt`; ems evaluates that H update locally after
+  `Simulation::run` (`Probe::lookahead`, the rule of the dumps' final
+  sample) and writes it, so all files have openEMS's rows. Agreement on
+  `cli_run`: 1e-8…2e-6 relative L2.
+- **Gaps:** probe files are written at the end, not during the run; a
+  `DumpBox` without `DumpMode` is mode 0 (no interpolation) in openEMS but
+  parsed as 1 by csx (§8.1).
+
 ## 8. What ems needs from csx
 
 csx is a work in progress. These are the interface points ems will rely on, so
@@ -2310,6 +2377,10 @@ These are reported here, not fixed in csx from this repo.
     `Wire`s thinner than the target cell as lines (no surface lines), and
     oblique ones (and `Curve`s) as contributing no fixed lines, perhaps
     with an option to keep the mesh uniform within a few cells of them.
+13. **Default `DumpMode`.** The XML reader gives a `DumpBox` without a
+    `DumpMode` attribute mode 1 (node interpolation); openEMS v0.37 uses
+    mode 0 (no interpolation: an `HField` dump without the attribute is
+    written on the dual mesh, `dual_mesh = 1`, observed on the oracle).
 
 ### 8.2 Feedback for hdf5rs
 

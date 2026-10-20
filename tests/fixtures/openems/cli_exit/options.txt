@@ -1,0 +1,16 @@
+--debug-CSX
+--debug-PEC
+--debug-boxes
+--debug-material
+--debug-operator
+--disable-dumps
+--dump-statistics
+--engine
+--exact-endcriteria
+--help
+--legacyHDF5Dumps
+--nativeFieldDumps
+--no-simulation
+--numThreads
+--showProbeDiscretization
+--verbose

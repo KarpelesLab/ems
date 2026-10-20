@@ -1,0 +1,11 @@
+# label	exit status	openEMS arguments (model.xml: the cli_run model)
+no-arguments	255	
+help	0	--help
+help-with-file	0	model.xml -h
+missing-file	1	missing.xml
+unknown-option	134	model.xml --bogus
+invalid-value	134	model.xml --numThreads=abc
+value-for-flag	134	model.xml --disable-dumps=1
+missing-value	134	model.xml --engine
+no-simulation	1	model.xml --no-simulation
+abbreviated-option	1	model.xml --no-sim

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems command-line fixture "cli_debug": the debug files (material, operator, PEC, CSX) of a
+     lossy dielectric, a metal plate, a lumped resistor and a soft E source, without simulation.
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-cli.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="400" endCriteria="1e-3">
+    <Excitation Type="0" f0="3e9" fc="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="MUR" ymax="PMC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="diel"><Property Epsilon="2" Mue="3" Kappa="0.01"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="4" Y="8" Z="3"/></Box></Primitives></Material>
+      <Metal Name="plate"><Primitives><Box Priority="5"><P1 X="1" Y="1" Z="3"/><P2 X="6" Y="6" Z="3"/></Box></Primitives></Metal>
+      <LumpedElement Name="R1" Direction="2" Caps="1" R="50"><Primitives><Box Priority="5"><P1 X="7" Y="4" Z="2"/><P2 X="7" Y="4" Z="4"/></Box></Primitives></LumpedElement>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="2"/><P2 X="4" Y="4" Z="4"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><Primitives><Box Priority="0"><P1 X="5" Y="4" Z="2"/><P2 X="5" Y="4" Z="4"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8</XLines>
+      <YLines>0,1,2,3,4,4.5,5,6,7,8</YLines>
+      <ZLines>0,1,2,3,4,5,6</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

@@ -45,7 +45,7 @@ case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
 the committed fixtures only; CI does not need the oracle.
 
-Three scripts regenerate the fixture sets; run them from the repository
+Four scripts regenerate the fixture sets; run them from the repository
 root (`OPENEMS` overrides the oracle path, `OEPY` its python). Each runs
 openEMS deterministically (single-threaded `--engine=basic`) on the
 hand-written `model.xml` of every case and records the oracle revision and
@@ -66,3 +66,12 @@ command line in the case's `meta.txt`:
   in VTK and HDF5; `tests/openems_dumps.rs`): all HDF5 files, a subset of
   the VTK files, and `structure.txt`, the HDF5 structure listing of
   `h5ls.py`.
+- `gen-cli.sh [CASE...]` regenerates the `cli_*` cases (the `ems`
+  command-line program as a drop-in `openEMS`; `tests/cli.rs`): it runs
+  openEMS with the options on the `args:` line of the case's `meta.txt`,
+  copies back the files on its `keep:` line, and records the exit status
+  and the names of all files written (`exit:`, `files:`), the console
+  output without wall-clock lines (`console.txt`) and the HDF5 structure
+  (`structure.txt`); `cli_exit` holds openEMS's exit status for
+  command-line errors and special invocations (`codes.txt`) and the
+  options its `--help` lists (`options.txt`).

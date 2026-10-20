@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems command-line fixture "cli_nodumps": the model of "cli_run" with dumps disabled
+     (no dump files are written).
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-cli.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="240" endCriteria="1e-6">
+    <Excitation Type="0" f0="3e9" fc="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="diel"><Property Epsilon="2" Kappa="0.01"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="10" Y="6" Z="3"/></Box></Primitives></Material>
+      <Metal Name="plate"><Primitives><Box Priority="5"><P1 X="2" Y="1" Z="5"/><P2 X="6" Y="5" Z="5"/></Box></Primitives></Metal>
+      <Excitation Name="exc" Type="0" Excite="0,1,0"><Weight X="1" Y="sin(3.14159265358979*x/10)" Z="1"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="2"/><P2 X="10" Y="6" Z="2"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><FD_Samples>2e9,3e9</FD_Samples><Primitives><Box Priority="0"><P1 X="5" Y="0" Z="7"/><P2 X="5" Y="6" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="it1" Type="1" NormDir="1"><FD_Samples>3e9</FD_Samples><Primitives><Box Priority="0"><P1 X="2" Y="3" Z="1"/><P2 X="8" Y="3" Z="4"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ef" Type="2"><Primitives><Box Priority="0"><P1 X="5" Y="3" Z="8"/><P2 X="5" Y="3" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="hf" Type="3"><Primitives><Box Priority="0"><P1 X="5" Y="3" Z="8"/><P2 X="5" Y="3" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="wv" Type="10" NormDir="2"><FD_Samples>3e9</FD_Samples><Attributes ModeFunctionX="0" ModeFunctionY="sin(3.14159265358979*x/10)" ModeFunctionZ="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="9"/><P2 X="10" Y="6" Z="9"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="wi" Type="11" NormDir="2"><Attributes ModeFunctionX="sin(3.14159265358979*x/10)" ModeFunctionY="0" ModeFunctionZ="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="9"/><P2 X="10" Y="6" Z="9"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="Et" DumpType="0" DumpMode="1" FileType="0"><Primitives><Box Priority="0"><P1 X="0" Y="3" Z="0"/><P2 X="10" Y="3" Z="12"/></Box></Primitives></DumpBox>
+      <DumpBox Name="Hf" DumpType="11" DumpMode="0" FileType="1"><FD_Samples>3e9</FD_Samples><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="6"/><P2 X="10" Y="6" Z="6"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10</XLines>
+      <YLines>0,1,2,3,4,5,6</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

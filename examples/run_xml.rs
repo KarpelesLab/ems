@@ -4,6 +4,9 @@
 //! cargo run --release --example run_xml -- model.xml [--threads N] [--out DIR] [--conformal] [--openems]
 //! ```
 //!
+//! (For a drop-in replacement of the `openEMS` executable, with its
+//! options and output files, use the `ems` binary instead: design §7.2.)
+//!
 //! `--openems` writes the dumps (and SAR dumps) as the files openEMS writes
 //! for their `FileType` (`ems::io::openems::dump`: VTK, or HDF5 with the
 //! `hdf5` feature) instead of the ems formats described below, and every

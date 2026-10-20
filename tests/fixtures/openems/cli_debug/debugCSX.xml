@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<ContinuousStructure CoordSystem="0">
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+        <XLines Qty="9">0,1,2,3,4,5,6,7,8</XLines>
+        <YLines Qty="10">0,1,2,3,4,4.5,5,6,7,8</YLines>
+        <ZLines Qty="7">0,1,2,3,4,5,6</ZLines>
+    </RectilinearGrid>
+    <BackgroundMaterial Epsilon="1" Mue="1" Kappa="0" Sigma="0" />
+    <ParameterSet />
+    <Properties>
+        <Material ID="0" Name="diel" Isotropy="1">
+            <FillColor R="103" G="198" B="105" a="123" />
+            <EdgeColor R="103" G="198" B="105" a="123" />
+            <Primitives>
+                <Box Priority="0">
+                    <P1 X="0.000000e+00" Y="0.000000e+00" Z="0.000000e+00" />
+                    <P2 X="4.000000e+00" Y="8.000000e+00" Z="3.000000e+00" />
+                </Box>
+            </Primitives>
+            <Property Epsilon="2.000000e+00,1.000000e+00,1.000000e+00" Mue="3.000000e+00,1.000000e+00,1.000000e+00" Kappa="1.000000e-02,0.000000e+00,0.000000e+00" Sigma="0.000000e+00,0.000000e+00,0.000000e+00" Density="0.000000e+00" />
+            <Weight Epsilon="1.000000e+00,1.000000e+00,1.000000e+00" Mue="1.000000e+00,1.000000e+00,1.000000e+00" Kappa="1.000000e+00,1.000000e+00,1.000000e+00" Sigma="1.000000e+00,1.000000e+00,1.000000e+00" Density="1.000000e+00" />
+        </Material>
+        <Metal ID="1" Name="plate">
+            <FillColor R="115" G="81" B="255" a="255" />
+            <EdgeColor R="115" G="81" B="255" a="255" />
+            <Primitives>
+                <Box Priority="5">
+                    <P1 X="1.000000e+00" Y="1.000000e+00" Z="3.000000e+00" />
+                    <P2 X="6.000000e+00" Y="6.000000e+00" Z="3.000000e+00" />
+                </Box>
+            </Primitives>
+        </Metal>
+        <LumpedElement ID="2" Name="R1" Direction="2" Caps="1" R="5.000000e+01" LEtype="0.000000e+00">
+            <FillColor R="74" G="236" B="41" a="255" />
+            <EdgeColor R="74" G="236" B="41" a="255" />
+            <Primitives>
+                <Box Priority="5">
+                    <P1 X="7.000000e+00" Y="4.000000e+00" Z="2.000000e+00" />
+                    <P2 X="7.000000e+00" Y="4.000000e+00" Z="4.000000e+00" />
+                </Box>
+            </Primitives>
+        </LumpedElement>
+        <Excitation ID="3" Name="exc" Number="0" Enabled="1" Frequency="0.000000e+00" Delay="0.000000e+00" Type="0" Excite="0.000000e+00,0.000000e+00,1.000000e+00" PropDir="0.000000e+00,0.000000e+00,0.000000e+00">
+            <FillColor R="205" G="186" B="171" a="255" />
+            <EdgeColor R="205" G="186" B="171" a="255" />
+            <Primitives>
+                <Box Priority="0">
+                    <P1 X="4.000000e+00" Y="4.000000e+00" Z="2.000000e+00" />
+                    <P2 X="4.000000e+00" Y="4.000000e+00" Z="4.000000e+00" />
+                </Box>
+            </Primitives>
+            <Weight X="1.000000e+00" Y="1.000000e+00" Z="1.000000e+00" />
+        </Excitation>
+        <ProbeBox ID="4" Name="ut1" Visible="0" Number="0" Type="0" Weight="1" NormDir="-1" StartTime="0" StopTime="0">
+            <FillColor R="242" G="251" B="227" a="255" />
+            <EdgeColor R="242" G="251" B="227" a="255" />
+            <Primitives>
+                <Box Priority="0">
+                    <P1 X="5.000000e+00" Y="4.000000e+00" Z="2.000000e+00" />
+                    <P2 X="5.000000e+00" Y="4.000000e+00" Z="4.000000e+00" />
+                </Box>
+            </Primitives>
+        </ProbeBox>
+    </Properties>
+</ContinuousStructure>

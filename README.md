@@ -76,6 +76,32 @@ It prints warnings, progress and the outcome, and writes every probe as
 `cavity`, `microstrip`, `waveguide`, `patch_antenna`, `dipole` (`cargo run --release
 --example <name>`).
 
+## Command line: a drop-in `openEMS`
+
+The `ems` binary runs a model file the way the `openEMS` executable does,
+with the same options, so scripts that call openEMS (e.g. its Python and
+Octave wrappers' `RunOpenEMS`) can call `ems` instead:
+
+```text
+cargo build --release --features hdf5     # -> target/release/ems
+ems model.xml [--engine=basic] [--numThreads=N] [--disable-dumps] [--no-simulation]
+    [--dump-statistics] [--exact-endcriteria] [--showProbeDiscretization]
+    [--debug-material] [--debug-PEC] [--debug-operator] [--debug-boxes] [--debug-CSX]
+    [--nativeFieldDumps] [--legacyHDF5Dumps] [-v|-vv|-vvv] [-h]
+```
+
+It writes openEMS's files to the current directory: the probe text files
+(`<probe>`, `<probe>_FD`, waveguide probes with their `mode_purity`
+column), the field and SAR dumps in the format each `DumpBox` asks for
+(VTK, or HDF5 with the `hdf5` feature), the excitation signals `et`/`ht`,
+and with the options the statistics and debug files. Its console shows
+openEMS's key lines (mesh size, time step, Nyquist rate, number of time
+steps, progress, end criteria, speed), and its exit status follows
+openEMS's (0 after a run, 1 on errors and with `--no-simulation`). ems has
+a single engine: `--engine` is accepted with every openEMS engine name
+(`basic`, `sse`, `sse-compressed` run on one thread). `ems --help` lists
+the options; design §7.2 has the details.
+
 ## Status
 
 | area | implemented | not yet |
