@@ -109,7 +109,14 @@ fn probe_diff(case: &str, name: &str, a: &str, b: &str) -> f64 {
             den += p * p;
         }
     }
-    assert!(den > 0.0, "{case}/{name}: openEMS file is all zero");
+    if den == 0.0 {
+        // Only the 0-step run has all-zero files (absolute difference).
+        assert!(
+            case.contains("steps0"),
+            "{case}/{name}: openEMS file is all zero"
+        );
+        return num.sqrt();
+    }
     (num / den).sqrt()
 }
 
@@ -222,6 +229,7 @@ cases! {
     abc_line_s1_t1: 1e-5;
     lumped_on_cyl: 1e-4;
     fdtd_odd: 1e-4;
+    fdtd_ts_and_steps0: 1e-30;      // (the t = 0 row of E-type files)
 }
 
 #[cfg(feature = "hdf5")]

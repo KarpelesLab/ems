@@ -684,7 +684,19 @@ impl Simulation {
             return;
         }
         let engine = &self.engine;
+        let no_step = engine.timestep() == 0;
         for p in &mut self.mapped.probes {
+            // A run of 0 steps: openEMS still writes the initial (zero)
+            // state of the E-type probes, at t = 0 (fixture
+            // `sweep_fdtd_ts_and_steps0`, design §5.16.3).
+            if no_step && !p.waveguide && matches!(p.kind, ProbeKind::Voltage | ProbeKind::EField) {
+                let n = match p.op {
+                    ProbeOp::Scalar(_) => 1,
+                    ProbeOp::Native(hs) => hs.len(),
+                };
+                p.final_sample = Some((0.0, vec![0.0; n], None));
+                continue;
+            }
             p.final_sample = match p.op {
                 ProbeOp::Scalar(h) => engine
                     .operator(&h)

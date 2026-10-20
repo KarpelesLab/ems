@@ -2386,7 +2386,7 @@ probes and the feature under test in the middle, 600 steps of 1.5 ps;
 formulations agree. 53 of the models are fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
-Matrix (169 models; 148 agree to ≲ 1e-4, 18 differ, 3 are rejected by
+Matrix (169 models; 149 agree to ≲ 1e-4, 17 differ, 3 are rejected by
 openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
 on the set-up):
 
@@ -2402,7 +2402,7 @@ on the set-up):
 | dumps: VTK/HDF5, SubSampling, OptResolution (modes 0–2), FD, without DumpMode, two primitives, transformed | 8 | 8 | |
 | boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 12 | PML 0.8 % (open box, probes ≥ 4 cells from the layer) to 4–13 % (PEC waveguide below cut-off, probes 4–8 cells from the layer): formulation difference (§5.16.2) |
 | lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper and resistive sheets | 6 | 5 | resistive ConductingSheet (§5.16.2) |
-| FDTD: OverSampling, f_max, TimeStepFactor, TimeStepMethod 1 and 3 (graded), MaxTime, CellConstantMaterial, endCriteria, CoordSystem, 0 steps, odd values | 11 | 10 | 0 steps: openEMS writes the t = 0 row of E-type probes, ems none |
+| FDTD: OverSampling, f_max, TimeStepFactor, TimeStepMethod 1 and 3 (graded), MaxTime, CellConstantMaterial, endCriteria, CoordSystem, 0 steps, odd values | 11 | 11 | |
 | other properties: unknown property element, properties without primitives | 2 | 2 | |
 
 Fixed in ems by the sweep (each was 2–270 % off, or did not run):
@@ -2432,7 +2432,8 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
     on non-Box primitives are skipped;
   - `OverSampling` < 2 is the default 4 (also negative, which csx
     rejected); `TimeStepFactor` outside (0, 1] is ignored; a negative
-    `endCriteria` runs every step (`Fdtd::from_csx`).
+    `endCriteria` runs every step (`Fdtd::from_csx`);
+  - a run of 0 steps writes the t = 0 row of the E-type probe files.
 - **Metal surfaces** (`compile::openems`, files only): openEMS's metal
   Sphere, SphericalShell and Wire are open (an edge whose midpoint lies
   on the surface is not PEC), Box, Cylinder and CylindricalShell closed,
@@ -2931,7 +2932,7 @@ cylindrical grids (§5.15; openEMS ignores plane waves there).
 
 Wave 12 (XML feature-coverage sweep, §5.16.3): 169 models over every
 primitive, transformation, property, probe/dump variant and FDTD
-attribute csx reads, 148 agree with openEMS to ≲ 1e-4; fixed: openEMS's
+attribute csx reads, 149 agree with openEMS to ≲ 1e-4; fixed: openEMS's
 reading rules (`io::openems::read_model`: boundary spellings, DumpMode
 default, short anisotropic lists, probe/dump boxes with several
 primitives or transformations, non-Box voltage probes and lumped
@@ -2941,8 +2942,8 @@ and raw H dump snapping.
 
 Remaining:
 - From the sweep: openEMS's polyhedron and polygon-vertex surface ties,
-  tie round-off (csx tolerance), σ_m averaging, E rows of 0-step runs,
-  current probes exactly between lines.
+  tie round-off (csx tolerance), σ_m averaging, current probes exactly
+  between lines.
 - SAR averaging where cubes reach air or the domain edge (SIMPLE within
   ~3 %, IEEE validity rules partly reproduced), `sar_calc -a`; parallel
   R‖L with an excitation on graded meshes (0.6–3 %); the cylindrical axis
