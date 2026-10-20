@@ -3,9 +3,10 @@
 //!
 //! # Oblique wires
 //!
-//! A metal `Wire` (radius > 0, Cartesian structure and grid) with at
-//! least one polyline segment that is not along a mesh axis is modelled
-//! as a whole by the oblique wire network ([`ObliqueWires`]), if the
+//! A metal `Wire` (radius > 0) with at least one polyline segment that is
+//! not along a mesh axis, and on a cylindrical grid every metal `Wire`
+//! (radius > 0, any direction; its points are taken in Cartesian space),
+//! is modelled as a whole by the oblique wire network ([`ObliqueWires`]), if the
 //! model's in-cell corrections are positive for it (roughly: radius below
 //! 0.15 cells everywhere along it). It is then removed from the model
 //! before csx discretises it, so it leaves no staircase (csx's own
@@ -38,7 +39,8 @@
 //! * Wires with a radius at or above the staircase radius keep the plain
 //!   staircase (or the volume rasterisation of csx), with a warning when
 //!   the radius is below half a cell (where the staircase is all csx
-//!   produces). Wires in a cylindrical structure are not handled (warning).
+//!   produces). On cylindrical grids all thin wires go to the oblique
+//!   model instead (above).
 //! * Two thin wires sharing a node (a junction or crossing) are both
 //!   corrected; the model assumes isolated wires, so a warning is given.
 //! * Curves (zero radius) are plain staircases.
@@ -106,11 +108,9 @@ pub(super) fn thin_wires(
                 continue;
             }
             let label = || format!("wire {:?} primitive #{pi}", p.name);
-            if cs != CoordSystem::Cartesian || model.grid.coord_system != CoordSystem::Cartesian {
-                warnings.push(format!(
-                    "{}: thin-wire model not available in cylindrical structures; staircase",
-                    label()
-                ));
+            if model.grid.coord_system != CoordSystem::Cartesian {
+                // The oblique model's business on cylindrical grids
+                // (`oblique_wires`, which warns if it keeps the staircase).
                 continue;
             }
             let Some(pts) = wire_points(prim, cs) else {
@@ -354,9 +354,7 @@ pub(super) fn oblique_wires(
     let unit = model.grid.delta_unit;
     let cs = model.coord_system;
     let mut set = ObliqueSet::default();
-    if cs != CoordSystem::Cartesian || model.grid.coord_system != CoordSystem::Cartesian {
-        return (set, None);
-    }
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
     let vacuum = EdgeMaterials::vacuum(grid);
     // (property index, primitive index) to remove.
     let mut remove: Vec<(usize, usize)> = Vec::new();
@@ -375,7 +373,7 @@ pub(super) fn oblique_wires(
             let Some(pts) = wire_points(prim, cs) else {
                 continue;
             };
-            if !pts.windows(2).any(|s| is_oblique(s[0], s[1])) {
+            if !cyl && !pts.windows(2).any(|s| is_oblique(s[0], s[1])) {
                 continue;
             }
             let label = format!("wire {:?} primitive #{pi}", p.name);

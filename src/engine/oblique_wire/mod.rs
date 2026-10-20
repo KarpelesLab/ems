@@ -131,11 +131,22 @@
 //! cavity with bent, junctioned and grounded wires is conserved to
 //! 3·10⁻⁸ over 15 000 steps at Courant 0.999.
 //!
+//! # Cylindrical grids
+//!
+//! On a `(ρ, α, z)` grid the wire points are Cartesian and the coupling,
+//! the copies of seam and axis edges and the in-cell corrections follow
+//! the rules of the `cyl` submodule (src/engine/oblique_wire/cyl.rs):
+//! Whitney forms in parameter space along each segment's image, the
+//! canonical copy of an edge with the copies' merged `cb`, and a locally
+//! uniform lattice of the physical spacings `(Δρ, ρ·Δα, Δz)` for the
+//! corrections. Wires must stay out of the first radial cell around the
+//! axis.
+//!
 //! # Scope
 //!
-//! * Cartesian grids. The wire may cross any cells; it should stay a few
-//!   cells away from absorbing boundaries (the correction line is not
-//!   absorbed by the PML).
+//! * Cartesian and cylindrical grids. The wire may cross any cells; it
+//!   should stay a few cells away from absorbing boundaries (the
+//!   correction line is not absorbed by the PML).
 //! * A homogeneous medium around the wire (the local `ε_r`, `μ_r` are
 //!   averaged over the coupled edges).
 //! * Wires closer than a few cells to each other or to other conductors
@@ -147,6 +158,7 @@
 //!   form a junction (Kirchhoff's current law at the node).
 
 mod correction;
+mod cyl;
 mod deposit;
 mod lattice;
 
@@ -402,8 +414,11 @@ pub struct ObliqueWires {
     /// ends.
     c_inv: Vec<f64>,
     connected: Vec<bool>,
-    /// Coupled E edges.
+    /// Coupled E edges (the canonical copy on a cylindrical grid).
     edges: Vec<(Axis, [usize; 3])>,
+    /// All stored copies of each coupled edge (itself on a Cartesian
+    /// grid).
+    copies: Vec<Vec<[usize; 3]>>,
     /// Per segment: `(edge slot, P_{e,s})`.
     p: Vec<Vec<(usize, f64)>>,
     /// Per edge slot: `(segment, P_{e,s})`.
@@ -435,21 +450,19 @@ impl ObliqueWires {
     /// outer faces): on a node, any of its edges; on an edge, that edge;
     /// inside a cell face, all four edges of the face.
     ///
+    /// On a cylindrical grid the wire points are Cartesian \[m\] (see
+    /// [cylindrical grids](self#cylindrical-grids)).
+    ///
     /// # Errors
-    /// [`Error::Invalid`] for a cylindrical grid, invalid wires, points
-    /// outside the grid, or a wire too thick for the model (a correction
-    /// is not positive).
+    /// [`Error::Invalid`] for invalid wires, points outside the grid (or
+    /// within the first radial cell of a cylindrical grid's axis), or a
+    /// wire too thick for the model (a correction is not positive).
     pub fn new(
         grid: &Grid,
         materials: &EdgeMaterials,
         wires: &[ObliqueWire],
         contact: impl Fn(Axis, [usize; 3]) -> bool,
     ) -> Result<Self> {
-        if grid.is_cylindrical() {
-            return Err(Error::Invalid(
-                "oblique thin wires need a Cartesian grid".into(),
-            ));
-        }
         if materials.nodes() != grid.nodes() {
             return Err(Error::Invalid(
                 "oblique wires: material map does not match the grid".into(),
@@ -460,18 +473,45 @@ impl ObliqueWires {
             grid.lines(Axis::Y),
             grid.lines(Axis::Z),
         ];
-        let extent = (0..3)
-            .map(|d| lines[d][lines[d].len() - 1] - lines[d][0])
-            .fold(0.0, f64::max);
+        let frame = grid.is_cylindrical().then(|| cyl::CylFrame::new(lines));
+        let extent = match &frame {
+            Some(_) => {
+                let r = lines[0][lines[0].len() - 1];
+                (2.0 * r).max(lines[2][lines[2].len() - 1] - lines[2][0])
+            }
+            None => (0..3)
+                .map(|d| lines[d][lines[d].len() - 1] - lines[d][0])
+                .fold(0.0, f64::max),
+        };
         let tol = 1e-9 * extent;
         for (wi, w) in wires.iter().enumerate() {
             w.validate()?;
             for p in &w.points {
-                for d in 0..3 {
-                    let l = lines[d];
-                    if p[d] < l[0] - tol || p[d] > l[l.len() - 1] + tol {
+                let inside = match &frame {
+                    Some(f) => f.contains(*p, tol),
+                    None => (0..3).all(|d| {
+                        let l = lines[d];
+                        p[d] >= l[0] - tol && p[d] <= l[l.len() - 1] + tol
+                    }),
+                };
+                if !inside {
+                    return Err(Error::Invalid(format!(
+                        "oblique wire #{wi}: point {p:?} is outside the grid{}",
+                        if frame.is_some_and(|f| f.axis) {
+                            " (or within the first radial cell of the axis)"
+                        } else {
+                            ""
+                        }
+                    )));
+                }
+            }
+            if let Some(f) = frame.filter(|f| f.axis) {
+                for s in w.points.windows(2) {
+                    if cyl::CylFrame::axis_distance(s[0], s[1]) < lines[0][1] - tol {
                         return Err(Error::Invalid(format!(
-                            "oblique wire #{wi}: point {p:?} is outside the grid"
+                            "oblique wire #{wi}: a segment passes within the first radial \
+                             cell of the axis ({} m)",
+                            f.lines[0][1]
                         )));
                     }
                 }
@@ -513,11 +553,12 @@ impl ObliqueWires {
                         let mid: [f64; 3] = core::array::from_fn(|d| 0.5 * (a[d] + b[d]));
                         0.5 * [a, mid, b]
                             .iter()
-                            .flat_map(|p| {
-                                (0..3).map(|d| {
+                            .flat_map(|p| match &frame {
+                                Some(f) => f.cell_size(*p),
+                                None => core::array::from_fn(|d| {
                                     let c = deposit::cell(lines[d], p[d]);
                                     lines[d][c + 1] - lines[d][c]
-                                })
+                                }),
                             })
                             .fold(f64::INFINITY, f64::min)
                     });
@@ -589,22 +630,33 @@ impl ObliqueWires {
             radius: &radius,
             component: &component,
         };
-        let (cap_len, flux) = correction::corrections(lines, &geo, &dual, WINDOW);
+        let (cap_len, flux) = correction::corrections(lines, &geo, &dual, WINDOW, frame.as_ref());
         // Coupling matrix on the real grid.
         let mut slot: BTreeMap<(usize, [usize; 3]), usize> = BTreeMap::new();
         let mut edges = Vec::new();
+        let mut copies = Vec::new();
         let mut p = Vec::with_capacity(segs.len());
         for &(a, b) in &segs {
             let mut w = BTreeMap::new();
-            deposit::segment_weights(lines, nodes[a], nodes[b], &mut w);
+            match &frame {
+                Some(f) => f.segment_weights(nodes[a], nodes[b], &mut w)?,
+                None => deposit::segment_weights(lines, nodes[a], nodes[b], &mut w),
+            }
             let mut row = Vec::with_capacity(w.len());
             for ((d, node), v) in w {
                 let axis = Axis::ALL[d];
                 let k = *slot.entry((d, node)).or_insert_with(|| {
                     edges.push((axis, node));
+                    copies.push(frame.map_or_else(|| vec![node], |f| f.copies(d, node)));
                     edges.len() - 1
                 });
-                row.push((k, v / grid.edge_length(axis, node)));
+                // Parameter length (the edge's physical length on a
+                // Cartesian grid).
+                let len = match &frame {
+                    Some(_) => lines[d][node[d] + 1] - lines[d][node[d]],
+                    None => grid.edge_length(axis, node),
+                };
+                row.push((k, v / len));
             }
             p.push(row);
         }
@@ -647,6 +699,7 @@ impl ObliqueWires {
         }
         // Connected ends.
         let on_conductor = |q: [f64; 3]| -> bool {
+            let q = frame.map_or(q, |f| f.param(q));
             let pec = |axis: Axis, node: [usize; 3]| {
                 let n = grid.nodes();
                 let a = axis.index();
@@ -725,6 +778,7 @@ impl ObliqueWires {
             c_inv,
             connected,
             edges,
+            copies,
             p,
             pt,
             feeds,
@@ -854,10 +908,26 @@ impl ObliqueWires {
     fn setup(&mut self, ctx: &StepContext<'_>) -> Result<()> {
         let dt = ctx.dt;
         let co = ctx.coefficients;
+        // The merged cb of the stored copies (1/cb = Σ 1/cb_j; a PEC copy
+        // makes the edge PEC).
         let cb: Vec<f64> = self
             .edges
             .iter()
-            .map(|&(axis, node)| co.cb(axis)[ctx.grid.index(node)] as f64)
+            .zip(&self.copies)
+            .map(|(&(axis, node), cs)| {
+                if cs.len() <= 1 {
+                    return co.cb(axis)[ctx.grid.index(node)] as f64;
+                }
+                let mut w = 0.0;
+                for c in cs {
+                    let v = co.cb(axis)[ctx.grid.index(*c)] as f64;
+                    if v <= 0.0 {
+                        return 0.0;
+                    }
+                    w += 1.0 / v;
+                }
+                1.0 / w
+            })
             .collect();
         let mut lower: BTreeMap<(usize, usize), f64> = BTreeMap::new();
         let mut add = |i: usize, j: usize, v: f64| {
@@ -951,10 +1021,11 @@ impl Operator for ObliqueWires {
                 j += pv * avg[s];
             }
             if j != 0.0 && sv.cb[k] != 0.0 {
-                let (axis, node) = self.edges[k];
-                fields
-                    .u
-                    .set(axis, node, (self.ustar[k] - sv.cb[k] * j) as f32);
+                let (axis, _) = self.edges[k];
+                let v = (self.ustar[k] - sv.cb[k] * j) as f32;
+                for &node in &self.copies[k] {
+                    fields.u.set(axis, node, v);
+                }
             }
         }
         for (s, &(a, b)) in self.segs.iter().enumerate() {

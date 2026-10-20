@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use super::cyl::CylFrame;
 use super::deposit::{Lines, cell, node_weights, segment_weights};
 use super::lattice::LatticeGreen;
 
@@ -162,12 +163,15 @@ fn offset(a: [usize; 3], b: [usize; 3]) -> [i64; 3] {
 /// segments (times `ε`: the capacitance; NaN where `k ≤ 0`), and segment
 /// `s` the flux per unit current the lattice misses, `Λ_s` \[m\] (times
 /// `μ`: the inductance). `window` is the radius \[m\] of the neighbourhood
-/// (in cell sizes of the local cell, times the largest of them).
+/// (in cell sizes of the local cell, times the largest of them). On a
+/// cylindrical grid (`cyl`) the virtual lattice is the unrolled local
+/// frame of the reference point ([`CylFrame::local`]).
 pub(super) fn corrections(
     real: Lines<'_>,
     geo: &Geometry<'_>,
     dual: &[f64],
     window: f64,
+    cyl: Option<&CylFrame<'_>>,
 ) -> (Vec<f64>, Vec<f64>) {
     let mut greens = Greens(BTreeMap::new());
     let nn = geo.nodes.len();
@@ -178,12 +182,35 @@ pub(super) fn corrections(
         halves[b].push(s);
     }
     let local_h = |p: [f64; 3]| -> f64 {
+        if let Some(f) = cyl {
+            return f.cell_size(p).into_iter().fold(0.0, f64::max);
+        }
         (0..3)
             .map(|d| {
                 let c = cell(real[d], p[d]);
                 real[d][c + 1] - real[d][c]
             })
             .fold(0.0, f64::max)
+    };
+    // The virtual lattice around `p` and the map of points into it.
+    let frame = |p: [f64; 3], reach: f64| -> (Virtual, Option<super::cyl::Local>) {
+        match cyl {
+            Some(f) => {
+                let loc = f.local(p, reach);
+                (
+                    Virtual {
+                        lines: loc.lines.clone(),
+                        h: loc.h,
+                    },
+                    Some(loc),
+                )
+            }
+            None => (Virtual::around(real, p, reach), None),
+        }
+    };
+    let to = |loc: &Option<super::cyl::Local>, x: [f64; 3]| match loc {
+        Some(l) => l.map(x),
+        None => x,
     };
     // Gauss–Legendre, 3 points on [0, 1].
     let g3 = [
@@ -195,7 +222,7 @@ pub(super) fn corrections(
     for j in 0..nn {
         let xj = geo.nodes[j];
         let reach = window * local_h(xj);
-        let virt = Virtual::around(real, xj, reach);
+        let (virt, loc) = frame(xj, reach);
         let vl = virt.lines();
         let g = greens.get(virt.h);
         let mut charge: BTreeMap<[usize; 3], f64> = BTreeMap::new();
@@ -208,7 +235,7 @@ pub(super) fn corrections(
             if norm(core::array::from_fn(|k| xi[k] - xj[k])) > reach {
                 continue;
             }
-            for (n, w) in node_weights(vl, xi) {
+            for (n, w) in node_weights(vl, to(&loc, xi)) {
                 if w != 0.0 {
                     *charge.entry(n).or_insert(0.0) += dual[i] * w;
                 }
@@ -225,7 +252,7 @@ pub(super) fn corrections(
                 .sum::<f64>()
                 / (4.0 * PI);
             let mut v = 0.0;
-            for (n, lam) in node_weights(vl, x) {
+            for (n, lam) in node_weights(vl, to(&loc, x)) {
                 if lam == 0.0 {
                     continue;
                 }
@@ -253,7 +280,7 @@ pub(super) fn corrections(
     for (s, fl) in flux.iter_mut().enumerate() {
         let ms = geo.mid(s);
         let reach = window * local_h(ms);
-        let virt = Virtual::around(real, ms, reach);
+        let (virt, loc) = frame(ms, reach);
         let vl = virt.lines();
         let g = greens.get(virt.h);
         let (a, b) = geo.segs[s];
@@ -271,7 +298,7 @@ pub(super) fn corrections(
                 continue;
             }
             let (pc, pe) = (geo.nodes[c], geo.nodes[e]);
-            segment_weights(vl, pc, pe, &mut cur);
+            segment_weights(vl, to(&loc, pc), to(&loc, pe), &mut cur);
             let cos = dot(ts, dir(pc, pe));
             if cos == 0.0 {
                 continue;
@@ -286,7 +313,7 @@ pub(super) fn corrections(
         }
         lam /= 4.0 * PI;
         let mut own = BTreeMap::new();
-        segment_weights(vl, pa, pb, &mut own);
+        segment_weights(vl, to(&loc, pa), to(&loc, pb), &mut own);
         // Per component: the current elements of that component.
         let by_comp: [Vec<([usize; 3], f64)>; 3] = core::array::from_fn(|d| {
             cur.iter()
@@ -355,7 +382,7 @@ mod tests {
             radius: &radius,
             component: &component,
         };
-        let (c, l) = corrections(real, &geo, &dual, super::super::WINDOW);
+        let (c, l) = corrections(real, &geo, &dual, super::super::WINDOW, None);
         let j = n / 2;
         (
             r0 * (2.0 * PI * seg / c[j]).exp(),
