@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Time-domain dumps: DumpType 0-5, DumpMode 0-2, HDF5 and VTK; 7x5x5 non-uniform mesh, lossy magnetic dielectric, custom sinusoidal soft E source.
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="10" endCriteria="0" f_max="5e9" OverSampling="8" TimeStep="6.5e-12">
+    <Excitation Type="10" f0="3e9" Function="sin(2*pi*3e9*t)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material ID="0" Name="lossy">
+        <Property Epsilon="2" Kappa="0.05" Mue="1.5"/>
+        <Primitives>
+          <Box Priority="0"><P1 X="15" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box>
+        </Primitives>
+      </Material>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives>
+          <Box Priority="0"><P1 X="9" Y="9" Z="3"/><P2 X="9" Y="9" Z="12"/></Box>
+        </Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="T0M0" DumpType="0" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="11" Name="T0M1" DumpType="0" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="12" Name="T0M2" DumpType="0" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="13" Name="T1M0" DumpType="1" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="14" Name="T1M1" DumpType="1" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="15" Name="T1M2" DumpType="1" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="16" Name="T2M0" DumpType="2" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="17" Name="T2M1" DumpType="2" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="18" Name="T2M2" DumpType="2" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="19" Name="T3M0" DumpType="3" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="20" Name="T3M1" DumpType="3" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="21" Name="T3M2" DumpType="3" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="22" Name="T4M0" DumpType="4" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="23" Name="T4M1" DumpType="4" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="24" Name="T4M2" DumpType="4" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="25" Name="T5M0" DumpType="5" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="26" Name="T5M1" DumpType="5" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="27" Name="T5M2" DumpType="5" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="28" Name="T0M1v" DumpType="0" DumpMode="1" FileType="0">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="29" Name="T1M0v" DumpType="1" DumpMode="0" FileType="0">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="30" Name="T3M2v" DumpType="3" DumpMode="2" FileType="0">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,4,9,15,20,26,30</XLines>
+      <YLines>0,5,9,14,20</YLines>
+      <ZLines>0,3,7,12,18</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

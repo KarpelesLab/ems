@@ -1,0 +1,200 @@
+# T10M0.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T10M1.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T10M2.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T11M0.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T11M1.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T11M2.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T12M1.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 2
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T13M1.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 3
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T14M1.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 4
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# T15M1.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 5
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1e+09, 2.5e+09]
+      f0: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1e+09
+      f1: dataset (3, 7, 5, 5) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2.5e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64

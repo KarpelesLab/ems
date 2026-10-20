@@ -1,0 +1,113 @@
+# sar_1g.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 21
+  @mass: float64 () = 0.002352
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 1002
+      @frequency: float64 (1,) = [1e+09]
+      @unused_cubes: uint64 () = 0
+      @used_cubes: uint64 () = 0
+      @valid_cubes: uint64 () = 294
+      f0: dataset (12, 12, 9) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 4.64044e-26
+        @maxSAR_idx: uint32 (3,) = [3, 3, 3]
+        @power: float32 () = 5.18168e-29
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (9,) float64
+# sar_local.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 20
+  @mass: float64 () = 0.002352
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 1002
+      @frequency: float64 (2,) = [1e+09, 2e+09]
+      @unused_cubes: uint64 () = 0
+      @used_cubes: uint64 () = 0
+      @valid_cubes: uint64 () = 294
+      f0: dataset (12, 12, 9) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 2.5388e-25
+        @maxSAR_idx: uint32 (3,) = [3, 5, 1]
+        @power: float32 () = 4.94439e-29
+      f1: dataset (12, 12, 9) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 2e+09
+        @maxSAR: float32 () = 5.10994e-27
+        @maxSAR_idx: uint32 (3,) = [3, 5, 6]
+        @power: float32 () = 9.89483e-31
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (9,) float64
+# sar_raw.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 29
+  @openEMS_HDF5_version: float64 () = 0.3
+  CellData/
+    Conductivity: dataset (12, 12, 9) float32
+      @d_order: vlen-str () = np.str_('XYZ')
+    Density: dataset (12, 12, 9) float32
+      @d_order: vlen-str () = np.str_('XYZ')
+    Volume: dataset (12, 12, 9) float32
+      @d_order: vlen-str () = np.str_('XYZ')
+  CellWidth/
+    @mesh_scaling: float64 () = 1
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (9,) float64
+  FieldData/
+    FD/
+      @frequency: float64 (1,) = [1e+09]
+      f0: dataset (3, 12, 12, 9) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (9,) float64
+# sar_sub.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 20
+  @mass: float64 () = 0.002352
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 192
+      @frequency: float64 (1,) = [1e+09]
+      @unused_cubes: uint64 () = 0
+      @used_cubes: uint64 () = 0
+      @valid_cubes: uint64 () = 294
+      f0: dataset (9, 9, 6) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 2.65585e-25
+        @maxSAR_idx: uint32 (3,) = [1, 4, 5]
+        @power: float32 () = 5.18168e-29
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (9,) float64
+    y: dataset (9,) float64
+    z: dataset (6,) float64

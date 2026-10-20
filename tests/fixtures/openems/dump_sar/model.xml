@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SAR dumps (local, 1 g, raw; HDF5 and VTK) of a lossy tissue block.
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e9" TimeStep="3.5e-12">
+    <Excitation Type="10" f0="1.5e9" Function="sin(2*pi*1e9*t)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material ID="0" Name="tissue">
+        <Property Epsilon="40" Kappa="0.8" Density="1000"/>
+        <Primitives>
+          <Box Priority="0"><P1 X="6" Y="4" Z="2"/><P2 X="20" Y="18" Z="14"/></Box>
+        </Primitives>
+      </Material>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives>
+          <Box Priority="0"><P1 X="2" Y="10" Z="4"/><P2 X="2" Y="10" Z="12"/></Box>
+        </Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="sar_local" DumpType="20" FileType="1">
+        <FD_Samples>1e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="22" Y="22" Z="16"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="11" Name="sar_1g" DumpType="21" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="22" Y="22" Z="16"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="12" Name="sar_raw" DumpType="29" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="22" Y="22" Z="16"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="13" Name="sar_sub" DumpType="20" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="5" Y="3" Z="2"/><P2 X="19" Y="17" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="14" Name="sar_vtk" DumpType="20" FileType="0">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="22" Y="22" Z="16"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,2,4,6,8,10,12,14,16,18,20,22</XLines>
+      <YLines>0,2,4,6,8,10,12,14,16,18,20,22</YLines>
+      <ZLines>0,2,4,6,8,10,12,14,16</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

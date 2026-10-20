@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<VTKFile type="StructuredGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <StructuredGrid WholeExtent="0 4 0 4 0 3">
+  <Piece Extent="0 4 0 4 0 3">
+    <PointData>
+      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.1794005839288795">
+        AQAAAACAAACwBAAARAEAAA==eJxjYKAuiLzcbwVj3+k8aA1jrwy6YklIb+4EXrj6GX7L98DYjPqc1th1IEAUkr23SbSXXHD/yrFdMPZHl2C4e73LOneiq3UQC4GrndWfttsjpHt3bZ+njb1mgGXr0ti9N7d22r5prbVOyb+46wLrGuuyD9Fwd2vNm7Ibxp7u8nYPg8McfbeYyzatzXeBahJUVmwxt3v5h8UWaIvi9SfHbPx61OH+t0Oydw7QXs+QbmuQvQoQe22R7LW6iGYvFv/CwxjoXxsk/xIM4zs49Hph0QsMK7jaef1p1h5QNwtoBuyEuflta+1ukJuhYQUPb2BYwf0ODCugPQcWgsKKqeUuUE3CElBYvfrDspfBQUYfGla78di7G8nevTB7k4FxdBHNXiz+xZo2vLCkDWoD5LxwCykvrCIiLxTQIA8SYy+xAADIMbMb
+        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
+          <Value index="0">
+            0
+          </Value>
+          <Value index="1">
+            0.17940058393
+          </Value>
+        </InformationKey>
+      </DataArray>
+    </PointData>
+    <CellData>
+    </CellData>
+    <Points>
+      <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary" RangeMin="0.004999999888241291" RangeMax="0.023323808144007856">
+        AQAAAACAAACwBAAAqAEAAA==eJxF0yFIg1EUxfHBU9ExQUQGgkEWV0Rlgr4rGNY0aBFhYBLLgojYh1NsBhmCWISh2aTFbDLYtmQyWIUVLfM7997zvaU/l1Pej33FXjcW/Hc0HYT9eFeXdG/nXex18/69vo8Ly2dr6M5pQb52PrT3nzakuT4X7d7K7tvR95LttWe/b+JVbaj7xslP7Fe39H5Rrkll/jba/Vj61XfuJdtrl1cv48PoqvZuox/PRzrarXpF3sY+/b4n5yMz4nvJ9trDzYO4ONXUzVL3OQ5Kr9qHf+PyMjEpdl+RQUm4l2wv/vboHpFWaFrZvZ03rdC0QtMKTSu7m5Xv1QpNKzSt0LSyu1n5Xq3QtELTCk0ru5uV79UKTSs0rdC0srtZ+V6t/O2R/6lkFSRZ4d7OO1kFSVZBklWQZIU7rXTvVkGSVZBkFSRZ4U4r3btVkGQVJFkFSVa400r3bhUkWQVJVkGSFe600r1b6dsjvzlaoWll93betELTCk0rNK3sbla+Vys0rdC0QtPK7mble7VC0wpNKzSt7G5WvlcrNK3QtELTyu5m5Xu1Qv8DBXRuBA==
+        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
+          <Value index="0">
+            0.0049999998882
+          </Value>
+          <Value index="1">
+            0.023323808144
+          </Value>
+        </InformationKey>
+      </DataArray>
+    </Points>
+  </Piece>
+  </StructuredGrid>
+</VTKFile>

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dump sampling rules: SubSampling, OptResolution, StartTime/StopTime, box snapping (node and cell modes), planes, lines, points, a box outside the mesh.
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="12" endCriteria="0" f_max="5e9" OverSampling="8" TimeStep="6.5e-12">
+    <Excitation Type="10" f0="3e9" Function="sin(2*pi*3e9*t)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material ID="0" Name="lossy">
+        <Property Epsilon="2" Kappa="0.05" Mue="1.5"/>
+        <Primitives>
+          <Box Priority="0"><P1 X="15" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box>
+        </Primitives>
+      </Material>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives>
+          <Box Priority="0"><P1 X="9" Y="9" Z="3"/><P2 X="9" Y="9" Z="12"/></Box>
+        </Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="sub" DumpType="0" DumpMode="1" SubSampling="2,2,3" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="11" Name="subc" DumpType="1" DumpMode="2" SubSampling="2,1,2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="12" Name="opt" DumpType="0" DumpMode="1" OptResolution="8,8,8" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="13" Name="optc" DumpType="0" DumpMode="2" OptResolution="8,5,8" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="14" Name="win" DumpType="1" DumpMode="1" StartTime="2.5e-11" StopTime="6e-11" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="15" Name="plane" DumpType="0" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="2" Y="0" Z="8"/><P2 X="31" Y="20" Z="8"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="16" Name="planec" DumpType="3" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="7"/><P2 X="30" Y="20" Z="7"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="17" Name="inner" DumpType="4" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="10" Y="6" Z="4"/><P2 X="24" Y="13" Z="11"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="18" Name="innerc" DumpType="5" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="10" Y="6" Z="4"/><P2 X="24" Y="13" Z="11"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="19" Name="line" DumpType="1" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="9" Z="7"/><P2 X="30" Y="9" Z="7"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="20" Name="point" DumpType="0" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="9" Y="9" Z="7"/><P2 X="9" Y="9" Z="7"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="21" Name="planev" DumpType="0" DumpMode="1" FileType="0">
+        <Primitives><Box Priority="0"><P1 X="2" Y="0" Z="8"/><P2 X="31" Y="20" Z="8"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="22" Name="outside" DumpType="0" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="19"/><P2 X="30" Y="20" Z="19"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,4,9,15,20,26,30</XLines>
+      <YLines>0,5,9,14,20</YLines>
+      <ZLines>0,3,7,12,18</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

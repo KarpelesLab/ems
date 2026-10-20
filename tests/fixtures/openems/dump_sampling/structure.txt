@@ -1,0 +1,302 @@
+# inner.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 4
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 4, 3, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 4, 3, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 4, 3, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 4, 3, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 4, 3, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (4,) float64
+    y: dataset (3,) float64
+    z: dataset (3,) float64
+# innerc.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 5
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 5, 4, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.25e-12]
+      00000003: dataset (3, 5, 4, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [2.275e-11]
+      00000006: dataset (3, 5, 4, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [4.225e-11]
+      00000009: dataset (3, 5, 4, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [6.175e-11]
+      00000012: dataset (3, 5, 4, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [8.125e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (5,) float64
+    y: dataset (4,) float64
+    z: dataset (4,) float64
+# line.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 7, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.25e-12]
+      00000003: dataset (3, 7, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [2.275e-11]
+      00000006: dataset (3, 7, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [4.225e-11]
+      00000009: dataset (3, 7, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [6.175e-11]
+      00000012: dataset (3, 7, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [8.125e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (1,) float64
+    z: dataset (1,) float64
+# opt.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 7, 5, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 7, 5, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 7, 5, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 7, 5, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 7, 5, 4) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (4,) float64
+# optc.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64
+# plane.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (1,) float64
+# planec.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 3
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 7, 5, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (1,) float64
+# point.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 1, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 1, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 1, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 1, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 1, 1, 1) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (1,) float64
+    y: dataset (1,) float64
+    z: dataset (1,) float64
+# sub.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 4, 3, 2) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000003: dataset (3, 4, 3, 2) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.95e-11]
+      00000006: dataset (3, 4, 3, 2) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.9e-11]
+      00000009: dataset (3, 4, 3, 2) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.85e-11]
+      00000012: dataset (3, 4, 3, 2) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.8e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (4,) float64
+    y: dataset (3,) float64
+    z: dataset (2,) float64
+# subc.h5
+//
+  @dual_mesh: uint8 () = 1
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 4, 5, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.25e-12]
+      00000003: dataset (3, 4, 5, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [2.275e-11]
+      00000006: dataset (3, 4, 5, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [4.225e-11]
+      00000009: dataset (3, 4, 5, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [6.175e-11]
+      00000012: dataset (3, 4, 5, 3) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [8.125e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (4,) float64
+    y: dataset (5,) float64
+    z: dataset (3,) float64
+# win.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000003: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [2.275e-11]
+      00000006: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [4.225e-11]
+      00000009: dataset (3, 7, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [6.175e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (7,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64

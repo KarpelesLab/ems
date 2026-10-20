@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<VTKFile type="RectilinearGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <RectilinearGrid WholeExtent="0 6 0 4 0 4">
+  <Piece Extent="0 6 0 4 0 4">
+    <PointData>
+      <DataArray type="Float32" Name="RotH-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.2762381111012417">
+        AQAAAACAAAA0CAAAsQQAAA==eJztlP831Xccx+/hyGwoK9VhqHxrJaRru5/7fr0xLtkqwi36eqWmSIep3dqduKJLzL210ISzzEgpWZLPvZ/3+3Pm6stqieWkSItk05Gz6JrSF9uP3T/AOfthjz/gcV7P17c+3oMGllpQs70V8PfMAbLouJ5W6iKJb8AgKK/V0YqsGNjZmA+zR++QkTX1sHAxFbtWunBssC0UTqsX3RrqZv267MWCt9ju305n56pJu1sVeG57SUeejFLrvR/zAz792NnFQP+Kteb1tX446PtzRElXIReTKnQkLpVrGc8G79B2ximsUCto6DNyGj6/Qm12HoEFy0eg5bSBXhy7i/1dnHlBzwPcfOMeNls2SZuVXjhBw0JHvhOc0B9DNoYkZCVNgShWzzR3q5gn1q1GTofJuXTY81e473QaXM9fI2ciNFilX0Pm3+iBOUoFXuDmDFUtMogHDZxDDTC4I0/MnLwuVmcOoR5vuUgarxStC+plBFNM5kAN0mzMR3o3C9yZOMBNv3lCzK5xwfy6SOSruMotZeJwMklFmUXFXEXdH+BrLhTLLdt04duDoZxLELnn1bMT84qMso9NKsX9QfYkQpiO296k0mcbyuiNtGz+bGkYXskW0BfvpvBdj5KgW7aPE4U+AYcURzR6oUMnb28E7JDNdGlWaAejQtDbTh8zjc7+cjOas16FY1zjaXuYAi85mcmbTEpwhjYBu99J5I/mbgarEBlyDn4PW3fZINO5PeLDbSdhT7ScyT0KzKnlQiPnHfoZ0i+x4mreeQphwn2ck/qQjvxEwWXGcbFlejJK6XfCRUcjUG16PFr/shMSL0wTx0gOiL0KnIA1cRVZKVaLfr69wSj7VJCkdQR5zTg67GuKk1rswE51CZLt1uIPl41xj3qvgtxcgauldVxwrh3MF7SCcJWjLm/DJbGXawREO3iy8pk5IkHhj0Z1dlZ3wal/d01WrsIZ/FpsY5+Ad1/4mg9PkNA4z6143JDCt6q+I1Ydr5Dtw/swvHQmJ91lgTxeEyieHa7l45cxHsnrjPqptL4Nsolr3FB2Lh4+E46LDBL61YoMvnbMjzI+EtowlszvLysg2MKErN5kjnsfmnNlO8y5/md1kHfqE+2cNGdtz4FgIydZawue77dwx+52Q43fBMqJ+Jboa0cgtKmb61OoyVX1Ely2S83tjP2NuxephxX3H2sTZam6K16LQM0bmtoLHdnpJalTPqOh5yUgCUmFLeejwGdbIsjGvXFZqIQ8Vn1KLA964I5dGYhunUVGVynhzJ5YKAnYprsVYoouXc9Fcbs3sy9nVIt6reRG9+6eFoQ/inSD3gfzIS3hCG56eAxHF3fSVxVZtCGrCAcKS+gb70ESUhIAyrulyOuLSM77sj9qXv4aXS/L0UrzExnWjDHKLtrkh1vPzSJ2X6bDnw4FWNaSSZ8+b6Q/OGbSm45ZtPRxFrXUdBK5x0oS8M0w8p8XyJ0VABdU2Y+2vNqvDdsh1e6OX2jktCvXwIPfgcT2bQSlLATaLprRRpvpxHSlPyle/ILsu6lAmz54ym2Z60EO/RINUUnuunS3Cp26SYqkVfaspzCQrTbxnvJf9z//ff4BjmUejg==
+        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
+          <Value index="0">
+            0
+          </Value>
+          <Value index="1">
+            0.2762381111
+          </Value>
+        </InformationKey>
+      </DataArray>
+    </PointData>
+    <CellData>
+    </CellData>
+    <Coordinates>
+      <DataArray type="Float64" Name="Array 0x555561e1d100" format="binary" RangeMin="0.002" RangeMax="0.032">
+        AQAAAACAAAA4AAAAPwAAAA==eJz7s/LjJd+kBHurLSfK9s2vsv9Vl7WnZHKH/ZvAHXKtryfaR6VY3/fvnW5f+VLNkGPNHPs/YPUL7AFmmB2A
+      </DataArray>
+      <DataArray type="Float64" Name="Array 0x555561e1d370" format="binary" RangeMin="0.0025" RangeMax="0.023">
+        AQAAAACAAAAoAAAALAAAAA==eJyrFlnn/rAqxb7ypZohx5oa+6gU6/v+ve32c44obCjKmAjlT7cHAGO1EYk=
+      </DataArray>
+      <DataArray type="Float64" Name="Array 0x555561e1d5e0" format="binary" RangeMin="0.0015" RangeMax="0.021">
+        AQAAAACAAAAoAAAALwAAAA==eJz7VZe1p2RyhH21yDr3h1Ul9rd/ggSa7XfItb4O3NFnL61/V4Wtcao9AKVQEz8=
+      </DataArray>
+    </Coordinates>
+  </Piece>
+  </RectilinearGrid>
+</VTKFile>

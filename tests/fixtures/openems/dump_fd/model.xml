@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Frequency-domain dumps: DumpType 10-15 (node mode; E and H also modes 0 and 2), HDF5; one VTK dump.
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="60" endCriteria="0" f_max="5e9" OverSampling="8" TimeStep="6.5e-12">
+    <Excitation Type="10" f0="3e9" Function="sin(2*pi*3e9*t)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material ID="0" Name="lossy">
+        <Property Epsilon="2" Kappa="0.05" Mue="1.5"/>
+        <Primitives>
+          <Box Priority="0"><P1 X="15" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box>
+        </Primitives>
+      </Material>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives>
+          <Box Priority="0"><P1 X="9" Y="9" Z="3"/><P2 X="9" Y="9" Z="12"/></Box>
+        </Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="T10M0" DumpType="10" DumpMode="0" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="11" Name="T10M1" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="12" Name="T10M2" DumpType="10" DumpMode="2" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="13" Name="T11M0" DumpType="11" DumpMode="0" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="14" Name="T11M1" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="15" Name="T11M2" DumpType="11" DumpMode="2" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="16" Name="T12M1" DumpType="12" DumpMode="1" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="17" Name="T13M1" DumpType="13" DumpMode="1" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="18" Name="T14M1" DumpType="14" DumpMode="1" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="19" Name="T15M1" DumpType="15" DumpMode="1" FileType="1">
+        <FD_Samples>1e9,2.5e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="20" Name="T10M1v" DumpType="10" DumpMode="1" FileType="0">
+        <FD_Samples>2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="30" Y="20" Z="18"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,4,9,15,20,26,30</XLines>
+      <YLines>0,5,9,14,20</YLines>
+      <ZLines>0,3,7,12,18</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

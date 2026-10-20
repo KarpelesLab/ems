@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cylindrical mesh (CylinderCoords): HDF5 (rho, alpha, z) and VTK StructuredGrid (.vts).
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="60" endCriteria="0" f_max="3e9" CylinderCoords="1" OverSampling="8" TimeStep="3e-12">
+    <Excitation Type="10" f0="3e9" Function="sin(2*pi*3e9*t)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <Properties>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives>
+          <Box Priority="0"><P1 X="12" Y="0.4" Z="4"/><P2 X="12" Y="0.4" Z="8"/></Box>
+        </Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="E0" DumpType="0" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="5" Y="0" Z="0"/><P2 X="20" Y="0.8" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="11" Name="E1" DumpType="0" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="5" Y="0" Z="0"/><P2 X="20" Y="0.8" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="12" Name="H1" DumpType="1" DumpMode="1" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="5" Y="0" Z="0"/><P2 X="20" Y="0.8" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="13" Name="E2" DumpType="0" DumpMode="2" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="5" Y="0" Z="0"/><P2 X="20" Y="0.8" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="14" Name="Ef" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="5" Y="0" Z="0"/><P2 X="20" Y="0.8" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="15" Name="E1v" DumpType="0" DumpMode="1" FileType="0">
+        <Primitives><Box Priority="0"><P1 X="5" Y="0" Z="0"/><P2 X="20" Y="0.8" Z="12"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="1">
+      <XLines>5,8,12,16,20</XLines>
+      <YLines>0,0.2,0.4,0.6,0.8</YLines>
+      <ZLines>0,4,8,12</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
