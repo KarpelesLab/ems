@@ -13,6 +13,12 @@
 //!
 //! Only the conductivity `κ` contributes to the absorbed power; the losses
 //! of dispersive (Lorentz/Debye) poles are not included.
+//!
+//! On cylindrical grids the cells are `(ρ, α, z)` cells: the samples are
+//! taken in those coordinates and weighted by `ρ` (the volume element), and
+//! mass-averaged dumps (`SAR1g`, `SAR10g`) are dropped with a warning
+//! (the averaging cubes need physical coordinates;
+//! [`SarVolume::averaged_with`](crate::post::sar::SarVolume::averaged_with)).
 
 use csx::properties::{DumpFileType, DumpType, MaterialQuantity};
 use csx::{CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
@@ -66,7 +72,7 @@ pub struct SarSpec {
     pub density: Vec<f64>,
     /// The cells of the openEMS-compatible SAR files (see
     /// [`io::openems::dump`](crate::io::openems::dump#sar-dumps)); `None`
-    /// on cylindrical grids.
+    /// if the dump box has no sample lines.
     pub openems: Option<OpenEmsSarCells>,
 }
 
@@ -112,7 +118,7 @@ pub(super) fn sar_specs(
         };
         let index = index.get_or_insert_with(|| {
             model.spatial_index(
-                CoordSystem::Cartesian,
+                model.grid.coord_system,
                 TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
             )
         });
@@ -158,10 +164,10 @@ fn openems_cells(
     d: &ProbeSpec<csx::properties::DumpBox>,
     n: usize,
 ) -> Option<OpenEmsSarCells> {
-    if model.grid.coord_system == CoordSystem::Cylindrical {
-        return None;
-    }
     let du = model.grid.delta_unit;
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
+    // Probe corners are in metres, cylindrical α in radians.
+    let unit = |a: usize| if cyl && a == 1 { 1.0 } else { du };
     let mut indices: [Vec<usize>; 3] = Default::default();
     for (a, ind) in indices.iter_mut().enumerate() {
         let l = model.grid.lines(a);
@@ -171,8 +177,8 @@ fn openems_cells(
         *ind = crate::io::openems::dump::sample_indices(
             l,
             (l[0], l[l.len() - 1]),
-            d.corners[0][a] / du,
-            d.corners[1][a] / du,
+            d.corners[0][a] / unit(a),
+            d.corners[1][a] / unit(a),
             1,
             None,
         )?;
@@ -232,6 +238,7 @@ fn cell_media(
 ) -> (Vec<[f64; 3]>, Vec<f64>) {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
     let bg = model.background.kappa.value();
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
     let (lo, c) = (cells.lo(), cells.cells());
     let mut sigma = Vec::with_capacity(cells.num_cells());
     let mut density = Vec::with_capacity(cells.num_cells());
@@ -242,7 +249,18 @@ fn cell_media(
                 let cell = [lo[0] + i, lo[1] + j, lo[2] + k];
                 let mut s = [0.0; 3];
                 let mut r = 0.0;
+                // Cylindrical cells: weights ∝ ρ of the sample (volume
+                // element), normalised over the cell.
+                let (r0, r1) = (lines[0][cell[0]], lines[0][cell[0] + 1]);
+                let rho_w = |t: usize| {
+                    if cyl && r0 + r1 > 0.0 {
+                        (r0 + (r1 - r0) * (t as f64 + 0.5) / n as f64) / (0.5 * (r0 + r1))
+                    } else {
+                        1.0
+                    }
+                };
                 for a in 0..n {
+                    let w = w * rho_w(a);
                     for b in 0..n {
                         for cc in 0..n {
                             let t = [a, b, cc];
@@ -254,11 +272,17 @@ fn cell_media(
                             match index.query(p).map(|h| &h.property.kind) {
                                 Some(PropertyKind::Metal) => {}
                                 Some(k) if let Some(m) = k.material() => {
-                                    let kap = m.values_at(MaterialQuantity::Kappa, p);
+                                    // Weighting functions take Cartesian points.
+                                    let pc = if cyl {
+                                        CoordSystem::Cylindrical.to_cartesian(p)
+                                    } else {
+                                        p
+                                    };
+                                    let kap = m.values_at(MaterialQuantity::Kappa, pc);
                                     for d in 0..3 {
                                         s[d] += w * kap[d];
                                     }
-                                    r += w * m.density_at(p);
+                                    r += w * m.density_at(pc);
                                 }
                                 _ => {
                                     for x in &mut s {

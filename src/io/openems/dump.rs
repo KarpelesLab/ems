@@ -764,6 +764,9 @@ pub struct OpenEmsSar {
     pub(crate) widths: [Vec<f64>; 3],
     /// Boundaries \[m\] of the real cells per axis.
     pub(crate) lines: [Vec<f64>; 3],
+    /// Cylindrical grids: the radius of the lower ρ line of each dump cell
+    /// \[m\] (openEMS's cell volume is `ρ_i·Δα·Δρ·Δz`, observed).
+    pub(crate) radii: Option<Vec<f64>>,
 }
 
 /// One frequency of an [`OpenEmsSar`]: SAR per cell and the openEMS
@@ -802,12 +805,16 @@ impl OpenEmsSar {
             let hi = v.last().copied().unwrap_or(0).min(n - 2).max(lo);
             grid.lines(a)[lo..=hi + 1].to_vec()
         });
+        let radii = grid
+            .is_cylindrical()
+            .then(|| indices[0].iter().map(|&j| grid.lines(Axis::X)[j]).collect());
         Self {
             fd,
             sigma,
             density,
             widths,
             lines,
+            radii,
         }
     }
 
@@ -830,19 +837,26 @@ impl OpenEmsSar {
         self.fd.sampler().dims()
     }
 
-    /// Volume per cell \[m³\].
+    /// Volume per cell \[m³\] (cylindrical grids: `ρ_i·Δα·Δρ·Δz` with the
+    /// radius of the cell's lower ρ line, like openEMS).
     pub fn volumes(&self) -> Vec<f64> {
         let [nx, ny, nz] = self.dims();
         let w = &self.widths;
         let mut v = Vec::with_capacity(nx * ny * nz);
         for i in 0..nx {
+            let r = self.radii.as_ref().map_or(1.0, |r| r[i]);
             for j in 0..ny {
                 for k in 0..nz {
-                    v.push(w[0][i] * w[1][j] * w[2][k]);
+                    v.push(r * w[0][i] * w[1][j] * w[2][k]);
                 }
             }
         }
         v
+    }
+
+    /// Whether the dump is on a cylindrical grid.
+    pub fn is_cylindrical(&self) -> bool {
+        self.radii.is_some()
     }
 
     /// Tissue mass `Σ ρ·V` \[kg\] (with `ρ` and `V` rounded to `f32` like
@@ -860,8 +874,14 @@ impl OpenEmsSar {
     /// index `k`.
     ///
     /// # Errors
-    /// See [`SarVolume::averaged`](crate::post::sar::SarVolume::averaged).
+    /// See [`SarVolume::averaged`](crate::post::sar::SarVolume::averaged);
+    /// [`Error::Unsupported`] for averaging on a cylindrical grid.
     pub fn frequency(&self, k: usize, averaging: Option<f64>) -> Result<SarFrequency> {
+        if averaging.is_some() && self.is_cylindrical() {
+            return Err(Error::Unsupported(
+                "mass-averaged SAR on a cylindrical grid is not available (local SAR only)".into(),
+            ));
+        }
         let e = openems_freq_values(&self.fd, k);
         let vol = self.volumes();
         let pd: Vec<f64> = e
@@ -974,10 +994,11 @@ fn sar_mass(kind: SarKind) -> Option<f64> {
 pub fn write_sar_vtk(dir: &Path, sar: &SarResult) -> Result<Vec<PathBuf>> {
     let Some(d) = sar.openems() else {
         return Err(Error::Unsupported(format!(
-            "SAR dump {:?}: no openEMS data (cylindrical grid)",
+            "SAR dump {:?}: no openEMS data",
             sar.name()
         )));
     };
+    let cyl = d.is_cylindrical();
     let s = d.fd.sampler();
     let coords = [s.coords(Axis::X), s.coords(Axis::Y), s.coords(Axis::Z)];
     let [nx, ny, nz] = s.dims();
@@ -992,11 +1013,21 @@ pub fn write_sar_vtk(dir: &Path, sar: &SarResult) -> Result<Vec<PathBuf>> {
                 }
             }
         }
-        let p = dir.join(format!("{}_f={f:.6}.vtr", sar.name()));
+        // Cylindrical grids: a structured grid of Cartesian points (.vts),
+        // as openEMS writes.
+        let (ty, fext) = if cyl {
+            ("StructuredGrid", "vts")
+        } else {
+            ("RectilinearGrid", "vtr")
+        };
+        let p = dir.join(format!("{}_f={f:.6}.{fext}", sar.name()));
         let ext = format!("0 {} 0 {} 0 {}", nx - 1, ny - 1, nz - 1);
         let mut t = String::new();
-        t.push_str("<?xml version=\"1.0\"?>\n<VTKFile type=\"RectilinearGrid\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt32\" compressor=\"vtkZLibDataCompressor\">\n");
-        let _ = writeln!(t, "  <RectilinearGrid WholeExtent=\"{ext}\">");
+        let _ = writeln!(
+            t,
+            "<?xml version=\"1.0\"?>\n<VTKFile type=\"{ty}\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt32\" compressor=\"vtkZLibDataCompressor\">"
+        );
+        let _ = writeln!(t, "  <{ty} WholeExtent=\"{ext}\">");
         let _ = writeln!(t, "  <Piece Extent=\"{ext}\">");
         t.push_str("    <PointData>\n");
         let raw: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -1010,7 +1041,32 @@ pub fn write_sar_vtk(dir: &Path, sar: &SarResult) -> Result<Vec<PathBuf>> {
             &raw,
             (f64::from(lo), f64::from(hi)),
         );
-        t.push_str("    </PointData>\n    <CellData>\n    </CellData>\n    <Coordinates>\n");
+        t.push_str("    </PointData>\n    <CellData>\n    </CellData>\n");
+        if cyl {
+            let mut pts = Vec::with_capacity(nx * ny * nz);
+            for &z in coords[2] {
+                for &a in coords[1] {
+                    for &r in coords[0] {
+                        let (sn, cs) = a.sin_cos();
+                        pts.push([(r * cs) as f32, (r * sn) as f32, z as f32]);
+                    }
+                }
+            }
+            t.push_str("    <Points>\n");
+            data_array(
+                &mut t,
+                "Float32",
+                "Points",
+                3,
+                &f32_bytes(&pts),
+                norm_range(&pts),
+            );
+            let _ = writeln!(t, "    </Points>\n  </Piece>\n  </{ty}>\n</VTKFile>");
+            write_file(&p, &t)?;
+            out.push(p);
+            continue;
+        }
+        t.push_str("    <Coordinates>\n");
         for (a, c) in coords.iter().enumerate() {
             let raw: Vec<u8> = c.iter().flat_map(|x| x.to_le_bytes()).collect();
             let lo = c.iter().copied().fold(f64::INFINITY, f64::min);
@@ -1222,7 +1278,7 @@ mod h5 {
             dump_type: code,
             dual_mesh: true,
             mesh_scaling,
-            cylindrical: false,
+            cylindrical: d.is_cylindrical(),
             legacy: false,
         };
         header(f, &h).map_err(e)?;
@@ -1247,11 +1303,24 @@ mod h5 {
             }
             let mut cw = root.create_group("CellWidth").map_err(e)?;
             cw.set_attr("mesh_scaling", &1.0f64).map_err(e)?;
-            cw.set_attr("mesh_type", &0i32).map_err(e)?;
-            for (a, n) in ["x", "y", "z"].into_iter().enumerate() {
+            let cyl = d.is_cylindrical();
+            cw.set_attr("mesh_type", &i32::from(cyl)).map_err(e)?;
+            let names = if cyl {
+                ["rho", "alpha", "z"]
+            } else {
+                ["x", "y", "z"]
+            };
+            for (a, n) in names.into_iter().enumerate() {
+                // openEMS scales the α widths (radians) by the drawing
+                // unit too (observed).
+                let w: Vec<f64> = if cyl && a == 1 {
+                    d.widths[a].iter().map(|x| x * mesh_scaling).collect()
+                } else {
+                    d.widths[a].clone()
+                };
                 cw.new_dataset::<f64>(n)
-                    .shape(&[d.widths[a].len() as u64])
-                    .write(&d.widths[a])
+                    .shape(&[w.len() as u64])
+                    .write(&w)
                     .map_err(e)?;
             }
             let mut fdg = root.create_group("FieldData").map_err(e)?;
@@ -1343,13 +1412,13 @@ pub fn hdf5_bytes(dump: &DumpResult, opts: &DumpFileOptions) -> Result<Vec<u8>> 
 /// [module docs](self#sar-dumps)).
 ///
 /// # Errors
-/// Encoding errors, a SAR dump without openEMS data (cylindrical grid),
-/// averaging errors.
+/// Encoding errors, a SAR dump without openEMS data, averaging errors
+/// (and averaging on a cylindrical grid).
 #[cfg(feature = "hdf5")]
 pub fn sar_hdf5_bytes(sar: &SarResult) -> Result<Vec<u8>> {
     let Some(d) = sar.openems() else {
         return Err(Error::Unsupported(format!(
-            "SAR dump {:?}: no openEMS data (cylindrical grid)",
+            "SAR dump {:?}: no openEMS data",
             sar.name()
         )));
     };

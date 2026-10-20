@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems cylindrical-grid fixture (scripts/openems-oracle/gen-cyl.sh): closed coaxial cavity a = 2 mm, b = 6 mm, L = 30 mm, empty (reference). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="9000" endCriteria="0" f_max="10e9" TimeStep="6.5e-13" CylinderCoords="1">
+    <Excitation Type="0" f0="5e9" fc="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>2.0,2.25,2.5,2.75,3.0,3.25,3.5,3.75,4.0,4.25,4.5,4.75,5.0,5.25,5.5,5.75,6.0</XLines>
+      <YLines>0.0,0.7853981633974483,1.5707963267948966,2.356194490192345,3.141592653589793,3.9269908169872414,4.71238898038469,5.497787143782138,6.283185307179586</YLines>
+      <ZLines>0.0,0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0,4.5,5.0,5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0,9.5,10.0,10.5,11.0,11.5,12.0,12.5,13.0,13.5,14.0,14.5,15.0,15.5,16.0,16.5,17.0,17.5,18.0,18.5,19.0,19.5,20.0,20.5,21.0,21.5,22.0,22.5,23.0,23.5,24.0,24.5,25.0,25.5,26.0,26.5,27.0,27.5,28.0,28.5,29.0,29.5,30.0</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="ex" Type="0" Excite="1,0,0">
+        <Primitives><Box Priority="0"><P1 X="2" Y="0" Z="15"/><P2 X="6" Y="6.283185307179586" Z="15"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="v0" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="2" Y="2.356194490192345" Z="10"/><P2 X="6" Y="2.356194490192345" Z="10"/></Box></Primitives>
+      </ProbeBox>
+      
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

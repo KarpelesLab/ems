@@ -1138,12 +1138,10 @@ pub fn compile(
     });
     cylindrical::multigrid_edge_warnings(&grid, &node_map, &excitations, &lumped, &mut warnings);
     let (probes, mut dumps) = probe_specs(model, &grid, &mut warnings);
-    let sar = if cyl {
-        cylindrical::no_sar(&mut dumps, &mut warnings);
-        Vec::new()
-    } else {
-        sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings)
-    };
+    if cyl {
+        cylindrical::no_averaged_sar(&mut dumps, &mut warnings);
+    }
+    let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);
     let abc = abc_specs(model, &mut warnings);
     Ok(Compiled {
         grid,

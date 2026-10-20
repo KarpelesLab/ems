@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Local and raw SAR dumps (HDF5, VTK) of a lossy tissue sector on a
+  cylindrical grid (no axis, quarter circle, PEC walls).
+  Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e9" TimeStep="3e-12" CylinderCoords="1">
+    <Excitation Type="10" f0="1.5e9" Function="sin(2*pi*1e9*t)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>10,12,14,16,18,20,22,24,26,28,30</XLines>
+      <YLines>0.0,0.19634954084936207,0.39269908169872414,0.5890486225480862,0.7853981633974483,0.9817477042468103,1.1780972450961724,1.3744467859455345,1.5707963267948966</YLines>
+      <ZLines>0,2,4,6,8,10,12,14,16</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Material Name="tissue">
+        <Property Epsilon="40" Kappa="0.8" Density="1000"/>
+        <Primitives><Box Priority="0"><P1 X="14" Y="0.2" Z="2"/><P2 X="26" Y="1.4" Z="14"/></Box></Primitives>
+      </Material>
+      <Excitation Name="src" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="12" Y="0.6" Z="4"/><P2 X="12" Y="0.9" Z="12"/></Box></Primitives>
+      </Excitation>
+      <DumpBox Name="sar_local" DumpType="20" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="30" Y="1.5707963267949" Z="16"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox Name="sar_raw" DumpType="29" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="30" Y="1.5707963267949" Z="16"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox Name="sar_sub" DumpType="20" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="13" Y="0.3" Z="3"/><P2 X="25" Y="1.2" Z="13"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox Name="sar_vtk" DumpType="20" FileType="0">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="30" Y="1.5707963267949" Z="16"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

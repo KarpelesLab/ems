@@ -416,3 +416,17 @@ fn sar_dumps() {
     let e = check("dump_sar", "", DumpFileOptions::new(), &["sar_1g"]);
     assert_close("dump_sar", &e, 1e-5);
 }
+
+/// SAR files on a cylindrical grid (`cyl_sar`, gen-cyl.sh): openEMS's
+/// cell volume is `ρ_i·Δα·Δρ·Δz` with the radius of the cell's lower ρ
+/// line, and it scales the α cell widths by the drawing unit; ems writes
+/// the same (its own SAR volumes use the exact annular cells). The cell
+/// fields of the two codes differ by about 1e-4 of their peak on this
+/// model, which shows as 3.5e-3 of the peak SAR in the weaker tissue
+/// field (both codes' local SAR equal `κ|E|²/(2ρ)` of their raw files to
+/// 1e-7).
+#[test]
+fn cylindrical_sar_dumps() {
+    let e = check("cyl_sar", "", DumpFileOptions::new(), &[]);
+    assert_close("cyl_sar", &e, 6e-3);
+}

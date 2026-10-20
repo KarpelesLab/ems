@@ -5,7 +5,8 @@
 //! weights), and the engine takes the geometry from the grid. Features
 //! whose models assume a Cartesian mesh are not available yet and are
 //! dropped with a warning: plane-wave excitations (openEMS ignores them on
-//! cylindrical grids too) and SAR dumps. Conducting sheets run their slab
+//! cylindrical grids too) and mass-averaged SAR dumps (local SAR works,
+//! with the `ρ` metric in the cell volumes). Conducting sheets run their slab
 //! model with the cylindrical metric ([`sheet_edges`]). Dispersive poles are mapped (midpoint rule in
 //! `(ρ, α, z)`, physical edge areas; within 1e-3 of openEMS on a
 //! Drude-filled coax). Waveguide mode probes work with a `z` normal (exact
@@ -168,20 +169,27 @@ pub(super) fn sheet_edges(
     }
 }
 
-/// Removes the SAR dumps from `dumps` (with a warning each).
-pub(super) fn no_sar(
+/// Removes the mass-averaged SAR dumps (`SAR1g`, `SAR10g`) from `dumps`
+/// (with a warning each): the averaging cubes are defined in physical
+/// coordinates, not on `(ρ, α, z)` cells. Local and raw SAR dumps are kept
+/// (`compile::sar`, cell volumes with the `ρ` metric).
+pub(super) fn no_averaged_sar(
     dumps: &mut Vec<ProbeSpec<csx::properties::DumpBox>>,
     warnings: &mut Vec<String>,
 ) {
     dumps.retain(|d| {
-        let sar = SarKind::of(d.settings.dump_type).is_some();
-        if sar {
+        let avg = matches!(
+            SarKind::of(d.settings.dump_type),
+            Some(SarKind::Averaged(_))
+        );
+        if avg {
             warnings.push(format!(
-                "SAR dump {:?}: SAR needs a Cartesian grid; ignored",
+                "SAR dump {:?}: mass-averaged SAR is not available on cylindrical grids \
+                 (the averaging cubes need physical coordinates); ignored, use a local SAR dump",
                 d.name
             ));
         }
-        !sar
+        !avg
     });
 }
 

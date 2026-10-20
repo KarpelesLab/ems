@@ -122,6 +122,8 @@ pub struct SarVolume {
     lines: [Vec<f64>; 3],
     power: Vec<f64>,
     density: Vec<f64>,
+    /// `(ρ, α, z)` cells ([`SarVolume::cylindrical`]).
+    cylindrical: bool,
 }
 
 /// How a voxel's value in a [`SarField`] was obtained.
@@ -226,7 +228,32 @@ impl SarVolume {
             lines,
             power,
             density,
+            cylindrical: false,
         })
+    }
+
+    /// As [`new`](Self::new) for the cells of a cylindrical grid: `lines`
+    /// are `ρ` \[m\] (`≥ 0`), `α` \[rad\] and `z` \[m\]; the cell volumes
+    /// are `Δα·Δz·(ρ_{i+1}² − ρ_i²)/2` ([`cell_volumes`](Self::cell_volumes)).
+    /// Local SAR, powers and masses work as on Cartesian cells; mass
+    /// averaging is not available ([`averaged_with`](Self::averaged_with)).
+    ///
+    /// # Errors
+    /// As [`new`](Self::new), and a negative radius.
+    pub fn cylindrical(lines: [Vec<f64>; 3], power: Vec<f64>, density: Vec<f64>) -> Result<Self> {
+        if lines[0].first().is_some_and(|&r| r < 0.0) {
+            return Err(Error::Invalid(
+                "SAR volume: cylindrical radii must be >= 0".into(),
+            ));
+        }
+        let mut v = Self::new(lines, power, density)?;
+        v.cylindrical = true;
+        Ok(v)
+    }
+
+    /// Whether the cells are `(ρ, α, z)` cells ([`cylindrical`](Self::cylindrical)).
+    pub fn is_cylindrical(&self) -> bool {
+        self.cylindrical
     }
 
     /// From the E field on the cell edges: `e[a]` holds the peak phasor
@@ -338,18 +365,118 @@ impl SarVolume {
         let f = dft.freqs()[k];
         let corr = (core::f64::consts::PI * f * dft.dt()).cos();
         let lo = b.lo();
+        let cyl = grid.is_cylindrical();
         let e = Axis::ALL.map(|axis| {
             let a = axis.index();
             let d = dft.edge_dims(axis);
             let mut u = dft.voltages(axis, k);
             for (idx, v) in u.iter_mut().enumerate() {
-                let along = [idx / (d[1] * d[2]), (idx / d[2]) % d[1], idx % d[2]][a];
-                *v *= corr / grid.delta(axis, lo[a] + along);
+                let q = [idx / (d[1] * d[2]), (idx / d[2]) % d[1], idx % d[2]];
+                if cyl {
+                    // Physical length; α edges on the axis do not exist.
+                    let l = grid.edge_length(axis, [0, 1, 2].map(|c| lo[c] + q[c]));
+                    *v = if l > 0.0 {
+                        *v * (corr / l)
+                    } else {
+                        Complex64::ZERO
+                    };
+                } else {
+                    *v *= corr / grid.delta(axis, lo[a] + q[a]);
+                }
             }
             u
         });
         let lines = Axis::ALL.map(|a| b.lines(grid, a).to_vec());
+        if cyl {
+            return Self::from_cylindrical_edge_fields(
+                lines,
+                [&e[0], &e[1], &e[2]],
+                sigma,
+                density,
+            );
+        }
         Self::from_edge_fields(lines, [&e[0], &e[1], &e[2]], sigma, density)
+    }
+
+    /// [`from_edge_fields`](Self::from_edge_fields) on the `(ρ, α, z)`
+    /// cells of a cylindrical grid ([`cylindrical`](Self::cylindrical)):
+    /// each edge's `|E|²` is weighted with the share of the cell volume
+    /// that the edge's dual cell has in it, as the engine's edge
+    /// conductances `κ·A*/l` count it: ¼ for the ρ edges, `ρ_e/(4ρ_{i+½})`
+    /// for the α edges at `ρ_e ∈ {ρ_i, ρ_{i+1}}`, and the half-annulus
+    /// shares `(ρ_{i+½}² − ρ_i²)/(2(ρ_{i+1}² − ρ_i²))` (inner) and
+    /// `(ρ_{i+1}² − ρ_{i+½}²)/(2(ρ_{i+1}² − ρ_i²))` (outer) for the z edges.
+    /// Then `Σ p·V` is the conduction loss of the discrete scheme, as on
+    /// Cartesian cells.
+    fn from_cylindrical_edge_fields(
+        lines: [Vec<f64>; 3],
+        e: [&[Complex64]; 3],
+        sigma: &[[f64; 3]],
+        density: Vec<f64>,
+    ) -> Result<Self> {
+        let c = cells_of(&lines);
+        let n: usize = c.iter().product();
+        if sigma.len() != n {
+            return Err(Error::Invalid(format!(
+                "SAR volume: {n} cells but {} conductivities",
+                sigma.len()
+            )));
+        }
+        let dims =
+            Axis::ALL.map(|a| [0, 1, 2].map(|b| if b == a.index() { c[b] } else { c[b] + 1 }));
+        for a in 0..3 {
+            let want: usize = dims[a].iter().product();
+            if e[a].len() != want {
+                return Err(Error::Invalid(format!(
+                    "SAR volume: {} edge values along axis {a}, expected {want}",
+                    e[a].len()
+                )));
+            }
+        }
+        let r = &lines[0];
+        let mut power = vec![0.0; n];
+        for i in 0..c[0] {
+            let (r0, r1) = (r[i], r[i + 1]);
+            let rm = 0.5 * (r0 + r1);
+            let ann = r1 * r1 - r0 * r0;
+            // Weights of the edges at ρ_i (index 0) and ρ_{i+1} (1).
+            let w_alpha = [r0 / (4.0 * rm), r1 / (4.0 * rm)];
+            let w_z = [
+                (rm * rm - r0 * r0) / (2.0 * ann),
+                (r1 * r1 - rm * rm) / (2.0 * ann),
+            ];
+            for j in 0..c[1] {
+                for k in 0..c[2] {
+                    let cell = (i * c[1] + j) * c[2] + k;
+                    let mut p = 0.0;
+                    for a in 0..3 {
+                        let s = sigma[cell][a];
+                        if s == 0.0 {
+                            continue;
+                        }
+                        let (b, cc) = ((a + 1) % 3, (a + 2) % 3);
+                        let d = dims[a];
+                        let mut sum = 0.0;
+                        for db in 0..2 {
+                            for dc in 0..2 {
+                                let mut q = [i, j, k];
+                                q[b] += db;
+                                q[cc] += dc;
+                                let w = match a {
+                                    0 => 0.25,
+                                    1 => w_alpha[q[0] - i],
+                                    _ => w_z[q[0] - i],
+                                };
+                                sum += w * e[a][(q[0] * d[1] + q[1]) * d[2] + q[2]].norm_sqr();
+                            }
+                        }
+                        p += s * sum;
+                    }
+                    power[cell] = 0.5 * p;
+                }
+            }
+        }
+        Self::cylindrical(lines, power, density)
     }
 
     /// Cell boundaries along `axis` \[m\].
@@ -375,8 +502,15 @@ impl SarVolume {
     /// Volume of each cell \[m³\].
     pub fn cell_volumes(&self) -> Vec<f64> {
         let c = self.cells();
-        let d: [Vec<f64>; 3] =
+        let mut d: [Vec<f64>; 3] =
             core::array::from_fn(|a| self.lines[a].windows(2).map(|w| w[1] - w[0]).collect());
+        if self.cylindrical {
+            // ∫ρ dρ = (ρ_{i+1}² − ρ_i²)/2 over the radial cells.
+            d[0] = self.lines[0]
+                .windows(2)
+                .map(|w| 0.5 * (w[1] * w[1] - w[0] * w[0]))
+                .collect();
+        }
         let mut v = Vec::with_capacity(c.iter().product());
         for i in 0..c[0] {
             for j in 0..c[1] {
@@ -474,8 +608,17 @@ impl SarVolume {
     ///
     /// # Errors
     /// [`Error::Invalid`] for a mass that is not positive and finite or an
-    /// air fraction outside `[0, 1)`.
+    /// air fraction outside `[0, 1)`; [`Error::Unsupported`] for
+    /// [cylindrical](Self::cylindrical) cells.
     pub fn averaged_with(&self, mass: f64, opts: &AveragingOptions) -> Result<SarField> {
+        if self.cylindrical {
+            return Err(Error::Unsupported(
+                "mass-averaged SAR on a cylindrical grid: the averaging cubes are defined in \
+                 physical (Cartesian) coordinates, not on (rho, alpha, z) cells; use the local \
+                 SAR"
+                .into(),
+            ));
+        }
         if !(mass.is_finite() && mass > 0.0) {
             return Err(Error::Invalid(format!(
                 "SAR averaging mass must be positive, got {mass}"
