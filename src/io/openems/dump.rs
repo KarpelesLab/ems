@@ -79,10 +79,16 @@
 //!
 //! * local SAR `κ·|E|²/(2ρ)` (0 outside tissue), absorbed power
 //!   `Σ ½·κ·|E|²·V`, tissue mass `Σ ρ·V`;
-//! * averaged SAR: [`SarVolume::averaged`](crate::post::sar::SarVolume::averaged)(crate::post::sar::SarVolume::averaged)
-//!   over the real cells. openEMS's in-run method (`SIMPLE`) gives the
-//!   same values where a valid averaging cube exists and different ones
-//!   at the tissue surface;
+//! * averaged SAR: openEMS's in-run method is `SIMPLE` (the output equals
+//!   `sar_calc --method SIMPLE` on the raw dump; no DumpBox attribute
+//!   selects another one): each tissue voxel gets the average over the
+//!   cube of the averaging mass centred on it, clipped by the box and
+//!   whatever the air inside
+//!   ([`AveragingMethod::Simple`](crate::post::sar::AveragingMethod::Simple),
+//!   over the real cells). openEMS solves the cube size to ±5 % of the
+//!   mass only: its values are the same as ems's for cubes of uniform
+//!   tissue clear of air and of the box boundary, and within a few percent
+//!   elsewhere (2.9 % of the peak on the `dump_sar` fixture);
 //! * HDF5 (`FileType` 1): root `@mass` (not raw), `@proc_time`; `/Mesh`
 //!   the cell centres; `/FieldData/FD` with `@frequency`,
 //!   `@valid_cubes`, `@used_cubes`, `@unused_cubes`, `@air_cubes` (u64)
@@ -903,10 +909,11 @@ impl OpenEmsSar {
             Some(m) => self.averaged(&pd, m)?,
         };
         let dims = self.dims();
-        // The last of equal (f32) maxima, like openEMS.
+        // The first of equal (f32) maxima, like openEMS (every averaged
+        // voxel is a centred cube with method SIMPLE).
         let mut max = (0.0, [0; 3]);
         for (i, &v) in sar.iter().enumerate() {
-            if v > 0.0 && v as f32 >= max.0 as f32 {
+            if v > 0.0 && v as f32 > max.0 as f32 {
                 max = (
                     v,
                     [
@@ -927,7 +934,7 @@ impl OpenEmsSar {
 
     /// Averaged SAR over the real cells, mapped back to the dump cells.
     fn averaged(&self, pd: &[f64], mass: f64) -> Result<(Vec<f64>, [u64; 4])> {
-        use crate::post::sar::{SarVolume, VoxelClass};
+        use crate::post::sar::{AveragingMethod, SarVolume, VoxelClass};
         let dims = self.dims();
         let c = self.lines.clone().map(|l| l.len() - 1);
         let idx = |p: [usize; 3]| (p[0] * dims[1] + p[1]) * dims[2] + p[2];
@@ -942,7 +949,7 @@ impl OpenEmsSar {
             }
         }
         let v = SarVolume::new(self.lines.clone(), power, density)?;
-        let f = v.averaged(mass)?;
+        let f = v.averaged_with(mass, &AveragingMethod::Simple.options(0))?;
         let mut out = vec![0.0; self.density.len()];
         let mut cubes = [0u64; 4];
         for i in 0..c[0] {
@@ -950,8 +957,7 @@ impl OpenEmsSar {
                 for k in 0..c[2] {
                     let m = (i * c[1] + j) * c[2] + k;
                     out[idx([i, j, k])] = f.values()[m];
-                    // openEMS (method SIMPLE) counts every averaged voxel
-                    // as valid.
+                    // Method SIMPLE: every averaged voxel is valid.
                     match f.classes()[m] {
                         VoxelClass::Centered | VoxelClass::Covered | VoxelClass::Boundary => {
                             cubes[0] += 1

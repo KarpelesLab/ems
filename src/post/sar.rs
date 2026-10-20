@@ -149,6 +149,10 @@ pub enum VoxelClass {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AveragingOptions {
     /// Largest non-tissue volume fraction of a valid cube (default 0.1).
+    /// 1 makes every centred cube valid: each tissue voxel gets the
+    /// average of the cube centred on it, whatever the air inside (the
+    /// rule of openEMS's `SIMPLE` method, see
+    /// [SAR dumps](crate::io::openems::dump#sar-dumps)).
     pub max_air_fraction: f64,
     /// Worker threads (0: available parallelism). The result does not
     /// depend on it.
@@ -160,6 +164,65 @@ impl Default for AveragingOptions {
         Self {
             max_air_fraction: 0.1,
             threads: 0,
+        }
+    }
+}
+
+/// The averaging methods of openEMS's `sar_calc --method` (and of its
+/// in-run SAR dumps, which use [`Simple`](Self::Simple)).
+///
+/// ems implements them on its own cube solver (exact cube mass, see the
+/// [module docs](self#mass-averaging)); what openEMS does was observed on
+/// a black-box openEMS v0.37:
+///
+/// * `SIMPLE`: every tissue voxel gets the average of the cube centred on
+///   it, clipped by the domain, whatever the air inside; no tissue cube of
+///   the mass exists → 0. openEMS solves the cube size only to ±5 % of the
+///   mass (an iterative solver started from the size `(m/ρ)^{1/3}` of the
+///   voxel's density), so its values equal ems's where that first size is
+///   exact (a cube of uniform tissue clear of air and of the domain
+///   boundary, at least two voxels wide) and differ by up to the effect of
+///   a 5 % mass error elsewhere.
+/// * `IEEE_C95_3`, `IEEE_62704`: valid centred cubes, then the maximum of
+///   the valid cubes reaching a voxel, then cubes at a face. ems uses its
+///   own IEEE 62704-1 procedure (10 % air) for both; openEMS's rules
+///   differ in detail (a centred cube is invalid when a face lies in air or
+///   outside the domain, even with little air inside, and valid with an
+///   air pocket inside; `IEEE_C95_3` takes the maximum over the valid cubes
+///   that overlap a voxel, `IEEE_62704` over those that contain it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AveragingMethod {
+    /// `SIMPLE`: centred cubes only (openEMS's default and in-run method).
+    #[default]
+    Simple,
+    /// `IEEE_C95_3`.
+    IeeeC95_3,
+    /// `IEEE_62704`.
+    Ieee62704,
+}
+
+impl AveragingMethod {
+    /// The openEMS name (`SIMPLE`, `IEEE_C95_3`, `IEEE_62704`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Simple => "SIMPLE",
+            Self::IeeeC95_3 => "IEEE_C95_3",
+            Self::Ieee62704 => "IEEE_62704",
+        }
+    }
+
+    /// Parses an openEMS method name.
+    pub fn from_name(s: &str) -> Option<Self> {
+        [Self::Simple, Self::IeeeC95_3, Self::Ieee62704]
+            .into_iter()
+            .find(|m| m.name() == s)
+    }
+
+    /// The [`AveragingOptions`] ems uses for the method.
+    pub fn options(self, threads: usize) -> AveragingOptions {
+        AveragingOptions {
+            max_air_fraction: if self == Self::Simple { 1.0 } else { 0.1 },
+            threads,
         }
     }
 }
@@ -182,6 +245,8 @@ pub struct SarField {
     values: Vec<f64>,
     classes: Vec<VoxelClass>,
     mass: Option<f64>,
+    cube_mass: Vec<f64>,
+    cube_volume: Vec<f64>,
 }
 
 fn cells_of(lines: &[Vec<f64>; 3]) -> [usize; 3] {
@@ -591,6 +656,8 @@ impl SarVolume {
             values,
             classes,
             mass: None,
+            cube_mass: Vec::new(),
+            cube_volume: Vec::new(),
         }
     }
 
@@ -608,7 +675,7 @@ impl SarVolume {
     ///
     /// # Errors
     /// [`Error::Invalid`] for a mass that is not positive and finite or an
-    /// air fraction outside `[0, 1)`; [`Error::Unsupported`] for
+    /// air fraction outside `[0, 1]`; [`Error::Unsupported`] for
     /// [cylindrical](Self::cylindrical) cells.
     pub fn averaged_with(&self, mass: f64, opts: &AveragingOptions) -> Result<SarField> {
         if self.cylindrical {
@@ -624,9 +691,9 @@ impl SarVolume {
                 "SAR averaging mass must be positive, got {mass}"
             )));
         }
-        if !(0.0..1.0).contains(&opts.max_air_fraction) {
+        if !(0.0..=1.0).contains(&opts.max_air_fraction) {
             return Err(Error::Invalid(format!(
-                "SAR max air fraction must be in [0, 1), got {}",
+                "SAR max air fraction must be in [0, 1], got {}",
                 opts.max_air_fraction
             )));
         }
@@ -672,6 +739,19 @@ impl SarField {
     /// The averaging mass \[kg\], `None` for local SAR.
     pub fn mass(&self) -> Option<f64> {
         self.mass
+    }
+
+    /// Per voxel, the tissue mass \[kg\] of the cube whose average it
+    /// holds ([`VoxelClass::Centered`] and [`VoxelClass::Boundary`]; 0
+    /// otherwise). Empty for local SAR.
+    pub fn cube_masses(&self) -> &[f64] {
+        &self.cube_mass
+    }
+
+    /// Per voxel, the volume \[m³\] within the domain (tissue and air) of
+    /// that cube, like [`cube_masses`](Self::cube_masses).
+    pub fn cube_volumes(&self) -> &[f64] {
+        &self.cube_volume
     }
 
     /// The SAR at cell `[i, j, k]`.
@@ -890,6 +970,10 @@ struct Cube {
     side: f64,
     sar: f64,
     air: f64,
+    /// Tissue mass \[kg\].
+    mass: f64,
+    /// Volume within the domain \[m³\].
+    volume: f64,
 }
 
 struct Averager<'a> {
@@ -1039,6 +1123,16 @@ impl<'a> Averager<'a> {
             side: s,
             sar: power / mass,
             air: (1.0 - tissue / (s * s * s)).max(0.0),
+            mass,
+            volume: {
+                let (lo, hi) = self.bounds(cell, p, s);
+                (0..3)
+                    .map(|a| {
+                        let l = &self.v.lines[a];
+                        (hi[a].min(l[self.c[a]]) - lo[a].max(l[0])).max(0.0)
+                    })
+                    .product()
+            },
         })
     }
 
@@ -1075,26 +1169,25 @@ impl<'a> Averager<'a> {
         let n: usize = self.c.iter().product();
         let tissue = |i: usize| self.v.density[i] > 0.0;
         // 1. Centred cubes.
-        let centred: Vec<Option<(f64, f64)>> = self.par_map(n, |i| {
+        let centred: Vec<Option<Cube>> = self.par_map(n, |i| {
             if !tissue(i) {
                 return None;
             }
             self.cube(self.cell(i), Placement::Centered)
                 .filter(|q| q.air <= self.opts.max_air_fraction)
-                .map(|q| (q.sar, q.side))
         });
         let half_max = centred
             .iter()
             .flatten()
-            .map(|&(_, s)| 0.5 * s)
+            .map(|q| 0.5 * q.side)
             .fold(0.0, f64::max);
         // 2. Covered voxels; 3. boundary cubes.
-        let rest: Vec<(f64, VoxelClass)> = self.par_map(n, |i| {
+        let rest: Vec<(f64, VoxelClass, [f64; 2])> = self.par_map(n, |i| {
             if !tissue(i) {
-                return (0.0, VoxelClass::NoTissue);
+                return (0.0, VoxelClass::NoTissue, [0.0; 2]);
             }
-            if let Some((sar, _)) = centred[i] {
-                return (sar, VoxelClass::Centered);
+            if let Some(q) = centred[i] {
+                return (q.sar, VoxelClass::Centered, [q.mass, q.volume]);
             }
             let cell = self.cell(i);
             let x = [0, 1, 2].map(|a| self.centers[a][cell[a]]);
@@ -1109,7 +1202,7 @@ impl<'a> Averager<'a> {
                 for q in range(1) {
                     for r in range(2) {
                         let j = (p * self.c[1] + q) * self.c[2] + r;
-                        if let Some((sar, side)) = centred[j] {
+                        if let Some(Cube { sar, side, .. }) = centred[j] {
                             let h = 0.5 * side;
                             let inside = (0..3).all(|a| {
                                 let y = self.centers[a][[p, q, r][a]];
@@ -1123,7 +1216,7 @@ impl<'a> Averager<'a> {
                 }
             }
             if let Some(b) = best {
-                return (b, VoxelClass::Covered);
+                return (b, VoxelClass::Covered, [0.0; 2]);
             }
             let mut pick: Option<Cube> = None;
             for axis in 0..3 {
@@ -1140,16 +1233,27 @@ impl<'a> Averager<'a> {
                 }
             }
             match pick {
-                Some(q) => (q.sar, VoxelClass::Boundary),
-                None => (0.0, VoxelClass::Unresolved),
+                Some(q) => (q.sar, VoxelClass::Boundary, [q.mass, q.volume]),
+                None => (0.0, VoxelClass::Unresolved, [0.0; 2]),
             }
         });
-        let (values, classes) = rest.into_iter().unzip();
+        let mut values = Vec::with_capacity(n);
+        let mut classes = Vec::with_capacity(n);
+        let mut cube_mass = Vec::with_capacity(n);
+        let mut cube_volume = Vec::with_capacity(n);
+        for (v, c, [m, vol]) in rest {
+            values.push(v);
+            classes.push(c);
+            cube_mass.push(m);
+            cube_volume.push(vol);
+        }
         SarField {
             lines: self.v.lines.clone(),
             values,
             classes,
             mass: Some(self.mass),
+            cube_mass,
+            cube_volume,
         }
     }
 }
@@ -1372,7 +1476,7 @@ mod tests {
             v.averaged_with(
                 1.0,
                 &AveragingOptions {
-                    max_air_fraction: 1.0,
+                    max_air_fraction: 1.5,
                     threads: 0
                 }
             )

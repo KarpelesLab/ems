@@ -1,0 +1,52 @@
+# simple_e.h5
+//
+  @mass: float64 () = 0.002352
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 1002
+      @frequency: float32 (1,) = [1e+09]
+      @unused_cubes: uint64 () = 0
+      @used_cubes: uint64 () = 0
+      @valid_cubes: uint64 () = 294
+      f0: dataset (12, 12, 9) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 4.64044e-26
+        @maxSAR_idx: uint32 (3,) = [3, 3, 3]
+        @power: float32 () = 5.18168e-29
+      f0_CubeMass: dataset (12, 12, 9) float32
+      f0_CubeType: dataset (12, 12, 9) uint8
+      f0_CubeVol: dataset (12, 12, 9) float32
+  Mesh/
+    @mesh_scaling: float64 () = 1
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (9,) float64
+# legacy.h5
+//
+  @legacy_fmt: uint8 () = 1
+  @mass: float64 () = 0.002352
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 1002
+      @frequency: float32 (1,) = [1e+09]
+      @unused_cubes: uint64 () = 0
+      @used_cubes: uint64 () = 0
+      @valid_cubes: uint64 () = 294
+      f0: dataset (9, 12, 12) float32
+        @d_order: vlen-str () = np.str_('ZYX')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 4.64044e-26
+        @maxSAR_idx: uint32 (3,) = [3, 3, 3]
+        @power: float32 () = 5.18168e-29
+  Mesh/
+    @mesh_scaling: float64 () = 1
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (9,) float64

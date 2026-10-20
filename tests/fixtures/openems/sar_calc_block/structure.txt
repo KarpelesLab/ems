@@ -1,0 +1,30 @@
+# simple.h5
+//
+  @mass: float64 () = 0.0008
+  @openEMS_HDF5_version: float64 () = 0.3
+  @proc_time: float64 () = <wall-clock time>
+  FieldData/
+    FD/
+      @air_cubes: uint64 () = 640
+      @frequency: float32 (2,) = [1e+09, 2e+09]
+      @unused_cubes: uint64 () = 0
+      @used_cubes: uint64 () = 0
+      @valid_cubes: uint64 () = 800
+      f0: dataset (12, 12, 10) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 1e+09
+        @maxSAR: float32 () = 0.0156025
+        @maxSAR_idx: uint32 (3,) = [5, 5, 3]
+        @power: float32 () = 7.75792e-06
+      f1: dataset (12, 12, 10) float32
+        @d_order: vlen-str () = np.str_('XYZ')
+        @frequency: float32 () = 2e+09
+        @maxSAR: float32 () = 0.00775712
+        @maxSAR_idx: uint32 (3,) = [9, 5, 8]
+        @power: float32 () = 3.69163e-06
+  Mesh/
+    @mesh_scaling: float64 () = 1
+    @mesh_type: int32 () = 0
+    x: dataset (12,) float64
+    y: dataset (12,) float64
+    z: dataset (10,) float64

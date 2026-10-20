@@ -29,6 +29,10 @@ hdf5rs = { version = "0.0.1", default-features = false, optional = true }
 name = "ems-nf2ff"
 required-features = ["hdf5"]
 
+[[bin]]
+name = "ems-sar-calc"
+required-features = ["hdf5"]
+
 [[example]]
 name = "run_xml"
 required-features = ["xml"]

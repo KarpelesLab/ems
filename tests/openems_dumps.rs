@@ -408,9 +408,10 @@ fn cylindrical_dumps() {
     assert_close("dump_cyl/native", &e, 1e-5);
 }
 
-/// SAR files: local and raw SAR match; the 1 g average uses ems's
-/// averaging (identical for voxels with a valid averaging cube, different
-/// at the tissue surface), so only its structure is compared.
+/// SAR files: local and raw SAR match; the 1 g average uses openEMS's
+/// `SIMPLE` rule, but openEMS solves the cube size only to ±5 % of the
+/// mass (all cubes of this small block are clipped: within 2.9 % of the
+/// peak, `tests/openems_sar_calc.rs`), so only its structure is compared.
 #[test]
 fn sar_dumps() {
     let e = check("dump_sar", "", DumpFileOptions::new(), &["sar_1g"]);

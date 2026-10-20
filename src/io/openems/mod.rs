@@ -11,6 +11,8 @@
 //!   `OptResolution`, sampling interval, time window).
 //! * `nf2ff` (feature `hdf5`): the openEMS `nf2ff` tool (near-field box
 //!   dumps described by an nf2ff XML file → far-field HDF5 file).
+//! * `sar_calc` (feature `hdf5`): the openEMS `sar_calc` tool (mass-averaged
+//!   SAR from a raw SAR dump).
 //! * [`probes`]: the probe text files (`<name>` time domain,
 //!   `<name>_FD` frequency domain, including the waveguide "mode
 //!   matching" files) and a reader for them.
@@ -28,6 +30,8 @@ pub mod dump;
 #[cfg(feature = "hdf5")]
 pub mod nf2ff;
 pub mod probes;
+#[cfg(feature = "hdf5")]
+pub mod sar_calc;
 pub mod signal;
 pub mod stats;
 
