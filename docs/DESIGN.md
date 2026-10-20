@@ -2743,7 +2743,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-20, after wave 10)
+### Status (2026-10-20, after wave 11)
 
 | Step | State |
 |---|---|
@@ -2781,17 +2781,26 @@ openEMS probe text files and field-dump files (§7.1: VTK, HDF5 current and
 legacy layouts, SAR), and coax, CPW, stripline, circular-waveguide and
 curve ports (§5.5). M2 is complete.
 
+Wave 11: the `ems` binary, a drop-in for the `openEMS` executable (§7.2:
+all its options, statistics and debug files, exit codes), mode-matching
+probe files with mode purity; openEMS's `nf2ff` and `sar_calc` tools
+(`ems-nf2ff`, `ems-sar-calc`, §5.10, §5.12) and its in-run SIMPLE SAR
+averaging; openEMS's lumped-element update and spreading, Mur energy in
+the end criterion, skipped probe boxes, PML_Grading (ignored by openEMS
+too; §5.16); conducting sheets, SAR, NF2FF and conformal PEC volumes on
+cylindrical grids (§5.15; openEMS ignores plane waves there).
+
 Remaining:
-- An openEMS command-line drop-in; `sar_calc` / `nf2ff` tool parity and
-  openEMS's in-run SAR averaging; the remaining numeric gaps of §5.16
-  (series lumped elements, PML grading expressions, energy measure, axis
-  cell and multigrid on cylindrical grids).
-- Conformal PEC, NF2FF, plane waves, SAR, MSL/CPW/stripline/waveguide
-  ports and sheets on cylindrical grids; oblique wires on cylindrical
-  grids.
+- SAR averaging where cubes reach air or the domain edge (SIMPLE within
+  ~3 %, IEEE validity rules partly reproduced), `sar_calc -a`; parallel
+  R‖L with an excitation on graded meshes (0.6–3 %); the cylindrical axis
+  E_z update and multigrid (ems keeps its own, more accurate, schemes).
+- On cylindrical grids: mass-averaged SAR, thin conformal sheets, oblique
+  wires, CellConstantMaterial, MSL/CPW/stripline/waveguide ports, NF2FF
+  mirrors not normal to z.
 - Junctions of several oblique sheets in one cell (sub-cell gap); a csx
   way to express a feed on an oblique wire; layered/dispersive backgrounds
-  for plane waves and NF2FF.
+  for plane waves and NF2FF; first-order conformal TE11 (Cartesian too).
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:

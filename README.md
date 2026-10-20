@@ -108,16 +108,16 @@ the options; design §7.2 has the details.
 |---|---|---|
 | mesh | Cartesian and cylindrical (ρ, α, z, with axis, closed azimuth and azimuthal multigrid near the axis) rectilinear, non-uniform; solver-aware checks (`ems::mesh`) | |
 | materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`); Drude, Lorentz, Debye (electric and magnetic) | |
-| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor); conformal PEC volumes and zero-thickness sheets (`CompileOptions::with_conformal`); thin wires (radius below the cell size), axis-aligned or oblique | conformal PEC on cylindrical grids |
+| metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor); conformal PEC volumes and zero-thickness sheets (`CompileOptions::with_conformal`); thin wires (radius below the cell size), axis-aligned or oblique; on cylindrical grids: sheets, ConductingSheet and conformal PEC volumes | thin conformal sheets and oblique wires on cylindrical grids |
 | boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave); stretched-radius cylindrical PML on ρ_max | |
 | sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF, homogeneous possibly lossy background); Gaussian, sine, Dirac, step, custom waveforms | |
-| lumped elements | R, L, C, parallel and series | |
-| probes | voltage, current, E/H field, waveguide mode voltage/current; DFT; openEMS probe text files (`ems::io::openems`) | openEMS mode-matching probe file format |
+| lumped elements | R, L, C, parallel and series; openEMS's update and spreading for XML models | |
+| probes | voltage, current, E/H field, waveguide mode voltage/current; DFT; openEMS probe text files including mode-matching files with mode purity (`ems::io::openems`) | |
 | dumps | E, H, J, rot H, D, B in time and frequency domain, node/cell/native sampling, sub-sampling, OptResolution; ems VTK/HDF5 and the openEMS file layouts (VTK `.vtr`/`.vts`, HDF5 current and legacy) | |
 | ports | lumped, curve, microstrip, coplanar waveguide, stripline, coaxial, rectangular and circular waveguide helpers; S-parameters, Z_in | |
-| antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes; homogeneous lossless background | openEMS nf2ff file format |
-| SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps; openEMS SAR dump files | openEMS's in-run averaging; `sar_calc` |
-| openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip; openEMS semantics (signals, timing, time step rules, probe snapping, end criteria) matched to ~1e-6 on the oracle fixtures | openEMS command-line drop-in |
+| antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes; homogeneous lossless background; Cartesian and cylindrical grids; openEMS's `nf2ff` tool (`ems-nf2ff`, feature `hdf5`) | layered backgrounds |
+| SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps, also on cylindrical grids (local); openEMS SAR dump files and in-run averaging; openEMS's `sar_calc` tool (`ems-sar-calc`) | exact openEMS averaging where cubes reach air or the domain edge (within ~3 %); `sar_calc -a`; averaging on cylindrical grids |
+| openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip; openEMS semantics (signals, timing, time step rules, probe snapping, end criteria) matched to ~1e-6 on the oracle fixtures; `ems` binary, a drop-in for the `openEMS` executable | |
 | engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |
 
 ## Features
