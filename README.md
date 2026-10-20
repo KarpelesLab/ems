@@ -102,6 +102,13 @@ a single engine: `--engine` is accepted with every openEMS engine name
 (`basic`, `sse`, `sse-compressed` run on one thread). `ems --help` lists
 the options; design §7.2 has the details.
 
+On realistic models it gives openEMS's results (end-to-end fixtures: a
+patch antenna with far field, a microstrip filter, a waveguide iris, a
+coax-fed monopole on a cylindrical grid, a dispersive slab under a plane
+wave; 1e-7…1e-3 apart, design §5.16.4) and runs faster: 1.5–10× openEMS's
+fastest engine on vacuum and PML boxes of 50³–200³ cells, 1.1–8× on those
+models (wall time; design §10).
+
 ## Status
 
 | area | implemented | not yet |

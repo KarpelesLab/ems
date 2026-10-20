@@ -418,8 +418,9 @@ pub struct Compiled {
     pub mur: Vec<(Face, Option<f64>)>,
     /// openEMS files ([`Fdtd::openems_run`], Cartesian grids): the local
     /// phase velocity of every face edge of a Mur face without a fixed
-    /// velocity, from the material at one point (see [`mur_point_media`]);
-    /// `None` uses the edge-averaged medium.
+    /// velocity, from the material at a single point (the edge's start
+    /// node, mid boundary cell along the normal; design §5.16.2); `None`
+    /// uses the edge-averaged medium.
     pub mur_media: Option<MurMedia>,
     /// PML faces and their parameters.
     pub pml: Vec<(Face, Cpml)>,

@@ -106,3 +106,10 @@ command line in the case's `meta.txt`:
   graded-mesh blob, a thin slab and anisotropic cells), with each
   averaging method, cube statistics (`-e`) and the auto range (`-a`); the
   test replays every `command:` line of the cases' `meta.txt`.
+- `gen-e2e.sh [CASE...]` regenerates the `e2e_*` cases (realistic models
+  using many features together: patch antenna with NF2FF box, microstrip
+  filter, waveguide iris, coax-fed monopole on a cylindrical grid,
+  dispersive slab under a plane wave; `tests/openems_e2e.rs`, which runs
+  the `ems` binary on them): it runs openEMS (and the `nf2ff` tool when
+  the case has an `nf2ff.xml`), copies back the files on the `keep:` line
+  of `meta.txt` and records the time step and the number of steps run.

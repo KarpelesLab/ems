@@ -2375,7 +2375,9 @@ regeneration script and test file:
   files of `sar-synth.py`, §5.12): `gen-sar.sh`,
   `tests/openems_sar_calc.rs`;
 - the XML feature-coverage sweep (§5.16.3, `sweep_*`): `gen-sweep.sh`,
-  `tests/openems_sweep.rs`.
+  `tests/openems_sweep.rs`;
+- end-to-end models (`e2e_*`, §5.16.4): `gen-e2e.sh`,
+  `tests/openems_e2e.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
 ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
@@ -2443,22 +2445,45 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     (2–17 % off on graded meshes and 3-D inclusions); the formula in
     `engine::timestep` is exact on ~120 random meshes except where the
     finest cells sit at the upper end of two axes (openEMS up to ~7 %
-    smaller there).
+    smaller there). In layered media on meshes graded along two axes it is
+    not exact either: openEMS's step is 2 % larger on the `e2e_msl_filter`
+    mesh (substrate under fine y and z cells; uniform y or z, or no
+    substrate: exact) and 0.5 % on `e2e_patch`, at the same limiting edge
+    (an air edge two cells above the substrate). Taking the interface
+    edges' `ε` at their node (the substrate's) instead of the average
+    closes 80 % of the gap; not resolved, the fixtures fix `TimeStep`.
 - **Run control.** `endCriteria` absent or 0 → 1e-6; checked every Nyquist
   interval on the state after the interval (stops at a multiple of it);
-  `MaxTime` → `⌊MaxTime/dt⌋` steps; no `NumberOfTimesteps` → 0 steps. The
-  energy measure agrees with the ems invariant to the printed digits in
-  PEC and PMC boxes (−30.1989 vs −30.19885 dB at the stop step). With
-  Mur faces openEMS also counts the face edges (with a full first dual
-  cell), which ems builds as PEC edges updated by the Mur operator;
-  `MurBoundary::count_energy` (on for files) adds them: −32.2843 vs
-  −32.2833 dB (−32.2868 before) in the `end_criteria` box, same stop step.
-  The remaining 1e-3 dB (2e-4 of the energy) was not resolved (the H on
-  the faces does not account for it).
+  `MaxTime` → `⌊MaxTime/dt⌋` steps; no `NumberOfTimesteps` → 0 steps.
+  The energy openEMS compares is `W = ε0·Σ u² + μ0·Σ i²` over every edge,
+  with `u` at `n·dt` and `i` at `(n + ½)·dt`, no material or cell-size
+  weighting and no lumped or pole state (fitted from full E/H dumps of a
+  graded WR-90 guide with a dielectric post, every check step: the
+  printed ratios follow it with a constant 0.005 dB offset; its printed
+  `Energy` is the same `W` in J/m). On uniform vacuum meshes it is
+  proportional to the ems invariant, which is why PEC boxes and the
+  `end_criteria` fixture agreed to 1e-3 dB before; on graded meshes and
+  in media the two differ by up to 0.2 dB, and slowly decaying runs
+  stopped 80–300 steps apart (Mur guides: 6237/6258/8694/11193 against
+  openEMS's 6153/6174/8715/10899). Files now use it
+  (`EnergyMeasure::OpenEms`, evaluated on the state by all engine
+  threads, `Engine::energy_in`): the same stop steps in all those cases.
+  The 0.005 dB offset is in `W_max` (reached during the excitation; the
+  ratios after the source has stopped agree to 1e-5 dB relative to each
+  other): subtracting or adding the source's last contribution does not
+  explain it; not resolved, it decides a stop step only when a check
+  falls within 0.005 dB of the threshold.
 - **Materials.** Edge averaging agrees with csx's (anisotropic, weighted,
   lossy, μ, σ: ~1e-6); `CellConstantMaterial` samples cell centres.
 - **Boundaries.** PEC and Mur (with phase velocity) agree to ~1e-6; Mur
-  without it, see §5.16.2. PMC: the wall is the outermost dual layer
+  without it, see §5.16.2. Two Mur details found on the end-to-end models
+  (per-edge least-squares fits of openEMS's per-step dumps, residuals
+  4e-8): an edge on two Mur faces takes both interior neighbours at
+  `n + 1` as 0, `u^{n+1} = ½(u_1^n + u_2^n) − ½(k_1 + k_2)·u^n`
+  (`MurBoundary::openems_corners`; an all-Mur box went from 5e-3 to 1e-6),
+  and the H component normal to an upper Mur face is never updated in the
+  face plane (it feeds no E update; ems holds it at 0 for files, which
+  matters for the energy and for dumps on the face). PMC: the wall is the outermost dual layer
   (tangential H there held at 0), half a cell inside. PML: formulation-level
   difference (ems CPML): ~0.2–0.4 % on near-field probes behind an 8-cell
   layer (§5.16.2). openEMS ignores `PML_Grading`: its operator dump and
@@ -2653,6 +2678,27 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   (§5.9), so the codes do not agree on sheets on any grid;
   `tests/openems_cyl.rs` records the ratios.
 
+**Current probes on a closed azimuth.** A current box over the full
+azimuth (α from 0 to 2π, the usual coax port current) reads `(N − 1)/N`
+of the enclosed current in openEMS for `N` α cells (7/8, 3/4 measured):
+the box's upper α snaps to the last line before 2π and the loop covers
+α_0 … α_{N−1}; ems closes the ring (the full current, the rule of
+§5.16) and keeps that difference (`e2e_coax_monopole`). Sector boxes
+agree where they do not touch the α = 0 seam (a box from π/4 to π reads
+4 cells in both codes); one starting at α = 0 reads half a cell more in
+ems (4.5/8 for 0 … π, openEMS 4/8): the seam copy of the H_α dual edge
+counts with half its length. Not resolved. openEMS's probe file headers
+print α times the drawing unit like the other coordinates (ems does now),
+and it rejects α lines spanning more than 2π by a rounding error
+(6.28319 written with 6 digits: "Alpha Max-Min must not be larger than
+2*PI"), which ems accepts.
+
+**Box snapping of excitations.** openEMS assigns no edge to a flat
+excitation box `4e-8` (drawing units, 3e-9 relative) off a mesh line
+("Unused primitive" warning at engine setup, the field stays zero); ems
+snaps within `1e-6` of the local cell (`CompileOptions::snap_tolerance`)
+and keeps that tolerance.
+
 **Lumped elements** (see also §5.16.1). On a PMC-walled line with the
 element across the full width both codes give every edge `R·N/M` (the
 operator's boundary dual cells are full), so the probes agree to 6e-7:
@@ -2669,10 +2715,28 @@ difference; with `R = 20·17/16` in ems the codes agree to 1e-6
 per edge to the local medium in openEMS: in an ε_r = 4 line it absorbs
 to 0.5 %, where ems's former vacuum tuning reflected 34–49 %. ems now
 does the same (`MurBoundary::with_faces_in`): 1e-6 agreement in ε_r = 4
-and in vacuum. openEMS's `PML_8` reflects −58 dB on a vacuum line at
+and in vacuum. On layered faces (a microstrip substrate meeting the
+face) the per-edge medium is not the averaged edge material: per-edge
+fits of the Mur coefficient from openEMS's per-step dumps give the
+material at one point, the edge's start node in the face's transverse
+coordinates and the middle of the boundary cell along the normal (closed
+bounds): an `E_z` edge starting on the substrate's top face takes the
+substrate's `ε`, the interface `E_y` edges `ε` instead of the average,
+and a substrate ending on the last interior line does not count, one
+ending between it and the face does. ems samples the same point for
+files (`MurMedia`, `compile::mur_point_media`): microstrip lines into a
+Mur face went from 3e-2 to 3e-7, the `e2e_msl_filter` ports agree to
+4e-7. openEMS's `PML_8` reflects −58 dB on a vacuum line at
 normal incidence (1 mm cells, 5 GHz pulse; opposite sign to ems's
 residual), ems's CPML −86 dB; ems keeps its CPML, so runs with PML differ
-by about 2e-3 (vacuum) to 4e-3 (ε_r = 4). openEMS's grading cannot be
+by about 2e-3 (vacuum) to 4e-3 (ε_r = 4), 2e-4 on the patch antenna
+probes, and more in waveguides near cutoff: 2.4e-2 at the source-side
+port of a WR-90 iris (`PML_8` ends, 7–13 GHz pulse, 6.6 GHz cutoff). A
+reference with the guide extended by 0.8 m on both sides (no reflection
+in the window) puts ems closer on every port (1.5e-2, 2.4e-3, 3.7e-3,
+3e-4 against openEMS's 3e-2, 8e-3, 6e-3, 2.4e-3), and the end
+criterion stops there 10 % later than openEMS (its PML loses the
+near-cutoff energy faster). openEMS's grading cannot be
 changed from the file (`PML_Grading` has no effect, §5.16.1), so an
 openEMS-matching PML would mean copying its fixed −58 dB profile; not
 done.
@@ -2793,6 +2857,30 @@ Not reproduced (documented differences):
   `f0 = 0` (openEMS runs the first two with an empty signal and crashes
   on the third).
 
+#### 5.16.4 End-to-end models
+
+Five hand-written models that use many features together run in both
+codes (`gen-e2e.sh`, `tests/openems_e2e.rs`; the full-size versions were
+compared the same way during development):
+
+| model | features | agreement (relative L2 unless noted) |
+|---|---|---|
+| `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 6e-5…6e-4 (PML), Zin 9e-4, resonance identical (2.29 GHz, −15.7 dB), far field 1e-3, Dmax 2.4e-4 |
+| `e2e_msl_filter` | microstrip open-stub low-pass, soft feed, 3 V + 2 I probes per port, Mur on every open face, FD dump | ports 2e-7…5e-7, `U2/U1` 8e-6 dB, dump 1.3e-3 of max |
+| `e2e_waveguide_iris` | WR-90, inductive iris + dielectric post, weighted TE10 source, mode-matching V/I probes, Mur ends, energy end criterion | 4e-7, purity 1e-6, same stop step, `U2/U1` 7e-7 |
+| `e2e_coax_monopole` | coax-fed λ/4 monopole, cylindrical grid (closed azimuth, axis in metal), 1/ρ weighted source, Mur faces | V and fields 2e-4 (axis region), I after the `(N−1)/N` factor 1.8e-4 |
+| `e2e_drude_slab` | plane wave on a Drude slab + lossy Lorentz layer, E/H probes with FD samples, FD dump | 7e-4…1e-3 (openEMS's plane-wave injection), R/T 9e-4 |
+
+At full size (2–5× the cells, the same physics): patch 2e-4 with the far
+field 1e-3 and the same stop step; microstrip filter with `PML_8` line
+ends 3e-3 (PML); WR-90 with `PML_8` 2.4e-2 (see Mur and PML above); the
+Drude slab with `PML_8` 1e-3. They led to the energy measure (§5.16.1),
+the Mur corner and point-medium rules (§5.16.1, §5.16.2), the α header
+scaling, and the open items above (time step in layered doubly graded
+meshes, α current loops). The patch and filter fixtures fix openEMS's
+time step and the patch a step count (PML end-criterion energies
+differ).
+
 ## 6. Engine architecture
 
 ```
@@ -2823,13 +2911,24 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     writes `i` and reads `u` of its slab and the next one; the E update does the
     reverse. Everything is safe Rust.
   - Each half-step costs one barrier. A serial operator gap (`post_h`/`pre_e`,
-    or `post_e`/`pre_h`) adds one barrier per step, only if some registered
-    operator declares a hook in it (`Operator::hooks() -> Hooks`, default all).
-    Spawning per step would be too slow for small models.
+    or `post_e`/`pre_h`) adds one barrier at the steps where some registered
+    operator needs a hook in it (`Operator::hooks() -> Hooks`, default all,
+    refined per step by `Operator::hooks_at`: probes and openEMS-timed
+    dumps at their sampling steps, soft sources while their signal is not
+    zero), scheduled per run of steps. Spawning per step would be too slow
+    for small models.
+  - The energy end criterion evaluates the state on all threads
+    (`Engine::energy_in`); it used to be a serial pass on the calling
+    thread every check interval, which at 16 threads and a 26-step
+    Nyquist interval cost as much as the steps themselves (×2–2.5 on the
+    XML vacuum boxes of §10).
   - Subnormals are flushed in the kernel arithmetic (`+ 2⁻¹⁰² − 2⁻¹⁰²`).
     Hardware flush-to-zero would need `unsafe`, and this way is still
     deterministic.
-  - Thread count is configurable and defaults to `available_parallelism()`.
+  - Thread count is configurable and defaults to one thread per physical
+    core, at most one per 4096 cells and per five x-planes
+    (`engine::default_threads_for`; measured optimum on the boxes and
+    end-to-end models of §10).
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
 - **Operators** (`Operator` trait): CPML, Mur, sources, lumped elements,
@@ -2862,7 +2961,14 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     layers are split along x), so results are bit-identical for any thread
     count. We chose this over fusing CPML into the kernel: it keeps the kernel
     simple and the Operator trait the single extension point, at the cost of
-    a second pass over the layer cells only.
+    a second pass over the layer cells only. Mur faces run the same way
+    when every face edge's neighbours lie in its own slab (≥ 2 x-planes per
+    slab), the grid merges no face copies and no earlier operator has
+    serial E hooks: `u_b^n`, `u_1^n` are saved in `post_h_slab`, the Mur
+    values written in `post_e_slab` (bit-identical to the serial update;
+    ×4 on the Mur microstrip filter at 4 threads). The Mur operator is
+    registered after the dispersive poles so the order of the slab
+    corrections is unchanged.
   - `Operator::energy()` (default 0) reports energy held in operator state
     (lumped L/C branches); `Engine::energy()` adds it, in registration order,
     so lossless LC-loaded cavities conserve the total.
@@ -3274,7 +3380,21 @@ mirrors normal to x / y, sector circular-waveguide and coax ports;
 periodic edge selection of sources and lumped elements past α = π;
 openEMS's azimuth conventions measured (§5.15).
 
+Wave 12 (end-to-end and speed): end-to-end parity on five realistic models (§5.16.4: patch
+antenna with NF2FF, microstrip filter, waveguide iris, coax-fed monopole
+on a cylindrical grid, dispersive slab under a plane wave), which led to
+openEMS's end-criterion energy measure, its Mur corner update and
+point-sampled Mur media, the α scaling of cylindrical probe headers; and
+engine speed against openEMS (benchmark below): the energy check on all
+threads, Mur faces as slab hooks, serial gaps only at the steps that need
+them, the time-step criteria from precomputed tables, VTK dump files
+written in parallel, a default thread count bounded by the x-planes.
+
 Remaining:
+- openEMS's Rennings time step in layered media on meshes graded along
+  two axes (up to 2 %); the 0.005 dB offset of its end-criterion energy
+  maximum; α current loops of sector boxes touching the α = 0 seam on
+  closed cylindrical grids (§5.16.2).
 - From the sweep: openEMS's polyhedron and polygon-vertex surface ties,
   tie round-off (csx tolerance), σ_m averaging, current probes exactly
   between lines.
@@ -3311,6 +3431,59 @@ default thread count, yielding barrier), same machine, lightly loaded:
 428 Mcells/s. The machine's measured stream bandwidth is about 70 GB/s; the
 old kernel was at that limit. The `patch_antenna` example went from ~25 s to
 2.4 s (mostly the thread-count default), with bit-identical output.
+
+**Against openEMS (wave 12).** Vacuum boxes run as openEMS XML files
+(`N³` cells of 1 mm, a soft z dipole, one voltage probe, end criterion
+1e-30, `--disable-dumps`; 2000 steps for 50³ and 100³, 740 for 150³, 312
+for 200³), the `Speed:` line of each program in MCells/s (both count mesh
+nodes), best of two runs, on the same Threadripper 9970X shared with
+other jobs (load average 4–17 during the runs, so single numbers vary by
+±20 %). openEMS v0.37 engines: `basic`, `sse`, `sse-compressed`
+(single-threaded) and `multithreaded` with `--numThreads`; ems before is
+master `0638148`, after is this wave:
+
+| box | openEMS basic / sse / sse-compressed (1 T) | openEMS multithreaded 1 / 4 / 8 / 16 / 32 T | ems before 1 / 4 / 8 / 16 / 32 T | ems after 1 / 4 / 8 / 16 / 32 T | best ems / best openEMS |
+|---|---|---|---|---|---|
+| 50³ PEC | 205 / 555 / 700 | 678 / 1075 / 938 / 368 / 139 | 573 / 1204 / 1437 / 1271 / 952 | 628 / 1861 / 2231 / 2275 / 1791 | 2.1× (before 1.3×) |
+| 50³ PML_8 | 110 / 137 / 147 | 138 / 240 / 162 / 62 / 26 | 271 / 755 / 983 / 1028 / 865 | 290 / 945 / 1360 / 1556 / 1080 | 6.5× (before 4.3×) |
+| 100³ PEC | 207 / 396 / 534 | 523 / 1421 / 1710 / 1536 / 870 | 531 / 1330 / 1718 / 1963 / 1834 | 439 / 2151 / 3416 / 5109 / 3795 | 3.0× (before 1.1×) |
+| 100³ PML_8 | 118 / 120 / 135 | 133 / 345 / 364 / 306 / 179 | 236 / 805 / 1307 / 1560 / 1609 | 234 / 1130 / 2088 / 3424 / 2930 | 9.4× (before 4.4×) |
+| 150³ PEC | 204 / 292 / 416 | 404 / 990 / 1519 / 1947 / 1703 | 355 / 751 / 1001 / 1687 / 2083 | 372 / 1015 / 1695 / 3932 / 5103 | 2.6× (before 1.1×) |
+| 150³ PML_8 | 116 / 120 / 124 | 123 / 254 / 317 / 346 / 315 | 240 / 527 / 801 / 1072 / 1515 | 254 / 595 / 947 / 1770 / 3663 | 10.6× (before 4.4×) |
+| 200³ PEC | 190 / 300 / 379 | 379 / 633 / 707 / 822 / 837 | 387 / 584 / 690 / 825 / 796 | 383 / 706 / 940 / 1071 / 1275 | 1.5× (before 1.0×) |
+| 200³ PML_8 | 111 / 113 / 128 | 132 / 263 / 288 / 337 / 333 | 238 / 420 / 500 / 591 / 694 | 279 / 497 / 606 / 778 / 902 | 2.7× (before 2.1×) |
+
+The large gain of "after" at 8–32 threads is the energy check of XML runs,
+which ran a serial look-ahead pass every Nyquist interval (26 steps here);
+it is now evaluated by all threads. openEMS's multithreaded engine peaks at
+8–16 threads and slows down past that (50³ PML: 240 MCells/s at 4 threads,
+26 at 32). 200³ boxes are bound by memory bandwidth in both codes (ems
+reads and writes at least the 48 bytes of fields per cell and step:
+1275 MCells/s is 61 GB/s, near the machine's ~70 GB/s).
+
+The end-to-end models of §5.16.4 at full size (wall time of the whole
+run including setup and file output, best of two; openEMS with its
+default engine and threads, ems with its default thread count and with
+master `0638148`):
+
+| model | cells | openEMS | ems master | ems now |
+|---|---|---|---|---|
+| patch antenna, PML, NF2FF dumps | 467 k | 18.7 s (275 MC/s) | 3.5 s | 2.37 s (2390 MC/s) |
+| microstrip filter, PML, 512 VTK dumps | 174 k | 5.7 s (270 MC/s) | 7.7 s | 1.03 s (1690 MC/s) |
+| WR-90 iris, mode probes, PML | 48 k | 0.63 s (271 MC/s) | 0.36 s | 0.31 s (667 MC/s) |
+| coax monopole, cylindrical, Mur | 19 k | 0.63 s (441 MC/s) | 2.4 s | 0.58 s (388 MC/s) |
+| Drude/Lorentz slab, plane wave, PML | 15 k | 0.12 s (232 MC/s) | 0.17 s | 0.08 s (298 MC/s) |
+
+(openEMS's own time step on the cylindrical coax is 27 % smaller, so it
+runs 12122 steps where ems runs 8866; ems's step there is still 12 %
+slower than openEMS's, with its periodic and axis merges serial every
+step.) Profiles (callgrind, single thread) found the serial periodic
+merge (half of the coax run), the serial Mur faces of cylindrical grids
+and the probe sampling locating every node per sample, the time-step
+criteria (a third of a short guide run), and the CPML corrections (46 %
+of the patch, whose grid is 74 % PML: per layer cell about 1.6 times a
+kernel component update; a fixed-length variant of the short z-layer
+rows was slower and was not kept).
 
 ## 11. Open questions for review
 
