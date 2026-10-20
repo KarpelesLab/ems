@@ -102,7 +102,9 @@ pub struct CircWaveguidePortProperties {
 ///   `(u, v) = axis.others()` and the azimuth `φ` is measured from `u`
 ///   towards `v`. The guide wall (a PEC tube) is part of the model, not
 ///   of the port: a staircased wall has a different cutoff from the
-///   ideal circle (see design §5.5), which the analysis does not know.
+///   ideal circle (see design §5.5), which the analysis does not know;
+///   a `radius` tuned to the effective radius of the staircase (from its
+///   measured cutoff) removes most of that mismatch.
 /// * **Cylindrical grids**: the guide is coaxial with the grid, `start`
 ///   and `stop` must lie on the axis (`ρ = 0`), the propagation axis is
 ///   `z` and the azimuth must be closed (`2π`). The wall can be the
@@ -384,7 +386,9 @@ impl CircWaveguidePort {
         let sign = (self.stop[w] - self.start[w]).signum();
         let (e, h) = self.mode_functions(cyl, axis, unit, p, sign);
 
-        // Boxes: the cross section on the excitation / reference plane.
+        // Boxes: the cross section on the excitation / reference plane,
+        // widened to the mesh lines that enclose the disc (so that the
+        // compile step does not snap them inwards).
         let alpha = {
             let al = model.grid.lines(1);
             (
@@ -392,20 +396,26 @@ impl CircWaveguidePort {
                 al.last().copied().unwrap_or(0.0),
             )
         };
-        let plane = |at: f64| -> ([f64; 3], [f64; 3]) {
-            if cyl {
-                ([0.0, alpha.0, at], [self.radius, alpha.1, at])
-            } else {
-                let (mut lo, mut hi) = (self.start, self.start);
-                let (u, v) = axis.others();
-                for d in [u.index(), v.index()] {
-                    lo[d] -= self.radius;
-                    hi[d] += self.radius;
-                }
-                lo[w] = at;
-                hi[w] = at;
-                (lo, hi)
+        let (mut lo, mut hi) = (self.start, self.start);
+        if cyl {
+            lo[0] = 0.0;
+            hi[0] = enclose(model.grid.lines(0), 0.0, self.radius).1;
+            (lo[1], hi[1]) = alpha;
+        } else {
+            let (u, v) = axis.others();
+            for d in [u.index(), v.index()] {
+                (lo[d], hi[d]) = enclose(
+                    model.grid.lines(d),
+                    self.start[d] - self.radius,
+                    self.start[d] + self.radius,
+                );
             }
+        }
+        let plane = |at: f64| -> ([f64; 3], [f64; 3]) {
+            let (mut l, mut h) = (lo, hi);
+            l[w] = at;
+            h[w] = at;
+            (l, h)
         };
         let prim = |(s, t): ([f64; 3], [f64; 3])| {
             Primitive::new(BoxShape::new(s, t)).with_priority(self.priority)
@@ -595,6 +605,26 @@ impl CircWaveguidePort {
         let i = get(&p.current.0)?.dft(freqs)?;
         PortResult::new_per_frequency(freqs.to_vec(), v, i, z)
     }
+}
+
+/// The mesh lines enclosing `[a, b]`: the last line at or below `a` and
+/// the first at or above `b` (within round-off); `a` or `b` itself where
+/// there is none.
+fn enclose(lines: &[f64], a: f64, b: f64) -> (f64, f64) {
+    let tol = 1e-9 * (1.0 + a.abs().max(b.abs()));
+    let lo = lines
+        .iter()
+        .copied()
+        .filter(|&x| x <= a + tol)
+        .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))))
+        .unwrap_or(a);
+    let hi = lines
+        .iter()
+        .copied()
+        .filter(|&x| x >= b - tol)
+        .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.min(x))))
+        .unwrap_or(b);
+    (lo, hi)
 }
 
 #[cfg(test)]
