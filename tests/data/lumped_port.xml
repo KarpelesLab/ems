@@ -79,8 +79,8 @@
                 <EdgeColor R="0" G="0" B="0" a="255" />
                 <Primitives>
                     <Box Priority="0">
-                        <P1 X="8" Y="10" Z="9" />
-                        <P2 X="8" Y="10" Z="11" />
+                        <P1 X="8" Y="10" Z="10" />
+                        <P2 X="8" Y="10" Z="10" />
                     </Box>
                 </Primitives>
             </ProbeBox>

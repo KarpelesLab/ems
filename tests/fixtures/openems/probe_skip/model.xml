@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "probe_skip": probe boxes openEMS skips (voltage boxes that are not lines, judged on the raw corners: a point, flat and solid boxes, a thin box snapping to one line; current boxes extending along NormDir, or solid without NormDir) next to the ones it keeps
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="1e-30">
+    <Excitation Type="0" f0="3e9" fc="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC" />
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+<Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="5" Y="5" Z="4"/><P2 X="5" Y="5" Z="6"/></Box></Primitives></Excitation>
+<ProbeBox Name="u_line" Type="0"><Primitives><Box Priority="0"><P1 X="5" Y="5" Z="4"/><P2 X="5" Y="5" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="u_point" Type="0"><Primitives><Box Priority="0"><P1 X="5" Y="5" Z="4"/><P2 X="5" Y="5" Z="4"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="u_2d" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="5" Z="4"/><P2 X="6" Y="5" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="u_3d" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="4"/><P2 X="6" Y="6" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="u_diag" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="4"/><P2 X="6" Y="6" Z="4"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="u_offgrid_line" Type="0"><Primitives><Box Priority="0"><P1 X="4.6" Y="5" Z="4"/><P2 X="4.6" Y="5" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="u_thin2d" Type="0"><Primitives><Box Priority="0"><P1 X="4.9" Y="5" Z="4"/><P2 X="5.1" Y="5" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="i_flat" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="5"/><P2 X="6" Y="6" Z="5"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="i_normal" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="4"/><P2 X="6" Y="6" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="i_thin" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="4.9"/><P2 X="6" Y="6" Z="5.1"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="i_auto3d" Type="1"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="4"/><P2 X="6" Y="6" Z="6"/></Box></Primitives></ProbeBox>
+<ProbeBox Name="i_line" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="4" Y="5" Z="5"/><P2 X="6" Y="5" Z="5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0</XLines>
+      <YLines>0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0</YLines>
+      <ZLines>0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

@@ -106,7 +106,10 @@ pub struct PortProperties {
 ///   transverse axis the centre is moved to the mesh line nearest to it
 ///   (if the model has lines there), so a multi-column port's probe lies
 ///   on a column of port edges instead of between two.
-/// * The **current** probe covers the whole box with normal `axis` and
+/// * The **current** probe covers the box's cross-section in its middle
+///   dual plane (a box flat along `axis` on the mesh line just above that
+///   plane, normal `axis`, which openEMS reads the same way; if the model
+///   has no mesh lines in the port yet, the whole box), with
 ///   weight `−1`: the H-loop current leaving the `+` terminal into the
 ///   structure, so `P = V·I` is the power delivered to it (the convention
 ///   of [`PortResult`]). It is written for openEMS compatibility and for
@@ -307,12 +310,40 @@ impl LumpedPort {
         let v_id = model.add_property(Property::probe(ut.clone(), vp));
         model.add_primitive(v_id, prim(vs, vt))?;
 
+        // The current loop: a box flat along the port axis in the middle
+        // dual plane of the port (openEMS skips current boxes that extend
+        // along their normal). A flat box on mesh line `k` loops on the
+        // dual plane `k − ½` (openEMS, design §5.16.1), so the box sits on
+        // the line just above the middle dual plane when the mesh has
+        // lines there; the sign makes the current flow from `start` to
+        // `stop`.
+        let (lo, hi) = (start[a].min(stop[a]), start[a].max(stop[a]));
+        let tol = 1e-9 * (hi - lo);
+        let inside: Vec<f64> = model
+            .grid
+            .lines(a)
+            .iter()
+            .copied()
+            .filter(|x| *x >= lo - tol && *x <= hi + tol)
+            .collect();
+        let (mut is, mut iu) = (start, stop);
+        // Without mesh lines in the port (mesh built later), the whole box
+        // (ems loops on its middle layer, signed by `stop − start`;
+        // openEMS skips such a probe).
+        let weight = if inside.len() >= 2 {
+            let plane = inside[(inside.len() - 2) / 2 + 1];
+            is[a] = plane;
+            iu[a] = plane;
+            -span.signum()
+        } else {
+            -1.0
+        };
         let mut ip = ProbeBox::new(ProbeType::Current)
-            .with_weight(-1.0)
+            .with_weight(weight)
             .with_norm_dir(csx_axis);
         ip.number = n;
         let i_id = model.add_property(Property::probe(it.clone(), ip));
-        model.add_primitive(i_id, prim(start, stop))?;
+        model.add_primitive(i_id, prim(is, iu))?;
 
         self.props = Some(PortProperties {
             element: (resist, el_id),

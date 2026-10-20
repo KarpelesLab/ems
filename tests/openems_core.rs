@@ -72,8 +72,6 @@ struct Check {
     tol: f64,
     /// Per-probe tolerances overriding `tol`.
     per_probe: &'static [(&'static str, f64)],
-    /// Probes ems writes that openEMS does not (ems extensions).
-    ems_only: &'static [&'static str],
 }
 
 impl Check {
@@ -82,7 +80,6 @@ impl Check {
             case,
             tol: 1e-4,
             per_probe: &[],
-            ems_only: &[],
         }
     }
 
@@ -93,11 +90,6 @@ impl Check {
 
     fn per_probe(mut self, p: &'static [(&'static str, f64)]) -> Self {
         self.per_probe = p;
-        self
-    }
-
-    fn ems_only(mut self, p: &'static [&'static str]) -> Self {
-        self.ems_only = p;
         self
     }
 
@@ -171,10 +163,7 @@ impl Check {
                 .collect()
         };
         let oe = names(&fixture(case), &NOT_PROBES);
-        let mut ours = names(&dir, &[]);
-        for x in self.ems_only {
-            assert!(ours.remove(*x), "{case}: ems should write {x}");
-        }
+        let ours = names(&dir, &[]);
         assert_eq!(ours, oe, "{case}: probe files");
         for name in &oe {
             let a_text = std::fs::read_to_string(fixture(case).join(name)).unwrap();
@@ -269,10 +258,22 @@ fn custom_weighted() {
 #[test]
 fn current_probes() {
     // openEMS disables a current probe whose box extends along its normal;
-    // ems integrates over the middle layer instead.
-    Check::new("current_probes")
-        .ems_only(&["i_normal_extent"])
-        .check();
+    // so does ems for files (warning).
+    Check::new("current_probes").check();
+}
+
+#[test]
+fn probe_skip() {
+    // Voltage boxes that are not lines and current boxes extending along
+    // their normal are skipped, as openEMS does.
+    let (sim, _) = Check::new("probe_skip").run();
+    let skipped = sim
+        .warnings()
+        .iter()
+        .filter(|w| w.contains("as openEMS does"))
+        .count();
+    assert_eq!(skipped, 8, "{:?}", sim.warnings());
+    Check::new("probe_skip").check();
 }
 
 #[test]

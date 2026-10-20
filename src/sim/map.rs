@@ -853,6 +853,39 @@ pub(crate) fn map_sources(
             stop_coords: at(stop),
         };
         let mut location = primary_location;
+        // openEMS skips a voltage probe whose box is not a line and a
+        // current probe whose box extends along its normal (or, without
+        // NormDir, is not flat), judged on the raw corners (black box,
+        // design §5.16.1); ems would integrate them. Mirrored for files.
+        if fdtd.get_openems_run() {
+            let extent: Vec<Axis> = Axis::ALL
+                .into_iter()
+                .filter(|a| p.corners[0][a.index()] != p.corners[1][a.index()])
+                .collect();
+            let skip = match kind {
+                ProbeKind::Voltage if extent.len() != 1 => Some(format!(
+                    "its box is not a line (dimension {})",
+                    extent.len()
+                )),
+                ProbeKind::Current => match s.norm_dir.and_then(|d| Axis::from_index(d.index())) {
+                    Some(n) if extent.contains(&n) => {
+                        Some(format!("its box extends along the normal direction {n}"))
+                    }
+                    None if extent.len() == 3 => {
+                        Some("its box is not flat and has no NormDir".to_string())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(why) = skip {
+                warnings.push(format!(
+                    "probe {:?}: {why}; ignored, as openEMS does",
+                    p.name
+                ));
+                continue;
+            }
+        }
         let op = match kind {
             ProbeKind::Voltage => {
                 let mut pr = Probe::new(ProbeQuantity::Voltage);
