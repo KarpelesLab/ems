@@ -9,6 +9,8 @@
 //!   files (current and legacy layout), including SAR dumps, plus the
 //!   openEMS dump sampling rules (box snapping, sub-sampling,
 //!   `OptResolution`, sampling interval, time window).
+//! * `nf2ff` (feature `hdf5`): the openEMS `nf2ff` tool (near-field box
+//!   dumps described by an nf2ff XML file → far-field HDF5 file).
 //! * [`probes`]: the probe text files (`<name>` time domain,
 //!   `<name>_FD` frequency domain, including the waveguide "mode
 //!   matching" files) and a reader for them.
@@ -23,6 +25,8 @@
 
 pub mod debug;
 pub mod dump;
+#[cfg(feature = "hdf5")]
+pub mod nf2ff;
 pub mod probes;
 pub mod signal;
 pub mod stats;

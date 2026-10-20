@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nf2ff freq="1e9" Outfile="out_layouts.h5">
+  <theta>0.0500,0.4313,0.8125,1.1938,1.5750,1.9563,2.3375,2.7188,3.1000</theta>
+  <phi>0.0000,1.1000,2.2000,3.3000,4.4000,5.5000</phi>
+  <Planes E_Field="E_leg.h5" H_Field="H_leg.h5"/>
+  <Planes E_Field="E_td.h5" H_Field="H_td.h5"/>
+  <Mirror Dir="1" Type="PEC" Pos="-0.03"/>
+</nf2ff>

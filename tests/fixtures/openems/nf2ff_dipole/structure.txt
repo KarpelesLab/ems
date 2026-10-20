@@ -1,0 +1,64 @@
+# farfield.h5
+//
+  @openEMS_HDF5_version: float64 () = 0.3
+  Mesh/
+    @MeshType: float32 (1,) = [2]
+    phi: dataset (4,) float32
+    r: dataset (1,) float32
+    theta: dataset (13,) float32
+  nf2ff/
+    @Dmax: float64 (2,) = [1.50538, 1.49547]
+    @Frequency: float32 (2,) = [1.5e+09, 2e+09]
+    @Prad: float64 (2,) = [3.0531e-30, 1.68388e-29]
+    E_phi/
+      FD/
+        f0: dataset (13, 4) compound{r: float64, i: float64}
+        f1: dataset (13, 4) compound{r: float64, i: float64}
+    E_theta/
+      FD/
+        f0: dataset (13, 4) compound{r: float64, i: float64}
+        f1: dataset (13, 4) compound{r: float64, i: float64}
+    P_rad/
+      FD/
+        f0: dataset (13, 4) float64
+        f1: dataset (13, 4) float64
+# nf2ff_E_xn.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1.5e+09, 2e+09]
+      f0: dataset (3, 1, 13, 13) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1.5e+09
+      f1: dataset (3, 1, 13, 13) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (1,) float64
+    y: dataset (13,) float64
+    z: dataset (13,) float64
+# nf2ff_H_xn.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 1
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    FD/
+      @frequency: float64 (2,) = [1.5e+09, 2e+09]
+      f0: dataset (3, 1, 13, 13) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 1.5e+09
+      f1: dataset (3, 1, 13, 13) compound{r: float32, i: float32}
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @frequency: float64 () = 2e+09
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (1,) float64
+    y: dataset (13,) float64
+    z: dataset (13,) float64

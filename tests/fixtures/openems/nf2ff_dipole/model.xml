@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NF2FF box dumps (E and H, frequency domain, node interpolation, HDF5) on
+  the six faces of a box around a short soft-source dipole in vacuum, PML.
+  Hand-written for the ems nf2ff fixtures (scripts/openems-oracle/gen-nf2ff.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="700" endCriteria="0" f_max="3e9">
+    <Excitation Type="0" f0="2e9" fc="1e9"/>
+    <BoundaryCond xmin="PML_8" xmax="PML_8" ymin="PML_8" ymax="PML_8" zmin="PML_8" zmax="PML_8"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="0" Z="-2"/><P2 X="0" Y="0" Z="2"/></Box></Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="nf2ff_E_xn" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="-12"/><P2 X="-12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="11" Name="nf2ff_E_xp" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="12" Y="-12" Z="-12"/><P2 X="12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="12" Name="nf2ff_E_yn" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="-12"/><P2 X="12" Y="-12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="13" Name="nf2ff_E_yp" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="12" Z="-12"/><P2 X="12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="14" Name="nf2ff_E_zn" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="-12"/><P2 X="12" Y="12" Z="-12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="15" Name="nf2ff_E_zp" DumpType="10" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="12"/><P2 X="12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="16" Name="nf2ff_H_xn" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="-12"/><P2 X="-12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="17" Name="nf2ff_H_xp" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="12" Y="-12" Z="-12"/><P2 X="12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="18" Name="nf2ff_H_yn" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="-12"/><P2 X="12" Y="-12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="19" Name="nf2ff_H_yp" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="12" Z="-12"/><P2 X="12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="20" Name="nf2ff_H_zn" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="-12"/><P2 X="12" Y="12" Z="-12"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox ID="21" Name="nf2ff_H_zp" DumpType="11" DumpMode="1" FileType="1">
+        <FD_Samples>1.5e9,2e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="-12" Y="-12" Z="12"/><P2 X="12" Y="12" Z="12"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>-40,-38,-36,-34,-32,-30,-28,-26,-24,-22,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40</XLines>
+      <YLines>-40,-38,-36,-34,-32,-30,-28,-26,-24,-22,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40</YLines>
+      <ZLines>-40,-38,-36,-34,-32,-30,-28,-26,-24,-22,-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

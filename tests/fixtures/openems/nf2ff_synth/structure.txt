@@ -1,0 +1,26 @@
+# out_options.h5
+//
+  @openEMS_HDF5_version: float64 () = 0.3
+  Mesh/
+    @MeshType: float32 (1,) = [2]
+    phi: dataset (6,) float32
+    r: dataset (1,) float32
+    theta: dataset (9,) float32
+  nf2ff/
+    @Dmax: float64 (2,) = [0.429347, 1.65586]
+    @Eps_r: float64 (2,) = [2.2, 3]
+    @Frequency: float32 (2,) = [1e+09, 1.5e+09]
+    @Mue_r: float64 (1,) = [1.3]
+    @Prad: float64 (2,) = [4.87961e-06, 3.41306e-06]
+    E_phi/
+      FD/
+        f0: dataset (9, 6) compound{r: float64, i: float64}
+        f1: dataset (9, 6) compound{r: float64, i: float64}
+    E_theta/
+      FD/
+        f0: dataset (9, 6) compound{r: float64, i: float64}
+        f1: dataset (9, 6) compound{r: float64, i: float64}
+    P_rad/
+      FD/
+        f0: dataset (9, 6) float64
+        f1: dataset (9, 6) float64

@@ -25,6 +25,10 @@ hdf5-deflate = ["hdf5", "hdf5rs/deflate"]
 csx = { version = "0.0.2", default-features = false }
 hdf5rs = { version = "0.0.1", default-features = false, optional = true }
 
+[[bin]]
+name = "ems-nf2ff"
+required-features = ["hdf5"]
+
 [[example]]
 name = "run_xml"
 required-features = ["xml"]
