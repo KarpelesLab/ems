@@ -67,8 +67,9 @@ command line in the case's `meta.txt`:
   `tests/openems_adv.rs`), copying back the files listed on the `keep:`
   line of the case's `meta.txt`.
 - `gen-cyl.sh [CASE...]` regenerates the `cyl_*` cases (cylindrical-grid
-  features: conducting sheets on ρ, α and z surfaces, SAR dumps, plane
-  waves;
+  features: conducting sheets on ρ, α and z surfaces, SAR dumps incl.
+  1 g averaging, plane waves, `CellConstantMaterial`, sources and lumped
+  elements at α > π and a lumped ring ending at α = 2π;
   `tests/openems_cyl.rs`, `tests/openems_dumps.rs`), copying back the
   files listed on the `keep:` line of the case's `meta.txt` (shell
   patterns) and listing the structure of kept HDF5 files

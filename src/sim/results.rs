@@ -466,7 +466,7 @@ impl SarResult {
 
     /// The openEMS-compatible SAR data (cell-interpolated E DFT and cell
     /// materials, see [`io::openems::dump`](crate::io::openems::dump#sar-dumps));
-    /// `None` on cylindrical grids and in Bloch runs.
+    /// `None` in Bloch runs and for dump boxes without sample lines.
     pub fn openems(&self) -> Option<&crate::io::openems::dump::OpenEmsSar> {
         self.openems.as_ref()
     }

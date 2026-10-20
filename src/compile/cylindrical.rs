@@ -2,17 +2,25 @@
 //!
 //! Most of the model maps as on a Cartesian grid: csx discretises in the
 //! grid's `(ρ, α, z)` coordinates (with the Jacobian in its volume
-//! weights), and the engine takes the geometry from the grid. Features
-//! whose models assume a Cartesian mesh are not available yet and are
-//! dropped with a warning: plane-wave excitations (openEMS ignores them on
-//! cylindrical grids too) and mass-averaged SAR dumps (local SAR works,
-//! with the `ρ` metric in the cell volumes). Conducting sheets run their slab
-//! model with the cylindrical metric ([`sheet_edges`]); conformal PEC
-//! handles solid metal (`compile::conformal`, cut z faces with the `ρ`
-//! metric), not thin conformal sheets. Dispersive poles are mapped (midpoint rule in
+//! weights), and the engine takes the geometry from the grid. Plane-wave
+//! excitations are dropped with a warning (openEMS ignores them on
+//! cylindrical grids too). Conducting sheets run their slab model with the
+//! cylindrical metric ([`sheet_edges`]); conformal PEC handles solid metal
+//! and thin sheets (`compile::conformal`, with the `ρ` metric in the cut z
+//! faces), oblique thin wires the `(ρ, α, z)` Whitney coupling
+//! (`engine::oblique_wire`), SAR dumps local and mass-averaged SAR
+//! (`post::sar`), `CellConstantMaterial` the cell midpoints
+//! (`compile/cellconst.rs`). Dispersive poles are mapped (midpoint rule in
 //! `(ρ, α, z)`, physical edge areas; within 1e-3 of openEMS on a
 //! Drude-filled coax). Waveguide mode probes work with a `z` normal (exact
 //! sampling, see `compile/mode.rs`).
+//!
+//! Angles are periodic: sheets ([`wrapped_sheets`]), excitations and lumped
+//! elements ([`wrapped_sources`]) are selected on every α line with the
+//! primitive tested at `α` and `α ± 2π`, since csx's bounding boxes
+//! normalise α to `[−π, π)`. For models read from openEMS files,
+//! [`openems_alpha_warnings`] names the boxes whose α range openEMS reads
+//! differently (design §5.15, azimuth conventions).
 
 use super::sheet::SheetSpec;
 use crate::engine::Grid;

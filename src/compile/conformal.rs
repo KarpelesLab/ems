@@ -42,8 +42,9 @@
 //! constant radius). So is the open area of ρ and α faces (constant
 //! metric); a z face has the area element `ρ·dρ·dα`, so its open polygon
 //! (straight in `(ρ, α)`) is measured by `∮ ρ²/2 dα` instead of the
-//! shoelace formula. Thin conformal sheets (`sheets`) are not available
-//! there (csx's sheet handling applies, with its warnings).
+//! shoelace formula. Thin conformal sheets (`sheets`) are cut against the
+//! `(ρ, α, z)` edges mapped to Cartesian points, with the same metric
+//! (src/compile/conformal/sheets/cyl.rs).
 //!
 //! # PEC mask
 //!

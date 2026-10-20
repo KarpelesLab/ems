@@ -589,9 +589,17 @@ probes, `Z_ref(f)` = the wave impedance), so it round-trips through XML.
 - Cartesian grids: any propagation axis, expressions in the offsets from
   the centre, masked to `ρ ≤ a` with `if()`; the wall is part of the
   model (PEC, staircased or conformal). Cylindrical grids: the guide on
-  the axis along `z`, closed azimuth required; the expressions use `rho`
-  and `a` and give the `(ρ, α)` components, the probe weights carry the
-  `ρ·Δα` metric (`compile/mode.rs`); the wall can be the `ρ_max` PEC face.
+  the axis along `z`; the expressions use `rho` and `a` and give the
+  `(ρ, α)` components, the probe weights carry the `ρ·Δα` metric
+  (`compile/mode.rs`); the wall can be the `ρ_max` PEC face. The azimuth
+  is closed, or a sector whose α faces are symmetry planes of the mode
+  (a half or quarter model): on each face the mode's tangential E
+  vanishes (`cos(n(α − φ0)) = 0`, or TE0m: a PEC wall) or its tangential
+  H does (`sin(n(α − φ0)) = 0`, or TM0m: a PMC wall), reported by
+  `sector_walls`; the mode is normalised over the sector, so V, I and the
+  power are the modelled part's and the S-parameters the full guide's
+  (TE11 half guide with PEC walls, `φ0 = π/2`: the full 8 × 12 guide's
+  S-parameters to 1.4e-8).
 - Limits: the reference impedance and `β` are the analytic ones, so a
   discretised cross section whose cutoff differs from `p/a` (azimuthal
   sampling, staircased wall) is seen as a mismatch: a cutoff error `δ`
@@ -1045,7 +1053,11 @@ recorded near fields, by the surface equivalence principle (Balanis,
   (`ρ·Δα·Δz` sides, `ρ·Δρ·Δα` caps, `Δρ·Δz` α faces). Phase centre: centre
   of the Cartesian bounding box (on the axis for a full cylinder). The
   background is detected from the coefficients with the physical lengths
-  and areas. Mirrors are allowed normal to `z` only. Validation
+  and areas. Mirrors are Cartesian planes: normal to `z`, or normal to
+  `x` / `y` if they do not cut the box; α faces lying in such a plane
+  (a sector `α ∈ [0, π]` and `y = 0`, i.e. the PEC/PMC α walls of a
+  half-space model) are skipped like any face on a mirror plane (a
+  geometric test on the face's sample points). Validation
   (`src/nf2ff.rs` unit test, `tests/cylindrical_nf2ff.rs`): analytic
   Hertzian-dipole fields given in `(ρ, α, z)` components on an annular
   sector around an off-axis dipole (all six faces): `P_rad` within 2e-3,
@@ -1054,7 +1066,12 @@ recorded near fields, by the surface equivalence principle (Balanis,
   cylindrical PML on `ρ_max`): `D = 1.5016 / 1.4990` at 0.7 / 1 GHz,
   `P_far/P_box = 1.0007 / 0.9987`, `P_box/P_Hertz = 1.002 / 1.005`, `sin²θ`
   pattern without φ dependence to 1 %; monopole over a PEC `z` plane with
-  a `z` mirror `D = 3.005`. openEMS does write frequency-domain field
+  a `z` mirror `D = 3.005`; analytic z dipole and image over `y = 0`
+  through a half-cylinder with a `y` mirror: far field within 3e-3, box
+  power = the pair's half-space power within 3e-3; FDTD z dipole 50 mm
+  over the PEC α walls of an `α ∈ [0, π]` sector grid: `D = 6.41`
+  against 6.50 for the pair, pattern within 8e-3 of the peak,
+  `P_far/P_box = 0.996`. openEMS does write frequency-domain field
   dumps on cylindrical grids (`dump_cyl`); its `nf2ff` tool (below) was
   not compared on them.
 - **Not done.** Lossy and inhomogeneous (layered) backgrounds;
@@ -1205,13 +1222,35 @@ with the share of the cell volume its dual cell has there, as the edge
 conductances `κ·A*/l` count it (¼ for ρ edges, `ρ_e/(4ρ_{i+½})` for α
 edges, the half-annulus shares for z edges), so `Σ p·V` is again the
 discrete conduction loss. The compile step samples `κ` and density in
-`(ρ, α, z)` with `ρ`-weighted subsamples. Mass averaging is refused
-(`Error::Unsupported`; averaged dumps are dropped with a warning): the
-standard's cubes live in physical space and do not map onto annular
-cells. Validation (`tests/cylindrical_sar.rs`): a tissue ring in a closed
-circular PEC cavity with an axis (16 α cells), fed by a one-cell port in
+`(ρ, α, z)` with `ρ`-weighted subsamples.
+
+*Mass averaging* (`post::sar` submodule `cyl`, src/post/sar/cyl.rs) uses
+cubes in physical space, axis-aligned with Cartesian `x, y, z`, centred
+on the voxel centre `(ρ_{i+½}, α_{j+½}, z_{k+½})`, with the same three
+steps and air rule as on Cartesian cells (face cubes put the voxel
+centre at the centre of a cube face, six orientations). The overlap of
+a cube with each annular cell is exact: the z overlap is an interval,
+and the area of the cube's square section inside the sector is
+`|Q ∩ W ∩ D(ρ_1)| − |Q ∩ W ∩ D(ρ_0)|` (`W` the cell's wedge, two
+half-planes, cells wider than π/2 split; `Q ∩ W` a convex polygon by
+Sutherland–Hodgman; polygon ∩ disc by summing, over its edges, the
+triangle (origin, edge) inside the disc: straight pieces inside,
+circular sectors outside). The cube mass is then a continuous increasing
+function of the side, solved to 1e-12 like the Cartesian cubes.
+Validation (`post::sar` unit tests): sector areas exact to 1e-14 (a
+square cut into 28 annular cells sums to its area to 1e-12); a constant
+power density averages to the local value on every tissue voxel of a
+tissue cylinder in air (centred, covered and face cubes, all cubes 1e-10
+of the mass); a power density constant per z layer averages exactly
+(1e-10) to the layer mean over the cube height; a linear `p(x, z)`
+averages to the centre value within 4.6e-3 (the cells' piecewise
+constant `p`); thread independent.
+
+Validation of the power (`tests/cylindrical_sar.rs`): a tissue ring in a
+closed circular PEC cavity with an axis (16 α cells), fed by a one-cell port in
 the tissue: absorbed power within 1.5e-5…2.2e-5 of the accepted power
-(0.5–1.5 GHz), tissue mass exact. openEMS-compatible files
+(0.5–1.5 GHz), tissue mass exact; the 1 g average has a voxel cube of
+1 g everywhere and its peak next to the port. openEMS-compatible files
 (`io::openems::dump`): openEMS writes local, raw and averaged SAR on
 cylindrical grids (`Mesh` `rho`/`alpha`/`z`, `.vts` for VTK); observed
 (`cyl_sar`): its cell volume is `ρ_i·Δα·Δρ·Δz` with the radius of the
@@ -1220,8 +1259,26 @@ against 3.393 g for the exact sector), and it scales the α `CellWidth`s
 by the drawing unit. ems writes the same files with the same rules (local
 SAR within 3.5e-3 of openEMS's peak; the remainder is a 1e-4 difference of
 the two codes' cell fields on this model, both codes' local SAR being
-`κ|E|²/(2ρ)` of their raw files to 1e-7). openEMS's 1 g average on
-cylindrical grids was not reproduced (ems drops averaged dumps there).
+`κ|E|²/(2ρ)` of their raw files to 1e-7).
+
+*openEMS's averaging on cylindrical grids* (black box, `cyl_sar` with a
+1 g dump): its in-run 1 g file equals `sar_calc` on its raw dump bit for
+bit, and also `sar_calc` on the same raw file with the axes renamed to
+`x, y, z` and `@mesh_type` 0. So openEMS averages the `(ρ, α, z)` cells
+as if they were Cartesian cells of the raw dump's `CellWidth`s (`Δρ`,
+`Δα·u` with the drawing unit `u`, `Δz`), each weighing with its `Volume`
+`ρ_i·Δα·Δρ·Δz`: its "cubes" are boxes of `s/(Δα·u)` α cells, neither
+cubes nor of constant physical size (at `u` = 1 mm and ρ = 20 mm, a
+1 g cube spans about 20 α cells of 0.2 mm "width"). Its `sar_calc` output
+of a cylindrical dump has a Cartesian `/Mesh` (`x, y, z` = the raw `rho`,
+`alpha`, `z`, `@mesh_type` 0). ems reproduces this for openEMS files
+(`SarVolume::openems_cylindrical`: the Cartesian view with the power and
+density per cell scaled by `V/(w_ρ·w_α·w_z)`, so masses and powers are
+openEMS's; used by the in-run dumps of `io::openems::dump` and by
+`ems-sar-calc` on cylindrical raw dumps): the 1 g dump within 0.93 % of
+openEMS's peak, `ems-sar-calc` on openEMS's raw file within 1.06 %
+(openEMS's ±5 % cube mass, as on Cartesian cells). Rust-built models
+(`SarResult::field`) use ems's physical cubes.
 
 **Output.** `SarField`: per-voxel values plus how each was obtained
 (`VoxelClass`), the peak and its location, `.vtr` (cell data) and, with
@@ -1386,7 +1443,7 @@ the `(ρ, α, z)` edges and faces; the metal test is made at their
 length (α edges are arcs of constant radius), and so are the face
 fractions of ρ and α faces; a cut z face (area element `ρ·dρ·dα`) is
 measured by `∮ ρ²/2 dα` over its open polygon instead of the shoelace
-formula. Thin conformal sheets (§5.13.1) are Cartesian only. Validation
+formula. Thin conformal sheets: §5.13.1 (cylindrical grids). Validation
 (`tests/cylindrical_conformal.rs`): a circular PEC cavity (`a = 10 mm`)
 whose axis is 30 mm off the grid axis (its wall is no coordinate
 surface), α cells of the radial cell size at 30 mm, 2 cells in z:
@@ -1503,11 +1560,35 @@ there, which leaves a gap of under a cell at the junction (warning); closed
 boxes of oblique plates therefore leak at their corners. Sheets touching
 solid conformal metal in the same cells are combined approximately (piece
 `cb` scaled by both fractions; owned faces drop their solid-metal `f_A`).
-Open polyhedra, cylindrical-coordinate boxes and conducting
+Open polyhedra, boxes given in cylindrical coordinates and conducting
 (`ConductingSheet`) oblique sheets are not handled. A trace that bulges
 into a face without crossing its edges is not seen. Sources, lumped
 elements and CPML on cut edges are not supported (the operator owns those
 voltages). Voltage probes on a cut edge read the sum of its pieces.
+
+**Cylindrical grids** (§5.15; `compile::conformal` submodule
+`sheets::cyl`). The same Cartesian sheet surfaces are cut against the
+`(ρ, α, z)` edges mapped to Cartesian points: ρ and z edges are straight
+segments as before, α edges arcs, whose crossings are the sign changes
+of `φ` at 16 samples along the arc, bisected. Faces are split in their
+parameter rectangle with straight chords (exact for a coaxial shell on a
+z face, whose trace is `ρ = r`; second order otherwise); ρ and α faces
+have a constant metric, z faces measure their polygons with `ρ·dρ·dα`
+(`∮ ρ²/2 dα`, closed form along straight parameter segments). Sheets on
+a mesh surface of the cylindrical grid keep csx's mask. The stored
+copies of a physical edge (seam of a closed azimuth, axis) share one set
+of pieces in the engine operator (merged coefficients `1/cb = Σ 1/cb_j`,
+`ca/cb = Σ ca_j/cb_j`); the kernel zeroes every copy and the operator
+writes all of them, so the periodic and axis merges keep the value; H
+faces stay per copy as on the uncut grid. Sheets cutting edges inside
+multigrid zones are dropped with a warning. Validation
+(`tests/cylindrical_conformal_sheet.rs`, TM010 against `j01`): a coaxial
+shell `r` = 10.3 mm between ρ lines (16 α cells, axis; it cuts the seam
+copies) −0.110 / −0.037 % at 1 / 0.5 mm; an off-axis shell (radius
+6 mm, centre 12 mm off the axis, across the seam, annular grid with α
+cells of `h` at 12 mm) −0.327 / −0.087 % (order 1.9); stability factor
+0.88–0.98, energy constant to 1e-7 after the source, 1 vs 3 threads
+bit-identical. The Cartesian sheet results are unchanged (same digits).
 
 ### 5.14 Thin wires
 
@@ -1733,10 +1814,39 @@ far from uniform over the correction's range (about a cell); a full
 correction matrix would remove it at the cost of a wider band. Graded
 meshes use the local cell's spacings; media are assumed homogeneous
 around the wire (`ε_r`, `μ_r` averaged over the coupled edges); wires
-closer than a few cells to each other or to other conductors, wire ends
-in the PML (the correction line is not absorbed) and cylindrical grids
-are not covered; wire energy is reported, wire losses (finite
-conductivity) are not modelled.
+closer than a few cells to each other or to other conductors and wire
+ends in the PML (the correction line is not absorbed) are not covered;
+wire energy is reported, wire losses (finite conductivity) are not
+modelled.
+
+**Cylindrical grids** (`engine::oblique_wire` submodule `cyl`). The wire
+stays a polyline of straight Cartesian segments. The coupling is the
+parameter-space Whitney 1-form of the `(ρ, α, z)` cells integrated along
+each segment's image, `P_{e,s} = ∫_s W_e dq_d/Δq_e` (`q_d` ∈ ρ, α, z,
+`Δq_e` the parameter length): the voltages are circulations, so
+`(Pᵀu)_s = ∫_s E·dl` exactly as before, and charge conservation is the
+same topological identity. Segments are split at ρ cylinders, α
+half-planes and z planes and integrated with 5-point Gauss–Legendre.
+Seam and axis edge copies are coupled as one physical edge (canonical
+copy, merged `cb`; the update is written into every copy). The in-cell
+corrections take the lattice locally uniform with the physical spacings
+`(Δρ, ρ_c·Δα, Δz)` in the unrolled frame `(ρ, ρ_c·α, z)`, whose hats are
+exactly the parameter hats; the kernels use the true geometry. Wires
+must stay out of the first radial cell around the axis. On cylindrical
+grids every csx metal `Wire` of radius > 0 goes to this model (radial
+and z-parallel ones too: the material model of §5.14 is Cartesian).
+Validation (`tests/cylindrical_oblique_wire.rs`): a closed annular
+cavity with wires across the seam (bend, junction, grounded end) keeps
+its energy to 8e-8 over 10 000 steps at Courant 0.999 (1 vs 3 threads
+bit-identical); the 170 mm dipole on 20 mm `(ρ, α, z)` cells at
+`R0` = 600 mm (`R0·Δα` = 20 mm) along z, at 45° in the ρz plane and along
+(1, 2, 3) agrees with the same wire on 20 mm Cartesian cells within
+0.09 % (resonance), 0.7 % (`R_in`) and 0.7 % (slope); 1200 mm alike
+(0.09 / 0.9 / 1.4 %). With strong curvature the agreement degrades: at
+`R0` = 300 mm (the domain reaches ρ = 60 mm) along z +0.5 % / −1.7 %
+(resonance / `R_in`, the curved environment and the absorbing faces of
+the sector), along (1, 2, 3) +0.2 % / −3.9 % (the correction window,
+5 cells, is a third of `R0`).
 
 ### 5.15 Cylindrical coordinates
 
@@ -1819,21 +1929,82 @@ cylindrical wave: the reflection is of order `1/(kρ)`, measured −31 dB at
 Cartesian-style CPML layer, still available as `plane_rho_max()` for
 comparison, is alike).
 
-**Not available on cylindrical grids** (dropped with a warning or refused):
-plane waves (openEMS ignores them there too: no field at all, no message;
-§5.16.2), mass-averaged SAR dumps (`SAR1g`, `SAR10g`: the averaging cubes
-are defined in physical coordinates; §5.12), thin conformal PEC sheets
-(§5.13.1; solid conformal metal works, §5.13), `CellConstantMaterial` (edge averaging with a warning), oblique
-thin wires, NF2FF mirrors not normal to `z`, and the MSL, CPW, stripline
-and rectangular-waveguide port helpers (`Error::Unsupported`). Lumped
-ports, lumped elements, voltage, current and field probes, waveguide mode
-probes on a `z`-normal plane (the exact weights of `compile/mode.rs` with
-the `ρ·Δα` metric), field dumps (VTK and HDF5), dispersive materials
-(§5.16), conducting sheets on ρ, α and z surfaces (§5.9), local and raw
-SAR dumps (§5.12), NF2FF boxes (cylinders and annular sectors, §5.10), the
+**Available on cylindrical grids**: lumped ports, lumped elements,
+voltage, current and field probes, waveguide mode probes on a
+`z`-normal plane (the exact weights of `compile/mode.rs` with the
+`ρ·Δα` metric), field dumps (VTK and HDF5), dispersive materials
+(§5.16), conducting sheets on ρ, α and z surfaces (§5.9), local, raw and
+mass-averaged SAR (physical cubes, and openEMS's warped cubes for openEMS
+files, §5.12), solid conformal metal and thin conformal sheets (§5.13,
+§5.13.1), oblique thin wires (§5.14.1), `CellConstantMaterial` (cell
+midpoints, below), NF2FF boxes (cylinders and annular sectors, mirrors
+normal to z, and to x / y when they do not cut the box, §5.10), the
 coaxial and circular-waveguide port helpers (`CoaxPort`,
-`CircWaveguidePort`, along `z` on the axis, §5.5) and `LumpedPort` /
-`CurvePort` work.
+`CircWaveguidePort`, along `z` on the axis, also on sectors with
+symmetry walls, §5.5) and `LumpedPort` / `CurvePort`.
+
+**Not available** (dropped with a warning or refused): plane waves
+(openEMS ignores them there too: no field at all, no message; §5.16.2),
+and the MSL, CPW, stripline and rectangular-waveguide port helpers
+(`Error::Unsupported`): their geometry and analysis assume planar
+Cartesian lines (a strip on a curved substrate needs its own line
+model). The material model of axis-aligned thin wires (§5.14) is
+Cartesian; on cylindrical grids thin wires use the oblique model.
+
+**CellConstantMaterial** (`compile/cellconst.rs`): each cell takes the
+material at its parameter midpoint `(ρ_{i+½}, α_{j+½}, z_{k+½})`
+(weighting functions at its Cartesian position) and
+`EdgeMaterials::from_cells` averages the cells onto the edges with the
+annular areas. openEMS (black box, `cyl_cellconst`) samples the same
+point: its probes with `CellConstantMaterial="1"` are bit-identical to
+the box snapped to the cells whose midpoints it holds, for a radial box
+face between a cell's midpoint and its centroid. The codes' edge
+averages (openEMS's material dump against ems's) agree on every ρ and α
+edge; on z edges at a radial interface openEMS weighs the two radial
+halves of the dual face by `Δρ_h` times the radius of the dual line
+bounding each half instead of their annular areas `Δρ_h·ρ̄_h` (first
+order in `Δρ/ρ`; ems keeps the exact areas), which shows as
+1.2e-4…1.7e-3 in the probes. Without `CellConstantMaterial` csx's
+averaging differs from openEMS's on α edges too (csx weighs the radial
+halves of an α edge's dual face by ρ, openEMS equally; the exact
+parallel capacitance of the two halves weighs them by `Δρ_h/ρ_h`):
+4e-4…3.9e-3 on the same box snapped to the cells.
+
+**Azimuth conventions of boxes** (`compile::cylindrical`). csx selects
+the edges of a primitive within its bounding box, whose α range it
+normalises to `[−π, π)` (§8.1): on a `[0, 2π]` grid sources and lumped
+elements at `α > π` got only part of their edges, or none (a lumped ring
+over `[0, 2π]` only its `α ≤ π` half). ems re-selects the edges of
+excitations and lumped elements on cylindrical grids with every α line
+as a candidate, testing the primitive at `α` and `α ± 2π` (csx's rules
+otherwise; sheets already were, `wrapped_sheets`), so angles are
+periodic: a box means the same region whatever multiple of 2π its α
+corners are given in. openEMS (black box, `cyl_wrap_*`, operator and
+PEC dumps):
+
+- materials, metal, sheets and excitations take the α range literally
+  against the grid's α lines: a dielectric over `[−π, 0]` on a `[0, 2π]`
+  grid is absent (but for the α = 0 dual faces), one over `[π, 3π]`
+  covers only `[π, 2π]`, metal over `[−π, 0]` is absent;
+- a lumped element has each α bound (after sorting) reduced modulo 2π
+  into `[0, 2π)`: `[0, 2π]` becomes the α = 0 line, `[π, 2π]` and
+  `[3π/2, 5π/2]` are empty, `[−π, π]` becomes the α = π line;
+- what lies on the α = 0 line of a closed grid only (a source, a lumped
+  element, a conducting sheet, a metal fin) has no effect: openEMS
+  updates the α = 2π copy of that line (a source or a metal fin on
+  α = 2π works; the fin then agrees with ems to 1e-7). So a lumped ring
+  over exactly `[0, 2π]` vanishes: openEMS's probes equal ems's without
+  the element to 1e-7, while `[0, 2π − 6e-15]` is the whole ring;
+- within the grid's α range both codes agree: a half-ring resistor over
+  `[π, 2π)` to 1e-7, a source over `[π, 3π/2]` to 1e-6 (a source on the
+  seam line itself differs by 5 %).
+
+No openEMS documentation describes these as conventions; they make the
+same physical box behave differently depending on how its angles are
+written, so ems keeps the periodic interpretation and warns, for models
+read from files, about boxes whose α range leaves the grid's, lumped
+elements whose bounds openEMS would reduce, and sources / elements /
+sheets on the α = 0 line of a closed grid only.
 
 **Validation.**
 
@@ -1845,9 +2016,9 @@ coaxial and circular-waveguide port helpers (`CoaxPort`,
 | lossless cavity energy, 5000 steps | drift 2.5e-8 |
 | random fields at Courant factor 1.0, 20 000 steps | energy constant to 1.3e-6 |
 | coax `b/a = 3`, closed azimuth, Mur ends | `|Z|` within 2e-4 of the discrete TEM value (0.1 % of `η/2π·ln(b/a)`), phase velocity 0.9999 c |
-| coax with radial lumped port and 100 Ω load spanning the circle | `Z_in` within 0.7 % of the transmission-line model (0.25–2 GHz) |
+| coax with radial lumped port and 100 Ω load spanning the circle | `Z_in` within 0.25 % (0.25 GHz) … 1.3 % (2 GHz) of the transmission-line model (csx had given both only their `α ≤ π` half, which read 0.1–0.7 %) |
 | one-column port on the periodic α = 0 face vs at α = π/2 | equal within 3e-5 |
-| axis port listed on one or all α copies | bit-identical |
+| axis port listed on one or all α copies | equal to 1e-12 (the rounding of the per-copy element values) |
 | openEMS XML (`CoordSystem="1"`) round trip | bit-identical probes |
 | 1 vs 3 threads | bit-identical |
 
@@ -2098,8 +2269,9 @@ regeneration script and test file:
 - advanced physics (§5.16.2, `adv_*`): `gen-adv.sh`, `tests/openems_adv.rs`;
 - field dumps and SAR files (`dump_*`, `io::openems::dump`): `gen-dumps.sh`,
   `tests/openems_dumps.rs`;
-- cylindrical-grid features (`cyl_*`: conducting sheets, SAR files, plane
-  waves): `gen-cyl.sh`, `tests/openems_cyl.rs`, `tests/openems_dumps.rs`;
+- cylindrical-grid features (`cyl_*`: conducting sheets, SAR files incl.
+  1 g, plane waves, `CellConstantMaterial`, α ranges): `gen-cyl.sh`,
+  `tests/openems_cyl.rs`, `tests/openems_dumps.rs`;
 - the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`;
 - the `nf2ff` tool (`nf2ff_*`, §5.10): `gen-nf2ff.sh`,
   `tests/openems_nf2ff.rs`;
@@ -2367,7 +2539,12 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   on a cylindrical grid (fields identically zero, no message, for
   propagation along z and along ρ; the same box on a Cartesian mesh runs);
   ems drops it with a warning;
-- SAR dumps run there in openEMS; see §5.12 (`cyl_sar`);
+- SAR dumps run there in openEMS, including averaged ones (its warped
+  cubes, reproduced to ~1 %); see §5.12 (`cyl_sar`);
+- `CellConstantMaterial` samples the cell midpoints in both codes
+  (`cyl_cellconst`, 1.2e-4…1.7e-3: openEMS's z-edge averaging at radial
+  interfaces); boxes past α = π and the α = 2π collapse of lumped
+  elements: §5.15 (`cyl_wrap_*`);
 - conducting sheets (`cyl_sheet_*`, half-wave coaxial cavity of §5.9,
   `Q` from the ring-down, same fit for both codes): openEMS's sheet model
   behaves as on Cartesian grids. A thick lossy inner tube (`σ = 1e5 S/m`,
@@ -2817,19 +2994,24 @@ These are reported here, not fixed in csx from this repo.
     `[−π, π)`. On a grid with α lines in `[0, 2π]` a sheet over the full
     circle only gets the edges with `α ≤ π`, and one at `α > π` none ("not
     on a mesh plane"). ems re-selects them on the grid's α range
-    (`compile::cylindrical::wrapped_sheets`).
+    (`compile::cylindrical::wrapped_sheets`). The same bounding box limits
+    the edges of excitations and lumped elements (a lumped ring over
+    `[0, 2π]` got only `α ≤ π`, a source at `3π/2` none); ems re-selects
+    those too (`wrapped_sources`). csx should test the primitive
+    periodically in α when the grid is cylindrical.
 15. **`FD_Samples` separators.** openEMS reads only comma-separated lists
     (`1e9,2e9`, also with spaces after the commas and a trailing comma);
     with spaces or semicolons as separators it writes no `_FD` file (and
     runs). csx accepts spaces and semicolons too (lenient, harmless), but
     rejects a Matlab-style range `1e9:1e9:3e9` with a hard parse error
     where openEMS runs without FD output; csx should warn instead.
-16. **Boxes ending at α = 2π.** On a closed cylindrical grid, CSXCAD maps a
-    box whose α range ends exactly at 2π onto the α = 0 line only (a 2π
-    ring of lumped resistors becomes one α column, operator dump), whereas
-    a bound `2π − 1e-14` covers the whole ring. csx does not collapse it,
-    so such models differ by 60–130 % between the codes (black box,
-    §5.16.2); csx should decide whether to follow CSXCAD here.
+16. **Boxes ending at α = 2π.** *Measured* (§5.15, azimuth conventions):
+    only lumped elements collapse (CSXCAD reduces each α bound of a
+    lumped element modulo 2π, and the resulting α = 0 column has no effect
+    in openEMS); materials, metal, sheets and excitations over `[0, 2π]`
+    are the full ring in both codes. ems keeps the drawn element (openEMS
+    is wrong here) and warns for models read from files; csx needs no
+    change for this, beyond item 14.
 
 17. **Inside tolerance and open surfaces.** csx's inside tests accept
     points up to ~1e-9 (relative) outside a primitive; openEMS compares
@@ -2989,6 +3171,13 @@ elements, odd OverSampling/TimeStepFactor/endCriteria), open metal
 spheres and wires, the AbsorbingBC normal sign, OptResolution round-off
 and raw H dump snapping.
 
+Wave 12 (cylindrical gaps, §5.15): mass-averaged SAR on cylindrical
+grids (exact physical cubes; openEMS's warped cubes for its files),
+CellConstantMaterial, thin conformal sheets, oblique thin wires, NF2FF
+mirrors normal to x / y, sector circular-waveguide and coax ports;
+periodic edge selection of sources and lumped elements past α = π;
+openEMS's azimuth conventions measured (§5.15).
+
 Remaining:
 - From the sweep: openEMS's polyhedron and polygon-vertex surface ties,
   tie round-off (csx tolerance), σ_m averaging, current probes exactly
@@ -2998,9 +3187,11 @@ Remaining:
   decided by its rounding (§5.12); parallel
   R‖L with an excitation on graded meshes (0.6–3 %); the cylindrical axis
   E_z update and multigrid (ems keeps its own, more accurate, schemes).
-- On cylindrical grids: mass-averaged SAR, thin conformal sheets, oblique
-  wires, CellConstantMaterial, MSL/CPW/stripline/waveguide ports, NF2FF
-  mirrors not normal to z.
+- On cylindrical grids: MSL/CPW/stripline/rectangular-waveguide ports
+  (planar Cartesian line models; a radial-line port would be the natural
+  cylindrical addition); openEMS's z-edge material averaging at radial
+  interfaces (ems keeps exact areas); the debug material/operator dumps
+  (`--debug-material`, `--debug-operator`; openEMS writes `.vts`).
 - Junctions of several oblique sheets in one cell (sub-cell gap); a csx
   way to express a feed on an oblique wire; layered/dispersive backgrounds
   for plane waves and NF2FF; first-order conformal TE11 (Cartesian too).
