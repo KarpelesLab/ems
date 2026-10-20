@@ -169,6 +169,531 @@ pub(super) fn sheet_edges(
     }
 }
 
+/// Edge and face selection with periodic azimuth (design §5.15, §8.1).
+///
+/// csx selects the edges of a primitive within its bounding box, whose α
+/// range it normalises to `[−π, π)`: on a grid with α lines in `[0, 2π]`
+/// a primitive at `α > π` (or wrapping past 2π) only gets part of its
+/// edges, or none. This selector takes every α line as a candidate and
+/// tests the primitive at `α`, `α ± 2π` (the ρ and z ranges, the snapping
+/// tolerance and the edge-midpoint / face-centre rules are csx's).
+struct Periodic<'a> {
+    model: &'a csx::ContinuousStructure,
+    lines: [&'a [f64]; 3],
+    snap_tol: f64,
+}
+
+impl<'a> Periodic<'a> {
+    fn new(model: &'a csx::ContinuousStructure, snap_tol: f64) -> Self {
+        Self {
+            model,
+            lines: [0, 1, 2].map(|a| model.grid.lines(a)),
+            snap_tol,
+        }
+    }
+
+    fn tol(&self, a: usize, i: usize, v: f64) -> f64 {
+        let l = self.lines[a];
+        let lo = if i > 0 {
+            l[i] - l[i - 1]
+        } else {
+            f64::INFINITY
+        };
+        let hi = if i + 1 < l.len() {
+            l[i + 1] - l[i]
+        } else {
+            f64::INFINITY
+        };
+        let h = lo.min(hi);
+        self.snap_tol * if h.is_finite() { h } else { 1.0 } + 1e-12 * v.abs()
+    }
+
+    /// Line of axis `a` at `v` (α: also `v ± 2π`).
+    fn snap(&self, a: usize, v: f64) -> Option<usize> {
+        let tau = core::f64::consts::TAU;
+        let c: &[f64] = if a == 1 { &[v, v + tau, v - tau] } else { &[v] };
+        c.iter().find_map(|&v| {
+            let i = self.model.grid.nearest_line(a, v)?;
+            ((self.lines[a][i] - v).abs() <= self.tol(a, i, v)).then_some(i)
+        })
+    }
+
+    /// Lines of axis `a` within `[min, max]` (α: all lines).
+    fn line_range(&self, a: usize, min: f64, max: f64) -> Option<(usize, usize)> {
+        let l = self.lines[a];
+        if a == 1 {
+            return Some((0, l.len() - 1));
+        }
+        let lo = self
+            .snap(a, min)
+            .unwrap_or_else(|| l.partition_point(|&x| x < min));
+        let hi = match self.snap(a, max) {
+            Some(i) => i,
+            None => l.partition_point(|&x| x <= max).checked_sub(1)?,
+        };
+        (lo < l.len() && lo <= hi).then_some((lo, hi))
+    }
+
+    /// Edge start indices of axis `a` overlapping `[min, max]` (α: all).
+    fn edge_range(&self, a: usize, min: f64, max: f64) -> Option<(usize, usize)> {
+        let l = self.lines[a];
+        if l.len() < 2 {
+            return None;
+        }
+        if a == 1 {
+            return Some((0, l.len() - 2));
+        }
+        if max < l[0] || min > l[l.len() - 1] {
+            return None;
+        }
+        let lo = l.partition_point(|&x| x <= min).saturating_sub(1);
+        let hi = l
+            .partition_point(|&x| x < max)
+            .saturating_sub(1)
+            .min(l.len() - 2);
+        (lo <= hi).then_some((lo, hi))
+    }
+
+    fn contains(&self, prim: &csx::Primitive, p: [f64; 3]) -> bool {
+        use csx::{CoordSystem, Vec3};
+        let tau = core::f64::consts::TAU;
+        [0.0, tau, -tau].iter().any(|&s| {
+            prim.contains_in(
+                Vec3::new(p[0], p[1] + s, p[2]),
+                CoordSystem::Cylindrical,
+                self.model.coord_system,
+            )
+        })
+    }
+
+    fn mid(&self, d: usize, n: [usize; 3]) -> [f64; 3] {
+        let mut p = [0, 1, 2].map(|a| self.lines[a][n[a]]);
+        p[d] = 0.5 * (self.lines[d][n[d]] + self.lines[d][n[d] + 1]);
+        p
+    }
+
+    /// The E edges of `prim` (csx's rules, periodic in α), or `None` for
+    /// shapes this selector leaves to csx (curves, wires, non-axis-aligned
+    /// sheets).
+    fn edges(&self, prim: &csx::Primitive) -> Option<Vec<csx::discretize::Edge>> {
+        use csx::CoordSystem;
+        use csx::discretize::Edge;
+        use csx::primitives::Shape;
+        if matches!(prim.shape, Shape::Wire(_) | Shape::Curve(_)) {
+            return None;
+        }
+        let b = prim.bounding_box_in(CoordSystem::Cylindrical, self.model.coord_system);
+        if b.is_empty() {
+            return Some(Vec::new());
+        }
+        let map = super::NodeMap::new(self.lines.map(<[f64]>::len));
+        let flat: Vec<usize> = (0..3)
+            .filter(|&a| {
+                let i = self.model.grid.nearest_line(a, b.min[a]).unwrap_or(0);
+                b.max[a] - b.min[a] <= self.tol(a, i, b.min[a])
+            })
+            .collect();
+        let dim = prim.dimension();
+        let mut out = Vec::new();
+        let mut push = |d: usize, n: [usize; 3]| {
+            out.push(Edge {
+                dir: d,
+                index: map.csx_index(n),
+            });
+        };
+        match (dim, flat.len()) {
+            (0, _) | (_, 3) => {}
+            (_, 2) => {
+                let d = (0..3).find(|a| !flat.contains(a))?;
+                let (a1, a2) = (flat[0], flat[1]);
+                let (i1, i2) = (self.snap(a1, b.min[a1])?, self.snap(a2, b.min[a2])?);
+                let (lo, hi) = self.edge_range(d, b.min[d], b.max[d])?;
+                for i in lo..=hi {
+                    let mut n = [0; 3];
+                    n[d] = i;
+                    n[a1] = i1;
+                    n[a2] = i2;
+                    if self.contains(prim, self.mid(d, n)) {
+                        push(d, n);
+                    }
+                }
+            }
+            (1, _) => return None,
+            (2, 1) => {
+                let nrm = flat[0];
+                let k = self.snap(nrm, b.min[nrm])?;
+                for d in (0..3).filter(|&d| d != nrm) {
+                    let t = 3 - d - nrm;
+                    let (Some((lo, hi)), Some((tlo, thi))) = (
+                        self.edge_range(d, b.min[d], b.max[d]),
+                        self.line_range(t, b.min[t], b.max[t]),
+                    ) else {
+                        continue;
+                    };
+                    for i in lo..=hi {
+                        for j in tlo..=thi {
+                            let mut n = [0; 3];
+                            n[d] = i;
+                            n[t] = j;
+                            n[nrm] = k;
+                            if self.contains(prim, self.mid(d, n)) {
+                                push(d, n);
+                            }
+                        }
+                    }
+                }
+            }
+            (2, _) => return None,
+            _ => {
+                for d in 0..3 {
+                    let (t1, t2) = ((d + 1) % 3, (d + 2) % 3);
+                    let (Some((lo, hi)), Some((l1, h1)), Some((l2, h2))) = (
+                        self.edge_range(d, b.min[d], b.max[d]),
+                        self.line_range(t1, b.min[t1], b.max[t1]),
+                        self.line_range(t2, b.min[t2], b.max[t2]),
+                    ) else {
+                        continue;
+                    };
+                    for i in lo..=hi {
+                        for j in l1..=h1 {
+                            for k in l2..=h2 {
+                                let mut n = [0; 3];
+                                n[d] = i;
+                                n[t1] = j;
+                                n[t2] = k;
+                                if self.contains(prim, self.mid(d, n)) {
+                                    push(d, n);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
+    }
+
+    /// The H faces of `prim` whose centres it contains (periodic in α).
+    fn faces(&self, prim: &csx::Primitive) -> Vec<csx::discretize::Edge> {
+        use csx::CoordSystem;
+        use csx::discretize::Edge;
+        let b = prim.bounding_box_in(CoordSystem::Cylindrical, self.model.coord_system);
+        let mut out = Vec::new();
+        if b.is_empty() {
+            return out;
+        }
+        let map = super::NodeMap::new(self.lines.map(<[f64]>::len));
+        for d in 0..3 {
+            let (t1, t2) = ((d + 1) % 3, (d + 2) % 3);
+            let (Some((lo, hi)), Some((l1, h1)), Some((l2, h2))) = (
+                self.line_range(d, b.min[d], b.max[d]),
+                self.edge_range(t1, b.min[t1], b.max[t1]),
+                self.edge_range(t2, b.min[t2], b.max[t2]),
+            ) else {
+                continue;
+            };
+            for i in lo..=hi {
+                for j in l1..=h1 {
+                    for k in l2..=h2 {
+                        let mut n = [0; 3];
+                        n[d] = i;
+                        n[t1] = j;
+                        n[t2] = k;
+                        let mut p = self.mid(t1, n);
+                        p[t2] = 0.5 * (self.lines[t2][k] + self.lines[t2][k + 1]);
+                        if self.contains(prim, p) {
+                            out.push(Edge {
+                                dir: d,
+                                index: map.csx_index(n),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A [`LumpedEdge`](csx::discretize::LumpedEdge) to fill in (csx's type
+/// has no public constructor): one of `existing`, or the edge csx makes of
+/// a one-edge model.
+fn lumped_template(
+    existing: &[csx::discretize::LumpedEdge],
+    prop: &csx::Property,
+) -> Option<csx::discretize::LumpedEdge> {
+    if let Some(l) = existing.first() {
+        return Some(l.clone());
+    }
+    let mut m = csx::ContinuousStructure::new();
+    for a in 0..3 {
+        m.grid.set_lines(a, [0.0, 1.0]).ok()?;
+    }
+    let mut p = prop.clone();
+    let csx::PropertyKind::LumpedElement(le) = &p.kind else {
+        return None;
+    };
+    let mut hi = [0.0; 3];
+    hi[le.direction.index()] = 1.0;
+    p.primitives.clear();
+    let id = m.add_property(p);
+    m.add_primitive(
+        id,
+        csx::Primitive::new(csx::primitives::BoxShape::new([0.0; 3], hi)),
+    )
+    .ok()?;
+    let mg =
+        csx::discretize::discretize(&m, &csx::discretize::DiscretizeOptions::default()).ok()?;
+    mg.lumped.into_iter().next()
+}
+
+/// Re-selects the edges of excitations and lumped elements on a
+/// cylindrical grid with [`Periodic`] (csx's α bounding-box range misses
+/// primitives at `α > π` and boxes wrapping past 2π, e.g. a lumped ring
+/// over `[0, 2π]` got only `α ≤ π`, a source at `α = 3π/2` none).
+/// Amplitudes (`Excite` × weight at the edge midpoint) and the lumped
+/// values per edge (`R·p/s`, `L·p/s`, `C·s/p` over the `s` series and `p`
+/// parallel positions of each primitive) follow csx; properties with
+/// shapes the selector does not handle keep csx's edges. csx's "covers no
+/// edge" warnings of re-selected properties are dropped when edges were
+/// found.
+pub(super) fn wrapped_sources(
+    model: &csx::ContinuousStructure,
+    mg: &mut csx::discretize::MaterialGrid,
+    snap_tol: f64,
+    warnings: &mut Vec<String>,
+) {
+    use csx::PropertyKind;
+    let sel = Periodic::new(model, snap_tol);
+    let map = super::NodeMap::new(sel.lines.map(<[f64]>::len));
+    let mut lumped: Vec<csx::discretize::LumpedEdge> = Vec::with_capacity(mg.lumped.len());
+    let mut found: Vec<&str> = Vec::new();
+    for p in model.properties() {
+        match &p.kind {
+            PropertyKind::Excitation(ex) => {
+                let h = ex.excitation_type.is_magnetic();
+                if !h && !ex.excitation_type.is_electric() {
+                    continue;
+                }
+                let mut amps = Vec::new();
+                let mut handled = true;
+                for prim in &p.primitives {
+                    let edges = if h {
+                        sel.faces(prim)
+                    } else if let Some(e) = sel.edges(prim) {
+                        e
+                    } else {
+                        handled = false;
+                        break;
+                    };
+                    for e in edges {
+                        let n = map.csx_node(e.index);
+                        let q = if h {
+                            let (t1, t2) = ((e.dir + 1) % 3, (e.dir + 2) % 3);
+                            let mut q = sel.mid(t1, n);
+                            q[t2] = 0.5 * (sel.lines[t2][n[t2]] + sel.lines[t2][n[t2] + 1]);
+                            q
+                        } else {
+                            sel.mid(e.dir, n)
+                        };
+                        let c = csx::CoordSystem::Cylindrical.to_cartesian(csx::Vec3(q));
+                        let a = ex.amplitude_at(e.dir, c);
+                        if a != 0.0 {
+                            amps.push((e, a));
+                        }
+                    }
+                }
+                if !handled {
+                    continue;
+                }
+                if let Some(f) = mg.excitations.iter_mut().find(|f| f.name == p.name) {
+                    let mut old = f.amplitudes.clone();
+                    let mut new = amps.clone();
+                    old.sort_by_key(|a| a.0);
+                    new.sort_by_key(|a| a.0);
+                    if old != new {
+                        f.amplitudes = amps;
+                        if !f.amplitudes.is_empty() {
+                            found.push(&p.name);
+                        }
+                    }
+                }
+            }
+            PropertyKind::LumpedElement(le) => {
+                let dir = le.direction.index();
+                let mine: Vec<_> = mg.lumped.iter().filter(|l| l.name == p.name).collect();
+                let mut new = Vec::new();
+                let mut handled = true;
+                for prim in &p.primitives {
+                    let Some(edges) = sel.edges(prim) else {
+                        handled = false;
+                        break;
+                    };
+                    let edges: Vec<_> = edges.into_iter().filter(|e| e.dir == dir).collect();
+                    if edges.is_empty() {
+                        continue;
+                    }
+                    let mut along: Vec<usize> =
+                        edges.iter().map(|e| map.csx_node(e.index)[dir]).collect();
+                    along.sort_unstable();
+                    along.dedup();
+                    let mut across: Vec<[usize; 2]> = edges
+                        .iter()
+                        .map(|e| {
+                            let n = map.csx_node(e.index);
+                            [n[(dir + 1) % 3], n[(dir + 2) % 3]]
+                        })
+                        .collect();
+                    across.sort_unstable();
+                    across.dedup();
+                    let (ns, np) = (along.len() as f64, across.len() as f64);
+                    let Some(t) = lumped_template(&mg.lumped, p) else {
+                        handled = false;
+                        break;
+                    };
+                    for e in edges {
+                        let mut l = t.clone();
+                        l.name.clone_from(&p.name);
+                        l.edge = e;
+                        l.r = le.r.value() * np / ns;
+                        l.c = le.c.value() * ns / np;
+                        l.l = le.l.value() * np / ns;
+                        l.le_type = le.le_type;
+                        l.caps = le.caps;
+                        new.push(l);
+                    }
+                }
+                let same = handled && {
+                    let mut a: Vec<_> = mine.iter().map(|l| l.edge).collect();
+                    let mut b: Vec<_> = new.iter().map(|l| l.edge).collect();
+                    a.sort_unstable();
+                    b.sort_unstable();
+                    a == b
+                };
+                if handled && !same {
+                    if !new.is_empty() {
+                        found.push(&p.name);
+                    }
+                    lumped.extend(new);
+                } else {
+                    lumped.extend(mine.into_iter().cloned());
+                }
+            }
+            _ => {}
+        }
+    }
+    // Lumped edges of properties not in the model's list (none expected).
+    for l in &mg.lumped {
+        if model.property_by_name(&l.name).is_none() {
+            lumped.push(l.clone());
+        }
+    }
+    mg.lumped = lumped;
+    for name in found {
+        let tag = format!("property {name:?} primitive #");
+        warnings.retain(|w| {
+            !(w.starts_with(&tag)
+                && (w.contains("covers no") || w.contains("is not on a mesh plane")))
+        });
+    }
+}
+
+/// Warns about boxes whose α range openEMS (CSXCAD) interprets
+/// differently from ems (black box, design §5.15): ems maps angles
+/// periodically, so a box means the same region whatever multiple of 2π
+/// its α corners are given in. openEMS
+///
+/// * takes the α range of materials, metal, sheets and excitations
+///   literally against the grid's α lines (nothing outside the grid's α
+///   range: a box over `[−π, 0]` on a `[0, 2π]` grid is empty, one over
+///   `[π, 3π]` covers `[π, 2π]` only);
+/// * reduces each α bound of a lumped element modulo 2π into `[0, 2π)`
+///   separately, so `[0, 2π]` becomes the α = 0 line, `[π, 2π]` and
+///   `[3π/2, 5π/2]` become empty and `[−π, π]` the α = π line;
+/// * ignores what lies on the α = 0 line of a closed grid only (sources,
+///   lumped elements, sheets: it updates the α = 2π copy of that line),
+///   e.g. a lumped ring over `[0, 2π]` has no effect at all.
+///
+/// Only identity-transformed `Box` primitives in cylindrical coordinates
+/// are checked. Called for models read from openEMS files.
+pub(super) fn openems_alpha_warnings(
+    model: &csx::ContinuousStructure,
+    grid: &Grid,
+    warnings: &mut Vec<String>,
+) {
+    use csx::primitives::Shape;
+    use csx::{CoordSystem, PropertyKind};
+    let tau = core::f64::consts::TAU;
+    let a = model.grid.lines(1);
+    let (Some(&g0), Some(&g1)) = (a.first(), a.last()) else {
+        return;
+    };
+    let eps = 1e-9 * tau;
+    let closed = grid.is_closed();
+    for p in model.properties() {
+        let what = match &p.kind {
+            PropertyKind::LumpedElement(_) => "lumped",
+            PropertyKind::Material(_)
+            | PropertyKind::Metal
+            | PropertyKind::ConductingSheet(_)
+            | PropertyKind::Excitation(_) => "other",
+            _ => continue,
+        };
+        for (pi, prim) in p.primitives.iter().enumerate() {
+            let Shape::Box(b) = &prim.shape else {
+                continue;
+            };
+            if prim.shape_cs(model.coord_system) != CoordSystem::Cylindrical
+                || !prim.transform.is_empty()
+            {
+                continue;
+            }
+            let (s, e) = (b.start.value()[1], b.stop.value()[1]);
+            let (lo, hi) = (s.min(e), s.max(e));
+            let tag = format!("property {:?} primitive #{pi}", p.name);
+            if what == "lumped" {
+                let r = |x: f64| x.rem_euclid(tau);
+                let (rl, rh) = (r(lo), r(hi));
+                if (rl - lo).abs() > eps || (rh - hi).abs() > eps {
+                    let fate = if rh < rl - eps {
+                        "an empty range (the element is dropped)".to_string()
+                    } else if closed && rh < g0 + eps {
+                        "the alpha = 0 line, where it has no effect".to_string()
+                    } else {
+                        format!("[{rl}, {rh}]")
+                    };
+                    warnings.push(format!(
+                        "{tag}: lumped element over alpha [{lo}, {hi}]; openEMS reduces each \
+                         alpha bound modulo 2*pi, which gives {fate}; ems keeps the element as \
+                         drawn (periodic azimuth)"
+                    ));
+                    continue;
+                }
+            } else if lo < g0 - eps || hi > g1 + eps {
+                warnings.push(format!(
+                    "{tag}: alpha range [{lo}, {hi}] leaves the grid's [{g0}, {g1}]; ems wraps \
+                     it periodically, openEMS takes it literally (nothing outside the grid's \
+                     alpha lines)"
+                ));
+                continue;
+            }
+            if closed
+                && hi < g0 + eps
+                && lo > g0 - eps
+                && !matches!(p.kind, PropertyKind::Material(_))
+            {
+                warnings.push(format!(
+                    "{tag}: lies on the alpha = {g0} line of a closed grid only; openEMS \
+                         ignores sources, lumped elements and sheets there (it updates the \
+                         alpha = {g1} copy of the line), ems applies them"
+                ));
+            }
+        }
+    }
+}
+
 /// Drops (with a warning) the absorbing boundaries that a cylindrical
 /// grid ignores: on the α faces of a closed grid (periodic) and on the
 /// `ρ_min` face of a grid with an axis.

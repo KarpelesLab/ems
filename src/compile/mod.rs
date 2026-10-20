@@ -1029,6 +1029,12 @@ pub fn compile(
         plane_waves.clear();
     }
 
+    if cyl {
+        cylindrical::wrapped_sources(model, &mut mg, opts.snap_tolerance, &mut warnings);
+        if fdtd.get_openems_run() {
+            cylindrical::openems_alpha_warnings(model, &grid, &mut warnings);
+        }
+    }
     let sheet_specs = if cyl {
         cylindrical::wrapped_sheets(
             model,

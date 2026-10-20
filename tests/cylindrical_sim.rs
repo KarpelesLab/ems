@@ -275,8 +275,11 @@ const COAX_NR: usize = 10;
 #[test]
 fn coax_lumped_ports_and_full_circle_load() {
     // A full-circle radial port and load follow the transmission-line
-    // formula (discrete TEM impedance). Counting the duplicate α column of
-    // the load (or of a port on the α = 0 face) would show as a 1/8 error.
+    // formula (discrete TEM impedance; 0.25 % at 0.25 GHz to 1.3 % at
+    // 2 GHz). Counting the duplicate α column of the load (or of a port on
+    // the α = 0 face) would show as a 1/8 error. (Before ems re-selected
+    // the edges of boxes past α = π, csx had given the port and the load
+    // only their α ≤ π half, which happened to read 0.1–0.7 %.)
     let freqs = [0.25e9, 0.5e9, 1e9, 2e9];
     let z_in = coax_z_in((0.0, TAU), &freqs);
     let z0: f64 = (0..COAX_NR)
@@ -305,7 +308,7 @@ fn coax_lumped_ports_and_full_circle_load() {
             f / 1e9,
             100.0 * err
         );
-        assert!(err < 0.01, "{z} vs {want}");
+        assert!(err < 0.015, "{z} vs {want}");
     }
     // A one-column port on the periodic α = 0 face (stored twice) behaves
     // exactly like the same port at an interior α.
@@ -320,7 +323,7 @@ fn coax_lumped_ports_and_full_circle_load() {
 #[test]
 fn axis_port_is_one_edge_whatever_its_alpha_range() {
     // A z port on the axis: the box may name one α copy or all of them;
-    // both are the same physical edge, so the results are identical.
+    // both are the same physical edge, so the results are the same.
     let run = |a1: f64| {
         let mut m = cavity();
         let port = LumpedPort::new(1, 50.0, [0.0, 0.0, 6.0], [0.0, a1, 9.0], Axis::Z)
@@ -333,5 +336,8 @@ fn axis_port_is_one_edge_whatever_its_alpha_range() {
     };
     let (one, all) = (run(0.0), run(TAU));
     println!("axis port Z_in: {one:?} / {all:?}");
-    assert_eq!(one, all);
+    // Equal up to the rounding of the per-copy element values.
+    for (a, b) in one.iter().zip(&all) {
+        assert!((*a - *b).norm() <= 1e-12 * a.norm(), "{a} vs {b}");
+    }
 }

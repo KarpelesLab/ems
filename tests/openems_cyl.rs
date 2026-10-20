@@ -164,7 +164,13 @@ fn kept(case: &str) -> Vec<String> {
 /// files) against ems run on `model` (both codes step with the fixed
 /// `TimeStep` of the model, so the samples coincide).
 fn probe_l2(case: &str, model: &str) -> Vec<(String, f64)> {
-    let mut sim = Simulation::from_xml(fixture(case).join(model)).unwrap();
+    let xml = std::fs::read_to_string(fixture(case).join(model)).unwrap();
+    probe_l2_xml(case, model, &xml)
+}
+
+/// [`probe_l2`] for ems run on the model text `xml` (labelled `model`).
+fn probe_l2_xml(case: &str, model: &str, xml: &str) -> Vec<(String, f64)> {
+    let mut sim = Simulation::from_xml_str(xml).unwrap();
     let res = sim.run().unwrap();
     kept(case)
         .into_iter()
@@ -199,7 +205,7 @@ fn probe_l2(case: &str, model: &str) -> Vec<(String, f64)> {
 /// interface differ: openEMS weighs the two radial halves of their dual
 /// face by `Δρ_h·ρ` of the dual line bounding each half, ems by their
 /// exact annular areas (first order in `Δρ/ρ`, design §5.15), which shows
-/// as 5e-4…1.6e-3 in the probes.
+/// as 1.2e-4…1.7e-3 in the probes.
 #[test]
 fn cylindrical_cell_constant_material_matches_openems() {
     for (n, e) in probe_l2("cyl_cellconst", "model.xml") {
@@ -215,4 +221,50 @@ fn cylindrical_cell_constant_material_matches_openems() {
     assert_eq!(c.materials.eps_r(ems::Axis::X)[idx], 4.0);
     let idx = c.grid.index([12, 4, 5]);
     assert_eq!(c.materials.eps_r(ems::Axis::X)[idx], 1.0);
+}
+
+/// Boxes at `α > π` on a closed `[0, 2π]` grid (`cyl_wrap_*`): csx selects
+/// the edges of sources and lumped elements within a bounding box whose
+/// α range is normalised to `[−π, π)` and missed them; ems re-selects them
+/// periodically (`compile::cylindrical`). A half-ring resistor over
+/// `[π, 2π)` then agrees with openEMS to 1e-7, a source over `[π, 3π/2]`
+/// to 1e-6.
+#[test]
+fn cylindrical_boxes_past_pi_match_openems() {
+    for case in ["cyl_wrap_lumped", "cyl_wrap_exc"] {
+        for (n, e) in probe_l2(case, "model.xml") {
+            let tol = if n == "uz_c" { 3e-4 } else { 2e-5 };
+            assert!(e < tol, "{case}/{n}: {e:e}");
+        }
+    }
+}
+
+/// A lumped ring over exactly `[0, 2π]` (`cyl_wrap_ring`): openEMS reduces
+/// the bound 2π to 0, the element lands on the α = 0 line, where openEMS
+/// applies nothing, and has no effect at all (its probes equal ems's
+/// without the element, 1e-7). ems keeps the ring as drawn (openEMS is
+/// wrong here, design §5.15) and warns.
+#[test]
+fn cylindrical_lumped_ring_ending_at_tau_vanishes_in_openems() {
+    let case = "cyl_wrap_ring";
+    let xml = std::fs::read_to_string(fixture(case).join("model.xml")).unwrap();
+    let start = xml.find("<LumpedElement").unwrap();
+    let end = xml.find("</LumpedElement>").unwrap() + "</LumpedElement>".len();
+    let without = format!("{}{}", &xml[..start], &xml[end..]);
+    for (n, e) in probe_l2_xml(case, "without the element", &without) {
+        assert!(e < 3e-4, "{n}: {e:e}");
+    }
+    for (n, e) in probe_l2(case, "model.xml") {
+        if n != "uz_c" {
+            assert!(e > 0.1, "{n}: {e:e}");
+        }
+    }
+    let sim = Simulation::from_xml_str(&xml).unwrap();
+    assert!(
+        sim.warnings()
+            .iter()
+            .any(|w| w.contains("openEMS reduces each alpha bound modulo 2*pi")),
+        "{:?}",
+        sim.warnings()
+    );
 }
