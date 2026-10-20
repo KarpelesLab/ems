@@ -3316,7 +3316,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-20, after wave 11)
+### Status (2026-10-21, after wave 12)
 
 | Step | State |
 |---|---|
@@ -3390,6 +3390,15 @@ threads, Mur faces as slab hooks, serial gaps only at the steps that need
 them, the time-step criteria from precomputed tables, VTK dump files
 written in parallel, a default thread count bounded by the x-planes.
 
+Wave 12 (conformal accuracy, §5.13): small cut faces are interpolated
+from neighbouring faces instead of merged, so TE modes converge at second
+order too (circular TE11 +0.076/+0.018/+0.0054 % at 10/20/40 cells per
+radius, was +0.57/+0.26/+0.12 %), time step unchanged; conformal walls in
+a CPML: the CPML is tuned before the conformal scaling, wall-node
+crossings snap to the node, merged faces in the layer apply the
+stretching (a conformal circular guide now decays to −50 dB; coax Z
++0.53/+0.069/+0.017 %, was +27/+15/+8 %).
+
 Remaining:
 - openEMS's Rennings time step in layered media on meshes graded along
   two axes (up to 2 %); the 0.005 dB offset of its end-criterion energy
@@ -3410,7 +3419,10 @@ Remaining:
   (`--debug-material`, `--debug-operator`; openEMS writes `.vts`).
 - Junctions of several oblique sheets in one cell (sub-cell gap); a csx
   way to express a feed on an oblique wire; layered/dispersive backgrounds
-  for plane waves and NF2FF; first-order conformal TE11 (Cartesian too).
+  for plane waves and NF2FF; conformal: thin sheets still merge small faces
+(first order for TE fields at sheets), the cylindrical ρ_max PML on merged
+faces, a weak wall-guided wave reflected where a wall ends one cell short
+of the CPML (§5.13).
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:
