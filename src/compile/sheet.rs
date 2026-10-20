@@ -67,7 +67,10 @@ fn sheet_planes(
             if prim.dimension() != 2 {
                 continue;
             }
-            let b = prim.bounding_box_in(CoordSystem::Cartesian, model.coord_system);
+            // In the grid's coordinates: (ρ, α, z) ranges on cylindrical
+            // grids, so sheets on ρ = const, α = const and z = const
+            // surfaces are all flat.
+            let b = prim.bounding_box_in(model.grid.coord_system, model.coord_system);
             if b.is_empty() {
                 continue;
             }
@@ -83,14 +86,37 @@ fn sheet_planes(
                 .filter(|&a| b.max[a] - b.min[a] <= tol(a, b.min[a]))
                 .collect();
             if let [nrm] = flat[..]
-                && let Some(k) = model.grid.nearest_line(nrm, b.min[nrm])
-                && (model.grid.lines(nrm)[k] - b.min[nrm]).abs() <= tol(nrm, b.min[nrm])
+                && let Some(k) = plane_line(model, nrm, b.min[nrm], snap_tol)
             {
                 planes.push((nrm, k));
             }
         }
     }
     out
+}
+
+/// The mesh line of `axis` within the snapping tolerance of `v` (on a
+/// cylindrical grid, an α plane modulo 2π: csx normalises the α ranges of
+/// bounding boxes to `[−π, π)`).
+pub(super) fn plane_line(
+    model: &csx::ContinuousStructure,
+    axis: usize,
+    v: f64,
+    snap_tol: f64,
+) -> Option<usize> {
+    let l = model.grid.lines(axis);
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
+    let tau = core::f64::consts::TAU;
+    let cands: &[f64] = if cyl && axis == 1 {
+        &[v, v + tau, v - tau]
+    } else {
+        &[v]
+    };
+    cands.iter().find_map(|&v| {
+        let k = model.grid.nearest_line(axis, v)?;
+        let tol = snap_tol * local_cell(l, k) + 1e-12 * v.abs();
+        ((l[k] - v).abs() <= tol).then_some(k)
+    })
 }
 
 /// Capacitance and conductance shares of the `+` side of the sheet edge
@@ -114,6 +140,7 @@ fn shares(
             (i + 1 < l.len()).then(|| (l[i] + 0.25 * (l[i + 1] - l[i]), 0.5 * (l[i + 1] - l[i])));
         [lo, hi]
     };
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
     let mid = 0.5 * (ld[node[d]] + ld[node[d] + 1]);
     let [dn, up] = sides(ln, node[nrm]);
     let mut acc = [[0.0; 2]; 2]; // [side][C, G]
@@ -124,9 +151,13 @@ fn shares(
             p[d] = mid;
             p[t] = pt;
             p[nrm] = pn;
-            if let Some(m) = model.medium_at(p, CoordSystem::Cartesian) {
-                acc[side][0] += m.epsilon[d] * wn * wt;
-                acc[side][1] += m.kappa[d] * wn * wt;
+            // Cylindrical grids: the dual face of a z edge is an annular
+            // sector (area element ρ·dρ·dα); the other dual faces have a
+            // constant metric along them.
+            let metric = if cyl && d == 2 { p[0] } else { 1.0 };
+            if let Some(m) = model.medium_at(p, model.grid.coord_system) {
+                acc[side][0] += m.epsilon[d] * wn * wt * metric;
+                acc[side][1] += m.kappa[d] * wn * wt * metric;
             }
         }
     }
@@ -140,29 +171,59 @@ fn shares(
     Some((sc, sg))
 }
 
-/// Maps the conducting-sheet edges of `mg` (see the module docs).
+/// A conducting sheet referenced by the per-edge sheet ids.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SheetSpec {
+    /// Property name.
+    pub name: String,
+    /// Conductivity \[S/m\].
+    pub conductivity: f64,
+    /// Thickness \[m\].
+    pub thickness: f64,
+}
+
+impl SheetSpec {
+    /// The sheets csx reports.
+    pub(super) fn of(mg: &MaterialGrid) -> Vec<Self> {
+        mg.sheets
+            .iter()
+            .map(|s| Self {
+                name: s.name.clone(),
+                conductivity: s.conductivity,
+                thickness: s.thickness,
+            })
+            .collect()
+    }
+}
+
+/// Maps the conducting-sheet edges of `mg` (see the module docs): `sheet`
+/// holds the sheet id per csx edge (0: none, `n`: `sheets[n − 1]`), as
+/// [`MaterialGrid::sheet`] (or its cylindrical completion,
+/// [`super::cylindrical::wrapped_sheets`]).
 pub(super) fn sheet_edges(
     model: &csx::ContinuousStructure,
     mg: &MaterialGrid,
+    sheet: &[Vec<u32>; 3],
+    sheets: &[SheetSpec],
     node_map: &NodeMap,
     snap_tol: f64,
     warnings: &mut Vec<String>,
 ) -> SheetMap {
     let mut out = SheetMap::default();
-    if mg.sheets.is_empty() {
+    if sheets.is_empty() {
         return out;
     }
     let planes = sheet_planes(model, snap_tol);
     // Per sheet index: edges without effect, edges made PEC.
-    let mut idle = vec![0usize; mg.sheets.len()];
-    let mut pec = vec![0usize; mg.sheets.len()];
-    for d in 0..3 {
-        for (idx, &sid) in mg.sheet[d].iter().enumerate() {
+    let mut idle = vec![0usize; sheets.len()];
+    let mut pec = vec![0usize; sheets.len()];
+    for (d, ids) in sheet.iter().enumerate() {
+        for (idx, &sid) in ids.iter().enumerate() {
             if sid == 0 || mg.pec[d][idx] {
                 continue;
             }
             let s = sid as usize - 1;
-            let info = &mg.sheets[s];
+            let info = &sheets[s];
             let (sigma, t) = (info.conductivity, info.thickness);
             if !(sigma.is_finite() && sigma > 0.0 && t.is_finite() && t > 0.0) {
                 idle[s] += 1;
@@ -189,7 +250,7 @@ pub(super) fn sheet_edges(
             });
         }
     }
-    for (s, info) in mg.sheets.iter().enumerate() {
+    for (s, info) in sheets.iter().enumerate() {
         if idle[s] > 0 {
             warnings.push(format!(
                 "ConductingSheet {:?}: conductivity {} S/m and thickness {} m must be > 0; \

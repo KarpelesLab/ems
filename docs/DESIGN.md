@@ -916,6 +916,32 @@ to PEC with a warning. PEC wins over a sheet. Sheets with `σ ≤ 0` or
 `t ≤ 0` have no effect (warning). Sheet edges inside a CPML lose the CPML
 correction (warning).
 
+**Cylindrical grids** (§5.15). Sheets on `ρ = const`, `α = const` and
+`z = const` surfaces use the same ladder with physical lengths: `g = w/l`
+with `l` the edge length (`ρ_i·Δα` for α edges) and `w` the width of the
+edge's strip of the sheet (`ρ_{i+½}·Δα*` for a ρ edge on a z sheet,
+`ρ_i·Δα*` for a z edge on a ρ sheet, else the dual cell length); the
+default capacitance share of a z edge on a ρ sheet is the share of the
+annular dual face, `(ρ_hi² − ρ²)/(ρ_hi² − ρ_lo²)`, and the compile step
+weights the material samples of a z edge's dual face by `ρ`. An edge on the
+α seam of a closed grid is one physical edge stored twice: it gets one
+ladder fed by the dual edges of both copies (the summed strip of a sheet
+crossing the seam), and for a sheet *on* the seam (normal α) the two
+copies are its two sides, each with its own kernel capacitance and
+conductance (materials included). z edges on the axis stay ordinary
+(warning); multigrid zones couple only the face voltage (warning). csx
+selects sheet edges in an α range normalised to `[−π, π)`, so the compile
+step re-selects planar sheets on the grid's α lines (§8.1). Validation
+(`tests/cylindrical_sheet.rs`, coax `a = 2 mm`, `b = 6 mm`, 16 × 8 cells
+across): a resistive annulus (`η0σt = 3.77`) across a matched line
+transmits within 2e-4…1.7e-3 of `2/(2 + η0σt)` (2–8 GHz); a half-wave
+coaxial cavity whose inner conductor is a lossy tube (`σ = 1e5 S/m`,
+`t = 100 µm`, `t/δ = 4.4`) rings down with `Q = 195.6` against
+`(ωL' + X')/R' = 195.9` from the exact `Z11`; with a resistive fin
+(`σt = 1e-4 S`, an α sheet from `a` to `b`) `Q = 57.73` against
+`ωC'/G' = 57.65`, identical on the seam and at `α = π/2`; results are
+thread-count independent.
+
 **Validation** (`tests/validation_sheet_conducting.rs`, TEM line,
 2–12 GHz): thin sheet (`η0σt = 3.77`) transmission within 1.3e-4 of
 `2/(2 + η0σt)`; thick-ish sheet (`σ = 1e6 S/m`, `t = 20 µm`,
@@ -1594,12 +1620,12 @@ Cartesian-style CPML layer, still available as `plane_rho_max()` for
 comparison, is alike).
 
 **Not available on cylindrical grids** (dropped with a warning or refused):
-conducting sheets (PEC instead; openEMS does run its sheet model there),
-plane waves, SAR dumps, NF2FF boxes, the MSL, CPW, stripline and
+plane waves (openEMS ignores them there too: no field at all, no message), SAR dumps, NF2FF boxes, the MSL, CPW, stripline and
 rectangular-waveguide port helpers (`Error::Unsupported`). Lumped ports,
 lumped elements, voltage, current and field probes, waveguide mode probes on
 a `z`-normal plane (the exact weights of `compile/mode.rs` with the `ρ·Δα`
-metric), field dumps (VTK and HDF5), dispersive materials (§5.16), the
+metric), field dumps (VTK and HDF5), dispersive materials (§5.16), conducting
+sheets on ρ, α and z surfaces (§5.9), the
 coaxial and circular-waveguide port helpers (`CoaxPort`,
 `CircWaveguidePort`, along `z` on the axis, §5.5) and `LumpedPort` /
 `CurvePort` work.
@@ -2054,8 +2080,16 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
   Drude-filled coax (static `ε` alone 1e-6);
-- conducting sheets run there in openEMS (its shunt model); ems still
-  uses PEC.
+- conducting sheets (`cyl_sheet_*`, half-wave coaxial cavity of §5.9,
+  `Q` from the ring-down): openEMS's sheet model behaves as on Cartesian
+  grids. A thick lossy inner tube (`σ = 1e5 S/m`, `t = 100 µm`) gives
+  `Q = 397` (ems 195.6, analytic 195.9): half the surface loss, as for
+  copper on a Cartesian line. A thin resistive fin (`σt = 1e-4 S`) at
+  `α = π/2` detunes the mode by −13 % (`Q = 123`; ems: −0.0 %,
+  `Q = 57.7`, analytic 57.65): nearly reactive, as on Cartesian grids. The
+  same fin on the α = 0 seam has no effect in openEMS (`Q` and frequency of
+  the empty cavity). ems keeps the slab model (§5.9), so the codes do not
+  agree on sheets on any grid; `tests/openems_cyl.rs` records the ratios.
 
 **Lumped elements** (see also §5.16.1; not reproduced). openEMS distributes a `LumpedElement`'s `R` differently from
 ems on edges whose dual faces are clipped or uneven: in a PMC-walled line
@@ -2381,6 +2415,13 @@ These are reported here, not fixed in csx from this repo.
     `DumpMode` attribute mode 1 (node interpolation); openEMS v0.37 uses
     mode 0 (no interpolation: an `HField` dump without the attribute is
     written on the dual mesh, `dual_mesh = 1`, observed on the oracle).
+14. **Planar sheets on cylindrical grids.** `discretize` selects the edges
+    of a planar metal or conducting-sheet primitive within its bounding
+    box, whose α range `Primitive::bounding_box_in` normalises to
+    `[−π, π)`. On a grid with α lines in `[0, 2π]` a sheet over the full
+    circle only gets the edges with `α ≤ π`, and one at `α > π` none ("not
+    on a mesh plane"). ems re-selects them on the grid's α range
+    (`compile::cylindrical::wrapped_sheets`).
 
 ### 8.2 Feedback for hdf5rs
 

@@ -83,6 +83,25 @@
 //! ([`model_abcd`] vs [`slab_abcd`]); e.g. 35 µm of copper with
 //! `f_max = 10 GHz` uses 48 layers, a 1 µm sheet 8.
 //!
+//! # Cylindrical grids
+//!
+//! On a cylindrical grid (design §5.15) the sheet lies on a `ρ = const`,
+//! `α = const` or `z = const` surface and the ladder uses physical lengths:
+//! `l` is [`Grid::edge_length`](super::Grid::edge_length) and `w` the width
+//! of the edge's strip of the sheet, the arc `ρ·Δα*` at the sheet for an α
+//! width (`ρ_{i+½}` for a ρ edge, `ρ_i` for a z edge on a ρ sheet). The
+//! default capacitance share of a z edge on a `ρ = const` sheet is the
+//! share of its annular dual face, `(ρ_hi² − ρ²)/(ρ_hi² − ρ_lo²)`. An edge
+//! on the α seam of a closed grid exists in two stored copies
+//! ([`e_edge_copies`](super::cylindrical::e_edge_copies)); it gets one
+//! ladder, fed by the dual edges around both copies, and its face voltage
+//! is written to both. For a sheet crossing the seam the copies hold the
+//! two halves of the strip (`g` summed); for a sheet *on* the seam (normal
+//! α) they are its two sides, so the `+` share of the capacitance and
+//! conductance is that of the `α = 0` copy (its kernel coefficients,
+//! materials included). Copies of an axis z edge (the dual face is the whole
+//! disc around the axis) are skipped.
+//!
 //! # Time stepping
 //!
 //! The ladder and the two face voltages are integrated with the
@@ -271,6 +290,65 @@ pub fn model_abcd(sigma: f64, t: f64, f_max: f64, f: f64) -> [Complex64; 4] {
     m
 }
 
+/// Geometry of the sheet edge along `d` at `node` on a sheet normal to
+/// `nrm`: `(g, f_up, s_c)` with `g = w/l` (`l` the physical edge length,
+/// `w` the physical width of its strip of the sheet: the dual length
+/// across, along the third axis, at the sheet), `f_up` the share of the
+/// crossing dual edges (along `nrm`) on the `+` side and `s_c` the default
+/// share of the edge capacitance on the `+` side: the share of the dual
+/// face area. On Cartesian grids `s_c = f_up`; on cylindrical grids the
+/// dual face of a z edge on a `ρ = const` sheet is an annulus, so `s_c`
+/// is the area share `(ρ_hi² − ρ²)/(ρ_hi² − ρ_lo²)`, and an α width is
+/// the arc `ρ·Δα*` at the sheet (`ρ_{i+½}` for a ρ edge on a `z` sheet,
+/// `ρ_i` for a z edge on a `ρ` sheet).
+fn sheet_geometry(grid: &super::Grid, d: Axis, nrm: Axis, node: [usize; 3]) -> (f64, f64, f64) {
+    let n = grid.nodes();
+    let t_ax = Axis::ALL[3 - nrm.index() - d.index()];
+    let k = node[nrm.index()];
+    let up = if k + 1 < n[nrm.index()] {
+        grid.delta(nrm, k)
+    } else {
+        0.0
+    };
+    let dn = if k > 0 { grid.delta(nrm, k - 1) } else { 0.0 };
+    let f_up = up / (up + dn);
+    let cyl = grid.is_cylindrical();
+    let w = if cyl && t_ax == Axis::Y {
+        // ρ_{i+½}·Δα* (multigrid aware); a z edge sits at ρ_i.
+        let arc = grid.dual_edge_length(Axis::Y, node);
+        if d == Axis::Z {
+            let r = grid.lines(Axis::X);
+            let i = node[0];
+            let rd = if i + 1 < r.len() {
+                0.5 * (r[i] + r[i + 1])
+            } else {
+                r[i]
+            };
+            if rd > 0.0 { arc * r[i] / rd } else { 0.0 }
+        } else {
+            arc
+        }
+    } else {
+        grid.dual_delta(t_ax, node[t_ax.index()])
+    };
+    let l = grid.edge_length(d, node);
+    let s_c = if cyl && d == Axis::Z && nrm == Axis::X {
+        let r = grid.lines(Axis::X);
+        let ri = r[k];
+        let hi = if k + 1 < r.len() {
+            0.5 * (ri + r[k + 1])
+        } else {
+            ri
+        };
+        let lo = if k > 0 { 0.5 * (ri + r[k - 1]) } else { ri };
+        let (a_up, a_dn) = (hi * hi - ri * ri, ri * ri - lo * lo);
+        a_up / (a_up + a_dn)
+    } else {
+        f_up
+    };
+    (w / l, f_up, s_c)
+}
+
 /// One sheet edge, as collected by [`ConductingSheet::push`] (and produced
 /// by the compile step from csx `ConductingSheet` properties).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -312,7 +390,8 @@ struct Coupling {
 #[derive(Debug, Clone)]
 struct EdgeState {
     axis: Axis,
-    node: [usize; 3],
+    /// The stored copies of the edge (engine nodes), canonical first.
+    copies: Vec<[usize; 3]>,
     /// Edge capacitance of the kernel (`C`, for the energy correction).
     c_edge: f64,
     /// First node / layer in the flat arrays; nodes `n0..n0 + nn`.
@@ -444,7 +523,7 @@ impl ConductingSheet {
     pub fn lower_voltage(&self, axis: Axis, node: [usize; 3]) -> Option<f64> {
         self.edges
             .iter()
-            .find(|e| e.axis == axis && e.node == node)
+            .find(|e| e.axis == axis && e.copies.contains(&node))
             .map(|e| self.u[e.n0 + e.nn - 1])
     }
 
@@ -491,38 +570,72 @@ impl ConductingSheet {
             None => 0.1 / dt,
         };
         let mut order: Vec<usize> = (0..self.entries.len()).collect();
-        let key = |e: &SheetEdge| (e.node, e.axis.index());
+        let key = |e: &SheetEdge| {
+            (
+                super::cylindrical::e_edge_copies(grid, e.axis, e.node)[0],
+                e.axis.index(),
+            )
+        };
         order.sort_by_key(|&i| key(&self.entries[i]));
         let co = engine.coefficients();
         let mut last = None;
         for &i in &order {
             let e = self.entries[i];
-            if last == Some(key(&e)) {
+            // The stored copies of the physical edge (both copies of an
+            // edge on the α seam of a closed cylindrical grid): one ladder
+            // for the physical edge, fed by the dual edges of every copy.
+            let copies = super::cylindrical::e_edge_copies(grid, e.axis, e.node);
+            let canon = (copies[0], e.axis.index());
+            if last == Some(canon) || copies.len() > 2 {
+                // Duplicates, and z edges on the axis (their dual face is
+                // the whole disc around the axis; not supported).
                 self.skipped += 1;
                 continue;
             }
-            last = Some(key(&e));
-            let idx = grid.index(e.node);
-            let (ca, cb) = (co.ca(e.axis)[idx], co.cb(e.axis)[idx]);
-            if cb == 0.0 {
+            last = Some(canon);
+            // Per copy: capacitance and conductance of its (part of the)
+            // dual face.
+            let mut cg = Vec::with_capacity(copies.len());
+            for &c in &copies {
+                let idx = grid.index(c);
+                let (ca, cb) = (co.ca(e.axis)[idx] as f64, co.cb(e.axis)[idx] as f64);
+                if cb == 0.0 {
+                    break;
+                }
+                cg.push((dt * (1.0 + ca) / (2.0 * cb), (1.0 - ca) / cb));
+            }
+            if cg.len() < copies.len() {
+                // PEC.
                 self.skipped += 1;
                 continue;
             }
-            let c_edge = dt * (1.0 + ca as f64) / (2.0 * cb as f64);
-            let g_edge = (1.0 - ca as f64) / cb as f64;
+            let c_edge: f64 = cg.iter().map(|x| x.0).sum();
+            let g_edge: f64 = cg.iter().map(|x| x.1).sum();
             let (nrm, d) = (e.normal, e.axis);
-            let t_ax = Axis::ALL[3 - nrm.index() - d.index()];
-            let k = e.node[nrm.index()];
-            let up = if k + 1 < n[nrm.index()] {
-                grid.delta(nrm, k)
+            let geom = |node: [usize; 3]| sheet_geometry(grid, d, nrm, node);
+            // A sheet on the α seam of a closed grid (normal α): the two
+            // copies are its two sides (the j = 0 copy holds the `+` half
+            // of the dual face, the other one the `−` half, each with its
+            // own kernel capacitance and conductance, materials
+            // included), and they share one strip of the sheet.
+            let seam_normal = copies.len() == 2 && nrm == Axis::Y;
+            let (geo, sc, sg) = if seam_normal {
+                let up = |x: f64, y: f64| if y > 0.0 { x / y } else { 0.5 };
+                let sc = up(cg[0].0, c_edge);
+                (
+                    geom(copies[0]).0,
+                    sc,
+                    if g_edge > 0.0 {
+                        up(cg[0].1, g_edge)
+                    } else {
+                        sc
+                    },
+                )
             } else {
-                0.0
+                let s = geom(e.node).2;
+                let (sc, sg) = e.upper_share.unwrap_or((s, s));
+                (copies.iter().map(|&c| geom(c).0).sum(), sc, sg)
             };
-            let dn = if k > 0 { grid.delta(nrm, k - 1) } else { 0.0 };
-            let f_up = up / (up + dn);
-            let (sc, sg) = e.upper_share.unwrap_or((f_up, f_up));
-            let geo =
-                grid.dual_delta(t_ax, e.node[t_ax.index()]) / grid.delta(d, e.node[d.index()]);
 
             // Ladder.
             let dz = layer_profile(e.conductivity, e.thickness, f_max);
@@ -559,17 +672,21 @@ impl ConductingSheet {
                 prev_cp = cp;
             }
 
-            // Couplings: the four dual edges around the dual face, with
-            // their sign in the E update (engine kernel convention).
+            // Couplings: the four dual edges around the dual face of every
+            // copy, with their sign in the E update (engine kernel
+            // convention).
             let (b, c) = d.others();
             let c0 = self.couplings.len();
-            for (ax, off, s) in [
-                (c, None, 1.0),
-                (c, Some(b), -1.0),
-                (b, None, -1.0),
-                (b, Some(c), 1.0),
-            ] {
-                let mut m = e.node;
+            for (node, ax, off, s) in copies.iter().flat_map(|&node| {
+                [
+                    (node, c, None, 1.0),
+                    (node, c, Some(b), -1.0),
+                    (node, b, None, -1.0),
+                    (node, b, Some(c), 1.0),
+                ]
+            }) {
+                let mut m = node;
+
                 if let Some(o) = off {
                     if m[o.index()] == 0 {
                         continue;
@@ -581,6 +698,7 @@ impl ConductingSheet {
                     continue;
                 }
                 let (w_up, w_dn) = if ax == nrm {
+                    let f_up = geom(node).1;
                     (f_up, 1.0 - f_up)
                 } else if off == Some(nrm) {
                     (0.0, 1.0)
@@ -606,7 +724,7 @@ impl ConductingSheet {
             }
             self.edges.push(EdgeState {
                 axis: d,
-                node: e.node,
+                copies,
                 c_edge,
                 n0,
                 nn,
@@ -647,7 +765,7 @@ impl Operator for ConductingSheet {
 
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         for e in &self.edges {
-            let up = f.u.get(e.axis, e.node) as f64;
+            let up = f.u.get(e.axis, e.copies[0]) as f64;
             self.u[e.n0] = up;
             let diff = self.u[e.n0 + e.nn - 1] - up;
             for c in &self.couplings[e.c0..e.c0 + e.nc] {
@@ -707,7 +825,9 @@ impl Operator for ConductingSheet {
                 u[k] = 2.0 * x[k] - u[k];
             }
             let up = flush(u[0] as f32);
-            f.u.set(e.axis, e.node, up);
+            for &c in &e.copies {
+                f.u.set(e.axis, c, up);
+            }
             w_corr += s_e * (u[nn - 1] - up as f64);
         }
         self.w_corr = w_corr;

@@ -1017,11 +1017,29 @@ pub fn compile(
         plane_waves.clear();
     }
 
-    let sheet_map = if cyl {
-        cylindrical::sheets_as_pec(&mg, &mut warnings)
+    let sheet_specs = if cyl {
+        cylindrical::wrapped_sheets(
+            model,
+            &mut mg,
+            &node_map,
+            opts.snap_tolerance,
+            &mut warnings,
+        )
     } else {
-        sheet::sheet_edges(model, &mg, &node_map, opts.snap_tolerance, &mut warnings)
+        sheet::SheetSpec::of(&mg)
     };
+    let mut sheet_map = sheet::sheet_edges(
+        model,
+        &mg,
+        &mg.sheet,
+        &sheet_specs,
+        &node_map,
+        opts.snap_tolerance,
+        &mut warnings,
+    );
+    if cyl {
+        cylindrical::sheet_edges(&grid, &mut sheet_map.edges, &mut warnings);
+    }
     let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
     for &(d, idx) in &sheet_map.pec {
         sheet_pec[d][idx] = true;
