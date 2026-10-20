@@ -922,6 +922,7 @@ impl Simulation {
                             c.density.clone(),
                             self.engine.grid(),
                             &c.indices,
+                            self.delta_unit(),
                         )
                     }),
                     delta_unit: self.delta_unit(),

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Local and raw SAR dumps (HDF5, VTK) of a lossy tissue sector on a
-  cylindrical grid (no axis, quarter circle, PEC walls).
+  Local, raw and 1 g averaged SAR dumps (HDF5, VTK) of a lossy tissue
+  sector on a cylindrical grid (no axis, quarter circle, PEC walls).
   Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
 -->
 <openEMS>
@@ -28,6 +28,10 @@
         <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="30" Y="1.5707963267949" Z="16"/></Box></Primitives>
       </DumpBox>
       <DumpBox Name="sar_raw" DumpType="29" FileType="1">
+        <FD_Samples>1e9</FD_Samples>
+        <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="30" Y="1.5707963267949" Z="16"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox Name="sar_1g" DumpType="21" FileType="1">
         <FD_Samples>1e9</FD_Samples>
         <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="30" Y="1.5707963267949" Z="16"/></Box></Primitives>
       </DumpBox>

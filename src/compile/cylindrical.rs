@@ -14,8 +14,6 @@
 //! Drude-filled coax). Waveguide mode probes work with a `z` normal (exact
 //! sampling, see `compile/mode.rs`).
 
-use super::ProbeSpec;
-use super::sar::SarKind;
 use super::sheet::SheetSpec;
 use crate::engine::Grid;
 use crate::fdtd::{Cpml, Face};
@@ -169,30 +167,6 @@ pub(super) fn sheet_edges(
              the face voltage of the sheet (approximate)"
         ));
     }
-}
-
-/// Removes the mass-averaged SAR dumps (`SAR1g`, `SAR10g`) from `dumps`
-/// (with a warning each): the averaging cubes are defined in physical
-/// coordinates, not on `(ρ, α, z)` cells. Local and raw SAR dumps are kept
-/// (`compile::sar`, cell volumes with the `ρ` metric).
-pub(super) fn no_averaged_sar(
-    dumps: &mut Vec<ProbeSpec<csx::properties::DumpBox>>,
-    warnings: &mut Vec<String>,
-) {
-    dumps.retain(|d| {
-        let avg = matches!(
-            SarKind::of(d.settings.dump_type),
-            Some(SarKind::Averaged(_))
-        );
-        if avg {
-            warnings.push(format!(
-                "SAR dump {:?}: mass-averaged SAR is not available on cylindrical grids \
-                 (the averaging cubes need physical coordinates); ignored, use a local SAR dump",
-                d.name
-            ));
-        }
-        !avg
-    });
 }
 
 /// Drops (with a warning) the absorbing boundaries that a cylindrical

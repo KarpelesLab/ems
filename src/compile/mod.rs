@@ -1145,10 +1145,7 @@ pub fn compile(
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
     cylindrical::multigrid_edge_warnings(&grid, &node_map, &excitations, &lumped, &mut warnings);
-    let (probes, mut dumps) = probe_specs(model, &grid, &mut warnings);
-    if cyl {
-        cylindrical::no_averaged_sar(&mut dumps, &mut warnings);
-    }
+    let (probes, dumps) = probe_specs(model, &grid, &mut warnings);
     let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);
     let abc = abc_specs(model, &mut warnings);
     Ok(Compiled {

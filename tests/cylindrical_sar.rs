@@ -3,8 +3,8 @@
 //! lumped port inside the tissue. Nothing radiates, so the SAR volume's
 //! total power (cell volumes `Δα·Δz·(ρ_{i+1}² − ρ_i²)/2`, edge weights of
 //! the cylindrical edge conductances) must equal the port's accepted power,
-//! and the tissue mass is that of the annulus. Mass-averaged dumps are
-//! dropped with a warning.
+//! and the tissue mass is that of the annulus. Mass-averaged dumps use
+//! cubes in physical space over the annular cells (`post::sar`).
 
 use std::f64::consts::TAU;
 
@@ -84,14 +84,10 @@ fn run() -> &'static (Results, LumpedPort, Vec<String>) {
 #[test]
 fn cylindrical_absorbed_power_equals_accepted_power() {
     let (res, port, w) = run();
-    // Only the averaged dump is dropped (and mesh remarks).
-    assert!(
-        w.iter()
-            .all(|w| w.starts_with("mesh ") || w.contains("\"avg1g\": mass-averaged SAR")),
-        "{w:?}"
-    );
-    assert!(w.iter().any(|w| w.contains("\"avg1g\"")));
-    assert!(res.sar("avg1g").is_none());
+    // No warnings but mesh remarks: the averaged dump is kept.
+    assert!(w.iter().all(|w| w.starts_with("mesh ")), "{w:?}");
+    let avg = res.sar("avg1g").unwrap();
+    assert_eq!(avg.kind(), SarKind::Averaged(1e-3));
     let acc = port.analyze(res, &FREQS).unwrap().accepted_power();
     let local = res.sar("local").unwrap();
     let raw = res.sar("raw").unwrap();
@@ -128,7 +124,27 @@ fn cylindrical_absorbed_power_equals_accepted_power() {
         let m = l.max().unwrap();
         assert!([7, 8].contains(&m.cell[0]) && [2, 3].contains(&m.cell[1]));
         assert_eq!(m.cell[2], 10);
-        // Averaging is refused on (ρ, α, z) cells.
-        assert!(matches!(v.averaged(1e-3), Err(ems::Error::Unsupported(_))));
+        // 1 g averages over physical cubes: every tissue voxel gets one,
+        // each centred or face cube holds 1 g, and the peak lies between
+        // the whole-tissue average and the local peak, near the port.
+        let a = avg.field(k).unwrap();
+        assert_eq!(a, v.averaged(1e-3).unwrap());
+        for (i, (&c, &cm)) in a.classes().iter().zip(a.cube_masses()).enumerate() {
+            assert_eq!(c == VoxelClass::NoTissue, v.density()[i] == 0.0);
+            assert_ne!(c, VoxelClass::Unresolved);
+            if matches!(c, VoxelClass::Centered | VoxelClass::Boundary) {
+                assert!((cm / 1e-3 - 1.0).abs() < 1e-9, "{cm}");
+            }
+        }
+        let am = a.max().unwrap();
+        println!(
+            "  1 g peak {:.4e} at {:?} (local {:.4e}, whole {:.4e})",
+            am.value,
+            am.cell,
+            m.value,
+            v.whole_average()
+        );
+        assert!(am.value < m.value && am.value > v.whole_average());
+        assert!((6..=10).contains(&am.cell[0]) && (8..=12).contains(&am.cell[2]));
     }
 }

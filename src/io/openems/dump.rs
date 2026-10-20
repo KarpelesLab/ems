@@ -773,6 +773,9 @@ pub struct OpenEmsSar {
     /// Cylindrical grids: the radius of the lower ρ line of each dump cell
     /// \[m\] (openEMS's cell volume is `ρ_i·Δα·Δρ·Δz`, observed).
     pub(crate) radii: Option<Vec<f64>>,
+    /// The drawing unit \[m\]: openEMS scales the α widths (radians) by it
+    /// (raw `CellWidth`, averaging cubes).
+    pub(crate) unit: f64,
 }
 
 /// One frequency of an [`OpenEmsSar`]: SAR per cell and the openEMS
@@ -796,6 +799,7 @@ impl OpenEmsSar {
         density: Vec<f64>,
         grid: &crate::Grid,
         indices: &[Vec<usize>; 3],
+        unit: f64,
     ) -> Self {
         let widths = Axis::ALL.map(|a| {
             let n = grid.nodes()[a.index()];
@@ -821,6 +825,7 @@ impl OpenEmsSar {
             widths,
             lines,
             radii,
+            unit,
         }
     }
 
@@ -879,15 +884,15 @@ impl OpenEmsSar {
     /// over `averaging` kg with [`SarVolume::averaged`](crate::post::sar::SarVolume::averaged) at frequency
     /// index `k`.
     ///
+    /// On cylindrical grids the average is openEMS's: cubes over the
+    /// `(ρ, α, z)` cells taken as Cartesian cells of widths `Δρ`, `Δα·u`,
+    /// `Δz` weighing with their volumes `ρ_i·Δα·Δρ·Δz`
+    /// ([`SarVolume::with_cell_volumes`](crate::post::sar::SarVolume::with_cell_volumes)),
+    /// over all dump cells.
+    ///
     /// # Errors
-    /// See [`SarVolume::averaged`](crate::post::sar::SarVolume::averaged);
-    /// [`Error::Unsupported`] for averaging on a cylindrical grid.
+    /// See [`SarVolume::averaged`](crate::post::sar::SarVolume::averaged).
     pub fn frequency(&self, k: usize, averaging: Option<f64>) -> Result<SarFrequency> {
-        if averaging.is_some() && self.is_cylindrical() {
-            return Err(Error::Unsupported(
-                "mass-averaged SAR on a cylindrical grid is not available (local SAR only)".into(),
-            ));
-        }
         let e = openems_freq_values(&self.fd, k);
         let vol = self.volumes();
         let pd: Vec<f64> = e
@@ -935,6 +940,9 @@ impl OpenEmsSar {
     /// Averaged SAR over the real cells, mapped back to the dump cells.
     fn averaged(&self, pd: &[f64], mass: f64) -> Result<(Vec<f64>, [u64; 4])> {
         use crate::post::sar::{AveragingMethod, SarVolume, VoxelClass};
+        if self.is_cylindrical() {
+            return self.averaged_cylindrical(pd, mass);
+        }
         let dims = self.dims();
         let c = self.lines.clone().map(|l| l.len() - 1);
         let idx = |p: [usize; 3]| (p[0] * dims[1] + p[1]) * dims[2] + p[2];
@@ -970,6 +978,49 @@ impl OpenEmsSar {
         }
         cubes[3] += (self.density.len() - c.iter().product::<usize>()) as u64;
         Ok((out, cubes))
+    }
+
+    /// The `(ρ, α·u, z)` widths of the dump cells, like the raw dump's
+    /// `CellWidth` group.
+    pub(crate) fn openems_widths(&self) -> [Vec<f64>; 3] {
+        let mut w = self.widths.clone();
+        if self.is_cylindrical() {
+            for x in &mut w[1] {
+                *x *= self.unit;
+            }
+        }
+        w
+    }
+
+    /// openEMS's cylindrical average: `sar_calc` on the raw dump (all dump
+    /// cells, warped widths, openEMS's volumes; observed equal).
+    fn averaged_cylindrical(&self, pd: &[f64], mass: f64) -> Result<(Vec<f64>, [u64; 4])> {
+        use crate::post::sar::{AveragingMethod, SarVolume, VoxelClass};
+        let w = self.openems_widths();
+        let vol: Vec<f64> = self
+            .volumes()
+            .iter()
+            .map(|&v| f64::from(v as f32))
+            .collect();
+        let lines = w.map(|w| {
+            core::iter::once(0.0)
+                .chain(w.iter().scan(0.0, |x, d| {
+                    *x += d;
+                    Some(*x)
+                }))
+                .collect::<Vec<f64>>()
+        });
+        let v = SarVolume::new(lines, pd.to_vec(), self.density.clone())?.with_cell_volumes(vol)?;
+        let f = v.averaged_openems(mass, AveragingMethod::Simple, 0)?;
+        let mut cubes = [0u64; 4];
+        for c in f.classes() {
+            match c {
+                VoxelClass::Centered | VoxelClass::Covered | VoxelClass::Boundary => cubes[0] += 1,
+                VoxelClass::Unresolved => cubes[2] += 1,
+                _ => cubes[3] += 1,
+            }
+        }
+        Ok((f.values().to_vec(), cubes))
     }
 }
 
@@ -1319,14 +1370,10 @@ mod h5 {
             for (a, n) in names.into_iter().enumerate() {
                 // openEMS scales the α widths (radians) by the drawing
                 // unit too (observed).
-                let w: Vec<f64> = if cyl && a == 1 {
-                    d.widths[a].iter().map(|x| x * mesh_scaling).collect()
-                } else {
-                    d.widths[a].clone()
-                };
+                let w = &d.openems_widths()[a];
                 cw.new_dataset::<f64>(n)
                     .shape(&[w.len() as u64])
-                    .write(&w)
+                    .write(w)
                     .map_err(e)?;
             }
             let mut fdg = root.create_group("FieldData").map_err(e)?;

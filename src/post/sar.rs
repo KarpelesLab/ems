@@ -113,6 +113,7 @@ use crate::io::{Layout, VtrWriter};
 use crate::post::Complex64;
 use crate::{Error, Result};
 
+mod cyl;
 mod openems;
 
 /// Absorbed power density and mass density per voxel; see the
@@ -317,7 +318,8 @@ impl SarVolume {
     /// are `ρ` \[m\] (`≥ 0`), `α` \[rad\] and `z` \[m\]; the cell volumes
     /// are `Δα·Δz·(ρ_{i+1}² − ρ_i²)/2` ([`cell_volumes`](Self::cell_volumes)).
     /// Local SAR, powers and masses work as on Cartesian cells; mass
-    /// averaging is not available ([`averaged_with`](Self::averaged_with)).
+    /// averaging uses cubes in physical space over the annular cells
+    /// ([`averaged_with`](Self::averaged_with), design §5.12).
     ///
     /// # Errors
     /// As [`new`](Self::new), and a negative radius.
@@ -692,17 +694,10 @@ impl SarVolume {
     ///
     /// # Errors
     /// [`Error::Invalid`] for a mass that is not positive and finite or an
-    /// air fraction outside `[0, 1]`; [`Error::Unsupported`] for
-    /// [cylindrical](Self::cylindrical) cells.
+    /// air fraction outside `[0, 1]`. On [cylindrical](Self::cylindrical)
+    /// cells the cubes are axis-aligned cubes in physical `(x, y, z)` space
+    /// with exact overlaps of the annular cells (design §5.12).
     pub fn averaged_with(&self, mass: f64, opts: &AveragingOptions) -> Result<SarField> {
-        if self.cylindrical {
-            return Err(Error::Unsupported(
-                "mass-averaged SAR on a cylindrical grid: the averaging cubes are defined in \
-                 physical (Cartesian) coordinates, not on (rho, alpha, z) cells; use the local \
-                 SAR"
-                .into(),
-            ));
-        }
         if !(mass.is_finite() && mass > 0.0) {
             return Err(Error::Invalid(format!(
                 "SAR averaging mass must be positive, got {mass}"
@@ -713,6 +708,10 @@ impl SarVolume {
                 "SAR max air fraction must be in [0, 1], got {}",
                 opts.max_air_fraction
             )));
+        }
+        if self.cylindrical {
+            // Physical cubes over the annular cells (sar/cyl.rs).
+            return Ok(cyl::average(self, mass, opts));
         }
         Ok(Averager::new(self, mass, opts).run())
     }

@@ -26,6 +26,13 @@
 //! part of the result); the totals use the `Volume` dataset: mass `Σ ρ·V`,
 //! absorbed power `Σ p·V`.
 //!
+//! Cylindrical dumps (`/Mesh` and `/CellWidth` with `rho`, `alpha`, `z`,
+//! `@mesh_type` 1) are averaged like openEMS does (observed): as Cartesian
+//! cells of the `CellWidth`s (`Δα` scaled by the drawing unit), each
+//! weighing with its `Volume` (`ρ_i·Δα·Δρ·Δz`,
+//! [`SarVolume::with_cell_volumes`]); the output mesh is written as
+//! `x, y, z` with `@mesh_type` 0, like openEMS.
+//!
 //! # Output
 //!
 //! ```text
@@ -85,6 +92,8 @@ pub struct RawSar {
     pub frequencies: Vec<f64>,
     /// `|E|²` summed over the components, per frequency and cell.
     pub e_squared: Vec<Vec<f64>>,
+    /// A cylindrical dump (`rho`, `alpha`, `z` axes).
+    pub cylindrical: bool,
 }
 
 impl RawSar {
@@ -96,10 +105,20 @@ impl RawSar {
         let path = path.as_ref();
         let f = File::open(path).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
         let read = |p: &str| f.dataset(p).and_then(|d| d.read::<f64>()).map_err(h5err);
-        let mesh = [read("/Mesh/x")?, read("/Mesh/y")?, read("/Mesh/z")?];
+        let cylindrical = f.dataset("/Mesh/rho").is_ok();
+        let [nx, ny] = if cylindrical {
+            ["rho", "alpha"]
+        } else {
+            ["x", "y"]
+        };
+        let mesh = [
+            read(&format!("/Mesh/{nx}"))?,
+            read(&format!("/Mesh/{ny}"))?,
+            read("/Mesh/z")?,
+        ];
         let widths = [
-            read("/CellWidth/x")?,
-            read("/CellWidth/y")?,
+            read(&format!("/CellWidth/{nx}"))?,
+            read(&format!("/CellWidth/{ny}"))?,
             read("/CellWidth/z")?,
         ];
         let [nx, ny, nz] = [0, 1, 2].map(|a| widths[a].len());
@@ -154,6 +173,7 @@ impl RawSar {
             volume,
             frequencies,
             e_squared,
+            cylindrical,
         })
     }
 

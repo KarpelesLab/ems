@@ -316,8 +316,52 @@ fn sar_dumps() {
 /// model, which shows as 3.5e-3 of the peak SAR in the weaker tissue
 /// field (both codes' local SAR equal `κ|E|²/(2ρ)` of their raw files to
 /// 1e-7).
+///
+/// The 1 g average: openEMS averages the `(ρ, α, z)` cells as Cartesian
+/// cells of widths `Δρ`, `Δα·u`, `Δz` weighing with those volumes (its
+/// in-run dump equals `sar_calc` on the raw dump, and `sar_calc` on the
+/// same file with the axes renamed to `x, y, z`), which ems reproduces
+/// with its openEMS averaging on those cells (`SarVolume::with_cell_volumes`,
+/// `averaged_openems`): `ems-sar-calc` on openEMS's raw dump gives
+/// openEMS's file to float precision; ems's own in-run file differs by the
+/// field difference of the two codes on this model (as the local SAR).
 #[test]
 fn cylindrical_sar_dumps() {
-    let e = check("cyl_sar", "", DumpFileOptions::new(), &[]);
+    let e = check("cyl_sar", "", DumpFileOptions::new(), &["sar_1g"]);
     assert_close("cyl_sar", &e, 6e-3);
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("openems_dumps/cyl_sar");
+    let want = fixture("cyl_sar").join("sar_1g.h5");
+    let d = sar_values(&want, &out.join("sar_1g.h5"));
+    eprintln!("cyl_sar 1 g: {d:e} of the peak");
+    assert!(d < 6e-3, "{d}");
+    // ems-sar-calc on openEMS's raw dump: the same average.
+    let o = ems::io::openems::sar_calc::SarCalcOptions {
+        input: fixture("cyl_sar").join("sar_raw.h5"),
+        output: out.join("sar_calc_1g.h5"),
+        mass_g: 1.0,
+        method: ems::post::sar::AveragingMethod::Simple,
+        threads: 1,
+        verbose: false,
+        export_cube_stats: false,
+        legacy: false,
+        autorange: None,
+    };
+    ems::io::openems::sar_calc::run(&o).unwrap();
+    let d = sar_values(&want, &o.output);
+    eprintln!("cyl_sar sar_calc 1 g: {d:e} of the peak");
+    assert!(d < 1e-6, "{d}");
+}
+
+/// Largest difference of the `f0` SAR datasets of two files, relative to
+/// the peak of the first.
+fn sar_values(want: &Path, got: &Path) -> f64 {
+    let (a, b) = (h5cmp::read_tree(want), h5cmp::read_tree(got));
+    let p = "/FieldData/FD/f0";
+    let (x, y) = (&a.objects[p].2, &b.objects[p].2);
+    assert_eq!(x.len(), y.len());
+    let m = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    x.iter()
+        .zip(y)
+        .fold(0.0f64, |d, (u, v)| d.max((u - v).abs()))
+        / m
 }
