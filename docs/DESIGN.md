@@ -552,6 +552,70 @@ line of two ports, PML ends, 2–8 GHz):
 | cylindrical, port-written inner conductor and shield, 35 Ω Thevenin feed resistor | `Z_L` within 1.1e-3 of discrete, `|S11|` ≤ −59.9 dB |
 | Cartesian staircase, `a` = 1.5 mm, `b` = 3.45 mm, 0.25 mm cells, shield to 4 mm | `ε_eff` = 2.0002–2.0022 (Yee dispersion), `Z_L` = 33.21 Ω vs `Z0` = 35.31 Ω (−5.9 %), `|S11|` ≤ −86 dB |
 
+**Circular waveguide port** (`ems::port::CircWaveguidePort`, TE_nm or
+TM_nm, `n` azimuthal, `m` radial). Same structure as the rectangular port
+(soft mode-shaped E excitation, `WaveguideVoltage` / `WaveguideCurrent`
+probes, `Z_ref(f)` = the wave impedance), so it round-trips through XML.
+- Mode functions (Pozar §3.4, Marcuvitz §2.3), `ρ` from the guide axis,
+  `φ0` a polarisation angle:
+  `TE: e = N·∇ψ × ẑ`, `ψ = J_n(k_cρ)·sin(n(φ−φ0))` (`J_0(k_cρ)` for
+  `n = 0`); `TM: e = N·∇ψ`, `ψ = J_n(k_cρ)·cos(n(φ−φ0))`; `h = d̂ × e`.
+  `φ0 = 0` puts TE11's centre field along the first transverse axis.
+  `k_c = p'_nm/a` (TE) or `p_nm/a` (TM).
+- Normalisation `∫|e|² dA = 1` in closed form: `∫|∇ψ|² = k_c²∫ψ²`
+  (Green, with the Neumann/Dirichlet wall condition) and
+  `∫₀^a J_n²ρ dρ = a²/2·(1 − n²/p'²)·J_n(p')²` (TE), `a²/2·J_n'(p)²`
+  (TM); `π` or `2π` (`n = 0`) for the azimuth. The unit test integrates
+  the written expressions numerically (to 1e-3, the quadrature).
+- Bessel functions: `J_n` from Bessel's integral by the trapezoidal rule
+  (exponentially convergent for the periodic integrand), the zeros of
+  `J_n` and `J_n'` by scan and bisection (`port/bessel.rs`, checked
+  against A&S tables 9.5/9.7 to 1e-9 and against csx's `jn`). The csx
+  expressions use `jn(n, x)` and `J_n' = (J_{n−1} − J_{n+1})/2`; the
+  `J_n/ρ` term has its limit written at `ρ = 0`.
+- Cartesian grids: any propagation axis, expressions in the offsets from
+  the centre, masked to `ρ ≤ a` with `if()`; the wall is part of the
+  model (PEC, staircased or conformal). Cylindrical grids: the guide on
+  the axis along `z`, closed azimuth required; the expressions use `rho`
+  and `a` and give the `(ρ, α)` components, the probe weights carry the
+  `ρ·Δα` metric (`compile/mode.rs`); the wall can be the `ρ_max` PEC face.
+- Limits: the reference impedance and `β` are the analytic ones, so a
+  discretised cross section whose cutoff differs from `p/a` (azimuthal
+  sampling, staircased wall) is seen as a mismatch: a cutoff error `δ`
+  gives `|S11| ≈ |δ|·k_c²/(2β²)`. The `radius` argument can be tuned to
+  the effective radius of a staircased wall. Inside an azimuthal
+  multigrid zone the mode probes are not valid (§5.15.1; warning).
+
+Validation (`tests/validation_circ_waveguide.rs`; `a` = 10 mm, TE11
+`f_c` = 8.785 GHz, Δz = 1 mm, ports 32–40 mm apart, CPML(8) ends). The
+effective cutoff `k_c,eff` is taken from the measured `β` with the Yee
+z dispersion, `sin²(ωΔt/2)/(cΔt/2)² − sin²(βΔz/2)/(Δz/2)²`; its spread
+over frequency measures the port, its offset the cross section.
+
+| case (10–13 GHz unless noted) | worst `|S11|` | `|S21| − 1` | `k_c,eff/k_c − 1` |
+|---|---|---|---|
+| TE11, cylindrical 8 ρ × 12 α cells (fast test, 17 s debug) | −37.8 dB | ≤ 1.4e-3 | −0.79 % ± 0.01 % |
+| TE11, cylindrical 10 × 16 | −46.1 dB | ≤ 1.4e-3 | −0.44 % ± 0.004 % |
+| TE11, cylindrical 20 × 32 | −49.2 dB | ≤ 5e-4 | −0.11 % ± 0.002 % |
+| TM01, cylindrical 20 × 16, 13–16 GHz | −48.6 dB | ≤ 1e-4 | −0.071 % ± 0.000 % |
+| TE01, cylindrical 20 × 16, 20–23 GHz | −47.3 dB | ≤ 4e-4 | −0.15 % ± 0.001 % |
+| TE11 short, cylindrical 20 × 32 | `|S11| = 1 ± 2e-4` | | β within 0.25–0.41 % of analytic (the cutoff offset) |
+| TE11, Cartesian 0.5 mm, staircased wall | −28.3 dB | ≤ 1e-3 | −3.6 % ± 0.48 % |
+| same, port radius tuned to `a·k_c/k_c,eff` = 10.372 mm | −42.1 dB | ≤ 1e-3 | +0.001 % ± 0.50 % (vs the tuned `k_c`) |
+
+On the cylindrical grid the TE11 cutoff error halves with each halving of
+the cells (azimuthal sampling, `(2/Δα)·sin(Δα/2)`, and the radial cells),
+and the spread of `k_c,eff` is ≤ 1e-4: the port extracts a single mode
+cleanly. On the staircased Cartesian wall the discrete cutoff is 3.6 % low
+and the analytic `Z_TE` is then a 5 % mismatch near cutoff, which is the
+`|S11|` reported; a port radius tuned to the measured cutoff brings it to
+−42 dB. The measured `β` is the same in both runs: the ±0.5 % drift of
+`k_c,eff` over the band belongs to the staircased guide, not to the port.
+The conformal wall (§5.13) was tried on the same guide (PEC block, vacuum
+cylinder, CPML ends through the cut cells): its energy did not decay
+(87 % of the peak after 30 000 steps) and it ran ~20× slower, so it is
+not in the tests; not investigated further here.
+
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
 openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
@@ -1509,11 +1573,13 @@ comparison, is alike).
 
 **Not available on cylindrical grids** (dropped with a warning or refused):
 conducting sheets (PEC instead), dispersive poles (static values only), plane
-waves, SAR dumps, NF2FF boxes, MSL and rectangular-waveguide port helpers
-(`Error::Unsupported`). Lumped ports, lumped elements, voltage, current and
+waves, SAR dumps, NF2FF boxes, the MSL, CPW, stripline and
+rectangular-waveguide port helpers (`Error::Unsupported`). Lumped ports, lumped elements, voltage, current and
 field probes, waveguide mode probes on a `z`-normal plane (the weights of
 `compile/mode.rs` with the `ρ·Δα` metric), field dumps (VTK and HDF5) and
-the coaxial port helper (`CoaxPort` along `z`, §5.5) work.
+the coaxial and circular-waveguide port helpers (`CoaxPort`,
+`CircWaveguidePort`, along `z` on the axis, §5.5) and `LumpedPort` /
+`CurvePort` work.
 
 **Validation.**
 
