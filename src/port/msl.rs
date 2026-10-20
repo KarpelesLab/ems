@@ -30,7 +30,7 @@
 //! `A' = (V2 + Z_L·I(s2))/2`, `B' = (V2 − Z_L·I(s2))/2`, and at the
 //! reference plane `s_ref` they are `A'·e^{−γ(s_ref − s2)}` and
 //! `B'·e^{γ(s_ref − s2)}`; [`MslPort::analyze`] reports the voltage and
-//! current there as a [`PortResult`].
+//! current there as a [`PortResult`](crate::post::PortResult).
 //!
 //! The relations are exact for any spatially exponential mode sampled at
 //! these positions, so they also hold for the discrete line of the Yee
@@ -51,15 +51,13 @@
 //! standing-wave node at the middle probe) the extraction is
 //! ill-conditioned.
 
-use std::ops::Deref;
-
 use csx::primitives::BoxShape;
 use csx::properties::{Excitation, LumpedElement, ProbeBox, ProbeType};
 use csx::{ContinuousStructure, Primitive, Property, PropertyId, Scalar};
 
+use super::line::{self, Layout, LinePortResult, choose_probes, line_index};
 use crate::axis::Axis;
-use crate::constants::C0;
-use crate::post::{Complex64, PortResult};
+use crate::post::Complex64;
 use crate::sim::Results;
 use crate::{Error, Result};
 
@@ -77,20 +75,6 @@ pub struct MslPortProperties {
     pub voltages: [(String, PropertyId); 3],
     /// The current `ProbeBox`es `port_it<n>A`, `B`, in propagation order.
     pub currents: [(String, PropertyId); 2],
-}
-
-/// Probe layout chosen by [`MslPort::add_to`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Layout {
-    /// Voltage probe positions along the propagation axis (drawing units),
-    /// in propagation order.
-    v_pos: [f64; 3],
-    /// Their spacing \[m\].
-    spacing: f64,
-    /// Middle voltage probe and reference plane, in metres from the feed
-    /// along the propagation direction.
-    s_mid: f64,
-    s_ref: f64,
 }
 
 /// A microstrip-line port written into a csx model: the strip over the
@@ -528,21 +512,16 @@ impl MslPort {
     /// if `Re Z_L` is not positive at some frequency (typically outside the
     /// excited band).
     pub fn analyze(&self, results: &Results, freqs: &[f64]) -> Result<MslPortResult> {
-        let line = self.line(results, freqs)?;
-        let port = PortResult::new_per_frequency(
-            freqs.to_vec(),
-            line.v.clone(),
-            line.i.clone(),
-            line.z_line.clone(),
+        let (p, l) = self.added()?;
+        line::analyze(
+            results,
+            freqs,
+            &p.probe_names(),
+            l,
+            None,
+            "MSL",
+            self.number,
         )
-        .map_err(|e| {
-            Error::Invalid(format!(
-                "MSL port {}: unusable line impedance ({e}); is every frequency inside \
-                 the excited band?",
-                self.number
-            ))
-        })?;
-        Ok(line.finish(port))
     }
 
     /// Frequency-domain analysis with the reference impedance `z_ref`.
@@ -556,259 +535,37 @@ impl MslPort {
         freqs: &[f64],
         z_ref: Complex64,
     ) -> Result<MslPortResult> {
-        let line = self.line(results, freqs)?;
-        let port = PortResult::new(freqs.to_vec(), line.v.clone(), line.i.clone(), z_ref)?;
-        Ok(line.finish(port))
+        let (p, l) = self.added()?;
+        line::analyze(
+            results,
+            freqs,
+            &p.probe_names(),
+            l,
+            Some(z_ref),
+            "MSL",
+            self.number,
+        )
     }
 
-    fn line(&self, results: &Results, freqs: &[f64]) -> Result<Line> {
-        let (Some(p), Some(l)) = (&self.props, &self.layout) else {
-            return Err(Error::Invalid(format!(
+    fn added(&self) -> Result<(&MslPortProperties, &Layout)> {
+        match (&self.props, &self.layout) {
+            (Some(p), Some(l)) => Ok((p, l)),
+            _ => Err(Error::Invalid(format!(
                 "MSL port {} was not added",
                 self.number
-            )));
-        };
-        let get = |name: &str| {
-            results
-                .probe(name)
-                .ok_or_else(|| Error::Invalid(format!("no probe {name:?} in the results")))?
-                .dft(freqs)
-        };
-        let [v1, v2, v3] = [0, 1, 2].map(|k| get(&p.voltages[k].0));
-        let [ia, ib] = [0, 1].map(|k| get(&p.currents[k].0));
-        let (v1, v2, v3, ia, ib) = (v1?, v2?, v3?, ia?, ib?);
-        let n = freqs.len();
-        let mut out = Line {
-            gamma: Vec::with_capacity(n),
-            z_line: Vec::with_capacity(n),
-            v: Vec::with_capacity(n),
-            i: Vec::with_capacity(n),
-        };
-        let delta = l.s_ref - l.s_mid;
-        for k in 0..n {
-            let (g, z, v, i) = extract([v1[k], v2[k], v3[k]], [ia[k], ib[k]], l.spacing, delta);
-            out.gamma.push(g);
-            out.z_line.push(z);
-            out.v.push(v);
-            out.i.push(i);
-        }
-        Ok(out)
-    }
-}
-
-/// Intermediate result of [`MslPort::line`].
-struct Line {
-    gamma: Vec<Complex64>,
-    z_line: Vec<Complex64>,
-    v: Vec<Complex64>,
-    i: Vec<Complex64>,
-}
-
-impl Line {
-    fn finish(self, port: PortResult) -> MslPortResult {
-        MslPortResult {
-            port,
-            gamma: self.gamma,
-            z_line: self.z_line,
+            ))),
         }
     }
 }
 
-/// The line quantities from three voltages `v` at spacing `d` \[m\] and two
-/// midpoint currents `i` (see the [module documentation](self)):
-/// `(γ, Z_L, V, I)` with `V`, `I` at `delta` metres past the middle probe.
-fn extract(
-    v: [Complex64; 3],
-    i: [Complex64; 2],
-    d: f64,
-    delta: f64,
-) -> (Complex64, Complex64, Complex64, Complex64) {
-    let sh2 = (v[0] + v[2] - v[1] * 2.0) / (v[1] * 4.0);
-    let mut sh = sh2.sqrt();
-    // x = γd/2 = asinh(sh), on the branch with β ≥ 0 (asinh is odd).
-    let mut x = (sh + (sh * sh + 1.0).sqrt()).ln();
-    if x.im < 0.0 {
-        x = -x;
-        sh = -sh;
-    }
-    let gamma = x * (2.0 / d);
-    let ch = (x.exp() + (-x).exp()) * 0.5;
-    let isum = i[0] + i[1];
-    let z = -(v[2] - v[0]) / (sh * isum * 2.0);
-    let i_mid = isum / (ch * 2.0);
-    let a = (v[1] + z * i_mid) * 0.5 * (-gamma * delta).exp();
-    let b = (v[1] - z * i_mid) * 0.5 * (gamma * delta).exp();
-    (gamma, z, a + b, (a - b) / z)
-}
-
-/// Index of the mesh line within a relative tolerance of `x`.
-fn line_index(lines: &[f64], x: f64) -> Option<usize> {
-    let (k, &l) = lines
-        .iter()
-        .enumerate()
-        .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))?;
-    let cell = [k.checked_sub(1), Some(k + 1)]
-        .into_iter()
-        .flatten()
-        .filter_map(|j| lines.get(j))
-        .map(|&o| (o - l).abs())
-        .fold(f64::INFINITY, f64::min);
-    let tol = if cell.is_finite() {
-        1e-6 * cell
-    } else {
-        1e-9 * (1.0 + x.abs())
-    };
-    ((l - x).abs() <= tol).then_some(k)
-}
-
-/// Picks three equally spaced consecutive lines past `feed`, not beyond
-/// `end`, with the middle one nearest the middle of the port.
-fn choose_probes(lines: &[f64], feed: f64, end: f64, shift: f64, du: f64) -> Option<Layout> {
-    let sign = (end - feed).signum();
-    // Propagation coordinate (drawing units) of a line.
-    let s = |x: f64| (x - feed) * sign;
-    let len = s(end);
-    let tol = 1e-6 * len;
-    let mut cand: Vec<f64> = lines
-        .iter()
-        .copied()
-        .filter(|&x| s(x) > tol && s(x) <= len + tol)
-        .collect();
-    if sign < 0.0 {
-        cand.reverse();
-    }
-    let mid = 0.5 * len;
-    cand.windows(3)
-        .filter(|t| {
-            let (d1, d2) = (s(t[1]) - s(t[0]), s(t[2]) - s(t[1]));
-            (d1 - d2).abs() <= 1e-6 * d1.max(d2)
-        })
-        .min_by(|a, b| (s(a[1]) - mid).abs().total_cmp(&(s(b[1]) - mid).abs()))
-        .map(|t| Layout {
-            v_pos: [t[0], t[1], t[2]],
-            spacing: 0.5 * (s(t[2]) - s(t[0])) * du,
-            s_mid: s(t[1]) * du,
-            s_ref: (len + shift) * du,
-        })
-}
-
-/// The analysis of an [`MslPort`]: the [`PortResult`] at the reference
-/// plane (also reachable through `Deref`, so it can be passed to
-/// [`s_param`](crate::post::s_param) directly) plus the extracted line
-/// parameters.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MslPortResult {
-    port: PortResult,
-    gamma: Vec<Complex64>,
-    z_line: Vec<Complex64>,
-}
-
-impl MslPortResult {
-    /// Voltage and current at the reference plane.
-    pub fn port(&self) -> &PortResult {
-        &self.port
-    }
-
-    /// Converts into the [`PortResult`].
-    pub fn into_port(self) -> PortResult {
-        self.port
-    }
-
-    /// Propagation constant `γ = α + jβ` \[1/m\] per frequency.
-    pub fn gamma(&self) -> &[Complex64] {
-        &self.gamma
-    }
-
-    /// Phase constant `β` \[rad/m\] per frequency.
-    pub fn beta(&self) -> Vec<f64> {
-        self.gamma.iter().map(|g| g.im).collect()
-    }
-
-    /// Attenuation constant `α` \[Np/m\] per frequency.
-    pub fn alpha(&self) -> Vec<f64> {
-        self.gamma.iter().map(|g| g.re).collect()
-    }
-
-    /// Effective permittivity `(c0·β/ω)²` per frequency (it includes the
-    /// numerical dispersion of the mesh).
-    pub fn eps_eff(&self) -> Vec<f64> {
-        self.port
-            .freqs()
-            .iter()
-            .zip(&self.gamma)
-            .map(|(&f, g)| (C0 * g.im / (std::f64::consts::TAU * f)).powi(2))
-            .collect()
-    }
-
-    /// Extracted line (characteristic) impedance `Z_L` \[Ω\] per frequency.
-    pub fn z_line(&self) -> &[Complex64] {
-        &self.z_line
+impl MslPortProperties {
+    fn probe_names(&self) -> line::ProbeNames<'_> {
+        line::ProbeNames {
+            voltages: self.voltages.each_ref().map(|v| v.0.as_str()),
+            currents: self.currents.each_ref().map(|v| v.0.as_str()),
+        }
     }
 }
 
-impl Deref for MslPortResult {
-    type Target = PortResult;
-
-    fn deref(&self) -> &PortResult {
-        &self.port
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn c(re: f64, im: f64) -> Complex64 {
-        Complex64::new(re, im)
-    }
-
-    /// A lossy line with forward and backward waves is recovered exactly.
-    #[test]
-    fn extraction_is_exact_for_exponential_modes() {
-        let gamma = c(0.3, 50.0);
-        let z = c(48.0, -2.0);
-        let (a, b) = (c(1.0, 0.2), c(-0.3, 0.1));
-        let (d, s2) = (1e-3, 7e-3);
-        let v = |s: f64| a * (-gamma * s).exp() + b * (gamma * s).exp();
-        let i = |s: f64| (a * (-gamma * s).exp() - b * (gamma * s).exp()) / z;
-        let (gx, zx, vx, ix) = extract(
-            [v(s2 - d), v(s2), v(s2 + d)],
-            [i(s2 - 0.5 * d), i(s2 + 0.5 * d)],
-            d,
-            3e-3,
-        );
-        assert!((gx - gamma).norm() < 1e-9 * gamma.norm(), "{gx}");
-        assert!((zx - z).norm() < 1e-9 * z.norm(), "{zx}");
-        assert!((vx - v(s2 + 3e-3)).norm() < 1e-9);
-        assert!((ix - i(s2 + 3e-3)).norm() < 1e-11);
-    }
-
-    #[test]
-    fn probe_choice() {
-        let lines: Vec<f64> = (0..=10).map(f64::from).collect();
-        let l = choose_probes(&lines, 0.0, 10.0, 0.0, 1e-3).unwrap();
-        assert_eq!(l.v_pos, [4.0, 5.0, 6.0]);
-        assert!((l.spacing - 1e-3).abs() < 1e-15);
-        assert!((l.s_mid - 5e-3).abs() < 1e-15 && (l.s_ref - 10e-3).abs() < 1e-15);
-        // Reversed port.
-        let l = choose_probes(&lines, 10.0, 2.0, 1.0, 1e-3).unwrap();
-        assert_eq!(l.v_pos, [7.0, 6.0, 5.0]);
-        assert!((l.s_mid - 4e-3).abs() < 1e-15 && (l.s_ref - 9e-3).abs() < 1e-15);
-        // Graded mesh: only one equally spaced triple.
-        let lines = [0.0, 1.0, 3.0, 4.0, 5.0, 7.0, 10.0];
-        let l = choose_probes(&lines, 0.0, 10.0, 0.0, 1.0).unwrap();
-        assert_eq!(l.v_pos, [3.0, 4.0, 5.0]);
-        let lines = [0.0, 1.0, 3.0, 6.0, 10.0];
-        assert!(choose_probes(&lines, 0.0, 10.0, 0.0, 1.0).is_none());
-        // The feed line itself is excluded.
-        assert!(choose_probes(&[0.0, 1.0, 2.0], 0.0, 2.0, 0.0, 1.0).is_none());
-    }
-
-    #[test]
-    fn mesh_snapping() {
-        let lines = [0.0, 0.5, 1.0];
-        assert_eq!(line_index(&lines, 0.5 + 1e-9), Some(1));
-        assert_eq!(line_index(&lines, 0.51), None);
-        assert_eq!(line_index(&[], 0.0), None);
-    }
-}
+/// The analysis of an [`MslPort`] (a [`LinePortResult`]).
+pub type MslPortResult = LinePortResult;

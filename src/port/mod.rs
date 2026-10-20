@@ -15,8 +15,10 @@
 //! * [`RectWaveguidePort`]: a TE_mn mode excitation and mode-matching
 //!   V/I probes in a rectangular waveguide.
 
+mod line;
 pub mod msl;
 
+pub use line::LinePortResult;
 pub use msl::{MslPort, MslPortProperties, MslPortResult};
 
 use csx::primitives::BoxShape;
