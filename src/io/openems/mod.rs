@@ -10,11 +10,25 @@
 //!   openEMS dump sampling rules (box snapping, sub-sampling,
 //!   `OptResolution`, sampling interval, time window).
 //! * [`probes`]: the probe text files (`<name>` time domain,
-//!   `<name>_FD` frequency domain) and a reader for them.
+//!   `<name>_FD` frequency domain, including the waveguide "mode
+//!   matching" files) and a reader for them.
+//! * [`signal`]: the excitation signal files `et` / `ht` and the signal
+//!   length openEMS reports.
+//! * [`stats`]: the `--dump-statistics` files.
+//! * [`debug`]: the `--debug-material`, `--debug-operator`, `--debug-PEC`
+//!   and `--debug-boxes` files.
+//!
+//! The `ems` command-line program (feature `xml`) writes all of them,
+//! as a drop-in replacement for the `openEMS` executable (design §7.2).
 
+pub mod debug;
 pub mod dump;
 pub mod probes;
+pub mod signal;
+pub mod stats;
 
 pub use probes::{
     ProbeDomain, ProbeFile, ProbeFileKind, read_probe_file, write_probe, write_probes,
 };
+pub use signal::{ExcitationSignal, SignalSpan};
+pub use stats::{RunStats, RunStatsLog};

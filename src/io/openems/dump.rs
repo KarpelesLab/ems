@@ -376,7 +376,7 @@ fn phase_steps() -> impl Iterator<Item = (u32, f64)> {
 /// A double as VTK writes `RangeMin`/`RangeMax`: the shortest
 /// round-trip digits, positional for `1e-6 ≤ |v| < 1e21`, exponential
 /// (`1.5e-9`, `1e+21`) otherwise.
-fn vtk_range(v: f64) -> String {
+pub(crate) fn vtk_range(v: f64) -> String {
     let a = v.abs();
     if v == 0.0 {
         "0".into()
@@ -392,7 +392,7 @@ fn vtk_range(v: f64) -> String {
 }
 
 /// `printf("%.11g", v)`, as VTK writes information key values.
-fn printf_g11(v: f64) -> String {
+pub(crate) fn printf_g11(v: f64) -> String {
     const P: i32 = 11;
     if v == 0.0 {
         return "0".into();
@@ -452,7 +452,7 @@ fn zlib(data: &[u8]) -> Vec<u8> {
 
 /// The VTK compressed binary encoding of `raw`: base64 of the `UInt32`
 /// block header, then base64 of the compressed 32 KiB blocks.
-fn vtk_binary(raw: &[u8]) -> String {
+pub(crate) fn vtk_binary(raw: &[u8]) -> String {
     const BLOCK: usize = 32768;
     let blocks: Vec<Vec<u8>> = raw.chunks(BLOCK).map(zlib).collect();
     let last = (raw.len() % BLOCK) as u32;
@@ -499,7 +499,7 @@ fn data_array(out: &mut String, ty: &str, name: &str, comps: usize, raw: &[u8], 
 }
 
 /// Range of the norms of 3-vectors (f32 components, computed in f64).
-fn norm_range(v: &[[f32; 3]]) -> (f64, f64) {
+pub(crate) fn norm_range(v: &[[f32; 3]]) -> (f64, f64) {
     let mut r = (f64::INFINITY, f64::NEG_INFINITY);
     for x in v {
         let n = x
@@ -512,7 +512,7 @@ fn norm_range(v: &[[f32; 3]]) -> (f64, f64) {
     if v.is_empty() { (0.0, 0.0) } else { r }
 }
 
-fn f32_bytes(v: &[[f32; 3]]) -> Vec<u8> {
+pub(crate) fn f32_bytes(v: &[[f32; 3]]) -> Vec<u8> {
     v.iter().flatten().flat_map(|x| x.to_le_bytes()).collect()
 }
 
@@ -551,6 +551,12 @@ impl VtkGrid<'_> {
 
     /// The complete VTK file text for the point array `name`.
     fn file(&self, name: &str, data: &[[f32; 3]]) -> String {
+        self.file_with(&[(name, data)])
+    }
+
+    /// The complete VTK file text with the point arrays `arrays` (name,
+    /// 3-vectors in VTK point order).
+    fn file_with(&self, arrays: &[(&str, &[[f32; 3]])]) -> String {
         let [nx, ny, nz] = self.dims();
         let ext = format!("0 {} 0 {} 0 {}", nx - 1, ny - 1, nz - 1);
         let ty = if self.cylindrical {
@@ -567,14 +573,16 @@ impl VtkGrid<'_> {
         let _ = writeln!(s, "  <{ty} WholeExtent=\"{ext}\">");
         let _ = writeln!(s, "  <Piece Extent=\"{ext}\">");
         s.push_str("    <PointData>\n");
-        data_array(
-            &mut s,
-            "Float32",
-            name,
-            3,
-            &f32_bytes(data),
-            norm_range(data),
-        );
+        for &(name, data) in arrays {
+            data_array(
+                &mut s,
+                "Float32",
+                name,
+                3,
+                &f32_bytes(data),
+                norm_range(data),
+            );
+        }
         s.push_str("    </PointData>\n    <CellData>\n    </CellData>\n");
         if self.cylindrical {
             let mut pts = Vec::with_capacity(nx * ny * nz);
@@ -613,6 +621,19 @@ impl VtkGrid<'_> {
         s.push_str("</VTKFile>\n");
         s
     }
+}
+
+/// A VTK XML `RectilinearGrid` file in openEMS's layout (see the
+/// [module docs](self#vtk-layout-filetype-0)) on the mesh lines `coords`
+/// \[m\], with `f32` 3-vector point arrays (name, values in VTK order:
+/// x fastest); used for openEMS's debug dumps
+/// ([`debug`](super::debug)).
+pub(crate) fn vtk_rectilinear(coords: [&[f64]; 3], arrays: &[(&str, &[[f32; 3]])]) -> String {
+    VtkGrid {
+        coords,
+        cylindrical: false,
+    }
+    .file_with(arrays)
 }
 
 fn vtk_grid<'a>(s: &'a FieldSampler, cylindrical: bool) -> VtkGrid<'a> {
