@@ -50,6 +50,19 @@ pub struct Probe {
     values: Vec<f64>,
     purity: Option<(Vec<ModeSample>, f64)>,
     purity_values: Vec<f64>,
+    /// Storage locations of `entries` and of the purity sample terms,
+    /// from the first sample (the engine's layout is fixed).
+    locs: Option<ProbeLocs>,
+}
+
+/// Field storage locations of a probe's entries and purity terms.
+#[derive(Debug, Clone)]
+struct ProbeLocs {
+    /// The layout they were computed for.
+    n: [usize; 3],
+    starts: Vec<usize>,
+    entries: Vec<(usize, usize)>,
+    terms: Vec<[Vec<(usize, usize)>; 2]>,
 }
 
 impl Probe {
@@ -63,6 +76,7 @@ impl Probe {
             values: Vec::new(),
             purity: None,
             purity_values: Vec::new(),
+            locs: None,
         }
     }
 
@@ -130,16 +144,48 @@ impl Probe {
     }
 
     fn sample(&mut self, f: &super::fields::FieldArrays<'_>, t: f64) {
+        let lay = f.layout();
+        // Rebuilt for another engine's layout (a probe cloned after use).
+        if self
+            .locs
+            .as_ref()
+            .is_none_or(|l| l.n != lay.n || l.starts != lay.slab_start)
+        {
+            self.locs = Some(ProbeLocs {
+                n: lay.n,
+                starts: lay.slab_start.clone(),
+                entries: self
+                    .entries
+                    .iter()
+                    .map(|&(_, n, _)| lay.locate(n))
+                    .collect(),
+                terms: self.purity.as_ref().map_or_else(Vec::new, |(samples, _)| {
+                    samples
+                        .iter()
+                        .map(|s| {
+                            s.field
+                                .each_ref()
+                                .map(|t| t.iter().map(|&(_, n, _)| lay.locate(n)).collect())
+                        })
+                        .collect()
+                }),
+            });
+        }
+        let locs = self.locs.as_ref().expect("built above");
         // Deterministic: fixed entry order, f64 accumulation.
         let v = self
             .entries
             .iter()
-            .map(|&(a, n, w)| w * f.get(a, n) as f64)
+            .zip(&locs.entries)
+            .map(|(&(a, _, w), &l)| w * f.at(a, l) as f64)
             .sum();
+        let p = self.purity_core(&|s, c, k| {
+            let (a, _, _) = self.purity.as_ref().expect("purity samples").0[s].field[c][k];
+            f64::from(f.at(a, locs.terms[s][c][k]))
+        });
         self.times.push(t);
         self.values.push(v);
-        let get = |a, n| f64::from(f.get(a, n));
-        if let Some(p) = self.purity_with(&get) {
+        if let Some(p) = p {
             self.purity_values.push(p);
         }
     }
@@ -147,12 +193,26 @@ impl Probe {
     /// The weighted mode purity of the field values `get` (`None` without
     /// [`mode_purity`](Self::mode_purity)).
     fn purity_with(&self, get: &dyn Fn(Axis, [usize; 3]) -> f64) -> Option<f64> {
+        let samples = &self.purity.as_ref()?.0;
+        self.purity_core(&|s, c, k| {
+            let (a, n, _) = samples[s].field[c][k];
+            get(a, n)
+        })
+    }
+
+    /// [`purity_with`](Self::purity_with) with term `k` of component `c`
+    /// of sample `s` read by `value(s, c, k)`.
+    fn purity_core(&self, value: &dyn Fn(usize, usize, usize) -> f64) -> Option<f64> {
         let (samples, weight) = self.purity.as_ref()?;
         let (mut dot, mut ff, mut mm) = (0.0f64, 0.0f64, 0.0f64);
-        for s in samples {
+        for (si, s) in samples.iter().enumerate() {
             let mut e = [0.0f64; 2];
-            for (c, terms) in e.iter_mut().zip(&s.field) {
-                *c = terms.iter().map(|&(a, n, w)| w * get(a, n)).sum();
+            for (ci, (c, terms)) in e.iter_mut().zip(&s.field).enumerate() {
+                *c = terms
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &(_, _, w))| w * value(si, ci, k))
+                    .sum();
             }
             dot += s.area * (e[0] * s.mode[0] + e[1] * s.mode[1]);
             ff += s.area * (e[0] * e[0] + e[1] * e[1]);
