@@ -206,7 +206,17 @@ pub struct MurBoundary {
     slab_ok: bool,
     /// Slab mode: the edges and corners of each x-slab.
     slabs: Option<Arc<MurSlabs>>,
+    /// Serial mode: the storage locations of every edge's node and
+    /// interior neighbours (`[node, inner]`) and corner's
+    /// (`[node, inner0, inner1]`), from the first serial call.
+    locs: Option<SerialLocs>,
 }
+
+/// A field storage location `(slab, offset)` ([`FieldArrays::at`]).
+type Loc = (usize, usize);
+
+/// The serial-mode locations of the edges and of the corners.
+type SerialLocs = (Vec<[Loc; 2]>, Vec<[Loc; 3]>);
 
 /// The edges and corners of one x-slab (slab mode).
 #[derive(Debug, Default)]
@@ -544,6 +554,7 @@ impl MurBoundary {
                     .iter()
                     .any(|r| r.hooks.intersects(Hooks::PRE_E | Hooks::POST_E)),
             slabs: None,
+            locs: None,
         })
     }
 
@@ -635,6 +646,7 @@ impl Operator for MurBoundary {
     /// Slab mode where possible (see the [module docs](self#threads)).
     fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {
         // A clone of a registered operator: take its edges back first.
+        self.locs = None;
         if let Some(sl) = self.slabs.take() {
             for m in &sl.slabs {
                 let s = lock(m);
@@ -674,29 +686,60 @@ impl Operator for MurBoundary {
 
     fn pre_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         let u = &fields.u;
-        for e in &mut self.edges {
-            e.saved = [u.get(e.axis, e.node), u.get(e.axis, e.inner)];
+        let (le, lc) = self.locs.get_or_insert_with(|| {
+            let lay = u.layout();
+            (
+                self.edges
+                    .iter()
+                    .map(|e| [lay.locate(e.node), lay.locate(e.inner)])
+                    .collect(),
+                self.corners
+                    .iter()
+                    .map(|c| {
+                        [
+                            lay.locate(c.node),
+                            lay.locate(c.inner[0]),
+                            lay.locate(c.inner[1]),
+                        ]
+                    })
+                    .collect(),
+            )
+        });
+        for (e, l) in self.edges.iter_mut().zip(le.iter()) {
+            e.saved = [u.at(e.axis, l[0]), u.at(e.axis, l[1])];
         }
-        for c in &mut self.corners {
-            c.saved = [
-                u.get(c.axis, c.node),
-                u.get(c.axis, c.inner[0]),
-                u.get(c.axis, c.inner[1]),
-            ];
+        for (c, l) in self.corners.iter_mut().zip(lc.iter()) {
+            c.saved = [u.at(c.axis, l[0]), u.at(c.axis, l[1]), u.at(c.axis, l[2])];
         }
     }
 
+    /// The same updates as the slab mode's (`update`), on the locations
+    /// precomputed in `pre_e`.
     fn post_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        let cell = core::cell::RefCell::new(&mut fields.u);
-        let get = |a: Axis, n: [usize; 3]| cell.borrow().get(a, n);
-        let mut set = |a: Axis, n: [usize; 3], v: f32| cell.borrow_mut().set(a, n, v);
-        update(
-            &mut self.edges,
-            &mut self.corners,
-            self.openems_corners,
-            &get,
-            &mut set,
-        );
+        let u = &mut fields.u;
+        let Some((le, lc)) = &self.locs else {
+            return;
+        };
+        for (e, l) in self.edges.iter_mut().zip(le.iter()) {
+            let [b, i] = e.saved;
+            let v = i + e.k * (u.at(e.axis, l[1]) - b);
+            u.set_at(e.axis, l[0], v);
+            e.last = v;
+        }
+        // After the face edges: corner neighbours are face edges.
+        for (c, l) in self.corners.iter_mut().zip(lc.iter()) {
+            let [b, i0, i1] = c.saved;
+            let (n0, n1) = if self.openems_corners {
+                (0.0, 0.0)
+            } else {
+                (u.at(c.axis, l[1]), u.at(c.axis, l[2]))
+            };
+            let v0 = i0 + c.k[0] * (n0 - b);
+            let v1 = i1 + c.k[1] * (n1 - b);
+            let v = 0.5 * (v0 + v1);
+            u.set_at(c.axis, l[0], v);
+            c.last = v;
+        }
     }
 
     /// [`boundary_energy`](Self::boundary_energy) with
