@@ -384,7 +384,7 @@ pub struct Compiled {
     /// Outer face conditions (Mur and PML faces are PEC).
     pub faces: FaceConditions,
     /// Mur faces and their phase velocities \[m/s\].
-    pub mur: Vec<(Face, f64)>,
+    pub mur: Vec<(Face, Option<f64>)>,
     /// PML faces and their parameters.
     pub pml: Vec<(Face, Cpml)>,
     /// Time step choice.
@@ -490,7 +490,7 @@ impl Compiled {
             h.cpml = Some(engine.add_operator(op));
         }
         if !self.mur.is_empty() {
-            let op = MurBoundary::with_faces(engine, &self.mur)?;
+            let op = MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?;
             h.mur = Some(engine.add_operator(op));
         }
         if !self.dispersive.is_empty() {
@@ -549,7 +549,7 @@ pub fn grid_from_csx(g: &csx::RectilinearGrid) -> Result<Grid> {
 }
 
 /// Mur faces with phase velocities, and PML faces with parameters.
-type AbsorbingFaces = (Vec<(Face, f64)>, Vec<(Face, Cpml)>);
+type AbsorbingFaces = (Vec<(Face, Option<f64>)>, Vec<(Face, Cpml)>);
 
 /// Maps the boundary settings: returns the face conditions plus the Mur
 /// and PML faces (built as PEC).
@@ -562,7 +562,7 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
             Boundary::Pmc => FaceCondition::Pmc,
             Boundary::Periodic => FaceCondition::Periodic,
             Boundary::Mur(m) => {
-                mur.push((face, m.velocity()));
+                mur.push((face, m.phase_velocity));
                 FaceCondition::Pec
             }
             Boundary::Pml(p) => {

@@ -629,7 +629,9 @@ openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
   and H outside the domain reads as zero (implemented, `FaceCondition::Pmc`).
 - **Mur 1st order**: one-way wave equation on the tangential E of the face.
   The engine builds that face as PEC; the operator saves values in `pre_e` and
-  overwrites the face's tangential E in `post_e`.
+  overwrites the face's tangential E in `post_e`. Without a phase velocity
+  each edge is tuned to its local medium `c0/√(ε_r μ_r)` (openEMS's
+  behaviour, §5.16; a vacuum-tuned face in `ε_r = 4` reflects 34–49 %).
 - **CPML** (Roden & Gedney 2000):
   - Occupies the **outermost `n` cells of the mesh**. This matches openEMS
     `PML_n` semantics, so XML models mesh identically.
@@ -1987,6 +1989,16 @@ with the element across the full width, its effective resistance is
 a closed-azimuth coax 21.5 Ω for 20 Ω (also with the α = 2π copy left
 out). A conductivity-like spreading over the dual areas would explain the
 Cartesian numbers.
+
+
+**Mur and PML** (§5.6). A Mur face without `MUR_PhaseVelocity` is tuned
+per edge to the local medium in openEMS: in an ε_r = 4 line it absorbs
+to 0.5 %, where ems's former vacuum tuning reflected 34–49 %. ems now
+does the same (`MurBoundary::with_faces_in`): 1e-6 agreement in ε_r = 4
+and in vacuum. openEMS's `PML_8` reflects −58 dB on a vacuum line at
+normal incidence (1 mm cells, 5 GHz pulse; opposite sign to ems's
+residual), ems's CPML −86 dB; ems keeps its CPML, so runs with PML differ
+by about 2e-3 (vacuum) to 4e-3 (ε_r = 4).
 
 
 ## 6. Engine architecture

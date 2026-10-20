@@ -82,7 +82,8 @@
 //! any engine thread count.
 
 use crate::axis::Axis;
-use crate::engine::{Engine, Fields, Hooks, Operator, StepContext};
+use crate::constants::C0;
+use crate::engine::{EdgeMaterials, Engine, Fields, Hooks, Operator, StepContext};
 use crate::fdtd::Face;
 use crate::{Error, Result};
 
@@ -128,7 +129,7 @@ struct Corner {
 /// ```
 #[derive(Debug, Clone)]
 pub struct MurBoundary {
-    faces: Vec<(Face, f64)>,
+    faces: Vec<(Face, Option<f64>)>,
     edges: Vec<Edge>,
     corners: Vec<Corner>,
 }
@@ -153,11 +154,56 @@ impl MurBoundary {
     /// normal, or a face was not built as
     /// [`FaceCondition::Pec`](crate::engine::FaceCondition::Pec).
     pub fn with_faces(engine: &Engine, faces: &[(Face, f64)]) -> Result<Self> {
+        let faces: Vec<(Face, Option<f64>)> = faces.iter().map(|&(f, v)| (f, Some(v))).collect();
+        Self::build(engine, &faces, None)
+    }
+
+    /// Mur boundary on several faces like [`with_faces`](Self::with_faces),
+    /// where a face without a phase velocity (`None`) uses the local
+    /// medium speed `c0/√(ε_r·μ_r)` of each boundary edge, from `materials`
+    /// (`ε_r` of the interior neighbour edge, `μ_r` of the H face between
+    /// them). This is what openEMS does when `MUR_PhaseVelocity` is not
+    /// given (design §5.16): in an `ε_r = 4` medium a vacuum-tuned Mur face
+    /// reflects 34–49 % of a pulse, a locally tuned one 0.5 %.
+    ///
+    /// # Errors
+    /// See [`with_faces`](Self::with_faces); also if a local velocity is not
+    /// finite and positive.
+    pub fn with_faces_in(
+        engine: &Engine,
+        faces: &[(Face, Option<f64>)],
+        materials: &EdgeMaterials,
+    ) -> Result<Self> {
+        Self::build(engine, faces, Some(materials))
+    }
+
+    fn build(
+        engine: &Engine,
+        faces: &[(Face, Option<f64>)],
+        materials: Option<&EdgeMaterials>,
+    ) -> Result<Self> {
         let grid = engine.grid();
         let n = grid.nodes();
         let dt = engine.dt();
+        let face_delta = |face: Face| {
+            let a = face.axis();
+            if face.is_max() {
+                grid.delta(a, n[a.index()] - 2)
+            } else {
+                grid.delta(a, 0)
+            }
+        };
         let mut k_face = [None::<f32>; 6];
         for &(face, v) in faces {
+            let v = match v {
+                Some(v) => v,
+                None if materials.is_some() => C0,
+                None => {
+                    return Err(Error::Invalid(format!(
+                        "Mur boundary on {face}: no phase velocity and no materials"
+                    )));
+                }
+            };
             if !(v.is_finite() && v > 0.0) {
                 return Err(Error::Invalid(format!(
                     "Mur boundary on {face}: phase velocity {v} must be finite and > 0"
@@ -175,12 +221,7 @@ impl MurBoundary {
                     n[a.index()]
                 )));
             }
-            let delta = if face.is_max() {
-                grid.delta(a, n[a.index()] - 2)
-            } else {
-                grid.delta(a, 0)
-            };
-            k_face[face.index()] = Some(Self::coefficient(v, dt, delta) as f32);
+            k_face[face.index()] = Some(Self::coefficient(v, dt, face_delta(face)) as f32);
         }
 
         // Boundary plane index and interior neighbour of `node` for `face`.
@@ -200,9 +241,38 @@ impl MurBoundary {
         let co = engine.coefficients();
         let mut edges = Vec::new();
         let mut corners = Vec::new();
+        // Coefficient of the edge along `t` at `node` for `face`: fixed per
+        // face, or from the local medium.
+        let local = |face: Face, t: Axis, o: Axis, node: [usize; 3]| -> Result<f32> {
+            let m = materials.expect("local velocity needs materials");
+            let a = face.axis();
+            let inner = inner(face, node);
+            // H face between the boundary edge and its neighbour: normal to
+            // `o`, lowest corner at the smaller of the two planes.
+            let mut hf = node;
+            hf[a.index()] = node[a.index()].min(inner[a.index()]);
+            let eps = m.eps_r(t)[grid.index(inner)];
+            let mu = m.mu_r(o)[grid.index(hf)];
+            let v = C0 / (eps * mu).sqrt();
+            if !(v.is_finite() && v > 0.0) {
+                return Err(Error::Invalid(format!(
+                    "Mur boundary on {face}: local phase velocity {v} at {node:?} must be \
+                     finite and > 0"
+                )));
+            }
+            Ok(Self::coefficient(v, dt, face_delta(face)) as f32)
+        };
+        let fixed: [bool; 6] =
+            core::array::from_fn(|i| faces.iter().any(|&(f, v)| f.index() == i && v.is_some()));
+        let coef = |face: Face, t: Axis, o: Axis, node: [usize; 3]| -> Result<f32> {
+            if fixed[face.index()] {
+                Ok(k_face[face.index()].expect("set above"))
+            } else {
+                local(face, t, o, node)
+            }
+        };
         for &(face, _) in faces {
             let a = face.axis();
-            let k = k_face[face.index()].expect("set above");
             for t in Axis::ALL.into_iter().filter(|&t| t != a) {
                 // The third axis: the edge may also lie on one of its faces.
                 let o = Axis::ALL
@@ -233,7 +303,7 @@ impl MurBoundary {
                                 axis: t,
                                 node,
                                 inner: inner(face, node),
-                                k,
+                                k: coef(face, t, o, node)?,
                                 saved: [0.0; 2],
                             }),
                             // Each domain edge is visited from both faces;
@@ -242,7 +312,7 @@ impl MurBoundary {
                                 axis: t,
                                 node,
                                 inner: [inner(face, node), inner(g, node)],
-                                k: [k, k_face[g.index()].expect("is Mur")],
+                                k: [coef(face, t, o, node)?, coef(g, t, a, node)?],
                                 saved: [0.0; 3],
                             }),
                             Some(_) => {}
@@ -258,8 +328,9 @@ impl MurBoundary {
         })
     }
 
-    /// The faces handled by this operator with their phase velocities.
-    pub fn faces(&self) -> &[(Face, f64)] {
+    /// The faces handled by this operator with their phase velocities
+    /// (`None`: the local medium speed, [`with_faces_in`](Self::with_faces_in)).
+    pub fn faces(&self) -> &[(Face, Option<f64>)] {
         &self.faces
     }
 

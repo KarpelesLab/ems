@@ -423,7 +423,7 @@ fn boundaries_map_to_conditions_and_operators() {
         };
         assert_eq!(c.faces[f], want, "{f}");
     }
-    assert_eq!(c.mur, vec![(Face::XMin, 2e8), (Face::ZMax, C0)]);
+    assert_eq!(c.mur, vec![(Face::XMin, Some(2e8)), (Face::ZMax, None)]);
     assert_eq!(
         c.pml,
         vec![(Face::XMax, Cpml::cells(4)), (Face::ZMin, Cpml::cells(3))]

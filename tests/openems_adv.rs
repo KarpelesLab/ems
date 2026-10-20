@@ -129,6 +129,42 @@ fn lorentz_coarse_trapezoidal_differs() {
     }
 }
 
+// ------------------------------------------------------------ boundaries
+
+/// Mur faces in a medium: the TEM line of 400 cells filled with ε_r = 4,
+/// Mur on both ends without `MUR_PhaseVelocity`. openEMS tunes each edge
+/// to the local medium (ems now does too, `MurBoundary::with_faces_in`):
+/// 0.9–1.2e-6 (with the vacuum speed the reflections were 34–49 %).
+#[test]
+fn mur_in_dielectric() {
+    check("adv_mur_dielectric", 2e-5);
+}
+
+/// `PML_8` on a vacuum line: openEMS's PML reflects about 1.3e-3 of the
+/// signal energy at the probes (−58 dB), ems's CPML 5e-5 (−86 dB); the
+/// reference is ems on a line long enough for no reflection to return
+/// (`reference.xml`). ems keeps its CPML (design §5.6, §5.16).
+#[test]
+fn pml_reflection_differs() {
+    let name = "adv_pml_vacuum";
+    let res = run(name, &CompileOptions::default());
+    let mut sim = Simulation::from_xml(fixture_dir(name).join("reference.xml")).unwrap();
+    let r = sim.run().unwrap();
+    for f in ["ut_a", "ut_c"] {
+        let (_, oe, ems) = at_oe_times(name, f, &res);
+        let (_, _, inc) = at_oe_times(name, f, &r);
+        let norm = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let refl = |x: &[f64]| {
+            let d: Vec<f64> = x.iter().zip(&inc).map(|(a, b)| a - b).collect();
+            norm(&d) / norm(&inc)
+        };
+        let (r_oe, r_ems) = (refl(&oe), refl(&ems));
+        eprintln!("{f}: reflected part openEMS {r_oe:.2e}, ems {r_ems:.2e}");
+        assert!(r_oe > 8e-4 && r_oe < 2e-3, "{f}: openEMS {r_oe}");
+        assert!(r_ems < 1.5e-4, "{f}: ems {r_ems}");
+    }
+}
+
 // ------------------------------------------------------------ cylindrical grids
 
 // `CoordSystem="1"` grids with `CylinderCoords="1"` on `<FDTD>` (openEMS's

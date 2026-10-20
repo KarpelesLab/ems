@@ -109,12 +109,14 @@ impl fmt::Display for Face {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Mur {
     /// Phase velocity the boundary is tuned for \[m/s\]; `None` means the
-    /// vacuum speed of light [`C0`](crate::constants::C0).
+    /// local medium speed `c0/√(ε_r·μ_r)` of each boundary edge when the
+    /// model is compiled (as openEMS does), see
+    /// [`MurBoundary::with_faces_in`](crate::engine::boundary::mur::MurBoundary::with_faces_in).
     pub phase_velocity: Option<f64>,
 }
 
 impl Mur {
-    /// Mur boundary tuned for `c0`.
+    /// Mur boundary tuned for the local medium (`c0` in vacuum).
     pub const fn new() -> Self {
         Mur {
             phase_velocity: None,
@@ -128,7 +130,9 @@ impl Mur {
         }
     }
 
-    /// The effective phase velocity \[m/s\].
+    /// The phase velocity \[m/s\], the vacuum speed of light
+    /// [`C0`](crate::constants::C0) if none is set (the value for a vacuum
+    /// boundary; compiled models use the local medium instead).
     pub fn velocity(&self) -> f64 {
         self.phase_velocity.unwrap_or(crate::constants::C0)
     }
@@ -280,7 +284,7 @@ pub enum Boundary {
 }
 
 impl Boundary {
-    /// Mur boundary tuned for `c0`.
+    /// Mur boundary tuned for the local medium (`c0` in vacuum).
     pub const fn mur() -> Self {
         Boundary::Mur(Mur::new())
     }

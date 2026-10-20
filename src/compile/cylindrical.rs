@@ -59,7 +59,7 @@ pub(super) fn no_sar(
 /// `ρ_min` face of a grid with an axis.
 pub(super) fn drop_ignored_boundaries(
     grid: &Grid,
-    mur: &mut Vec<(Face, f64)>,
+    mur: &mut Vec<(Face, Option<f64>)>,
     pml: &mut Vec<(Face, Cpml)>,
     warnings: &mut Vec<String>,
 ) {
