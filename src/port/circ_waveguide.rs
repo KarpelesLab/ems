@@ -451,6 +451,9 @@ impl CircWaveguidePort {
             for (c, s) in ["X", "Y", "Z"].iter().zip(f) {
                 p.set_attribute(format!("ModeFunction{c}"), s.clone());
             }
+            // ems's exact sampling (openEMS samples its own way, design
+            // §5.16).
+            p.set_attribute(crate::compile::MODE_SAMPLING_ATTR, "exact");
             let id = model.add_property(p);
             model.add_primitive(id, prim(ref_plane))?;
             Ok(id)

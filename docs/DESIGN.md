@@ -377,7 +377,10 @@ through XML:
 - A `WaveguideVoltage` and a `WaveguideCurrent` `ProbeBox` over the
   reference plane, with the mode functions `e` and `h = d̂ × e` as the
   csx user attributes `ModeFunctionX/Y/Z` (expressions in drawing-unit
-  coordinates, values in 1/m).
+  coordinates, values in 1/m, written as numbers: openEMS's parser has
+  no `pi`), plus `emsModeSampling="exact"`, which selects ems's exact
+  overlap integrals; without it a waveguide probe samples like openEMS
+  (§5.16, `compile/mode.rs`), which openEMS itself always does.
 - The mode functions are normalised to `∫|e|² dA = 1`, so a single wave
   has `V = ∫E_t·e dA`, `I = ∫H_t·h dA` and `V/I = Z_TE = ωμ/β`.
 
@@ -1926,6 +1929,32 @@ documentation) is a different model, not reproduced:
   −14…−34 dB below `2/(2 + η0σt)`, its effective impedance being nearly
   capacitive; ems is within 0.02 dB.
 ems keeps the slab model; `tests/openems_adv.rs` records the copper ratio.
+
+
+**Waveguide mode probes** (§5.5, `compile/mode.rs`; resolves the open
+convention of §10). Measured on a 20 × 10 mm guide (TE10, uniform 1 mm
+mesh; TE11-like field on a graded mesh), with mode functions `sin`, `1`,
+`x`, indicators of single nodes or cells, full and partial probe boxes:
+- `ModeFunctionX/Y/Z` are read from the `<Attributes>` child of the
+  `ProbeBox` (as csx stores user attributes); as attributes of the
+  element itself openEMS reports a parse error. Its parser does not know
+  `pi`. Coordinates are in **drawing units** (like excitation weights,
+  also confirmed: an E source weighted `sin(πx/20)` in a 1 mm mesh
+  matches to 1e-6).
+- openEMS **normalises** the mode function: `V = Σ E_t·f·A/√(Σ |f_t|²·A)`
+  (scale-invariant, in volts; `f_z` ignored), positive for `E` along `f`.
+  The sums run over the box's nodes (voltage) or cells (current), never
+  the outermost mesh lines; voltage: `f` at the node, dual area, `E`
+  linearly interpolated from the two edge midpoints; current: `f` at the
+  cell centre, cell area, `H` the plain mean of the dual edges at the
+  cell's lower corner node. A third file column is the mode purity.
+- ems implements this as the default sampling (agreement 3e-7 uniform,
+  4e-6 graded; a single-node indicator in a TE11 null 5e-4 from
+  cancellation). The quirk of the current (`f` half a cell off `H`)
+  makes `V/I` of a matched TE10 mode 0.28 % high at 20 cells, so
+  `RectWaveguidePort` keeps ems's exact overlap integrals
+  (`emsModeSampling="exact"`), with which a matched guide reads
+  −54…−63 dB instead of −49…−63 dB.
 
 
 ## 6. Engine architecture

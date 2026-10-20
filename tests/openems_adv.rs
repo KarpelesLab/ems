@@ -129,6 +129,34 @@ fn lorentz_coarse_trapezoidal_differs() {
     }
 }
 
+// ------------------------------------------------------------ waveguide probes
+
+/// TE10 in a 20 × 10 mm guide (PEC, 1 mm cells, `sin(πx/20)`-weighted Ey
+/// source), mode probes at z = 30 mm with mode functions `sin(πx/20)`,
+/// `1` and `x` (drawing units), over the full guide and over the box
+/// 4…16 × 2…8 mm: openEMS's normalised, node/cell sampled mode matching
+/// (`compile/mode.rs`). Measured 2.8–3.5e-7.
+#[test]
+fn waveguide_probes_te10() {
+    check("adv_wg_te10", 2e-5);
+}
+
+/// A TE11-like field on a graded mesh (0.5…1.5 mm cells around the node
+/// x = 5, y = 5 mm) with full mode functions and with indicators that
+/// select the single node (voltage: linear interpolation of E, dual area)
+/// and the single cell (current: `f` at the cell centre, cell area).
+/// Measured 3.7–9.7e-6, and 4.7e-4 for the node indicator, which sits in
+/// a field null (cancellation of its two edge contributions).
+#[test]
+fn waveguide_probes_graded() {
+    let name = "adv_wg_graded";
+    let res = run(name, &CompileOptions::default());
+    for (f, e) in compare(name, &res) {
+        let tol = if f == "wv_node" { 3e-3 } else { 1e-4 };
+        assert!(e < tol, "{name}/{f}: relative L2 {e:.3e} > {tol:e}");
+    }
+}
+
 // ------------------------------------------------------------ sheets
 
 /// ems's signal of `name`'s probe `f` at the openEMS sample times of the

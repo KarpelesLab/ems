@@ -51,9 +51,11 @@ impl OeProbe {
         OeProbe { t, cols }
     }
 
-    /// The single value column.
+    /// The value column of a scalar probe (voltage, current; for the
+    /// waveguide probes the first of their two columns, the second being
+    /// the mode purity).
     pub fn values(&self) -> &[f64] {
-        assert_eq!(self.cols.len(), 1, "not a scalar probe");
+        assert!(matches!(self.cols.len(), 1 | 2), "not a scalar probe");
         &self.cols[0]
     }
 }

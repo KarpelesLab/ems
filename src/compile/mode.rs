@@ -1,25 +1,63 @@
 //! Waveguide (mode-matching) probes: `ProbeBox` types `WaveguideVoltage`
 //! and `WaveguideCurrent`.
 //!
-//! The probe's mode function `f = (f_x, f_y, f_z)` is given by the
-//! property attributes `ModeFunctionX`, `ModeFunctionY` and
-//! `ModeFunctionZ`: expressions over the csx weighting variables
-//! ([`csx::properties::WEIGHT_VARS`]: `x, y, z` in **drawing units**,
-//! `rho, a, r, t`) and the model parameters; a missing attribute is `0`.
-//! The probe box must be flat along its normal (or set `NormDir`); its
-//! transverse extent is the integration area `S`. The probe records
+//! The probe's mode function `f = (f_x, f_y, f_z)` is given by the user
+//! attributes `ModeFunctionX`, `ModeFunctionY` and `ModeFunctionZ` of the
+//! property (the `<Attributes>` child element in the file; openEMS reads
+//! them there, not as attributes of `<ProbeBox>`): expressions over the
+//! csx weighting variables ([`csx::properties::WEIGHT_VARS`]: `x, y, z`
+//! in **drawing units**, `rho, a, r, t`) and the model parameters; a
+//! missing attribute is `0`. openEMS's own parser does not know `pi`, so
+//! files meant for both codes should write numbers. The probe box must be
+//! flat along its normal (or set `NormDir`). Only the tangential
+//! components of `f` matter.
+//!
+//! # openEMS sampling (default)
+//!
+//! These rules were identified from openEMS v0.37 output (fixtures
+//! `adv_wg_*`, design §5.16): with them ems's probe signals agree with
+//! openEMS's to 3e-7 (uniform mesh) and 4e-6 (graded mesh). openEMS
+//! **normalises the mode function itself**, so only its shape matters and
+//! the result is in volts / amperes for any scale of `f`:
+//!
+//! ```text
+//! V = w · Σ_n E_t(n)·f(r_n)·A_n / √(Σ_n |f_t(r_n)|²·A_n)
+//! I = w · Σ_c H_t(c)·f(r_c)·A_c / √(Σ_c |f_t(r_c)|²·A_c)
+//! ```
+//!
+//! with the ProbeBox weight `w` and, in the probe plane (never using the
+//! outermost mesh lines of the domain):
+//!
+//! * **Voltage:** the nodes `n` of the box (box faces included), `f` at
+//!   the node, `A_n` its dual area, `E_t(n)` the linear interpolation
+//!   between the midpoints of the two edges through the node along each
+//!   tangential axis.
+//! * **Current:** the cells `c` of the box, `f` at the **cell centre**,
+//!   `A_c` the cell area, but `H_t(c)` the field at the cell's lower
+//!   corner node: the mean of the two dual edges beside the node, each the
+//!   mean of the two H planes `k ± ½`. This half-cell offset between `f`
+//!   and `H` makes `I` of an exactly matched TE10 mode 0.3 % low at 20
+//!   cells across the guide.
+//!
+//! openEMS also writes a third column, the mode purity
+//! `(Σ E_t·f·A)² / (Σ |E_t|²·A · Σ |f_t|²·A)` (the same sums); ems does
+//! not record it.
+//!
+//! # Exact sampling (`emsModeSampling = "exact"`)
+//!
+//! With the user attribute `emsModeSampling="exact"` (set by
+//! [`RectWaveguidePort`](crate::port::RectWaveguidePort); openEMS ignores
+//! it) the probe records the plain overlap integrals, with `f` in 1/m:
 //!
 //! ```text
 //! WaveguideVoltage:  V(t) = w · ∫_S E_t · f dA     (after each E update)
 //! WaveguideCurrent:  I(t) = w · ∫_S H_t · f dA     (after each H update)
 //! ```
 //!
-//! with the ProbeBox weight `w` and `f` in units of 1/m for `V` in volts
-//! and `I` in amperes (as written by
-//! [`RectWaveguidePort`](crate::port::RectWaveguidePort), whose mode
-//! functions are normalised to `∫|f|² dA = 1`).
+//! over the box's transverse extent `S` (the port helper's mode functions
+//! are normalised to `∫|f|² dA = 1`).
 //!
-//! # Discretisation
+//! # Discretisation of the exact sampling
 //!
 //! The integrals become weighted sums of the edge values (`u = E·Δ` on
 //! primary edges, `i = H·Δ*` on dual edges), so the probes are plain
@@ -77,6 +115,11 @@ use crate::engine::Grid;
 
 /// One probe entry: component, engine node, weight.
 pub(crate) type Entry = (Axis, [usize; 3], f64);
+
+/// User attribute of a waveguide probe property selecting the sampling:
+/// `"exact"` for ems's exact sampling, anything else (or absent) for
+/// openEMS's (see the module docs). openEMS ignores the attribute.
+pub(crate) const SAMPLING_ATTR: &str = "emsModeSampling";
 
 /// Probe entries of a waveguide probe (`pb.probe_type` is
 /// `WaveguideVoltage` or `WaveguideCurrent`) over the snapped box
@@ -142,6 +185,49 @@ pub(super) fn mode_entries(
              plane at its start is used"
         ));
     }
+    let ctx = Ctx {
+        pb,
+        grid,
+        delta_unit,
+        funcs: &funcs,
+        normal,
+        start,
+        stop,
+    };
+    // openEMS's sampling is only identified on Cartesian grids; cylindrical
+    // grids always sample exactly.
+    Some(if cyl || prop.attribute(SAMPLING_ATTR) == Some("exact") {
+        exact_entries(&ctx, name, warnings)
+    } else {
+        openems_entries(&ctx, name, warnings)
+    })
+}
+
+/// What both samplings need.
+struct Ctx<'a> {
+    pb: &'a ProbeBox,
+    grid: &'a Grid,
+    delta_unit: f64,
+    funcs: &'a [CompiledExpr],
+    normal: Axis,
+    start: [usize; 3],
+    stop: [usize; 3],
+}
+
+/// ems's exact sampling (see the module docs), selected by the property
+/// attribute `emsModeSampling = "exact"`.
+fn exact_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<Entry> {
+    let Ctx {
+        pb,
+        grid,
+        delta_unit,
+        funcs,
+        normal,
+        start,
+        stop,
+    } = *c;
+    let cyl = grid.is_cylindrical();
+    let n = normal.index();
     let k = start[n];
     let lo = [0, 1, 2].map(|d| start[d].min(stop[d]));
     let hi = [0, 1, 2].map(|d| start[d].max(stop[d]));
@@ -251,9 +337,129 @@ pub(super) fn mode_entries(
                 }
             }
         }
-        _ => return None,
+        _ => {}
     }
-    Some(out)
+    out
+}
+
+/// openEMS's sampling (see the module docs).
+fn openems_entries(c: &Ctx<'_>, name: &str, warnings: &mut Vec<String>) -> Vec<Entry> {
+    let Ctx {
+        pb,
+        grid,
+        delta_unit,
+        funcs,
+        normal,
+        start,
+        stop,
+    } = *c;
+    let n = normal.index();
+    let k = start[n];
+    let lo = [0, 1, 2].map(|d| start[d].min(stop[d]));
+    let hi = [0, 1, 2].map(|d| start[d].max(stop[d]));
+    let nodes = grid.nodes();
+    let ax = |a: usize| Axis::from_index(a).expect("axis index in 0..3");
+    let lines = |a: usize| grid.lines(ax(a));
+    let eval = |c: usize, p: [f64; 3]| -> f64 {
+        let vars = weight_vars(csx::Vec3::new(
+            p[0] / delta_unit,
+            p[1] / delta_unit,
+            p[2] / delta_unit,
+        ));
+        funcs[c].eval(&vars)
+    };
+    let (ta, tb) = normal.others();
+    let (a, b) = (ta.index(), tb.index());
+    // Sample nodes, without the outermost mesh lines: the box's nodes
+    // (voltage), the lower corners of the box's cells (current).
+    let current = pb.probe_type == ProbeType::WaveguideCurrent;
+    let range = |d: usize| {
+        let top = if current {
+            hi[d].saturating_sub(1)
+        } else {
+            hi[d]
+        };
+        lo[d].max(1)..=top.min(nodes[d].saturating_sub(2))
+    };
+    let mut samples: Vec<([usize; 2], [f64; 2], f64)> = Vec::new();
+    for i in range(a) {
+        for j in range(b) {
+            let mut p = [0.0; 3];
+            p[n] = lines(n)[k];
+            let area = if current {
+                // Cell centre, primary cell area.
+                p[a] = 0.5 * (lines(a)[i] + lines(a)[i + 1]);
+                p[b] = 0.5 * (lines(b)[j] + lines(b)[j + 1]);
+                grid.delta(ta, i) * grid.delta(tb, j)
+            } else {
+                p[a] = lines(a)[i];
+                p[b] = lines(b)[j];
+                grid.dual_delta(ta, i) * grid.dual_delta(tb, j)
+            };
+            samples.push(([i, j], [eval(a, p), eval(b, p)], area));
+        }
+    }
+    let norm2: f64 = samples
+        .iter()
+        .map(|(_, f, area)| (f[0] * f[0] + f[1] * f[1]) * area)
+        .sum();
+    if !(norm2 > 0.0 && norm2.is_finite()) {
+        warnings.push(format!(
+            "waveguide probe {name:?}: the mode function is zero (or not finite) on the \
+             probe plane; it reads 0"
+        ));
+        return Vec::new();
+    }
+    let scale = 1.0 / norm2.sqrt();
+    let mut out = Vec::new();
+    let mut push = |axis: Axis, node: [usize; 3], w: f64| {
+        if w != 0.0 && w.is_finite() {
+            out.push((axis, node, w));
+        }
+    };
+    // H planes k − ½ (node k − 1) and k + ½ (node k), averaged.
+    let planes: Vec<(usize, f64)> = match (k > 0, k + 1 < nodes[n]) {
+        (true, true) => vec![(k - 1, 0.5), (k, 0.5)],
+        (true, false) => vec![(k - 1, 1.0)],
+        (false, true) => vec![(k, 1.0)],
+        (false, false) => Vec::new(),
+    };
+    for &([i, j], f, area) in &samples {
+        let w = area * scale;
+        for (c, (t, o)) in [(ta, tb), (tb, ta)].into_iter().enumerate() {
+            let (ti, oi) = (t.index(), o.index());
+            let (it, io) = if c == 0 { (i, j) } else { (j, i) };
+            let fc = f[c] * w;
+            if fc == 0.0 {
+                continue;
+            }
+            let mut node = [0; 3];
+            node[n] = k;
+            node[oi] = io;
+            if current {
+                // H_t at the node: mean of the two dual edges beside it
+                // along `o`, each the mean of the two H planes.
+                for oc in [io - 1, io] {
+                    for &(kp, wp) in &planes {
+                        node[ti] = it;
+                        node[oi] = oc;
+                        node[n] = kp;
+                        push(t, node, fc * 0.5 * wp / grid.dual_delta(t, it));
+                    }
+                }
+            } else {
+                // E_t at the node: linear interpolation between the
+                // midpoints of the two edges along `t`.
+                let (dl, dh) = (grid.delta(t, it - 1), grid.delta(t, it));
+                let (wl, wh) = (dh / (dl + dh), dl / (dl + dh));
+                node[ti] = it - 1;
+                push(t, node, fc * wl / dl);
+                node[ti] = it;
+                push(t, node, fc * wh / dh);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -263,6 +469,10 @@ mod tests {
     use csx::{ContinuousStructure, Primitive, Property};
 
     fn setup(ty: ProbeType, fx: &str, fy: &str) -> (Vec<Entry>, Grid) {
+        setup_with(ty, fx, fy, true)
+    }
+
+    fn setup_with(ty: ProbeType, fx: &str, fy: &str, exact: bool) -> (Vec<Entry>, Grid) {
         let mut m = ContinuousStructure::new();
         m.grid.delta_unit = 1e-3;
         m.grid.set_lines(0, [0.0, 1.0, 3.0, 4.0]).unwrap();
@@ -271,6 +481,9 @@ mod tests {
         let mut p = Property::probe("p", ProbeBox::new(ty));
         p.set_attribute("ModeFunctionX", fx);
         p.set_attribute("ModeFunctionY", fy);
+        if exact {
+            p.set_attribute(SAMPLING_ATTR, "exact");
+        }
         let id = m.add_property(p);
         m.add_primitive(
             id,
@@ -390,6 +603,18 @@ mod tests {
     }
 
     #[test]
+    fn openems_voltage_normalised_on_interior_nodes() {
+        // Interior nodes (x = 1, 3 mm; y = 2 mm), dual areas 1.5 × 1.5 mm²
+        // each: V = Σ E·f·A / √(Σ f²·A) = √(4.5e-6) m for E_x = 1 V/m,
+        // whatever the scale of f.
+        for fx in ["1", "7"] {
+            let (e, g) = setup_with(ProbeType::WaveguideVoltage, fx, "0", false);
+            let s: f64 = e.iter().map(|&(a, n, w)| w * g.delta(a, n[0])).sum();
+            assert!((s - 4.5e-6f64.sqrt()).abs() < 1e-15, "{s}");
+        }
+    }
+
+    #[test]
     fn cylindrical_needs_z_normal() {
         let mut m = ContinuousStructure::new();
         m.coord_system = csx::CoordSystem::Cylindrical;
@@ -408,5 +633,14 @@ mod tests {
         let mut w = Vec::new();
         assert!(mode_entries(&m, &p, &pb, &grid, 1e-3, [0, 1, 0], [1, 1, 1], &mut w).is_none());
         assert!(!w.is_empty());
+    }
+
+    #[test]
+    fn openems_current_uses_cell_areas() {
+        // Nodes (x = 1, 3 mm; y = 2 mm) with their primary cells 2 × 1 and
+        // 1 × 1 mm²: I = √(3e-6) m for H_y = 1 A/m.
+        let (e, g) = setup_with(ProbeType::WaveguideCurrent, "0", "1", false);
+        let s: f64 = e.iter().map(|&(a, n, w)| w * g.dual_delta(a, n[1])).sum();
+        assert!((s - 3e-6f64.sqrt()).abs() < 1e-15, "{s}");
     }
 }

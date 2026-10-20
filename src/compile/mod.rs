@@ -126,10 +126,12 @@
 //! E / H field over the probe plane, weighted by the mode function of the
 //! property attributes `ModeFunctionX/Y/Z`. Their weights are computed
 //! here ([`ProbeSpec::mode_entries`]); the conventions and the
-//! discretisation are documented in `src/compile/mode.rs`
-//! (mode function in 1/m over drawing-unit coordinates, `V = w·∫E_t·f dA`
-//! after the E update, `I = w·∫H_t·f dA` after the H update, with H
-//! interpolated from the two adjacent dual planes onto the probe plane).
+//! discretisation are documented in `src/compile/mode.rs`: by default
+//! openEMS's sampling (drawing-unit coordinates, the mode function
+//! normalised by the probe itself, `V = w·Σ E_t·f·A/√(Σ f²·A)` over the
+//! plane's nodes, the current over its cells with `f` at the cell centre),
+//! or with the attribute `emsModeSampling="exact"` the plain overlap
+//! integrals `V = w·∫E_t·f dA`, `I = w·∫H_t·f dA`.
 //!
 //! # SAR dumps
 //!
@@ -147,6 +149,7 @@ pub mod sar;
 pub mod sheet;
 mod wire;
 
+pub(crate) use mode::SAMPLING_ATTR as MODE_SAMPLING_ATTR;
 pub use planewave::PlaneWaveSource;
 
 use crate::axis::Axis;
