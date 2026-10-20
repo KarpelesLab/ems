@@ -169,6 +169,69 @@ fn inv_l(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3]) -> f64 {
     g.d(a, n[a]) / (MU0 * mu * g.p(b, n[b]) * g.p(c, n[c]))
 }
 
+/// [`inv_c`] and [`inv_l`] of every edge, precomputed: both depend on
+/// the node only through its clamped indices, so a lookup clamps the same
+/// way and returns the same value bit for bit (the criteria evaluate each
+/// edge's value up to 15 times).
+struct Tables {
+    /// Per axis: table dimensions, then values (index `(i·d1 + j)·d2 + k`).
+    ic: [([usize; 3], Vec<f64>); 3],
+    il: [([usize; 3], Vec<f64>); 3],
+}
+
+impl Tables {
+    fn new(g: &Geo, m: &EdgeMaterials) -> Self {
+        let dims = |a: usize, edge: bool| -> [usize; 3] {
+            core::array::from_fn(|d| {
+                let along = d == a;
+                // inv_c: along a cells, across nodes; inv_l: the reverse.
+                if along == edge {
+                    g.n[d].saturating_sub(1).max(1)
+                } else {
+                    g.n[d]
+                }
+            })
+        };
+        let fill = |a: usize, edge: bool| -> ([usize; 3], Vec<f64>) {
+            let d = dims(a, edge);
+            let mut v = Vec::with_capacity(d[0] * d[1] * d[2]);
+            for i in 0..d[0] {
+                for j in 0..d[1] {
+                    for k in 0..d[2] {
+                        let n = [i as isize, j as isize, k as isize];
+                        v.push(if edge {
+                            inv_c(g, m, a, n)
+                        } else {
+                            inv_l(g, m, a, n)
+                        });
+                    }
+                }
+            }
+            (d, v)
+        };
+        Self {
+            ic: core::array::from_fn(|a| fill(a, true)),
+            il: core::array::from_fn(|a| fill(a, false)),
+        }
+    }
+
+    fn get(t: &([usize; 3], Vec<f64>), n: [isize; 3]) -> f64 {
+        let (d, v) = t;
+        let c: [usize; 3] = core::array::from_fn(|q| n[q].clamp(0, d[q] as isize - 1) as usize);
+        v[(c[0] * d[1] + c[1]) * d[2] + c[2]]
+    }
+
+    /// [`inv_c`] of the E edge along `a` at `n`.
+    fn c(&self, a: usize, n: [isize; 3]) -> f64 {
+        Self::get(&self.ic[a], n)
+    }
+
+    /// [`inv_l`] of the H dual edge along `a` at `n`.
+    fn l(&self, a: usize, n: [isize; 3]) -> f64 {
+        Self::get(&self.il[a], n)
+    }
+}
+
 fn shift(n: [isize; 3], a: usize, k: isize) -> [isize; 3] {
     let mut m = n;
     m[a] += k;
@@ -195,13 +258,14 @@ fn nodes_iter(n: [usize; 3]) -> impl Iterator<Item = [isize; 3]> {
 
 fn gershgorin(grid: &Grid, m: &EdgeMaterials) -> f64 {
     let g = Geo::new(grid, false);
+    let tb = Tables::new(&g, m);
     let mut w2max = 0.0f64;
     for a in 0..3 {
         for n in nodes_iter(g.n) {
             if n[a] as usize + 1 >= g.n[a] {
                 continue;
             }
-            let ic = inv_c(&g, m, a, n);
+            let ic = tb.c(a, n);
             let mut s = 0.0;
             for t in [(a + 1) % 3, (a + 2) % 3] {
                 let o = 3 - a - t;
@@ -212,7 +276,7 @@ fn gershgorin(grid: &Grid, m: &EdgeMaterials) -> f64 {
                     // Face normal to o spanning a × t-cell ct.
                     let mut f = n;
                     f[t] = ct;
-                    s += inv_l(&g, m, o, f);
+                    s += tb.l(o, f);
                 }
             }
             w2max = w2max.max(ic * s);
@@ -223,6 +287,7 @@ fn gershgorin(grid: &Grid, m: &EdgeMaterials) -> f64 {
 
 fn rennings(grid: &Grid, m: &EdgeMaterials) -> f64 {
     let g = Geo::new(grid, true);
+    let tb = Tables::new(&g, m);
     let mut w2max = 0.0f64;
     for a in 0..3 {
         for n in nodes_iter(g.n) {
@@ -233,12 +298,12 @@ fn rennings(grid: &Grid, m: &EdgeMaterials) -> f64 {
                     continue;
                 }
                 let c = 3 - a - b;
-                let lm = inv_l(&g, m, c, shift(n, b, -1));
-                let l0 = inv_l(&g, m, c, n);
+                let lm = tb.l(c, shift(n, b, -1));
+                let l0 = tb.l(c, n);
                 let t = 0.25
-                    * (lm * (inv_c(&g, m, a, shift(n, b, -1)) + inv_c(&g, m, a, n))
-                        + l0 * (inv_c(&g, m, a, n) + inv_c(&g, m, a, shift(n, b, 1))));
-                let q = 0.5 * (inv_c(&g, m, b, n) + inv_c(&g, m, b, shift(n, a, 1)));
+                    * (lm * (tb.c(a, shift(n, b, -1)) + tb.c(a, n))
+                        + l0 * (tb.c(a, n) + tb.c(a, shift(n, b, 1))));
+                let q = 0.5 * (tb.c(b, n) + tb.c(b, shift(n, a, 1)));
                 w2 += t + 0.5 * (lm + l0) * q;
                 if own0.is_none() {
                     own0 = Some(l0 * q);
