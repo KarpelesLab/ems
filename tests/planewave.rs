@@ -658,7 +658,8 @@ fn xml_plane_wave_round_trip() {
     use csx::OpenEmsDocument;
 
     let model = csx_model::model();
-    let fdtd = csx_model::fdtd().max_timesteps(400);
+    // A file means openEMS semantics.
+    let fdtd = csx_model::fdtd().max_timesteps(400).file_equivalent();
     let probe = |mut sim: ems::Simulation| {
         let r = sim.run().unwrap();
         r.probe("centre").unwrap().vector().unwrap().to_vec()

@@ -318,7 +318,8 @@ fn xml_absorbing_bc_round_trip() {
     use ems::{Boundary, Simulation};
 
     let model = model(120, Some((100.0, abc(true, AbcType::Mur1st))));
-    let fdtd = fdtd(Boundary::Pec);
+    // A file means openEMS semantics.
+    let fdtd = fdtd(Boundary::Pec).file_equivalent();
     let direct = probe(Simulation::new(&model, &fdtd).unwrap());
     let mut doc = OpenEmsDocument {
         structure: model,

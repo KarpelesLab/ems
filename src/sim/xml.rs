@@ -15,7 +15,9 @@ impl Fdtd {
     ///
     /// A document without `<FDTD>` (e.g. a bare `<ContinuousStructure>`
     /// file) gets the settings of an empty `<FDTD/>` element (openEMS
-    /// defaults: no excitation, PEC boundaries) and a warning.
+    /// defaults: no excitation, PEC boundaries), but
+    /// [`OPENEMS_DEFAULT_TIMESTEPS`](Fdtd::OPENEMS_DEFAULT_TIMESTEPS)
+    /// steps, and a warning.
     ///
     /// # Errors
     /// A malformed `<FDTD>` element ([`Error::Csx`](crate::Error::Csx)) and
@@ -25,6 +27,8 @@ impl Fdtd {
             Some(s) => Fdtd::from_csx(&s),
             None => {
                 let (f, mut w) = Fdtd::from_csx(&Default::default())?;
+                let f = f.max_timesteps(Fdtd::OPENEMS_DEFAULT_TIMESTEPS);
+                w.retain(|w| !w.contains("NumberOfTimesteps"));
                 w.insert(
                     0,
                     "the document has no <FDTD> settings; openEMS defaults are used".into(),

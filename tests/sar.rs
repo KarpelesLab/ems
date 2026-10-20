@@ -137,9 +137,14 @@ fn local_averaged_and_raw_dumps() {
         assert_eq!(lm.cell[2], 12);
         // The peak 1 g cube is centred 2.5 mm behind the gap; it reaches
         // 0.5 mm out of the block (5 % air, valid).
-        assert_eq!(am.cell, [8, 11, 12]);
+        // (y = 11 and y = 12 are mirror images about the port column: a tie.)
+        assert!(
+            [[8, 11, 12], [8, 12, 12]].contains(&am.cell),
+            "{:?}",
+            am.cell
+        );
         assert_eq!(
-            a.classes()[(8 * c[1] + 11) * c[2] + 12],
+            a.classes()[(8 * c[1] + am.cell[1]) * c[2] + 12],
             VoxelClass::Centered
         );
         // The block is 16 mm, a 1 g cube 10 mm: the block centre has a

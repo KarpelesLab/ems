@@ -45,24 +45,62 @@
 //! ([`Waveform::duration`]); outside `[0, 2T]` it is exactly zero. The
 //! truncation changes the spectrum by less than 1e-6 of its peak.
 //!
+//! # openEMS Gaussian pulse
+//!
+//! [`Waveform::OpenEmsGaussian`] is the Gaussian excitation of openEMS
+//! (signal type 0, what [`Waveform::from_csx`] gives for a file's
+//! Gaussian):
+//!
+//! ```text
+//! s(t) = cos(2π f0 (t − T)) · exp(−((t − T)/τ)²)     for 0 < t ≤ 2T, else 0
+//! τ = 3/(2π·fc),   T = 3τ = 9/(2π·fc)
+//! ```
+//!
+//! established by black-box comparison with openEMS's own signal files
+//! (`et`/`ht`, agreement to their 6 printed digits): carrier phase, width
+//! `τ`, delay `T` and the signal length `2T`. The same Fourier transform
+//! as above applies with this `τ` and `T`. Each lobe falls to
+//! `e^{−2.25} ≈ 0.105` at `f0 ± fc` (−19.5 dB). The pulse starts and is
+//! cut at `e⁻⁹ ≈ 1.2e-4` of its peak, which changes its spectrum by about
+//! 1e-4 of the peak; prefer [`Waveform::Gaussian`] in Rust-built models
+//! where that matters.
+//!
+//! # Sampling convention
+//!
+//! [`Waveform::value`] takes the sampling interval `dt`. With `dt > 0`
+//! the waveforms follow openEMS's sampled signals, where sample `k` of a
+//! signal is the value at `k·dt` (E-field samples) or `(k + ½)·dt`
+//! (H-field samples), and `k = ⌊t/dt + ¼⌋` identifies the sample of a
+//! time `t` on either grid:
+//!
+//! * the openEMS Gaussian and the sinusoid have sample 0 forced to zero
+//!   (their first non-zero sample is `k = 1`), and the openEMS Gaussian
+//!   ends with sample `k = ⌊2T/dt⌋` (the ems [`Waveform::Gaussian`] is the
+//!   continuous pulse on `[0, 2T]`, already 1e-6 small at its ends);
+//! * [`Waveform::Dirac`] is 1 for sample `k = 1` only (`t = dt` on the E
+//!   grid, `1.5·dt` on the H grid) — openEMS's Dirac signal is `[0, 1]`;
+//! * openEMS repeats one period of the sinusoid, starting with its zeroed
+//!   sample 0, so (when `dt` divides the period, as openEMS arranges)
+//!   every sample that is a multiple of the period is zero too (on the H
+//!   grid this differs from the sine);
+//! * the step is 1 from sample 0 on; expressions are evaluated as given.
+//!
+//! How these samples are applied by the excitations of a model (one step
+//! late, as in openEMS) is described on [`Simulation`](crate::Simulation).
+//! With `dt = 0` the waveforms are the continuous functions (openEMS
+//! Gaussian on `(0, 2T]`, Dirac never fires).
+//!
 //! # openEMS / csx interoperability
 //!
 //! [`Waveform::from_csx`] and [`Waveform::to_csx`] convert from / to the
-//! file-level [`csx::fdtd::ExcitationSignal`]. The Gaussian definition above
-//! (cosine carrier, `τ`, `T`) is identical to csx's
-//! [`ExcitationSignal::eval`](csx::fdtd::ExcitationSignal::eval); the only
-//! difference is that `ems` is exactly zero outside `[0, 2T]` while csx
-//! evaluates the untruncated pulse (at most 1e-6 of the peak there). The
-//! public openEMS documentation defines `f0` as the centre frequency and
-//! `fc` as the 20 dB cutoff ("bandwidth is 2·fc"), which this definition
-//! satisfies; it does not specify the carrier phase or the delay.
-//!
-//! The other signals agree with csx for `t ≥ 0`, which is where the engine
-//! samples them. Differences: the sinusoid and the step are 0 for `t < 0`
-//! here (csx's sinusoid continues to negative times), and
-//! [`Waveform::Dirac`] is a sampled unit impulse (1 for the one sample
-//! within half a step of `t = 0`) where csx returns 1 only at exactly
-//! `t = 0`.
+//! file-level [`csx::fdtd::ExcitationSignal`]. A file's Gaussian becomes
+//! [`Waveform::OpenEmsGaussian`]; both Gaussians are written as one (so
+//! [`Waveform::Gaussian`] does not survive a round trip through a file
+//! unchanged). The ems Gaussian is identical to csx's
+//! [`ExcitationSignal::eval`](csx::fdtd::ExcitationSignal::eval) (cosine
+//! carrier, `τ`, `T`), except that ems is exactly zero outside `[0, 2T]`.
+//! The other signals agree with csx for `t ≥ 0` up to the sampling
+//! convention above.
 
 use crate::error::{Error, Result};
 use crate::post::Complex64;
@@ -91,13 +129,22 @@ pub enum Waveform {
         /// 20 dB half-bandwidth \[Hz\], `> 0`.
         fc: f64,
     },
-    /// `sin(2π f0 t)` for `t ≥ 0`, zero before (so it starts smoothly at 0).
+    /// openEMS's Gaussian pulse (`τ = 3/(2π·fc)`, `T = 3τ`, cut at `2T`;
+    /// see the [module documentation](self#openems-gaussian-pulse)).
+    OpenEmsGaussian {
+        /// Centre frequency \[Hz\], `≥ 0`.
+        f0: f64,
+        /// 20 dB half-bandwidth \[Hz\], `> 0`.
+        fc: f64,
+    },
+    /// `sin(2π f0 t)` for `t ≥ 0`, zero before (so it starts smoothly at 0;
+    /// the first sample is forced to 0, see [`Waveform::value`]).
     Sinusoid {
         /// Frequency \[Hz\], `> 0`.
         f0: f64,
     },
-    /// A single sample of amplitude 1 at the time step closest to `t = 0`;
-    /// see [`Waveform::value`].
+    /// A single sample of amplitude 1: the first time step after `t = 0`
+    /// (openEMS's Dirac signal); see [`Waveform::value`].
     Dirac,
     /// Unit step: 1 for `t ≥ 0`, 0 before.
     Step,
@@ -170,6 +217,11 @@ impl fmt::Debug for Waveform {
                 .field("f0", f0)
                 .field("fc", fc)
                 .finish(),
+            Waveform::OpenEmsGaussian { f0, fc } => f
+                .debug_struct("OpenEmsGaussian")
+                .field("f0", f0)
+                .field("fc", fc)
+                .finish(),
             Waveform::Sinusoid { f0 } => f.debug_struct("Sinusoid").field("f0", f0).finish(),
             Waveform::Dirac => f.write_str("Dirac"),
             Waveform::Step => f.write_str("Step"),
@@ -194,11 +246,45 @@ fn gaussian_delay(fc: f64) -> f64 {
     gaussian_tau(fc) * (6.0 * LN_10).sqrt()
 }
 
+/// openEMS repeats one period of a sinusoid, whose sample 0 is zero, so
+/// every sample `k` that is a multiple of the period is zero (on the H
+/// grid this differs from the sine). Only when `dt` divides the period
+/// (openEMS adjusts it so).
+fn sine_wrap(f0: f64, dt: f64, k: f64) -> bool {
+    let p = 1.0 / (f0 * dt);
+    let n = p.round();
+    n >= 1.0 && (p - n).abs() <= 1e-6 * n && k.rem_euclid(n) == 0.0
+}
+
+/// Width `τ = 3/(2π·fc)` of the openEMS Gaussian.
+fn oe_tau(fc: f64) -> f64 {
+    3.0 / (TAU * fc)
+}
+
+/// Delay `T = 3τ` of the openEMS Gaussian.
+fn oe_delay(fc: f64) -> f64 {
+    3.0 * oe_tau(fc)
+}
+
 impl Waveform {
     /// Gaussian-modulated cosine centred at `f0` \[Hz\] with 20 dB
     /// half-bandwidth `fc` \[Hz\].
     pub fn gaussian(f0: f64, fc: f64) -> Self {
         Waveform::Gaussian { f0, fc }
+    }
+
+    /// openEMS's Gaussian pulse ([`Waveform::OpenEmsGaussian`]) centred at
+    /// `f0` \[Hz\] with 20 dB half-bandwidth `fc` \[Hz\].
+    pub fn openems_gaussian(f0: f64, fc: f64) -> Self {
+        Waveform::OpenEmsGaussian { f0, fc }
+    }
+
+    /// `(f0, fc)` of either Gaussian, `None` for the other waveforms.
+    pub fn gaussian_parameters(&self) -> Option<(f64, f64)> {
+        match *self {
+            Waveform::Gaussian { f0, fc } | Waveform::OpenEmsGaussian { f0, fc } => Some((f0, fc)),
+            _ => None,
+        }
     }
 
     /// Sinusoid `sin(2π f0 t)` starting at `t = 0`.
@@ -245,7 +331,8 @@ impl Waveform {
         Ok(Waveform::Custom(Arc::new(move |t| compiled.eval(&[t]))))
     }
 
-    /// Converts a csx / openEMS excitation signal.
+    /// Converts a csx / openEMS excitation signal. A Gaussian becomes
+    /// [`Waveform::OpenEmsGaussian`].
     ///
     /// Dirac and step signals carry the highest frequency of interest
     /// `f_max`, which is not part of [`Waveform`]; [`Fdtd::from_csx`]
@@ -256,7 +343,7 @@ impl Waveform {
     pub fn from_csx(s: &csx::fdtd::ExcitationSignal) -> Result<Self> {
         use csx::fdtd::ExcitationSignal as S;
         let w = match s {
-            S::Gaussian { f0, fc } => Waveform::gaussian(*f0, *fc),
+            S::Gaussian { f0, fc } => Waveform::openems_gaussian(*f0, *fc),
             S::Sinus { f0 } => Waveform::sinusoid(*f0),
             S::Dirac { .. } => Waveform::Dirac,
             S::Step { .. } => Waveform::Step,
@@ -286,7 +373,9 @@ impl Waveform {
     pub fn to_csx(&self) -> Option<csx::fdtd::ExcitationSignal> {
         use csx::fdtd::ExcitationSignal as S;
         Some(match self {
-            Waveform::Gaussian { f0, fc } => S::Gaussian { f0: *f0, fc: *fc },
+            Waveform::Gaussian { f0, fc } | Waveform::OpenEmsGaussian { f0, fc } => {
+                S::Gaussian { f0: *f0, fc: *fc }
+            }
             Waveform::Sinusoid { f0 } => S::Sinus { f0: *f0 },
             Waveform::Dirac => S::Dirac { f_max: 0.0 },
             Waveform::Step => S::Step { f_max: 0.0 },
@@ -303,7 +392,7 @@ impl Waveform {
     /// Sinusoid a finite `f0 > 0`, Expression finite `f0` and `f_max`.
     pub fn validate(&self) -> Result<()> {
         match *self {
-            Waveform::Gaussian { f0, fc } => {
+            Waveform::Gaussian { f0, fc } | Waveform::OpenEmsGaussian { f0, fc } => {
                 if !(f0.is_finite() && f0 >= 0.0) {
                     return Err(Error::Invalid(format!(
                         "Gaussian waveform: centre frequency f0 = {f0} must be finite and >= 0"
@@ -339,14 +428,19 @@ impl Waveform {
         }
     }
 
-    /// Amplitude at time `t` \[s\]; `dt` is the sampling interval (time step).
+    /// Amplitude at time `t` \[s\]; `dt` is the sampling interval (time
+    /// step), `0` for the continuous function.
     ///
-    /// `dt` only matters for [`Waveform::Dirac`], which is 1 in the window
-    /// `−dt/2 < t ≤ dt/2` (shifted by `1e-6·dt` to absorb rounding) and 0
-    /// elsewhere. For any uniformly spaced sampling `t0 + n·dt` exactly one
-    /// sample falls into that window: `t = 0` for integer-step sampling and
-    /// `t = +dt/2` for half-step sampling.
+    /// With `dt > 0`, `t` is taken as a sample time of the E grid (`k·dt`)
+    /// or the H grid (`(k + ½)·dt`) and the openEMS sampling convention of
+    /// the [module documentation](self#sampling-convention) applies: the
+    /// openEMS Gaussian and the sinusoid are 0 for sample
+    /// `k = ⌊t/dt + ¼⌋ < 1`, the openEMS Gaussian also for `k > ⌊2T/dt⌋`,
+    /// and the Dirac pulse is 1 for `k = 1` only. The ems Gaussian is the
+    /// continuous pulse on `[0, 2T]` for any `dt`.
     pub fn value(&self, t: f64, dt: f64) -> f64 {
+        // Sample index of `t` on the E or H grid (None without sampling).
+        let k = (dt > 0.0).then(|| (t / dt + 0.25 + 1e-9).floor());
         match self {
             Waveform::Gaussian { f0, fc } => {
                 let delay = gaussian_delay(*fc);
@@ -356,20 +450,34 @@ impl Waveform {
                 let x = (t - delay) / gaussian_tau(*fc);
                 (TAU * f0 * (t - delay)).cos() * (-x * x).exp()
             }
+            Waveform::OpenEmsGaussian { f0, fc } => {
+                let delay = oe_delay(*fc);
+                let inside = match k {
+                    Some(k) => k >= 1.0 && k <= (2.0 * delay / dt + 1e-9).floor(),
+                    None => t > 0.0 && t <= 2.0 * delay,
+                };
+                if !inside {
+                    return 0.0;
+                }
+                let x = (t - delay) / oe_tau(*fc);
+                (TAU * f0 * (t - delay)).cos() * (-x * x).exp()
+            }
             Waveform::Sinusoid { f0 } => {
-                if t >= 0.0 {
+                if k.map_or(t >= 0.0, |k| k >= 1.0 && !sine_wrap(*f0, dt, k)) {
                     (TAU * f0 * t).sin()
                 } else {
                     0.0
                 }
             }
             Waveform::Dirac => {
-                let half = 0.5 * dt;
-                let s = t - 1e-6 * dt;
-                if s > -half && s <= half { 1.0 } else { 0.0 }
+                if k == Some(1.0) {
+                    1.0
+                } else {
+                    0.0
+                }
             }
             Waveform::Step => {
-                if t >= 0.0 {
+                if k.map_or(t >= 0.0, |k| k >= 0.0) {
                     1.0
                 } else {
                     0.0
@@ -381,10 +489,12 @@ impl Waveform {
     }
 
     /// Built-in delay \[s\]: the time of the Gaussian pulse's peak
-    /// (`T = √6·ln 10/(π·fc)`), 0 for all other waveforms.
+    /// (`T = √6·ln 10/(π·fc)`, openEMS: `T = 9/(2π·fc)`), 0 for all other
+    /// waveforms.
     pub fn delay(&self) -> f64 {
         match *self {
             Waveform::Gaussian { fc, .. } => gaussian_delay(fc),
+            Waveform::OpenEmsGaussian { fc, .. } => oe_delay(fc),
             _ => 0.0,
         }
     }
@@ -395,6 +505,7 @@ impl Waveform {
     pub fn duration(&self) -> Option<f64> {
         match *self {
             Waveform::Gaussian { fc, .. } => Some(2.0 * gaussian_delay(fc)),
+            Waveform::OpenEmsGaussian { fc, .. } => Some(2.0 * oe_delay(fc)),
             Waveform::Dirac => Some(0.0),
             _ => None,
         }
@@ -406,16 +517,53 @@ impl Waveform {
     /// is ignored). `None` for all other waveforms.
     pub fn spectrum(&self, f: f64) -> Option<Complex64> {
         match *self {
-            Waveform::Gaussian { f0, fc } => {
-                let tau = gaussian_tau(fc);
+            Waveform::Gaussian { f0, fc } | Waveform::OpenEmsGaussian { f0, fc } => {
+                let ems = matches!(self, Waveform::Gaussian { .. });
+                let (tau, delay) = if ems {
+                    (gaussian_tau(fc), gaussian_delay(fc))
+                } else {
+                    (oe_tau(fc), oe_delay(fc))
+                };
                 let lobe = |df: f64| {
                     let x = PI * tau * df;
                     (-x * x).exp()
                 };
                 let mag = 0.5 * tau * PI.sqrt() * (lobe(f - f0) + lobe(f + f0));
-                Some(Complex64::from_polar(mag, -TAU * f * gaussian_delay(fc)))
+                Some(Complex64::from_polar(mag, -TAU * f * delay))
             }
             _ => None,
+        }
+    }
+
+    /// The frequency openEMS bases its Nyquist sampling interval on
+    /// \[Hz\]: `f0 + fc` for the Gaussian, `f0` for the sinusoid and for
+    /// an expression (openEMS uses the custom signal's `f0`, not its
+    /// `f_max`), `None` for Dirac, step and closures (openEMS samples
+    /// every step then).
+    pub fn nyquist_frequency(&self) -> Option<f64> {
+        match *self {
+            Waveform::Gaussian { f0, fc } | Waveform::OpenEmsGaussian { f0, fc } => Some(f0 + fc),
+            Waveform::Sinusoid { f0 } => Some(f0),
+            Waveform::Expression(ref e) if e.f0 > 0.0 => Some(e.f0),
+            _ => None,
+        }
+    }
+
+    /// openEMS's Nyquist interval in steps for time step `dt`:
+    /// `⌊1/(2·f·dt)⌋` with `f` the [`nyquist_frequency`](Self::nyquist_frequency)
+    /// (at least 1; 1 without a frequency).
+    pub fn nyquist_interval(&self, dt: f64) -> u64 {
+        let Some(f) = self
+            .nyquist_frequency()
+            .filter(|f| f.is_finite() && *f > 0.0)
+        else {
+            return 1;
+        };
+        let k = (1.0 / (2.0 * f * dt)).floor();
+        if k.is_finite() && k >= 1.0 {
+            k as u64
+        } else {
+            1
         }
     }
 
@@ -425,7 +573,7 @@ impl Waveform {
     /// unbounded.
     pub fn max_frequency(&self) -> Option<f64> {
         match *self {
-            Waveform::Gaussian { f0, fc } => Some(f0 + fc),
+            Waveform::Gaussian { f0, fc } | Waveform::OpenEmsGaussian { f0, fc } => Some(f0 + fc),
             Waveform::Sinusoid { f0 } => Some(f0),
             Waveform::Expression(ref e) if e.f_max > 0.0 => Some(e.f_max),
             _ => None,
@@ -455,6 +603,45 @@ mod tests {
         assert_eq!(w.value(t_end + 1e-12, dt), 0.0);
         // Closed form of the delay.
         assert!((w.delay() - 6f64.sqrt() * LN_10 / (PI * 1e9)).abs() < 1e-22);
+    }
+
+    #[test]
+    fn openems_gaussian_window_and_samples() {
+        let w = Waveform::openems_gaussian(2e9, 1e9);
+        let dt = 1e-13;
+        let t_end = w.duration().unwrap();
+        assert!((t_end - 2.0 * w.delay()).abs() < 1e-24);
+        assert!((w.delay() - 9.0 / (TAU * 1e9)).abs() < 1e-22);
+        // Envelope at both ends is e^-9 of the peak.
+        let x = w.delay() / oe_tau(1e9);
+        assert!(((-x * x).exp() / (-9f64).exp() - 1.0).abs() < 1e-12);
+        // Sample 0 (E: t = 0, H: t = dt/2) is forced to zero, sample 1 is not.
+        assert_eq!(w.value(0.0, dt), 0.0);
+        assert_eq!(w.value(0.5 * dt, dt), 0.0);
+        assert!(w.value(dt, dt) != 0.0 && w.value(1.5 * dt, dt) != 0.0);
+        // Continuous form: (0, 2T].
+        assert_eq!(w.value(0.0, 0.0), 0.0);
+        assert!(w.value(1e-15, 0.0) != 0.0);
+        // Peak 1 at the delay, zero outside [0, 2T].
+        assert!((w.value(w.delay(), dt) - 1.0).abs() < 1e-15);
+        assert_eq!(w.value(-1e-12, dt), 0.0);
+        assert_eq!(w.value(t_end + 1e-12, dt), 0.0);
+        // Last sample: k = floor(2T/dt), on the E and on the H grid.
+        let last = (t_end / dt).floor();
+        assert!(w.value(last * dt, dt) != 0.0);
+        assert!(w.value((last + 0.5) * dt, dt) != 0.0);
+        assert_eq!(w.value((last + 1.0) * dt, dt), 0.0);
+
+        // openEMS's own signal file (`et`, f0 = fc = 1.5 GHz, 1 mm cube
+        // mesh): sample 1 at t = dt is -0.000115619, sample 2 -0.000118828.
+        let w = Waveform::openems_gaussian(1.5e9, 1.5e9);
+        let dt = 1.92583319473e-12;
+        assert!((w.value(dt, dt) + 0.000115619).abs() < 1e-9);
+        assert!((w.value(2.0 * dt, dt) + 0.000118828).abs() < 1e-9);
+        // `ht`: sample 1 at 1.5·dt is -0.000117219.
+        assert!((w.value(1.5 * dt, dt) + 0.000117219).abs() < 1e-9);
+        // 992 samples (0..=991).
+        assert_eq!((w.duration().unwrap() / dt).floor(), 991.0);
     }
 
     #[test]
@@ -501,20 +688,18 @@ mod tests {
     }
 
     #[test]
-    fn dirac_hits_exactly_one_sample() {
+    fn dirac_is_sample_one() {
         let w = Waveform::dirac();
         let dt = 1.3e-12;
-        for t0 in [0.0, 0.5 * dt, -0.5 * dt, 0.3 * dt, -3.0 * dt] {
-            let hits: Vec<f64> = (0..20)
-                .map(|n| t0 + n as f64 * dt)
-                .filter(|&t| w.value(t, dt) == 1.0)
+        // E grid: t = dt; H grid: t = 1.5·dt (openEMS's `[0, 1]` signal).
+        for t0 in [0.0, 0.5 * dt] {
+            let hits: Vec<usize> = (0..20)
+                .filter(|&n| w.value(t0 + n as f64 * dt, dt) == 1.0)
                 .collect();
-            assert_eq!(hits.len(), 1, "t0 = {t0}");
-            assert!(hits[0].abs() <= 0.5 * dt * (1.0 + 1e-6));
+            assert_eq!(hits, vec![1], "t0 = {t0}");
         }
-        assert_eq!(w.value(0.0, dt), 1.0);
-        assert_eq!(w.value(0.5 * dt, dt), 1.0);
-        assert_eq!(w.value(-0.5 * dt, dt), 0.0);
+        assert_eq!(w.value(0.0, dt), 0.0);
+        assert_eq!(w.value(dt, 0.0), 0.0);
         assert_eq!(w.duration(), Some(0.0));
         assert_eq!(w.spectrum(1.0), None);
     }
@@ -522,7 +707,8 @@ mod tests {
     #[test]
     fn step_and_sinusoid() {
         let s = Waveform::step();
-        assert_eq!(s.value(-1e-15, 1.0), 0.0);
+        assert_eq!(s.value(-0.5, 1.0), 0.0);
+        assert_eq!(s.value(-1e-15, 0.0), 0.0);
         assert_eq!(s.value(0.0, 1.0), 1.0);
         assert_eq!(s.value(5.0, 1.0), 1.0);
         assert_eq!(s.duration(), None);
@@ -531,6 +717,9 @@ mod tests {
         let w = Waveform::sinusoid(1e9);
         assert_eq!(w.value(-1e-10, 1e-12), 0.0);
         assert_eq!(w.value(0.0, 1e-12), 0.0);
+        // The first H sample is forced to zero too (openEMS).
+        assert_eq!(w.value(0.5e-12, 1e-12), 0.0);
+        assert!(w.value(1.5e-12, 1e-12) > 0.0);
         assert!((w.value(0.25e-9, 1e-12) - 1.0).abs() < 1e-12);
         assert_eq!(w.max_frequency(), Some(1e9));
         assert_eq!(w.duration(), None);
@@ -581,8 +770,7 @@ mod tests {
     fn gaussian_matches_csx() {
         for (f0, fc) in [(2e9, 1e9), (1e9, 5e8), (0.0, 1e9), (10e9, 2e9), (5e6, 3e7)] {
             let sig = Sig::Gaussian { f0, fc };
-            let w = Waveform::from_csx(&sig).unwrap();
-            assert!(matches!(w, Waveform::Gaussian { .. }));
+            let w = Waveform::gaussian(f0, fc);
             // Same width, delay, duration and maximum frequency.
             let tau = sig.gaussian_width().unwrap();
             assert!((tau - gaussian_tau(fc)).abs() <= 1e-15 * tau);
@@ -613,6 +801,18 @@ mod tests {
     }
 
     #[test]
+    fn gaussian_converts_from_csx() {
+        for (f0, fc) in [(2e9, 1e9), (1e9, 5e8), (0.0, 1e9)] {
+            let sig = Sig::Gaussian { f0, fc };
+            let w = Waveform::from_csx(&sig).unwrap();
+            assert!(matches!(w, Waveform::OpenEmsGaussian { .. }));
+            assert_eq!(w.gaussian_parameters(), Some((f0, fc)));
+            assert_eq!(Some(sig.max_frequency()), w.max_frequency());
+            assert_eq!(w.to_csx(), Some(sig));
+        }
+    }
+
+    #[test]
     fn other_signals_match_csx_for_nonnegative_t() {
         let dt = 1e-12;
         let ts: Vec<f64> = (0..2000).map(|i| i as f64 * 0.37 * dt).collect();
@@ -627,6 +827,11 @@ mod tests {
         ] {
             let w = Waveform::from_csx(&sig).unwrap();
             for &t in &ts {
+                // The sinusoid's sample 0 is forced to zero.
+                if matches!(sig, Sig::Sinus { .. }) && t < 0.75 * dt {
+                    assert_eq!(w.value(t, dt), 0.0);
+                    continue;
+                }
                 assert_eq!(w.value(t, dt), sig.eval(t), "{sig:?} t={t}");
             }
         }
@@ -634,12 +839,11 @@ mod tests {
         let w = Waveform::from_csx(&Sig::Sinus { f0: 1e9 }).unwrap();
         assert_eq!(w.value(-0.25e-9, dt), 0.0);
         assert!((Sig::Sinus { f0: 1e9 }.eval(-0.25e-9) + 1.0).abs() < 1e-12);
-        // Dirac: both 1 at t = 0; ems also hits the half-step sample.
+        // Dirac: csx is 1 at t = 0, ems (openEMS) at the first step.
         let d = Sig::Dirac { f_max: 1e9 };
         let w = Waveform::from_csx(&d).unwrap();
-        assert_eq!((w.value(0.0, dt), d.eval(0.0)), (1.0, 1.0));
-        assert_eq!((w.value(dt, dt), d.eval(dt)), (0.0, 0.0));
-        assert_eq!((w.value(0.5 * dt, dt), d.eval(0.5 * dt)), (1.0, 0.0));
+        assert_eq!((w.value(0.0, dt), d.eval(0.0)), (0.0, 1.0));
+        assert_eq!(w.value(dt, dt), 1.0);
     }
 
     #[test]

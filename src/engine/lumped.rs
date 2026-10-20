@@ -527,7 +527,8 @@ impl LumpedElement {
 
     /// Thevenin source `amplitude · waveform(t)` \[V\]; see
     /// [`source`](Self::source). [`Waveform::Dirac`] fires at the step
-    /// whose E update is centred on `t = dt/2`.
+    /// whose E update is centred on `t = 1.5·dt` (its sample `k = 1`, see
+    /// [`Waveform::value`]).
     pub fn waveform(mut self, waveform: Waveform, amplitude: f64) -> Self {
         self.source = Some(Source::Waveform(waveform, amplitude));
         self

@@ -23,6 +23,26 @@ pub enum ProbeKind {
     HField,
 }
 
+/// Where a model probe sits on the mesh, as openEMS reports it in the
+/// header of its probe files (`start-coordinates: (x,y,z) m -> [i,j,k]`).
+///
+/// The indices are primary node indices for voltage and E-field probes
+/// and dual indices for current and H-field probes (index `i` is the
+/// dual line between nodes `i` and `i + 1`); the coordinates are those of
+/// the primary node with the same indices, in metres (openEMS prints
+/// them the same way).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbeLocation {
+    /// Indices of the first corner.
+    pub start: [usize; 3],
+    /// Indices of the second corner.
+    pub stop: [usize; 3],
+    /// Coordinates of the first corner's node \[m\].
+    pub start_coords: [f64; 3],
+    /// Coordinates of the second corner's node \[m\].
+    pub stop_coords: [f64; 3],
+}
+
 /// Recorded values of a probe.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProbeValues {
@@ -35,6 +55,11 @@ pub enum ProbeValues {
 /// The recorded time series of one csx `ProbeBox`, restricted to its
 /// `StartTime`/`StopTime` window (a stop time `≤ 0` means "no limit") and
 /// multiplied by its weight.
+///
+/// The window follows openEMS (black-box comparison): E-type probes
+/// (voltage, E field) keep the samples with `start − dt ≤ t ≤ stop + dt`,
+/// H-type probes (current, H field) those with `start ≤ t ≤ stop + dt`
+/// (`t` the sample time, `dt` the time step).
 ///
 /// In a Bloch run ([`Simulation`](crate::Simulation), Bloch mode) the
 /// probe value is complex: [`values`](Self::values) is the real part (the
@@ -53,6 +78,7 @@ pub struct ProbeResult {
     pub(crate) times: Vec<f64>,
     pub(crate) values: ProbeValues,
     pub(crate) imag: Option<ProbeValues>,
+    pub(crate) location: Option<ProbeLocation>,
 }
 
 impl ProbeResult {
@@ -75,6 +101,12 @@ impl ProbeResult {
     /// What is measured.
     pub fn kind(&self) -> ProbeKind {
         self.kind
+    }
+
+    /// The snapped position of a model probe (`None` for lumped-element
+    /// currents and waveguide probes).
+    pub fn location(&self) -> Option<&ProbeLocation> {
+        self.location.as_ref()
     }
 
     /// The property's frequencies for frequency-domain output \[Hz\]
@@ -460,6 +492,8 @@ impl SarResult {
 pub struct Results {
     pub(crate) outcome: Option<RunOutcome>,
     pub(crate) dt: f64,
+    /// openEMS sampling intervals `(time domain, Nyquist)` in steps.
+    pub(crate) openems_intervals: (u64, u64),
     pub(crate) probes: Vec<ProbeResult>,
     pub(crate) lumped: Vec<ProbeResult>,
     pub(crate) dumps: Vec<DumpResult>,
@@ -523,6 +557,22 @@ impl IncidentWave {
 }
 
 impl Results {
+    /// The steps between two samples of openEMS's time-domain probe files
+    /// for this simulation
+    /// ([`Fdtd::openems_probe_interval`](crate::Fdtd::openems_probe_interval)).
+    /// The probes here record every step; [`crate::io::openems`] writes
+    /// every this many.
+    pub fn openems_probe_interval(&self) -> u64 {
+        self.openems_intervals.0
+    }
+
+    /// openEMS's Nyquist interval in steps
+    /// ([`Fdtd::openems_nyquist_interval`](crate::Fdtd::openems_nyquist_interval)),
+    /// the sampling of its frequency-domain probe values.
+    pub fn openems_nyquist_interval(&self) -> u64 {
+        self.openems_intervals.1
+    }
+
     /// How the run stopped (`None` for results taken without
     /// [`Simulation::run`](crate::Simulation::run)).
     pub fn outcome(&self) -> Option<&RunOutcome> {

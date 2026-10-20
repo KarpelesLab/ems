@@ -118,7 +118,10 @@ fn csx_port_into_resistor_loop() {
 
 /// The same port built from csx properties and as an engine `LumpedPort`
 /// on the same compiled model gives the same V and I series (the csx
-/// excitation over the lumped resistor is a Thevenin source).
+/// excitation over the lumped resistor is a Thevenin source, sampled with
+/// openEMS's timing: half a step earlier than the engine port's). With
+/// openEMS run semantics (XML files) it is scaled to openEMS's soft source
+/// instead; see tests/openems_core.rs.
 #[test]
 fn csx_port_matches_engine_port() {
     let steps = 1500;
@@ -135,8 +138,10 @@ fn csx_port_matches_engine_port() {
 
     let mut b = Simulation::new(&bare, &fdtd).unwrap();
     let bx = LumpedBox::new(Axis::Z, [8, 10, 9], [8, 10, 11]).unwrap();
+    let dt = b.engine().dt();
+    let wave = Waveform::gaussian(0.0, 3e9);
     let h = EnginePort::new(bx, 50.0)
-        .excite_waveform(Waveform::gaussian(0.0, 3e9), 1.0)
+        .excite(move |t| wave.value(t - 0.5 * dt, dt))
         .add_to(b.engine_mut())
         .unwrap();
     b.run().unwrap();
@@ -238,10 +243,12 @@ fn line_model() -> ContinuousStructure {
     cube(8)
 }
 
-/// Hard E source: the edge voltages are overwritten with `E·l·a((n+1)·dt)`
-/// after every step, and an E-field probe at the shared node of two driven
-/// edges reads exactly `E·a(t)`. Soft E source: the first sample is
-/// `E·l·a(dt/2)`. Hard H source: the dual-edge current is `H·l*·a`.
+/// openEMS timing: a field at time `T` gets the signal at `T − dt`. Hard E
+/// source: the edge voltages are overwritten with `E·l·a(n·dt)` for the
+/// state at `(n+1)·dt`, and an E-field probe at the lower node of the
+/// driven edges reads `E·a(t − dt)` (the native E_z edge above the node).
+/// Soft E source: the first sample is `E·l·a(0) = 0` and the second
+/// `E·l·a(dt)`. Hard H source: the dual-edge current is `H·l*·a`.
 #[test]
 fn hard_and_soft_sources_and_field_probe() {
     let f0 = 1e9;
@@ -282,20 +289,24 @@ fn hard_and_soft_sources_and_field_probe() {
     let e = hard.probe("e").unwrap();
     for (k, (&t, &x)) in v.times().iter().zip(v.scalar().unwrap()).enumerate() {
         assert!((t - (k as f64 + 1.0) * dt).abs() < 1e-22);
-        let want = 2.0 * (amp * 1e-3 * wave.value(t, dt)) as f32 as f64;
+        let want = 2.0 * (amp * 1e-3 * wave.value(t - dt, dt)) as f32 as f64;
         assert!((x - want).abs() <= 1e-6 * amp * 1e-3, "{x} vs {want}");
         let ez = e.vector().unwrap()[k][2];
-        assert!((ez - amp * wave.value(t, dt)).abs() <= 1e-5 * amp, "{ez}");
+        assert!(
+            (ez - amp * wave.value(t - dt, dt)).abs() <= 1e-5 * amp,
+            "{ez}"
+        );
     }
     assert_eq!(e.kind(), ems::ProbeKind::EField);
 
     let soft = run(ExcitationType::EFieldSoft);
     let v = soft.probe("v").unwrap().scalar().unwrap();
-    let want = 2.0 * amp * 1e-3 * wave.value(0.5 * dt, dt);
+    assert_eq!(v[0], 0.0);
+    let want = 2.0 * amp * 1e-3 * wave.value(dt, dt);
     assert!(
-        (v[0] - want).abs() < 1e-6 * want.abs(),
+        (v[1] - want).abs() < 1e-6 * want.abs(),
         "{} vs {want}",
-        v[0]
+        v[1]
     );
     // A soft source radiates: later samples differ from the hard ones.
     let vh = hard.probe("v").unwrap().scalar().unwrap();
@@ -323,7 +334,7 @@ fn hard_and_soft_sources_and_field_probe() {
     assert_eq!((edges[0].0, edges[0].1), (Axis::Z, [4, 4, 4]));
     sim.run().unwrap();
     let t = (19.0 + 0.5) * dt;
-    let want = 2.0 * 1e-3 * wave.value(t, dt);
+    let want = 2.0 * 1e-3 * wave.value(t - dt, dt);
     let got = sim.engine().i(Axis::Z, [4, 4, 4]) as f64;
     assert!((got - want).abs() < 1e-6 * 2e-3, "{got} vs {want}");
 }
@@ -490,8 +501,9 @@ fn lumped_caps() {
     assert_eq!(run(false), [false, false, false]);
 }
 
-/// Field probes sample the centre of their box (interpolated between
-/// nodes); dumps honour the probe settings' start / stop time; a hard
+/// Field probes read the native E components of the (snapped) start corner
+/// of their box, like openEMS (`E_z` of the edge above the node); dumps
+/// honour the probe settings' start / stop time; a hard
 /// source on a lumped element's edge warns; a multi-column port's voltage
 /// probe sits on a mesh line (no snapping warning).
 #[test]
@@ -517,6 +529,7 @@ fn field_probe_centre_dump_window_and_warnings() {
     };
     point(&mut m, "p4", [4.0, 4.0, 4.0], [4.0, 4.0, 4.0]);
     point(&mut m, "p5", [5.0, 4.0, 4.0], [5.0, 4.0, 4.0]);
+    point(&mut m, "p3", [4.0, 4.0, 3.0], [4.0, 4.0, 3.0]);
     point(&mut m, "box_z", [4.0, 4.0, 3.0], [4.0, 4.0, 5.0]);
     point(&mut m, "box_x", [4.0, 4.0, 4.0], [5.0, 4.0, 4.0]);
     let (t0, t1) = (20e-12, 60e-12);
@@ -540,12 +553,11 @@ fn field_probe_centre_dump_window_and_warnings() {
     let v = |n: &str| res.probe(n).unwrap().vector().unwrap().to_vec();
     let (p4, p5, bz, bx) = (v("p4"), v("p5"), v("box_z"), v("box_x"));
     assert!(p4.iter().any(|x| x[2].abs() > 1.0));
+    let p3 = v("p3");
     for k in 0..p4.len() {
-        assert_eq!(bz[k], p4[k], "box centred on a node is that node");
-        for c in 0..3 {
-            let want = 0.5 * (p4[k][c] + p5[k][c]);
-            assert!((bx[k][c] - want).abs() <= 1e-12 * (1.0 + want.abs()));
-        }
+        assert_eq!(bz[k], p3[k], "a box reads its start corner");
+        assert_eq!(bx[k], p4[k], "a box reads its start corner");
+        assert!(p5[k][2].abs() <= p4[k][2].abs() + 1e-12);
     }
     let snaps = res.dump("td").unwrap().snapshots().unwrap();
     let dt = res.dt();

@@ -10,6 +10,7 @@
 //! convert between the two (see [`Fdtd::from_csx`] for the mapping).
 
 use crate::axis::Axis;
+use crate::engine::{OpenEmsTimestep, TimeStep, TimestepMethod};
 use crate::error::{Error, Result};
 use crate::waveform::Waveform;
 use core::fmt;
@@ -473,6 +474,9 @@ pub struct Fdtd {
     max_timesteps: u64,
     timestep_factor: f64,
     timestep: Option<f64>,
+    timestep_method: Option<TimestepMethod>,
+    openems_run: bool,
+    cell_constant_material: bool,
     threads: Option<usize>,
     max_frequency: Option<f64>,
     max_time: Option<f64>,
@@ -491,6 +495,9 @@ impl Default for Fdtd {
             max_timesteps: Self::DEFAULT_MAX_TIMESTEPS,
             timestep_factor: Self::DEFAULT_TIMESTEP_FACTOR,
             timestep: None,
+            timestep_method: None,
+            openems_run: false,
+            cell_constant_material: false,
             threads: None,
             max_frequency: None,
             max_time: None,
@@ -566,6 +573,74 @@ impl Fdtd {
     pub fn timestep(mut self, dt: f64) -> Self {
         self.timestep = Some(dt);
         self
+    }
+
+    /// Chooses the time step with an openEMS criterion
+    /// ([`TimestepMethod`], see [`crate::engine::timestep`]) on the
+    /// compiled operator (materials included) instead of the ems default
+    /// (the global Courant limit of the smallest cells,
+    /// [`courant_limit`](crate::engine::courant_limit)), times the
+    /// [time step factor](Self::timestep_factor). An explicit
+    /// [`timestep`](Self::timestep) is then also multiplied by the factor,
+    /// and a [sinusoidal](Waveform::Sinusoid) waveform shortens the step so
+    /// that its period is an integer number of steps (openEMS behaviour).
+    /// [`Fdtd::from_csx`] sets this (openEMS files always use one).
+    pub fn timestep_method(mut self, m: impl Into<Option<TimestepMethod>>) -> Self {
+        self.timestep_method = m.into();
+        self
+    }
+
+    /// openEMS run semantics (set by [`Fdtd::from_csx`]; established by
+    /// black-box comparison with openEMS v0.37):
+    ///
+    /// * the [end criteria](Self::end_criteria) are evaluated every
+    ///   Nyquist interval of the waveform ([`Waveform::nyquist_interval`],
+    ///   1 step without a waveform) instead of the criteria's own check
+    ///   interval, on the state reached after each interval
+    ///   ([`RunLimits::check_after_interval`](crate::engine::RunLimits::check_after_interval)),
+    ///   from the start of the run instead of after the excitation has
+    ///   ended;
+    /// * a [`max_time`](Self::max_time) allows `⌊max_time/dt⌋` steps
+    ///   (instead of `⌈max_time/dt⌉`);
+    /// * [`max_timesteps`](Self::max_timesteps) may be 0 (openEMS's value
+    ///   when `NumberOfTimesteps` is missing: nothing is run).
+    /// * a [`Boundary::Pmc`] face holds the tangential H of the outermost
+    ///   dual layer at zero (the magnetic wall half a cell inside the
+    ///   domain, see [`Compiled::openems_pmc`](crate::compile::Compiled::openems_pmc));
+    /// * parallel lumped elements replace their edges' medium capacitance
+    ///   (`C`) and conductance (`R`), and an excitation over a parallel
+    ///   element acts like openEMS's soft source (see
+    ///   [`Simulation`](crate::Simulation), lumped elements and
+    ///   excitations).
+    pub fn openems_run(mut self, on: bool) -> Self {
+        self.openems_run = on;
+        self
+    }
+
+    /// Samples materials once per cell, at the cell centre, instead of
+    /// averaging sub-cell samples onto each edge (openEMS
+    /// `CellConstantMaterial`; see `compile/cellconst.rs`). Cartesian grids
+    /// only.
+    pub fn cell_constant_material(mut self, on: bool) -> Self {
+        self.cell_constant_material = on;
+        self
+    }
+
+    /// These settings with the semantics they get when written to an
+    /// openEMS file and read back ([`Fdtd::to_csx`], [`Fdtd::from_csx`]):
+    /// a [`Waveform::Gaussian`] becomes openEMS's
+    /// [`Waveform::OpenEmsGaussian`], the time step openEMS's criterion
+    /// ([`TimestepMethod::Rennings`] unless one is set), and
+    /// [`openems_run`](Self::openems_run) is on. A model run with these
+    /// settings gives the same results as after a round trip through XML.
+    pub fn file_equivalent(&self) -> Fdtd {
+        let mut f = self.clone();
+        if let Some(Waveform::Gaussian { f0, fc }) = f.waveform {
+            f.waveform = Some(Waveform::OpenEmsGaussian { f0, fc });
+        }
+        f.timestep_method.get_or_insert(TimestepMethod::Rennings);
+        f.openems_run = true;
+        f
     }
 
     /// Sets the number of worker threads (≥ 1).
@@ -684,7 +759,8 @@ impl Fdtd {
     }
 
     /// The step limit for time step `dt` \[s\]: [`max_timesteps`](Fdtd::max_timesteps),
-    /// reduced to `ceil(max_time/dt)` (at least 1) when a
+    /// reduced to `ceil(max_time/dt)` (at least 1; `floor(max_time/dt)` with
+    /// [`openems_run`](Self::openems_run)) when a
     /// [`max_time`](Fdtd::max_time) is set.
     pub fn timestep_limit(&self, dt: f64) -> u64 {
         match self.max_time {
@@ -693,11 +769,13 @@ impl Fdtd {
                 let r = t / dt;
                 let n = if (r - r.round()).abs() <= 1e-9 * r {
                     r.round()
+                } else if self.openems_run {
+                    r.floor()
                 } else {
                     r.ceil()
                 };
                 if n < self.max_timesteps as f64 {
-                    (n as u64).max(1)
+                    (n as u64).max(u64::from(!self.openems_run))
                 } else {
                     self.max_timesteps
                 }
@@ -741,6 +819,65 @@ impl Fdtd {
         self.timestep
     }
 
+    /// Whether materials are sampled at cell centres (see
+    /// [`cell_constant_material`](Self::cell_constant_material)).
+    pub fn get_cell_constant_material(&self) -> bool {
+        self.cell_constant_material
+    }
+
+    /// Whether openEMS run semantics are used (see
+    /// [`openems_run`](Self::openems_run)).
+    pub fn get_openems_run(&self) -> bool {
+        self.openems_run
+    }
+
+    /// The openEMS Nyquist interval in steps for time step `dt`
+    /// ([`Waveform::nyquist_interval`] of the waveform, 1 without one).
+    /// openEMS evaluates its end criterion, and samples frequency-domain
+    /// probes, at this interval; time-domain probes every
+    /// `max(1, ⌊interval/OverSampling⌋)` steps (OverSampling default 4).
+    pub fn openems_nyquist_interval(&self, dt: f64) -> u64 {
+        self.waveform.as_ref().map_or(1, |w| w.nyquist_interval(dt))
+    }
+
+    /// The openEMS time-domain probe sampling interval in steps for time
+    /// step `dt`: `max(1, ⌊N/OS⌋)` with `N` the
+    /// [Nyquist interval](Self::openems_nyquist_interval) and `OS` the
+    /// [oversampling](Self::oversampling) (default 4; values below 2 are
+    /// replaced by 4, as openEMS does).
+    pub fn openems_probe_interval(&self, dt: f64) -> u64 {
+        let os = self.oversampling.filter(|&o| o >= 2).unwrap_or(4) as u64;
+        (self.openems_nyquist_interval(dt) / os).max(1)
+    }
+
+    /// The openEMS time-step criterion, if any (see
+    /// [`timestep_method`](Self::timestep_method)).
+    pub fn get_timestep_method(&self) -> Option<TimestepMethod> {
+        self.timestep_method
+    }
+
+    /// The engine time-step request for these settings: with a
+    /// [`timestep_method`](Self::timestep_method),
+    /// [`TimeStep::OpenEms`]; else a fixed `dt` override or the Courant
+    /// factor.
+    pub fn engine_timestep(&self) -> TimeStep {
+        match self.timestep_method {
+            Some(method) => TimeStep::OpenEms(OpenEmsTimestep {
+                method,
+                factor: self.timestep_factor,
+                fixed: self.timestep,
+                period: match self.waveform {
+                    Some(Waveform::Sinusoid { f0 }) if f0 > 0.0 => Some(1.0 / f0),
+                    _ => None,
+                },
+            }),
+            None => match self.timestep {
+                Some(dt) => TimeStep::Fixed(dt),
+                None => TimeStep::Courant(self.timestep_factor),
+            },
+        }
+    }
+
     /// The configured thread count; `None` lets the engine choose
     /// ([`engine::default_threads`](crate::engine::default_threads)).
     pub fn get_threads(&self) -> Option<usize> {
@@ -771,7 +908,7 @@ impl Fdtd {
         if let Some(e) = &self.end_criteria {
             e.validate()?;
         }
-        if self.max_timesteps == 0 {
+        if self.max_timesteps == 0 && !self.openems_run {
             return Err(Error::Invalid("max_timesteps must be at least 1".into()));
         }
         let s = self.timestep_factor;

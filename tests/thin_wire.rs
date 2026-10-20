@@ -321,8 +321,13 @@ fn xml_round_trip() {
         structure: m.clone(),
         ..Default::default()
     };
-    doc.set_fdtd_settings(&wire_fdtd().to_csx());
-    let mut a = Simulation::new(&m, &wire_fdtd()).unwrap();
+    // What an openEMS file means (Fdtd::from_csx sets both).
+    let fdtd = wire_fdtd()
+        .waveform(Waveform::openems_gaussian(5e9, 4e9))
+        .timestep_method(ems::engine::TimestepMethod::Rennings)
+        .openems_run(true);
+    doc.set_fdtd_settings(&fdtd.to_csx());
+    let mut a = Simulation::new(&m, &fdtd).unwrap();
     let mut b = Simulation::from_xml_str(&doc.to_xml_string()).unwrap();
     let (ra, rb) = (a.run().unwrap(), b.run().unwrap());
     assert_eq!(

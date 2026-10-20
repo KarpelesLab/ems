@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <openEMS>
-    <FDTD NumberOfTimesteps="4000" endCriteria="0" f_max="3e9" TimeStepFactor="0.99" TimeStepMethod="1">
+    <FDTD NumberOfTimesteps="4000" endCriteria="1e-300" f_max="3e9" TimeStepFactor="0.99">
         <Excitation Type="0" f0="0" fc="3e9" />
         <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC" />
     </FDTD>

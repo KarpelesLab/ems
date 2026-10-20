@@ -140,6 +140,7 @@
 //! per-cell conductivity and mass density sampled from the model (see
 //! [`sar`]).
 
+mod cellconst;
 mod conformal;
 pub(crate) mod cylindrical;
 pub mod dispersive;
@@ -383,6 +384,12 @@ pub struct Compiled {
     pub materials: EdgeMaterials,
     /// Outer face conditions (Mur and PML faces are PEC).
     pub faces: FaceConditions,
+    /// openEMS PMC faces ([`Fdtd::openems_run`]): the magnetic wall lies
+    /// on the outermost dual plane, half a cell inside the domain (the
+    /// tangential H there is held at zero), instead of on the face itself.
+    /// Established by black-box comparison with openEMS v0.37 (agreement
+    /// ~1e-6, against ~3–30 % for the on-face wall).
+    pub openems_pmc: bool,
     /// Mur faces and their phase velocities \[m/s\].
     pub mur: Vec<(Face, Option<f64>)>,
     /// PML faces and their parameters.
@@ -482,6 +489,9 @@ impl Compiled {
     /// `engine`.
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
+        if self.openems_pmc {
+            pmc_half_cell(engine, &self.faces);
+        }
         if let Some(c) = &self.conformal {
             h.conformal = Some(c.apply(engine)?);
         }
@@ -572,6 +582,42 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
         };
     }
     (faces, (mur, pml))
+}
+
+/// openEMS's PMC: zero the H dual edges tangential to every PMC face in
+/// the dual layer next to it (see [`Compiled::openems_pmc`]).
+fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
+    let n = engine.grid().nodes();
+    let mut co = engine.coefficients_mut();
+    for face in Face::ALL {
+        if faces[face] != FaceCondition::Pmc {
+            continue;
+        }
+        let t = face.axis();
+        let ti = t.index();
+        if n[ti] < 2 {
+            continue;
+        }
+        let layer = if face.is_max() { n[ti] - 2 } else { 0 };
+        for a in Axis::ALL {
+            if a == t {
+                continue;
+            }
+            let (da, db) = co.h_mut(a);
+            for i in 0..n[0] {
+                for j in 0..n[1] {
+                    for k in 0..n[2] {
+                        if [i, j, k][ti] != layer {
+                            continue;
+                        }
+                        let idx = (i * n[1] + j) * n[2] + k;
+                        da[idx] = 0.0;
+                        db[idx] = 0.0;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Warnings for properties the compile step does not (fully) handle.
@@ -733,32 +779,7 @@ fn snap_primitive_corners(
     name: &str,
     warnings: &mut Vec<String>,
 ) -> ([usize; 3], [usize; 3], [[f64; 3]; 2]) {
-    // Box and point values are used as given when they are in the grid's
-    // coordinate system (the default for primitives without their own).
-    let gcs = grid.coord_system;
-    let cart = prim.effective_cs(gcs) == gcs;
-    let tf = |v: csx::Vec3| {
-        if prim.transform.is_empty() {
-            v
-        } else {
-            prim.transform.apply(v)
-        }
-    };
-    let (a, b) = match &prim.shape {
-        csx::Shape::Box(bx) if cart => (tf(bx.start.value()), tf(bx.stop.value())),
-        csx::Shape::Point(pt) if cart => {
-            let v = tf(pt.point.value());
-            (v, v)
-        }
-        other => {
-            warnings.push(format!(
-                "{what} {name:?}: {} primitive replaced by its bounding box",
-                other.type_name()
-            ));
-            let bb = prim.bounding_box_in(gcs, gcs);
-            (bb.min, bb.max)
-        }
-    };
+    let (a, b) = primitive_corners(grid, prim, what, name, warnings);
     let mut off = false;
     let mut outside = false;
     let mut snap = |v: f64, d: usize| -> usize {
@@ -783,6 +804,44 @@ fn snap_primitive_corners(
         ));
     }
     (start, stop, [a.0, b.0])
+}
+
+/// The corners of a probe / dump primitive in drawing units (after its
+/// transformation), before snapping: a box's corners in order, a point
+/// twice, the bounding box of other shapes (with a warning).
+fn primitive_corners(
+    grid: &csx::RectilinearGrid,
+    prim: &csx::Primitive,
+    what: &str,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> (csx::Vec3, csx::Vec3) {
+    // Box and point values are used as given when they are in the grid's
+    // coordinate system (the default for primitives without their own).
+    let gcs = grid.coord_system;
+    let cart = prim.effective_cs(gcs) == gcs;
+    let tf = |v: csx::Vec3| {
+        if prim.transform.is_empty() {
+            v
+        } else {
+            prim.transform.apply(v)
+        }
+    };
+    match &prim.shape {
+        csx::Shape::Box(bx) if cart => (tf(bx.start.value()), tf(bx.stop.value())),
+        csx::Shape::Point(pt) if cart => {
+            let v = tf(pt.point.value());
+            (v, v)
+        }
+        other => {
+            warnings.push(format!(
+                "{what} {name:?}: {} primitive replaced by its bounding box",
+                other.type_name()
+            ));
+            let bb = prim.bounding_box_in(gcs, gcs);
+            (bb.min, bb.max)
+        }
+    }
 }
 
 /// Snaps the AbsorbingBC primitives of `model` to its grid (see
@@ -967,6 +1026,17 @@ pub fn compile(
             .pec_mask_mut(axis)
             .copy_from_slice(&node_map.reorder(&pec));
     }
+    if fdtd.get_cell_constant_material() {
+        if cyl {
+            warnings.push(
+                "CellConstantMaterial is not available on cylindrical grids; materials are \
+                 averaged onto the edges"
+                    .into(),
+            );
+        } else {
+            cellconst::apply(model, &grid, &mut materials)?;
+        }
+    }
     if opts.conformal && cyl {
         warnings.push(
             "conformal PEC is not available on cylindrical grids; using the staircase".into(),
@@ -1012,10 +1082,7 @@ pub fn compile(
         &faces,
         &mut warnings,
     );
-    let timestep = match fdtd.get_timestep() {
-        Some(dt) => TimeStep::Fixed(dt),
-        None => TimeStep::Courant(fdtd.get_timestep_factor()),
-    };
+    let timestep = fdtd.engine_timestep();
     let MaterialGrid {
         mut excitations,
         lumped,
@@ -1041,6 +1108,7 @@ pub fn compile(
         delta_unit: model.grid.delta_unit,
         materials,
         faces,
+        openems_pmc: fdtd.get_openems_run(),
         mur,
         pml,
         timestep,

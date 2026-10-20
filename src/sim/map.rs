@@ -6,16 +6,16 @@ use std::collections::HashMap;
 
 use csx::properties::{DumpMode, ExcitationType, LumpedElementType, ProbeType};
 
-use super::results::ProbeKind;
+use super::results::{ProbeKind, ProbeLocation};
 use crate::Result;
 use crate::axis::Axis;
 use crate::compile::{ModelSources, NodeMap};
 use crate::engine::cylindrical;
 use crate::engine::port::loop_entries;
 use crate::engine::{
-    DumpPosition, DumpQuantity, DumpTiming, EdgeDft, EdgeSource, EdgeValues, Engine, FieldProbe,
-    FieldSampler, FreqDump, LumpedElement, OperatorHandle, PeriodicPlaneWave, PlaneWave, Probe,
-    ProbeQuantity, Schedule, SourceKind, TimeDump, Topology, WavePart,
+    DumpPosition, DumpQuantity, DumpTiming, EdgeDft, EdgeSource, EdgeValues, Engine, FieldSampler,
+    FreqDump, LumpedElement, OperatorHandle, PeriodicPlaneWave, PlaneWave, Probe, ProbeQuantity,
+    Schedule, SourceKind, TimeDump, Topology, WavePart,
 };
 use crate::fdtd::Fdtd;
 use crate::io::openems::dump as oe;
@@ -25,8 +25,9 @@ use crate::io::openems::dump as oe;
 pub(crate) enum ProbeOp {
     /// Voltage or current: a weighted sum of edge values.
     Scalar(OperatorHandle<Probe>),
-    /// E or H field vector at a point.
-    Field(OperatorHandle<FieldProbe>),
+    /// E or H field vector: the native components, one weighted edge
+    /// each (x, y, z).
+    Native([OperatorHandle<Probe>; 3]),
 }
 
 /// A mapped ProbeBox.
@@ -36,13 +37,12 @@ pub(crate) struct ProbeEntry {
     pub id: u32,
     pub number: u32,
     pub kind: ProbeKind,
-    /// Result weight, applied to field probes when reading (already in the
-    /// entries of scalar probes).
-    pub weight: f64,
     pub op: ProbeOp,
     pub frequencies: Vec<f64>,
     pub start_time: f64,
     pub stop_time: f64,
+    /// Snapped position as openEMS reports it (none for waveguide probes).
+    pub location: Option<ProbeLocation>,
 }
 
 /// The engine operator behind a model dump.
@@ -151,6 +151,46 @@ fn value(v: f64, what: &str, name: &str, warnings: &mut Vec<String>) -> Option<f
 
 /// Sampling interval (steps) of dumps: the Nyquist interval of the highest
 /// frequency of interest divided by the oversampling factor (default 4).
+/// Extra signal delay \[s\] that gives an engine source of `kind` the
+/// openEMS excitation timing: the field value at time `T` (E at
+/// `(n + 1)·dt`, H at `(n + ½)·dt`) receives the signal sample at
+/// `T − dt` (openEMS's E excitation of step `n` uses its signal sample `n`
+/// at `n·dt`, its H excitation the sample at `(n − ½)·dt`; established by
+/// black-box comparison, see `tests/openems_core.rs`). The engine samples
+/// at the times documented on [`SourceKind`], so the lag is `dt/2` for
+/// soft sources (sampled mid-update) and `dt` for hard ones (sampled at
+/// the field time).
+pub(crate) fn openems_lag(kind: SourceKind, dt: f64) -> f64 {
+    if kind.is_hard() { dt } else { 0.5 * dt }
+}
+
+/// The amplitude function of a model excitation with openEMS timing: the
+/// waveform sampled at `τ = t − lag − D·dt` (`lag` from [`openems_lag`],
+/// `D = ⌊Delay/dt⌋`: openEMS delays a signal by whole steps, rounded
+/// down), and 0 before the signal's first sample (`τ < 0` on the E grid,
+/// `τ < dt/2` on the H grid; openEMS has no samples before its index 0).
+pub(crate) fn openems_signal(
+    wf: crate::Waveform,
+    delay: f64,
+    lag: f64,
+    dt: f64,
+) -> impl Fn(f64) -> f64 + Send + 'static {
+    let steps = if delay > 0.0 && dt > 0.0 {
+        (delay / dt).floor()
+    } else {
+        0.0
+    };
+    let shift = lag + steps * dt;
+    move |t| {
+        let tau = t - shift;
+        if tau < -0.25 * dt {
+            0.0
+        } else {
+            wf.value(tau, dt)
+        }
+    }
+}
+
 pub(crate) fn dump_interval(fdtd: &Fdtd, dt: f64) -> u64 {
     let Some(f) = fdtd
         .get_max_frequency()
@@ -381,8 +421,15 @@ pub(crate) fn map_sources(
             // Reported by the compile step (csx does not discretise them).
             _ => continue,
         };
-        let (wf, delay) = (w.clone(), ex.delay);
-        let mut op = EdgeSource::new(move |t| wf.value(t - delay, dt)).kind(kind);
+        // openEMS timing: a field at time `T` gets the signal at `T − dt`
+        // (see `openems_lag`).
+        let mut op = EdgeSource::new(openems_signal(
+            w.clone(),
+            ex.delay,
+            openems_lag(kind, dt),
+            dt,
+        ))
+        .kind(kind);
         let mut thevenin = 0;
         let mut hard_on_lumped = 0usize;
         // Cylindrical grids: physical edges already handled (canonical copy).
@@ -468,14 +515,55 @@ pub(crate) fn map_sources(
         if g.caps {
             add_caps(engine, g.axis, &g.edges);
         }
+        if g.topology == Topology::Parallel && fdtd.get_openems_run() {
+            replace_medium(engine, g.axis, &g.edges);
+        }
         let ne = g.edges.len();
+        // openEMS adds the excitation to the edge voltage after the update
+        // (a soft source). The element's Thevenin source adds
+        // `cb·g_e·v_e` per step instead, so `v_e = w/(cb·g_e)` gives the
+        // same voltage per step, with `cb = dt/(C + G·dt/2)` of the edge
+        // with the element folded in (see `Simulation`, lumped elements).
+        // Only with openEMS run semantics; otherwise `v_e = w` (ems
+        // Thevenin semantics).
+        let openems = fdtd.get_openems_run();
+        let gain: Vec<f64> = {
+            let nodes = engine.grid().nodes();
+            let co = engine.coefficients();
+            g.edges
+                .iter()
+                .map(|e| {
+                    let i = (e.node[0] * nodes[1] + e.node[1]) * nodes[2] + e.node[2];
+                    let ge = e.r.map_or(0.0, |r| 1.0 / r);
+                    let (_, cb) = crate::engine::fold_parallel(
+                        co.ca(g.axis)[i],
+                        co.cb(g.axis)[i],
+                        dt,
+                        ge,
+                        e.c.unwrap_or(0.0),
+                    );
+                    if g.topology == Topology::Series || !openems {
+                        // A Thevenin source in the series branch (ems
+                        // semantics; openEMS differs, see the docs).
+                        1.0
+                    } else if ge > 0.0 {
+                        1.0 / (f64::from(cb) * ge)
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
         let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?.record_current();
         for (k, weights) in g.sources {
             debug_assert_eq!(weights.len(), ne);
+            let weights: Vec<f64> = weights.iter().zip(&gain).map(|(w, k)| w * k).collect();
             let ex = &src.excitations[k];
             let wf = waveform.expect("sources only with a waveform").clone();
-            let delay = ex.delay;
-            el = el.edge_source(weights, move |t| wf.value(t - delay, dt));
+            // The element samples its source at `(n + ½)·dt` for the E
+            // update to `(n + 1)·dt`, like a soft E source.
+            let lag = openems_lag(SourceKind::SoftE, dt);
+            el = el.edge_source(weights, openems_signal(wf, ex.delay, lag, dt));
         }
         let h = el.add_to(engine)?;
         mapped.lumped.push((g.name, h));
@@ -551,21 +639,33 @@ pub(crate) fn map_sources(
                     id: p.id,
                     number: s.number,
                     kind,
-                    weight,
                     op: ProbeOp::Scalar(engine.add_operator(pr)),
                     frequencies: s.frequencies.clone(),
                     start_time: s.start_time.value(),
                     stop_time: s.stop_time.value(),
+                    location: None,
                 });
                 continue;
             }
             // Reported by the compile step.
             _ => continue,
         };
+        // openEMS snapping (ties to the lower line) of the raw corners.
+        let prim = |c: [f64; 3]| Axis::ALL.map(|a| snap_lower(grid.lines(a), c[a.index()]));
+        let dual = |c: [f64; 3]| Axis::ALL.map(|a| snap_dual(grid.lines(a), c[a.index()]));
+        let (start, stop) = (prim(p.corners[0]), prim(p.corners[1]));
+        let at = |idx: [usize; 3]| Axis::ALL.map(|a| grid.lines(a)[idx[a.index()]]);
+        let primary_location = ProbeLocation {
+            start,
+            stop,
+            start_coords: at(start),
+            stop_coords: at(stop),
+        };
+        let mut location = primary_location;
         let op = match kind {
             ProbeKind::Voltage => {
                 let mut pr = Probe::new(ProbeQuantity::Voltage);
-                let path = voltage_path(p.start, p.stop);
+                let path = voltage_path(start, stop);
                 if path.is_empty() {
                     warnings.push(format!(
                         "voltage probe {:?}: start and stop snap to the same node; it reads 0",
@@ -578,13 +678,39 @@ pub(crate) fn map_sources(
                 ProbeOp::Scalar(engine.add_operator(pr))
             }
             ProbeKind::Current => {
-                let Some(entries) = current_loop(p.start, p.stop, s.norm_dir, nodes) else {
+                // A flat box: the loop lies in the dual plane nearest to
+                // the box's raw normal coordinate (openEMS).
+                let normal = current_normal(start, stop, s.norm_dir);
+                let flat_layer = normal
+                    .filter(|n| start[n.index()] == stop[n.index()])
+                    .map(|n| dual(p.corners[0])[n.index()]);
+                let Some((entries, layer)) =
+                    current_loop(start, stop, s.norm_dir, nodes, flat_layer)
+                else {
                     warnings.push(format!(
                         "current probe {:?}: no normal direction (set NormDir or use a \
                          box that is flat along one axis); ignored",
                         p.name
                     ));
                     continue;
+                };
+                // Reported like openEMS: the dual lines of the loop.
+                let n = normal.expect("a loop has a normal").index();
+                let mut lo = [0; 3];
+                let mut hi = [0; 3];
+                for d in 0..3 {
+                    if d == n {
+                        (lo[d], hi[d]) = (layer, layer);
+                    } else {
+                        let (a, b) = (start[d].min(stop[d]), start[d].max(stop[d]));
+                        (lo[d], hi[d]) = (a.saturating_sub(1), b.min(nodes[d].saturating_sub(2)));
+                    }
+                }
+                location = ProbeLocation {
+                    start: lo,
+                    stop: hi,
+                    start_coords: at(lo),
+                    stop_coords: at(hi),
                 };
                 let mut pr = Probe::new(ProbeQuantity::Current);
                 for (axis, node, w) in entries {
@@ -593,19 +719,51 @@ pub(crate) fn map_sources(
                 ProbeOp::Scalar(engine.add_operator(pr))
             }
             ProbeKind::EField | ProbeKind::HField => {
-                let q = if kind == ProbeKind::EField {
-                    DumpQuantity::E
+                // openEMS: the native field components at the (snapped)
+                // start corner: E on the three primary edges leaving the
+                // node, H on the three dual edges of the dual node
+                // (i + ½, j + ½, k + ½).
+                let e = kind == ProbeKind::EField;
+                let idx = if e { start } else { dual(p.corners[0]) };
+                if !e {
+                    let stop_dual = dual(p.corners[1]);
+                    location = ProbeLocation {
+                        start: idx,
+                        stop: stop_dual,
+                        start_coords: at(idx),
+                        stop_coords: at(stop_dual),
+                    };
+                }
+                let q = if e {
+                    ProbeQuantity::Voltage
                 } else {
-                    DumpQuantity::H
+                    ProbeQuantity::Current
                 };
-                // The centre of the (snapped) box: the node itself for a
-                // point probe, interpolated otherwise.
-                let centre = Axis::ALL.map(|a| {
-                    let l = grid.lines(a);
-                    let d = a.index();
-                    0.5 * (l[p.start[d]] + l[p.stop[d]])
+                let comps = Axis::ALL.map(|a| {
+                    let mut pr = Probe::new(q);
+                    let ok = Axis::ALL.iter().all(|&b| {
+                        let i = idx[b.index()];
+                        // E_a needs an edge along a; H_a dual edges along
+                        // the two other axes.
+                        if (b == a) == e {
+                            i + 1 < nodes[b.index()]
+                        } else {
+                            true
+                        }
+                    });
+                    if ok {
+                        let len = if e {
+                            grid.edge_length(a, idx)
+                        } else {
+                            grid.dual_edge_length(a, idx)
+                        };
+                        if len > 0.0 {
+                            pr = pr.entry(a, idx, weight / len);
+                        }
+                    }
+                    engine.add_operator(pr)
                 });
-                ProbeOp::Field(engine.add_operator(FieldProbe::at(&grid, q, centre)?))
+                ProbeOp::Native(comps)
             }
         };
         mapped.probes.push(ProbeEntry {
@@ -613,11 +771,11 @@ pub(crate) fn map_sources(
             id: p.id,
             number: s.number,
             kind,
-            weight,
             op,
             frequencies: s.frequencies.clone(),
             start_time: s.start_time.value(),
             stop_time: s.stop_time.value(),
+            location: Some(location),
         });
     }
 
@@ -722,6 +880,51 @@ pub(crate) fn map_sources(
     Ok(mapped)
 }
 
+/// openEMS semantics ([`Fdtd::openems_run`]) of a parallel lumped element
+/// on its edges: the
+/// element's capacitance *replaces* the edge's own (medium) capacitance,
+/// and its resistance the medium's conductance; values the element does
+/// not set keep the medium's. (Established by black-box comparison with
+/// openEMS v0.37: C on vacuum and on a lossy dielectric, R on a lossy
+/// dielectric agree to ~1e-6; adding the element to the medium, as the
+/// engine's [`LumpedElement`] does by itself, is ~1 % off for a 1 pF
+/// element on a 1 mm vacuum cell.) The edges are set to `C = 0` / `G = 0`
+/// where the element provides the value, so that the element's own
+/// folding ([`fold_parallel`](crate::engine::fold_parallel)) gives exactly
+/// its value there.
+fn replace_medium(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
+    let nodes = engine.grid().nodes();
+    let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
+    let dt = engine.dt();
+    let mut co = engine.coefficients_mut();
+    let (ca, cb) = co.e_mut(axis);
+    for e in edges {
+        if e.c.is_none() && e.r.is_none() {
+            continue;
+        }
+        let i = idx(e.node);
+        let (a, b) = (f64::from(ca[i]), f64::from(cb[i]));
+        let mut cap = dt * (1.0 + a) / (2.0 * b);
+        let mut cond = (1.0 - a) / b;
+        if e.c.is_some() {
+            cap = 0.0;
+        }
+        if e.r.is_some() {
+            cond = 0.0;
+        }
+        let den = cap + 0.5 * cond * dt;
+        if den > 0.0 {
+            ca[i] = ((cap - 0.5 * cond * dt) / den) as f32;
+            cb[i] = (dt / den) as f32;
+        } else {
+            // Nothing left of the medium: the element provides all of the
+            // edge's C and G when it is folded in.
+            ca[i] = 1.0;
+            cb[i] = f32::INFINITY;
+        }
+    }
+}
+
 /// PEC end caps of a lumped element: the transverse E edges of its two end
 /// planes, inside the transverse extent of its edges.
 fn add_caps(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
@@ -784,47 +987,93 @@ pub(crate) fn voltage_path(start: [usize; 3], stop: [usize; 3]) -> Vec<(Axis, [u
     v
 }
 
-/// Dual edges `(axis, node, weight)` whose weighted sum is the current
-/// through the probe box from `start` towards `stop` along the normal
-/// (`+normal` for a flat box), or `None` without a normal direction.
-pub(crate) fn current_loop(
+/// Weighted dual edges `(axis, node, weight)` of a current loop.
+pub(crate) type LoopEntries = Vec<(Axis, [usize; 3], f64)>;
+
+/// The normal axis of a current probe: `NormDir`, or the box's only flat
+/// axis.
+pub(crate) fn current_normal(
     start: [usize; 3],
     stop: [usize; 3],
     norm_dir: Option<csx::Axis>,
-    nodes: [usize; 3],
-) -> Option<Vec<(Axis, [usize; 3], f64)>> {
-    let n = match norm_dir {
-        Some(d) => Axis::from_index(d.index())?,
+) -> Option<Axis> {
+    match norm_dir {
+        Some(d) => Axis::from_index(d.index()),
         None => {
             let flat: Vec<Axis> = Axis::ALL
                 .into_iter()
                 .filter(|a| start[a.index()] == stop[a.index()])
                 .collect();
             match flat[..] {
-                [a] => a,
-                _ => return None,
+                [a] => Some(a),
+                _ => None,
             }
         }
-    };
+    }
+}
+
+/// Dual edges `(axis, node, weight)` whose weighted sum is the current
+/// through the probe box from `start` towards `stop` along the normal
+/// (`+normal` for a flat box), and the E-edge layer `k` of the loop (the
+/// loop lies in the dual plane between nodes `k` and `k + 1` along the
+/// normal), or `None` without a normal direction.
+///
+/// The layer is `flat_layer` if given (openEMS: the dual plane nearest to
+/// a flat box), else the middle layer of the box (for a flat box at node
+/// `k`, the layer from `k` to `k + 1`).
+pub(crate) fn current_loop(
+    start: [usize; 3],
+    stop: [usize; 3],
+    norm_dir: Option<csx::Axis>,
+    nodes: [usize; 3],
+    flat_layer: Option<usize>,
+) -> Option<(LoopEntries, usize)> {
+    let n = current_normal(start, stop, norm_dir)?;
     let ni = n.index();
     if nodes[ni] < 2 {
         return None;
     }
     let lo = [0, 1, 2].map(|d| start[d].min(stop[d]));
     let hi = [0, 1, 2].map(|d| start[d].max(stop[d]));
-    let layer = if lo[ni] == hi[ni] {
+    let layer = if let Some(k) = flat_layer {
+        k.min(nodes[ni] - 2)
+    } else if lo[ni] == hi[ni] {
         lo[ni].min(nodes[ni] - 2)
     } else {
         lo[ni] + (hi[ni] - lo[ni] - 1) / 2
     };
     let sign = if start[ni] <= stop[ni] { 1.0 } else { -1.0 };
     // loop_entries gives −∮H (right-handed about +n).
-    Some(
+    Some((
         loop_entries(n, lo, hi, layer)
             .into_iter()
             .map(|(a, p, w)| (a, p, -w * sign))
             .collect(),
-    )
+        layer,
+    ))
+}
+
+/// Index of the mesh line nearest to `x` (openEMS probe snapping: on a
+/// tie, within `1e-9` of the local cell size, the lower line).
+pub(crate) fn snap_lower(lines: &[f64], x: f64) -> usize {
+    let mut best = 0;
+    for (i, &l) in lines.iter().enumerate().skip(1) {
+        let tol = 1e-9 * (l - lines[i - 1]).abs();
+        if (l - x).abs() < (lines[best] - x).abs() - tol {
+            best = i;
+        }
+    }
+    best
+}
+
+/// Index `i` of the dual line `(l[i] + l[i+1])/2` nearest to `x` (ties to
+/// the lower one), `0` for a single-line axis.
+pub(crate) fn snap_dual(lines: &[f64], x: f64) -> usize {
+    if lines.len() < 2 {
+        return 0;
+    }
+    let mid: Vec<f64> = lines.windows(2).map(|w| 0.5 * (w[0] + w[1])).collect();
+    snap_lower(&mid, x)
 }
 
 #[cfg(test)]
@@ -856,17 +1105,36 @@ mod tests {
     }
 
     #[test]
+    fn openems_snapping_ties_down() {
+        let l = [0.0, 1.0, 2.0, 3.5];
+        assert_eq!(snap_lower(&l, 0.5), 0);
+        assert_eq!(snap_lower(&l, 0.51), 1);
+        assert_eq!(snap_lower(&l, 1.5), 1);
+        assert_eq!(snap_lower(&l, 9.0), 3);
+        assert_eq!(snap_lower(&l, -1.0), 0);
+        // Dual lines 0.5, 1.5, 2.75.
+        assert_eq!(snap_dual(&l, 1.0), 0);
+        assert_eq!(snap_dual(&l, 1.2), 1);
+        assert_eq!(snap_dual(&l, 3.5), 2);
+        assert_eq!(snap_dual(&[1.0], 3.0), 0);
+    }
+
+    #[test]
     fn current_loop_normal_and_sign() {
         let nodes = [10, 10, 10];
         // Flat box normal to z: +z.
-        let a = current_loop([3, 4, 2], [3, 4, 2], None, nodes);
+        let a = current_loop([3, 4, 2], [3, 4, 2], None, nodes, None);
         assert!(a.is_none(), "a point has no unique flat axis");
-        let a = current_loop([3, 3, 2], [4, 4, 2], None, nodes).unwrap();
-        let b = current_loop([3, 3, 2], [4, 4, 2], Some(csx::Axis::Z), nodes).unwrap();
+        let a = current_loop([3, 3, 2], [4, 4, 2], None, nodes, None).unwrap();
+        let b = current_loop([3, 3, 2], [4, 4, 2], Some(csx::Axis::Z), nodes, None).unwrap();
         assert_eq!(a, b);
+        assert_eq!(a.1, 2);
+        let c = current_loop([3, 3, 2], [4, 4, 2], None, nodes, Some(1)).unwrap();
+        assert_eq!(c.1, 1);
         // Reversed along the normal: opposite sign, same layer.
-        let up = current_loop([3, 4, 1], [3, 4, 4], Some(csx::Axis::Z), nodes).unwrap();
-        let down = current_loop([3, 4, 4], [3, 4, 1], Some(csx::Axis::Z), nodes).unwrap();
+        let (up, _) = current_loop([3, 4, 1], [3, 4, 4], Some(csx::Axis::Z), nodes, None).unwrap();
+        let (down, _) =
+            current_loop([3, 4, 4], [3, 4, 1], Some(csx::Axis::Z), nodes, None).unwrap();
         assert_eq!(up.len(), down.len());
         for (u, d) in up.iter().zip(&down) {
             assert_eq!((u.0, u.1), (d.0, d.1));

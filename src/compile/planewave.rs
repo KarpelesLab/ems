@@ -71,8 +71,10 @@ pub(super) fn is_csx_skip_warning(w: &str, names: &[&str]) -> bool {
 /// The matching frequency for the settings' waveform (0: operator default).
 fn match_frequency(fdtd: &Fdtd) -> f64 {
     match fdtd.get_waveform() {
-        Some(&Waveform::Gaussian { f0, .. }) if f0 > 0.0 => f0,
-        Some(&Waveform::Gaussian { fc, .. }) => 0.5 * fc,
+        Some(w) if w.gaussian_parameters().is_some() => {
+            let (f0, fc) = w.gaussian_parameters().expect("checked");
+            if f0 > 0.0 { f0 } else { 0.5 * fc }
+        }
         Some(&Waveform::Sinusoid { f0 }) => f0,
         _ => fdtd.get_max_frequency().map_or(0.0, |f| 0.5 * f),
     }

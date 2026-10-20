@@ -161,6 +161,7 @@ mod rows;
 pub(crate) mod run;
 pub mod sheet;
 mod slab;
+pub mod timestep;
 pub mod wire;
 
 use core::marker::PhantomData;
@@ -170,8 +171,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use bloch_wave::{PeriodicPlaneWave, PeriodicPlaneWaveSpec, WavePart};
 pub use boundary::periodic::BlochPair;
 pub use coeffs::{
-    Coefficients, FaceCondition, FaceConditions, TimeStep, courant_limit, dual_edge_lr,
-    primary_edge_cg,
+    Coefficients, FaceCondition, FaceConditions, OpenEmsTimestep, TimeStep, courant_limit,
+    dual_edge_lr, primary_edge_cg,
 };
 pub use conformal::{
     ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, ConformalSheets,
@@ -198,6 +199,7 @@ pub use probe::{FieldProbe, Probe, ProbeQuantity};
 pub use run::{Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+pub use timestep::TimestepMethod;
 pub use wire::ThinWire;
 
 use crate::axis::Axis;
@@ -281,7 +283,13 @@ impl EngineBuilder {
         let periodic = Periodic::from_faces(&faces, grid.nodes())?;
         let axis = cylindrical::AxisMerge::new(&grid);
         let multigrid = multigrid::Multigrid::new(&grid);
-        let dt = self.timestep.resolve(&grid)?;
+        let dt = match (self.timestep, &self.materials) {
+            (TimeStep::OpenEms(o), Some(Materials::Edges(m))) => o.resolve(&grid, m)?,
+            (TimeStep::OpenEms(o), Some(Materials::Cells(m))) => {
+                o.resolve(&grid, &EdgeMaterials::from_cells(&grid, m)?)?
+            }
+            (t, _) => t.resolve(&grid)?,
+        };
         let coeffs = match &self.materials {
             Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
             Some(Materials::Edges(m)) => Coefficients::from_edges(&grid, m, &self.faces, dt)?,

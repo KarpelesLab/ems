@@ -10,7 +10,8 @@ mod results;
 mod xml;
 
 pub use results::{
-    DumpData, DumpResult, IncidentWave, ProbeKind, ProbeResult, ProbeValues, Results, SarResult,
+    DumpData, DumpResult, IncidentWave, ProbeKind, ProbeLocation, ProbeResult, ProbeValues,
+    Results, SarResult,
 };
 
 use crate::Result;
@@ -65,10 +66,21 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///    transverse E edges of the two end planes of the element (within its
 ///    transverse extent) are made PEC, i.e. metal end plates. Every
 ///    element records its terminal current
-///    ([`Results::lumped_current`]).
+///    ([`Results::lumped_current`]). With [`Fdtd::openems_run`] (openEMS
+///    files) a parallel element's `C` *replaces* the capacitance of its
+///    edges' medium and its `R` the medium's conductance (openEMS
+///    behaviour, black-box comparison; otherwise the element adds to the
+///    medium).
 /// 2. **Excitations** (csx `Excitation`, only enabled ones), driven by the
-///    settings' [`Waveform`](crate::Waveform) delayed by the property's
-///    `Delay`: `a(t) = waveform.value(t − delay)`. csx gives the field
+///    settings' [`Waveform`](crate::Waveform) with openEMS's timing
+///    (established by black-box comparison with openEMS v0.37, see
+///    `tests/openems_core.rs`): a field value at time `T` (E at
+///    `(n + 1)·dt`, H at `(n + ½)·dt`) receives the signal sample at
+///    `T − dt − D·dt`, where `D = ⌊Delay/dt⌋` (openEMS delays by whole
+///    steps, rounding down, computed in floating point: 2e-10 s at
+///    `dt = 1e-9/525` s is 104 steps), and nothing before the signal's
+///    first sample. The samples follow the waveform's
+///    [sampling convention](crate::waveform#sampling-convention). csx gives the field
 ///    amplitude per edge (V/m for E types, A/m for H types, including the
 ///    weighting function); the integral-form weight is that amplitude
 ///    times the edge length (primary edge for E, dual edge for H) in
@@ -81,7 +93,14 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///      is `(u − w·a)/R_e`, so a lumped resistor plus an excitation over
 ///      the same box is a resistive voltage source of `Σw = E·L` volts per
 ///      column — exactly the engine's [`LumpedPort`](crate::engine::LumpedPort)
-///      model, so XML ports behave like native ones.
+///      model, so XML ports behave like native ones. With
+///      [`Fdtd::openems_run`], a parallel element's source voltage is
+///      scaled to `w·(C_e + G_e·dt/2)/(dt·g_e)` (`C_e`, `G_e` the edge's
+///      total capacitance and conductance, `g_e` the element's): then each
+///      step adds exactly `w·a` to the edge voltage, which is what openEMS
+///      does (a plain soft source after the element's update; agreement
+///      ~1e-7). A series element keeps the unscaled Thevenin source
+///      (openEMS's series elements with an excitation differ by ~30 %).
 ///    * `EFieldHard` overwrites the edge voltage (after the lumped
 ///      updates, so on a lumped element's edge the element has no effect:
 ///      warning), `HFieldSoft` / `HFieldHard` add to / overwrite the H
@@ -98,25 +117,37 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 /// 3. **Probes** (csx `ProbeBox`, corners snapped to mesh nodes by the
 ///    compile step, see [`crate::compile`]), all multiplied by the probe
 ///    `Weight`:
+///    The corners are snapped like openEMS does (black-box comparison):
+///    to the nearest mesh line, a tie going to the lower line, and for H
+///    and current probes to the dual lines (cell centres) where noted.
+///    Every probe records every step (openEMS writes its files every
+///    [`Results::openems_probe_interval`] steps, see
+///    [`crate::io::openems`]); [`ProbeResult::location`] gives the
+///    snapped position as openEMS reports it.
 ///    * `Voltage`: `∫E·dl` from `start` to `stop` along the staircase path
 ///      x, then y, then z (edges traversed against their direction count
 ///      negative, so swapping start and stop flips the sign). Sampled at
-///      the E times `(n + 1)·dt`.
+///      the E times `(n + 1)·dt`. (openEMS accepts lines only.)
 ///    * `Current`: the total current through the box cross-section normal
 ///      to `NormDir` (or to the box's only flat axis), counted positive
 ///      from `start` towards `stop` along the normal (along `+normal` for a
 ///      flat box), measured as `∮H·dl` around the E edges whose transverse
-///      node coordinates are inside the box, in the dual plane through the
-///      middle edge layer of the box (for a flat box at node `k`, the layer
-///      from `k` to `k + 1`). Sampled at the H times `(n + ½)·dt`.
-///    * `EField` / `HField`: the field vector at the **centre** of the
-///      (snapped) box, at the E / H times: for a point probe
-///      (`start == stop`) the node itself, interpolated like the dumps (see
-///      [`crate::engine::dump`]); for a box, the node values trilinearly
-///      interpolated at its centre ([`FieldProbe::at`](crate::engine::FieldProbe::at)).
-///      The openEMS documentation describes field probes at a point; using
-///      the centre of a box is this crate's choice (no averaging over the
-///      box).
+///      node coordinates are inside the box. A flat box integrates in the
+///      dual plane nearest to its (unsnapped) normal coordinate, ties to
+///      the lower one (openEMS: a box on the node plane `k` uses the plane
+///      between `k − 1` and `k`). A box with an extent along the normal
+///      (which openEMS disables) uses the dual plane through its middle
+///      edge layer. Sampled at the H times `(n + ½)·dt`.
+///    * `EField` / `HField`: the **native** field components at the
+///      (snapped) start corner of the box, at the E / H times, like
+///      openEMS: for E at node `(i, j, k)` the three primary edges leaving
+///      it (`E_x` on the edge from `i` to `i + 1`, …; a component without
+///      an edge there reads 0); for H at the dual node `(i + ½, j + ½,
+///      k + ½)` (start corner snapped to the dual lines) `H_x` of the dual
+///      edge at `(i, j + ½, k + ½)`, `H_y` at `(i + ½, j, k + ½)` and `H_z`
+///      at `(i + ½, j + ½, k)`. The values are the edge voltages / currents
+///      divided by the (dual) edge length. A box reads its start corner
+///      only.
 ///    * `WaveguideVoltage` / `WaveguideCurrent`: the mode-weighted
 ///      integral of tangential E / H over the probe plane, with the mode
 ///      function of the property attributes `ModeFunctionX/Y/Z` (1/m, over
@@ -546,6 +577,10 @@ impl Simulation {
     /// [`PlaneWave::transit_time`](crate::engine::PlaneWave::transit_time)),
     /// so the energy criterion judges the scattered field only (see
     /// [`crate::engine::planewave`] on energy).
+    ///
+    /// With [`Fdtd::openems_run`] (openEMS files), the criteria are
+    /// instead checked every [Nyquist interval](Fdtd::openems_nyquist_interval)
+    /// from the first step on, without an excitation end.
     pub fn run_limits(&self) -> RunLimits {
         let end = self.fdtd.get_waveform().map(|w| {
             let d = w.duration().unwrap_or(f64::INFINITY);
@@ -559,7 +594,14 @@ impl Simulation {
                 end.max(delay + d + self.engine.operator(h).transit_time())
             })
         });
-        RunLimits::new(self.fdtd.timestep_limit(self.engine.dt()))
+        let dt = self.engine.dt();
+        if self.fdtd.get_openems_run() {
+            let k = self.fdtd.openems_nyquist_interval(dt);
+            return RunLimits::new(self.fdtd.timestep_limit(dt))
+                .end_criteria(self.fdtd.get_end_criteria().map(|c| c.check_interval(k)))
+                .check_after_interval(true);
+        }
+        RunLimits::new(self.fdtd.timestep_limit(dt))
             .end_criteria(self.fdtd.get_end_criteria().copied())
             .excitation_end(end)
     }
@@ -667,11 +709,17 @@ impl Simulation {
             .map(|(q, p)| {
                 let (times, values) = probe_series(&self.engine, p);
                 // Recording window (stop ≤ 0: no limit), with a small
-                // tolerance against rounding of the sample times.
+                // tolerance against rounding of the sample times. openEMS
+                // keeps one more sample at each end on the E side
+                // (`start − dt ≤ t ≤ stop + dt`) and on the H side the
+                // first after the stop (`start ≤ t ≤ stop + dt`), see
+                // `ProbeResult`.
                 let eps = 1e-9 * dt;
-                let lo = times.partition_point(|&t| t < p.start_time - eps);
+                let magnetic = matches!(p.kind, ProbeKind::Current | ProbeKind::HField);
+                let lo_margin = if magnetic { 0.0 } else { dt };
+                let lo = times.partition_point(|&t| t < p.start_time - lo_margin - eps);
                 let hi = if p.stop_time > 0.0 {
-                    times.partition_point(|&t| t <= p.stop_time + eps)
+                    times.partition_point(|&t| t <= p.stop_time + dt + eps)
                 } else {
                     times.len()
                 }
@@ -695,6 +743,7 @@ impl Simulation {
                     times: times[lo..hi].to_vec(),
                     values: window(values),
                     imag,
+                    location: p.location,
                 }
             })
             .collect();
@@ -719,6 +768,7 @@ impl Simulation {
                     times: op.current_times(),
                     values: results::ProbeValues::Scalar(op.current().to_vec()),
                     imag,
+                    location: None,
                 }
             })
             .collect();
@@ -821,6 +871,10 @@ impl Simulation {
         Results {
             outcome: None,
             dt,
+            openems_intervals: (
+                self.fdtd.openems_probe_interval(dt),
+                self.fdtd.openems_nyquist_interval(dt),
+            ),
             probes,
             lumped,
             dumps,
@@ -840,11 +894,13 @@ fn probe_series(engine: &Engine, p: &map::ProbeEntry) -> (Vec<f64>, results::Pro
                 results::ProbeValues::Scalar(op.values().to_vec()),
             )
         }
-        ProbeOp::Field(h) => {
-            let op = engine.operator(&h);
-            let w = p.weight;
-            let v = op.values().iter().map(|v| v.map(|x| x * w)).collect();
-            (op.times().to_vec(), results::ProbeValues::Vector(v))
+        ProbeOp::Native(h) => {
+            // Weights (1/length × probe weight) are in the entries.
+            let ops = h.map(|h| engine.operator(&h));
+            let v = (0..ops[0].values().len())
+                .map(|i| ops.map(|o| o.values()[i]))
+                .collect();
+            (ops[0].times().to_vec(), results::ProbeValues::Vector(v))
         }
     }
 }

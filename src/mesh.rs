@@ -580,10 +580,7 @@ fn updated<'a>(
 }
 
 fn timestep_of(fdtd: &Fdtd) -> TimeStep {
-    match fdtd.get_timestep() {
-        Some(dt) => TimeStep::Fixed(dt),
-        None => TimeStep::Courant(fdtd.get_timestep_factor()),
-    }
+    fdtd.engine_timestep()
 }
 
 /// Refractive index of `eps·mu` (1 for non-physical products).
@@ -834,6 +831,9 @@ impl<'a> Ctx<'a> {
         let factor = match timestep {
             TimeStep::Courant(f) => f,
             TimeStep::Fixed(dt) => dt / limit,
+            TimeStep::OpenEms(o) => o
+                .resolve(g, &crate::engine::EdgeMaterials::vacuum(g))
+                .map_or(1.0, |dt| dt / limit),
         };
         s.dt = match timestep.resolve(g) {
             Ok(dt) => dt,

@@ -34,6 +34,12 @@ pub struct RunLimits {
     /// applies from the first check). For an excitation that never ends,
     /// use `Some(f64::INFINITY)` or no end criteria.
     pub excitation_end: Option<f64>,
+    /// Evaluate the energy of the state *after* every `K` steps of the call
+    /// (with [`Engine::energy`], one extra read-only pass) and stop right
+    /// there, instead of as a by-product of the next step (default
+    /// `false`). This is openEMS's schedule: with `K` its Nyquist interval
+    /// the run stops after a multiple of `K` steps.
+    pub check_after_interval: bool,
 }
 
 impl RunLimits {
@@ -43,7 +49,14 @@ impl RunLimits {
             max_timesteps,
             end_criteria: None,
             excitation_end: None,
+            check_after_interval: false,
         }
+    }
+
+    /// Builder: sets [`check_after_interval`](Self::check_after_interval).
+    pub fn check_after_interval(mut self, on: bool) -> Self {
+        self.check_after_interval = on;
+        self
     }
 
     /// Builder: sets the energy-decay criterion.
@@ -172,7 +185,10 @@ impl Engine {
     ///    (batched, one barrier per half-step when no operator has serial
     ///    hooks).
     ///
-    /// The engine therefore stops one step after the deciding sample.
+    /// The engine therefore stops one step after the deciding sample. With
+    /// [`RunLimits::check_after_interval`], each check instead follows `K`
+    /// steps and evaluates the state reached ([`Engine::energy`]), so the
+    /// run stops at the deciding state.
     /// When `max_timesteps` steps have run → [`StopReason::MaxTimesteps`].
     /// While no energy has been seen (`W_max = 0`) the criterion never
     /// fires. Energy is computed (and `progress` called) even without end
@@ -208,6 +224,11 @@ pub(crate) trait Stepper {
     fn step_with_energy(&mut self) -> f64;
     /// `n` steps without energy evaluation.
     fn run(&mut self, n: u64);
+    /// The energy invariant of the current state without stepping, if the
+    /// stepper supports it.
+    fn energy_now(&mut self) -> Option<f64> {
+        None
+    }
 }
 
 impl Stepper for Engine {
@@ -229,6 +250,9 @@ impl Stepper for Engine {
     fn run(&mut self, n: u64) {
         Engine::run(self, n);
     }
+    fn energy_now(&mut self) -> Option<f64> {
+        Some(Engine::energy(self))
+    }
 }
 
 /// The loop of [`Engine::run_until_with`] for any [`Stepper`].
@@ -243,13 +267,26 @@ where
     let cells = s.cells();
     let start = Instant::now();
     let (mut steps, mut w, mut w_max) = (0u64, 0.0f64, 0.0f64);
+    let after = limits.check_after_interval && s.energy_now().is_some();
     let reason = loop {
         if steps >= max {
             break StopReason::MaxTimesteps;
         }
-        let n = s.timestep();
-        w = s.step_with_energy();
-        steps += 1;
+        let n;
+        if after {
+            let chunk = interval.min(max - steps);
+            s.run(chunk);
+            steps += chunk;
+            if chunk < interval {
+                continue;
+            }
+            n = s.timestep();
+            w = s.energy_now().expect("checked above");
+        } else {
+            n = s.timestep();
+            w = s.step_with_energy();
+            steps += 1;
+        }
         w_max = w_max.max(w);
         let ratio = if w_max > 0.0 { w / w_max } else { 1.0 };
         let ratio_db = if ratio > 0.0 {
@@ -282,9 +319,11 @@ where
         {
             break StopReason::EnergyDecay { ratio_db };
         }
-        let chunk = (interval - 1).min(max - steps);
-        s.run(chunk);
-        steps += chunk;
+        if !after {
+            let chunk = (interval - 1).min(max - steps);
+            s.run(chunk);
+            steps += chunk;
+        }
     };
     Ok(RunOutcome {
         reason,

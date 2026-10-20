@@ -128,6 +128,73 @@ pub enum TimeStep {
     Courant(f64),
     /// A fixed `dt` \[s\]; rejected if it exceeds [`courant_limit`].
     Fixed(f64),
+    /// openEMS's time step: its `TimeStepMethod` criterion on the actual
+    /// operator (materials included), times a factor, optionally shortened
+    /// so that a period fits an integer number of steps (see
+    /// [`OpenEmsTimestep`]). Not checked against [`courant_limit`], which
+    /// is conservative on non-uniform meshes and in dielectrics.
+    OpenEms(OpenEmsTimestep),
+}
+
+/// openEMS time-step settings ([`TimeStep::OpenEms`]).
+///
+/// `dt = factor · dt_method` ([`openems_timestep`](super::timestep::openems_timestep)),
+/// or `factor · fixed` when an explicit time step is given (openEMS
+/// applies its `TimeStepFactor` to an explicit `TimeStep` too); then, for
+/// a periodic excitation of period `T`, `dt = T/(⌊T/dt⌋ + 1)`
+/// ([`periodic_timestep`](super::timestep::periodic_timestep)).
+///
+/// On a cylindrical grid the criterion is replaced by the operator limit
+/// of [`courant_limit`] (openEMS's cylindrical time step has not been
+/// characterised).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenEmsTimestep {
+    /// The criterion.
+    pub method: super::timestep::TimestepMethod,
+    /// Factor in `(0, 1]`.
+    pub factor: f64,
+    /// Explicit time step \[s\] instead of the criterion.
+    pub fixed: Option<f64>,
+    /// Period \[s\] of a periodic (sinusoidal) excitation.
+    pub period: Option<f64>,
+}
+
+impl OpenEmsTimestep {
+    /// `dt` for `grid` and `materials`.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for a factor outside `(0, 1]` or a non-positive
+    /// explicit time step or period.
+    pub fn resolve(&self, grid: &Grid, materials: &EdgeMaterials) -> Result<f64> {
+        let f = self.factor;
+        if !(f.is_finite() && f > 0.0 && f <= 1.0) {
+            return Err(Error::Invalid(format!(
+                "time step factor {f} must be in (0, 1]"
+            )));
+        }
+        let base = match self.fixed {
+            Some(dt) if dt.is_finite() && dt > 0.0 => dt,
+            Some(dt) => {
+                return Err(Error::Invalid(format!(
+                    "time step {dt:e} s must be positive and finite"
+                )));
+            }
+            // The criteria are Cartesian; a cylindrical grid uses its
+            // operator limit (power iteration, see `courant_limit`).
+            None if grid.is_cylindrical() => courant_limit(grid),
+            None => super::timestep::openems_timestep(grid, materials, self.method),
+        };
+        let mut dt = f * base;
+        if let Some(t) = self.period {
+            if !(t.is_finite() && t > 0.0) {
+                return Err(Error::Invalid(format!(
+                    "excitation period {t:e} s must be > 0"
+                )));
+            }
+            dt = super::timestep::periodic_timestep(dt, t);
+        }
+        Ok(dt)
+    }
 }
 
 impl Default for TimeStep {
@@ -150,6 +217,8 @@ impl TimeStep {
             TimeStep::Fixed(dt) => Err(Error::Invalid(format!(
                 "time step {dt:e} s must be positive and at most the stability limit {max:e} s"
             ))),
+            // Without materials: vacuum.
+            TimeStep::OpenEms(o) => o.resolve(grid, &EdgeMaterials::vacuum(grid)),
         }
     }
 }

@@ -9,12 +9,18 @@ use csx::fdtd::{
 };
 
 impl Fdtd {
-    /// Number of timesteps used when an openEMS file does not set
-    /// `NumberOfTimesteps` (the documented openEMS default, 1e9).
+    /// Number of timesteps used for a document without `<FDTD>` element
+    /// (`Fdtd::from_document`, feature `xml`). (A `<FDTD>` element without
+    /// `NumberOfTimesteps` runs no step, like openEMS.)
     pub const OPENEMS_DEFAULT_TIMESTEPS: u64 = 1_000_000_000;
     /// End criterion used when an openEMS file does not set `endCriteria`
-    /// (the documented openEMS default, 1e-5 = −50 dB).
-    pub const OPENEMS_DEFAULT_END_CRITERIA: f64 = 1e-5;
+    /// (1e-6 = −60 dB, what openEMS v0.37 uses: its console reports
+    /// "end-criteria of -60dB").
+    pub const OPENEMS_DEFAULT_END_CRITERIA: f64 = 1e-6;
+    /// `endCriteria` written by [`Fdtd::to_csx`] for settings without end
+    /// criteria: openEMS has no "off" value (0 means its default), so a
+    /// ratio that is never reached (-3000 dB) is written.
+    pub const NO_END_CRITERIA: f64 = 1e-300;
 
     /// Converts csx / openEMS `<FDTD>` settings into solver settings.
     ///
@@ -27,15 +33,15 @@ impl Fdtd {
     ///
     /// | csx field (XML attribute) | `Fdtd` |
     /// |---|---|
-    /// | `number_of_timesteps` (`NumberOfTimesteps`) | [`max_timesteps`](Fdtd::max_timesteps); absent → [`OPENEMS_DEFAULT_TIMESTEPS`](Fdtd::OPENEMS_DEFAULT_TIMESTEPS) |
-    /// | `end_criteria` (`endCriteria`) | [`EndCriteria::energy_ratio`]: a linear energy ratio (1e-5 = −50 dB); `0` → no end criteria; absent → [`OPENEMS_DEFAULT_END_CRITERIA`](Fdtd::OPENEMS_DEFAULT_END_CRITERIA) |
+    /// | `number_of_timesteps` (`NumberOfTimesteps`) | [`max_timesteps`](Fdtd::max_timesteps); absent → 0 with a warning (openEMS runs nothing) |
+    /// | `end_criteria` (`endCriteria`) | [`EndCriteria::energy_ratio`]: a linear energy ratio (1e-6 = −60 dB); absent or `0` → [`OPENEMS_DEFAULT_END_CRITERIA`](Fdtd::OPENEMS_DEFAULT_END_CRITERIA) (as openEMS); checked like openEMS ([`openems_run`](Fdtd::openems_run) is set) |
     /// | `f_max` (`f_max`) | [`max_frequency`](Fdtd::max_frequency); else the `f_max` of a Dirac / step signal (if > 0). Written back as [`Fdtd::get_max_frequency`] |
     /// | `over_sampling` (`OverSampling`) | [`oversampling`](Fdtd::oversampling) (dump sampling interval) |
-    /// | `time_step_method` (`TimeStepMethod`) | CFL is what ems implements; Rennings or other ids → warning, CFL is used |
+    /// | `time_step_method` (`TimeStepMethod`) | [`timestep_method`](Fdtd::timestep_method): absent or 3 → [`TimestepMethod::Rennings`](crate::engine::TimestepMethod::Rennings), 1 → [`Cfl`](crate::engine::TimestepMethod::Cfl), other ids → `Cfl` with a warning (what openEMS does) |
     /// | `max_time` (`MaxTime`) | [`max_time`](Fdtd::max_time) |
     /// | `time_step` (`TimeStep`) | [`timestep`](Fdtd::timestep) |
-    /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor) |
-    /// | `cell_constant_material` | `true` → warning (ems averages materials onto edges) |
+    /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor); absent → 1 (openEMS default) |
+    /// | `cell_constant_material` (`CellConstantMaterial`) | [`cell_constant_material`](Fdtd::cell_constant_material) |
     /// | `coord_system` | `0` (Cartesian) or `1` (cylindrical) accepted: the coordinate system is that of the model's grid; anything else → [`Error::Unsupported`] |
     /// | extra attribute `CylinderCoords` | `0` / `1` accepted silently (openEMS's switch for its cylindrical solver; ems follows the grid) |
     /// | `multi_grid` (`MultiGrid`) | [`multigrid`](Fdtd::multigrid): comma-separated radii in drawing units; unparsable → [`Error::Invalid`] |
@@ -69,18 +75,22 @@ impl Fdtd {
                 .collect::<Result<_>>()?;
         }
 
+        f.openems_run = true;
         f.max_timesteps = match s.number_of_timesteps {
-            Some(0) => {
-                return Err(Error::Invalid(
-                    "FDTD NumberOfTimesteps must be at least 1".into(),
-                ));
-            }
             Some(n) => n,
-            None => Self::OPENEMS_DEFAULT_TIMESTEPS,
+            None => {
+                warn.push("FDTD NumberOfTimesteps is missing: openEMS runs no timestep (0)".into());
+                0
+            }
         };
 
-        let e = s.end_criteria.unwrap_or(Self::OPENEMS_DEFAULT_END_CRITERIA);
-        f.end_criteria = if e == 0.0 {
+        // openEMS replaces a missing or non-positive value by its default
+        // (`endCriteria="0"` stops at -60 dB too).
+        let e = s
+            .end_criteria
+            .filter(|&e| e != 0.0)
+            .unwrap_or(Self::OPENEMS_DEFAULT_END_CRITERIA);
+        f.end_criteria = if e == Self::NO_END_CRITERIA {
             None
         } else if e > 0.0 && e <= 1.0 {
             Some(EndCriteria::energy_ratio(e))
@@ -102,23 +112,24 @@ impl Fdtd {
         // record every timestep.
         f.oversampling = s.over_sampling;
 
-        match s.time_step_method {
-            None | Some(TimeStepMethod::Cfl) => {}
-            Some(m) => warn.push(format!(
-                "FDTD TimeStepMethod={} not implemented; using the CFL criterion",
-                m.id()
-            )),
-        }
+        // openEMS: Rennings (3) by default; every other id selects its
+        // CFL criterion (1), as observed with openEMS v0.37.
+        f.timestep_method = Some(match s.time_step_method {
+            None | Some(TimeStepMethod::Rennings) => crate::engine::TimestepMethod::Rennings,
+            Some(TimeStepMethod::Cfl) => crate::engine::TimestepMethod::Cfl,
+            Some(m) => {
+                warn.push(format!(
+                    "FDTD TimeStepMethod={} is not a known method; using the CFL criterion \
+                     (method 1) like openEMS",
+                    m.id()
+                ));
+                crate::engine::TimestepMethod::Cfl
+            }
+        });
         f.timestep = s.time_step;
-        if let Some(k) = s.time_step_factor {
-            f.timestep_factor = k;
-        }
-        if s.cell_constant_material == Some(true) {
-            warn.push(
-                "FDTD CellConstantMaterial=1 ignored: materials are averaged onto cell edges"
-                    .into(),
-            );
-        }
+        // openEMS's default factor is 1.
+        f.timestep_factor = s.time_step_factor.unwrap_or(1.0);
+        f.cell_constant_material = s.cell_constant_material == Some(true);
 
         if let Some(sig) = &s.excitation {
             f.waveform = Some(Waveform::from_csx(sig)?);
@@ -148,11 +159,13 @@ impl Fdtd {
     /// Converts the solver settings into csx / openEMS `<FDTD>` settings.
     ///
     /// Every setting the file format can express is written explicitly
-    /// (including `TimeStepMethod` = CFL, the method ems uses, and
-    /// `endCriteria = 0` when there are no end criteria), so that
+    /// (including [`NO_END_CRITERIA`](Self::NO_END_CRITERIA) when there are no end criteria), so that
     /// [`Fdtd::from_csx`] of the result gives the same settings back.
     ///
-    /// Lossy: the CPML grading parameters other than the cell count, the
+    /// Lossy: settings without a [`timestep_method`](Fdtd::timestep_method)
+    /// (the ems Courant time step) are written without `TimeStepMethod`,
+    /// which openEMS (and [`Fdtd::from_csx`]) read as Rennings; the CPML
+    /// grading parameters other than the cell count, the
     /// end-criteria check interval, the thread count and
     /// [`Waveform::Custom`] closures (written without `<Excitation>`) have
     /// no file representation. The file format has a single Mur phase
@@ -191,11 +204,18 @@ impl Fdtd {
         }
         FdtdSettings {
             number_of_timesteps: Some(self.max_timesteps),
-            end_criteria: Some(self.end_criteria.map_or(0.0, |e| e.energy_ratio)),
+            end_criteria: Some(
+                self.end_criteria
+                    .map_or(Self::NO_END_CRITERIA, |e| e.energy_ratio),
+            ),
             f_max: self.get_max_frequency(),
             over_sampling: self.oversampling,
-            time_step_method: Some(TimeStepMethod::Cfl),
+            time_step_method: self.timestep_method.map(|m| match m {
+                crate::engine::TimestepMethod::Cfl => TimeStepMethod::Cfl,
+                crate::engine::TimestepMethod::Rennings => TimeStepMethod::Rennings,
+            }),
             max_time: self.max_time,
+            cell_constant_material: self.cell_constant_material.then_some(true),
             time_step: self.timestep,
             time_step_factor: Some(self.timestep_factor),
             multi_grid: (!self.multigrid.is_empty()).then(|| {
@@ -309,23 +329,32 @@ mod tests {
         let (f, warn) = Fdtd::from_csx(&s).unwrap();
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(f.get_max_timesteps(), 1_000_000_000);
+        assert!(f.get_openems_run());
+        // csx's helper sets endCriteria = 1e-5.
         let e = f.get_end_criteria().unwrap();
         assert_eq!(e.energy_ratio, 1e-5);
         assert!((e.decay_db() + 50.0).abs() < 1e-12);
         assert!(matches!(
             f.get_waveform(),
-            Some(Waveform::Gaussian { f0: 2e9, fc: 1e9 })
+            Some(Waveform::OpenEmsGaussian { f0: 2e9, fc: 1e9 })
         ));
         assert_eq!(f.get_max_frequency(), Some(3e9));
         assert_eq!(*f.get_boundaries(), Boundaries::all(Boundary::pml(8)));
-        assert_eq!(f.get_timestep_factor(), Fdtd::DEFAULT_TIMESTEP_FACTOR);
+        // openEMS's time step: Rennings, factor 1.
+        assert_eq!(f.get_timestep_factor(), 1.0);
+        assert_eq!(
+            f.get_timestep_method(),
+            Some(crate::engine::TimestepMethod::Rennings)
+        );
         assert_eq!(f.get_timestep(), None);
 
-        // An empty element: documented openEMS defaults, PEC walls.
+        // An empty element: openEMS defaults, PEC walls; no
+        // NumberOfTimesteps runs no step.
         let (f, warn) = Fdtd::from_csx(&FdtdSettings::new()).unwrap();
-        assert!(warn.is_empty());
-        assert_eq!(f.get_max_timesteps(), Fdtd::OPENEMS_DEFAULT_TIMESTEPS);
-        assert_eq!(f.get_end_criteria().unwrap().energy_ratio, 1e-5);
+        assert_eq!(warn.len(), 1);
+        assert!(warn[0].contains("NumberOfTimesteps"));
+        assert_eq!(f.get_max_timesteps(), 0);
+        assert_eq!(f.get_end_criteria().unwrap().energy_ratio, 1e-6);
         assert!(f.get_waveform().is_none());
         assert_eq!(*f.get_boundaries(), Boundaries::default());
     }
@@ -345,6 +374,7 @@ mod tests {
     #[test]
     fn boundary_kinds() {
         let mut s = FdtdSettings::new();
+        s.number_of_timesteps = Some(100);
         s.boundary = Some(BoundaryConditions {
             faces: [
                 CsxBoundary::Pec,
@@ -399,6 +429,7 @@ mod tests {
     #[test]
     fn end_criteria_units() {
         let mut s = FdtdSettings::new();
+        s.number_of_timesteps = Some(100);
         for (ratio, db) in [(1e-5, -50.0), (1e-6, -60.0), (1e-4, -40.0), (1.0, 0.0)] {
             s.end_criteria = Some(ratio);
             let (f, _) = Fdtd::from_csx(&s).unwrap();
@@ -408,11 +439,15 @@ mod tests {
             assert_eq!(e.check_interval, EndCriteria::DEFAULT_CHECK_INTERVAL);
             assert_eq!(f.to_csx().end_criteria, Some(ratio));
         }
-        // 0 disables the criterion, and is how "none" is written back.
+        // 0 means openEMS's default (-60 dB); "none" is written as a ratio
+        // that is never reached, and read back as none.
         s.end_criteria = Some(0.0);
         let (f, _) = Fdtd::from_csx(&s).unwrap();
-        assert!(f.get_end_criteria().is_none());
-        assert_eq!(f.to_csx().end_criteria, Some(0.0));
+        assert_eq!(f.get_end_criteria().unwrap().energy_ratio, 1e-6);
+        let none = f.no_end_criteria();
+        assert_eq!(none.to_csx().end_criteria, Some(Fdtd::NO_END_CRITERIA));
+        let (back, _) = Fdtd::from_csx(&none.to_csx()).unwrap();
+        assert!(back.get_end_criteria().is_none());
         // dB values or ratios above 1 are rejected.
         for bad in [-50.0, 2.0, f64::NAN] {
             s.end_criteria = Some(bad);
@@ -447,13 +482,20 @@ mod tests {
         let (f, warn) = Fdtd::from_csx(&s).unwrap();
         assert_eq!(f.get_multigrid(), &[10.0, 20.0]);
         assert_eq!(f.to_csx().multi_grid.as_deref(), Some("10,20"));
-        assert_eq!(warn.len(), 4, "{warn:?}");
-        for key in [
-            "TimeStepMethod=3",
-            "CellConstantMaterial",
-            "Verbose",
-            "Delay",
-        ] {
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(f.get_cell_constant_material());
+        assert_eq!(
+            f.get_timestep_method(),
+            Some(crate::engine::TimestepMethod::Rennings)
+        );
+        s.time_step_method = Some(TimeStepMethod::Other(2));
+        let (f2, w2) = Fdtd::from_csx(&s).unwrap();
+        assert_eq!(
+            f2.get_timestep_method(),
+            Some(crate::engine::TimestepMethod::Cfl)
+        );
+        assert!(w2.iter().any(|w| w.contains("TimeStepMethod=2")), "{w2:?}");
+        for key in ["Verbose", "Delay"] {
             assert!(warn.iter().any(|w| w.contains(key)), "{key}: {warn:?}");
         }
 
@@ -469,9 +511,10 @@ mod tests {
         assert!(Fdtd::from_csx(&bad).is_err());
         bad.multi_grid = Some("-1".into());
         assert!(Fdtd::from_csx(&bad).is_err());
-        let mut bad = FdtdSettings::new();
-        bad.number_of_timesteps = Some(0);
-        assert!(Fdtd::from_csx(&bad).is_err());
+        // Zero steps is valid (openEMS runs nothing).
+        let mut zero = FdtdSettings::new();
+        zero.number_of_timesteps = Some(0);
+        assert_eq!(Fdtd::from_csx(&zero).unwrap().0.get_max_timesteps(), 0);
         let mut bad = FdtdSettings::new();
         bad.time_step_factor = Some(1.5);
         assert!(Fdtd::from_csx(&bad).is_err());
@@ -537,7 +580,10 @@ mod tests {
             assert!(s.boundary.is_some());
             let (back, _) = Fdtd::from_csx(&s).unwrap();
             assert_same(&f, &back);
-            // And csx → Fdtd → csx is stable.
+            // And csx → Fdtd → csx is stable (a missing TimeStepMethod is
+            // read as openEMS's default, Rennings).
+            let mut s = s;
+            s.time_step_method.get_or_insert(TimeStepMethod::Rennings);
             assert_eq!(back.to_csx(), s);
         }
 
@@ -583,7 +629,7 @@ mod tests {
         assert_eq!(f.get_max_frequency(), Some(3e9));
         assert!(matches!(
             f.get_waveform(),
-            Some(Waveform::Gaussian { f0: 2e9, fc: 1e9 })
+            Some(Waveform::OpenEmsGaussian { f0: 2e9, fc: 1e9 })
         ));
         let b = f.get_boundaries();
         assert_eq!(b[Face::XMin], Boundary::pml(8));

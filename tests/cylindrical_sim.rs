@@ -183,7 +183,13 @@ fn cartesian_only_features_are_refused() {
 #[test]
 fn xml_round_trip_is_bit_identical() {
     use csx::OpenEmsDocument;
-    let (model, fdtd) = (cavity(), fdtd().max_timesteps(1500));
+    // A file's Gaussian is openEMS's.
+    let (model, fdtd) = (
+        cavity(),
+        fdtd()
+            .waveform(Waveform::openems_gaussian(15e9, 10e9))
+            .max_timesteps(1500),
+    );
     let mut direct = Simulation::new(&model, &fdtd.clone().threads(2)).unwrap();
     let a = direct.run().unwrap();
     let mut doc = OpenEmsDocument {

@@ -75,7 +75,9 @@ fn hand_written_pec_cavity_resonates() {
     );
     assert_eq!(sim.grid().nodes(), [21, 10, 15]);
     assert_eq!(sim.run_limits().max_timesteps, 5000);
-    assert!(sim.run_limits().end_criteria.is_none());
+    // endCriteria="0" means openEMS's default, -60 dB (never reached in a
+    // lossless cavity).
+    assert_eq!(sim.run_limits().end_criteria.unwrap().energy_ratio, 1e-6);
     let res = sim.run().unwrap();
     assert_eq!(res.outcome().unwrap().steps, 5000);
     let p = res.probe("probe").unwrap();
@@ -208,10 +210,14 @@ fn round_trip_model() -> (ContinuousStructure, Fdtd) {
     )
     .unwrap();
     let fdtd = Fdtd::new()
-        .waveform(Waveform::gaussian(2e9, 1.5e9))
+        // A file's Gaussian is openEMS's.
+        .waveform(Waveform::openems_gaussian(2e9, 1.5e9))
         .max_timesteps(1500)
         .end_criteria(EndCriteria::energy_ratio(1e-4))
         .timestep_factor(0.95)
+        // What an openEMS file means (Fdtd::from_csx sets both).
+        .timestep_method(ems::engine::TimestepMethod::Rennings)
+        .openems_run(true)
         .boundary(Face::XMax, Boundary::pml(4))
         .boundary(Face::ZMax, Boundary::mur());
     (m, fdtd)
