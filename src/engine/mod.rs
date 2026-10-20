@@ -264,8 +264,8 @@ impl EngineBuilder {
     /// Number of threads, including the caller; `1` runs everything
     /// inline. Capped at `nx` (one x-plane per thread at least).
     ///
-    /// `0` (default) picks [`default_threads`] for the grid: one thread per
-    /// physical core, fewer on small grids.
+    /// `0` (default) picks [`default_threads_for`] for the grid: one thread
+    /// per physical core, fewer on small grids.
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = n;
         self
@@ -298,7 +298,7 @@ impl EngineBuilder {
             }
         };
         let threads = match self.threads {
-            0 => default_threads(grid.num_cells()),
+            0 => default_threads_for(grid.nodes()),
             n => n,
         };
         let layout = Layout::new(grid.nodes(), threads);
@@ -328,11 +328,34 @@ impl EngineBuilder {
 /// Grid cells per thread below which the default thread count is reduced:
 /// on small grids the per-step synchronisation of more threads costs more
 /// than their share of the update.
-const MIN_CELLS_PER_THREAD: usize = 8192;
+const MIN_CELLS_PER_THREAD: usize = 4096;
 
-/// The thread count an engine uses by default for a grid of `cells` cells:
-/// one thread per physical core available to the process, but at most one
-/// per 8192 grid cells (and at least 1).
+/// x-planes per thread below which the default thread count is reduced
+/// (the slabs are runs of x-planes).
+const MIN_PLANES_PER_THREAD: usize = 5;
+
+/// The thread count an engine uses by default for a grid of `nodes`
+/// nodes: [`default_threads`] of its cells, and at most one thread per
+/// five x-planes (at least 1).
+///
+/// Measured on a 32-core machine with vacuum boxes of 20³…200³ cells
+/// (with and without PML) and the end-to-end models (design §10): the
+/// fastest thread count is about one per five x-planes up to the core
+/// count, as long as each thread has a few thousand cells; one per 8192
+/// cells and none per plane (the former rule) used 1–3 threads on boxes
+/// of 20³–30³ that ran fastest on 4–6 (×1.6), and 32 on 80³–100³ boxes that
+/// ran fastest on 16–20 (×1.3).
+pub fn default_threads_for(nodes: [usize; 3]) -> usize {
+    let cells: usize = nodes.iter().map(|n| n.saturating_sub(1).max(1)).product();
+    default_threads(cells)
+        .min(nodes[0] / MIN_PLANES_PER_THREAD)
+        .max(1)
+}
+
+/// The thread count for a grid of `cells` cells: one thread per physical
+/// core available to the process, but at most one per 4096 grid cells
+/// (and at least 1). See also [`default_threads_for`], which also bounds
+/// it by the x-planes (the engine's default).
 ///
 /// The kernels are memory-bound, so a second hardware thread on a core
 /// (SMT) adds no throughput, while every extra thread adds to the per-step
