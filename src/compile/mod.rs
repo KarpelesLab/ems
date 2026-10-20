@@ -404,7 +404,10 @@ pub struct Compiled {
     /// on the outermost dual plane, half a cell inside the domain (the
     /// tangential H there is held at zero), instead of on the face itself.
     /// Established by black-box comparison with openEMS v0.37 (agreement
-    /// ~1e-6, against ~3–30 % for the on-face wall).
+    /// ~1e-6, against ~3–30 % for the on-face wall). The same switch
+    /// makes Mur faces count the energy of their edges in the end
+    /// criterion, as openEMS does
+    /// ([`MurBoundary::count_energy`](crate::engine::boundary::mur::MurBoundary::count_energy)).
     pub openems_pmc: bool,
     /// Mur faces and their phase velocities \[m/s\].
     pub mur: Vec<(Face, Option<f64>)>,
@@ -516,7 +519,8 @@ impl Compiled {
             h.cpml = Some(engine.add_operator(op));
         }
         if !self.mur.is_empty() {
-            let op = MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?;
+            let op = MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?
+                .count_energy(self.openems_pmc);
             h.mur = Some(engine.add_operator(op));
         }
         if !self.dispersive.is_empty() {

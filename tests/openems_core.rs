@@ -344,6 +344,23 @@ fn end_criteria() {
     let res = Check::new("end_criteria").check();
     // A multiple of the 57-step Nyquist interval.
     assert_eq!(res.outcome().unwrap().steps % 57, 0);
+    // The energy decay at the stop step: openEMS prints −32.2833 dB; ems
+    // counts the Mur face edges like openEMS (−32.2843 dB; −32.2868 dB
+    // without them).
+    let text = std::fs::read_to_string(fixture("end_criteria").join("console.txt")).unwrap();
+    let oe: f64 = text
+        .split("reached after")
+        .nth(1)
+        .and_then(|r| r.split('(').nth(1))
+        .and_then(|r| r.split("dB").next())
+        .unwrap()
+        .parse()
+        .unwrap();
+    let ems::engine::StopReason::EnergyDecay { ratio_db } = res.outcome().unwrap().reason else {
+        panic!("not stopped by the energy criterion");
+    };
+    eprintln!("end_criteria: openEMS {oe} dB, ems {ratio_db:.4} dB");
+    assert!((ratio_db - oe).abs() < 2e-3, "{ratio_db} vs {oe}");
 }
 
 #[test]

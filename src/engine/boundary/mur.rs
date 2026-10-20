@@ -83,6 +83,7 @@
 
 use crate::axis::Axis;
 use crate::constants::C0;
+use crate::engine::coeffs::Coefficients;
 use crate::engine::{EdgeMaterials, Engine, Fields, Hooks, Operator, StepContext};
 use crate::fdtd::Face;
 use crate::{Error, Result};
@@ -96,6 +97,10 @@ struct Edge {
     k: f32,
     /// `u_b^n`, `u_1^n` saved in `pre_e`.
     saved: [f32; 2],
+    /// Capacitance counted by [`MurBoundary::boundary_energy`] \[F\].
+    c: f64,
+    /// The edge voltage after the last update.
+    last: f32,
 }
 
 /// An edge on two Mur faces: average of two 1-D updates.
@@ -107,6 +112,10 @@ struct Corner {
     k: [f32; 2],
     /// `u_b^n`, then `u_1^n` of each direction.
     saved: [f32; 3],
+    /// Capacitance counted by [`MurBoundary::boundary_energy`] \[F\].
+    c: f64,
+    /// The edge voltage after the last update.
+    last: f32,
 }
 
 /// First-order Mur absorbing boundary on one or more outer faces, as an
@@ -132,6 +141,7 @@ pub struct MurBoundary {
     faces: Vec<(Face, Option<f64>)>,
     edges: Vec<Edge>,
     corners: Vec<Corner>,
+    count_energy: bool,
 }
 
 impl MurBoundary {
@@ -239,6 +249,23 @@ impl MurBoundary {
         };
 
         let co = engine.coefficients();
+        // Capacitance of a boundary edge with full dual cells on the outer
+        // planes: the interior neighbour's (its medium), with the dual
+        // extent along each face normal taken as the whole first cell.
+        let full_c = |t: Axis, node: [usize; 3], inner: [usize; 3]| -> f64 {
+            let i = grid.index(inner);
+            let c = Coefficients::capacitance(co.ca(t)[i], co.cb(t)[i], dt);
+            let mut f = 1.0;
+            for b in Axis::ALL.into_iter().filter(|&b| b != t) {
+                let (k, ki) = (node[b.index()], inner[b.index()]);
+                let nb = n[b.index()];
+                if k == 0 || k + 1 == nb {
+                    let cell = grid.delta(b, if k == 0 { 0 } else { nb - 2 });
+                    f *= cell / grid.dual_delta(b, ki);
+                }
+            }
+            if c.is_finite() { c * f } else { 0.0 }
+        };
         let mut edges = Vec::new();
         let mut corners = Vec::new();
         // Coefficient of the edge along `t` at `node` for `face`: fixed per
@@ -305,6 +332,8 @@ impl MurBoundary {
                                 inner: inner(face, node),
                                 k: coef(face, t, o, node)?,
                                 saved: [0.0; 2],
+                                c: full_c(t, node, inner(face, node)),
+                                last: 0.0,
                             }),
                             // Each domain edge is visited from both faces;
                             // keep it once (from the lower-index face).
@@ -314,6 +343,8 @@ impl MurBoundary {
                                 inner: [inner(face, node), inner(g, node)],
                                 k: [coef(face, t, o, node)?, coef(g, t, a, node)?],
                                 saved: [0.0; 3],
+                                c: full_c(t, node, inner(g, inner(face, node))),
+                                last: 0.0,
                             }),
                             Some(_) => {}
                         }
@@ -325,7 +356,32 @@ impl MurBoundary {
             faces: faces.to_vec(),
             edges,
             corners,
+            count_energy: false,
         })
+    }
+
+    /// Counts the energy of the boundary edges in
+    /// [`Operator::energy`] (default off): `Σ ½·C_e·u_e²` over the face
+    /// edges, whose own update coefficients are those of PEC, with `C_e`
+    /// the capacitance of the interior neighbour's medium over a full
+    /// first cell along each face normal. This is the energy openEMS's end
+    /// criterion includes (its operator gives boundary edges full dual
+    /// cells; black-box comparison, design §5.16.1). With it the energy
+    /// of a Mur-terminated box at openEMS's stop step agrees to 1e-3 dB
+    /// at −32 dB (3.5e-3 dB without).
+    pub fn count_energy(mut self, on: bool) -> Self {
+        self.count_energy = on;
+        self
+    }
+
+    /// The energy of the boundary edges counted with
+    /// [`count_energy`](Self::count_energy) \[J\] (`t = n·dt`).
+    pub fn boundary_energy(&self) -> f64 {
+        let e = self.edges.iter().map(|e| (e.c, e.last));
+        let c = self.corners.iter().map(|c| (c.c, c.last));
+        e.chain(c)
+            .map(|(c, u)| 0.5 * c * f64::from(u) * f64::from(u))
+            .sum()
     }
 
     /// The faces handled by this operator with their phase velocities
@@ -372,12 +428,28 @@ impl Operator for MurBoundary {
             let v = i + e.k * (u.get(e.axis, e.inner) - b);
             u.set(e.axis, e.node, v);
         }
+        for e in &mut self.edges {
+            e.last = u.get(e.axis, e.node);
+        }
         // After the face edges: corner neighbours are face edges.
         for c in &self.corners {
             let [b, i0, i1] = c.saved;
             let v0 = i0 + c.k[0] * (u.get(c.axis, c.inner[0]) - b);
             let v1 = i1 + c.k[1] * (u.get(c.axis, c.inner[1]) - b);
             u.set(c.axis, c.node, 0.5 * (v0 + v1));
+        }
+        for c in &mut self.corners {
+            c.last = u.get(c.axis, c.node);
+        }
+    }
+
+    /// [`boundary_energy`](Self::boundary_energy) with
+    /// [`count_energy`](Self::count_energy), else 0.
+    fn energy(&self) -> f64 {
+        if self.count_energy {
+            self.boundary_energy()
+        } else {
+            0.0
         }
     }
 }
