@@ -130,7 +130,90 @@ fn monopole_over_ground_with_a_z_mirror() {
     );
     assert!((d.directivity / 3.0 - 1.0).abs() < 0.02, "{d:?}");
     assert!((p_far / p_box - 1.0).abs() < 0.01);
-    // Only z mirrors on cylindrical grids.
+    // A Cartesian x plane through the cylinder is refused.
     let m = ems::nf2ff::Mirror::new(Axis::X, 0.0, MirrorKind::Pec);
-    assert!(matches!(ff.with_mirror(m), Err(ems::Error::Unsupported(_))));
+    assert!(matches!(ff.with_mirror(m), Err(ems::Error::Invalid(_))));
+}
+
+/// A short z dipole at `y0` = 50 mm over the PEC plane `y = 0`, on a
+/// half-space sector grid (`α ∈ [0, π]` with PEC α faces, which form that
+/// plane; axis, cylindrical PML on `ρ_max`, CPML on the z faces), seen
+/// through a half-cylinder box with a mirror normal to y: the pattern and
+/// directivity of the dipole and its image.
+#[test]
+fn dipole_over_a_pec_half_plane_with_a_y_mirror() {
+    let y0 = 50.0; // mm
+    let mut m = ContinuousStructure::new();
+    m.coord_system = CoordSystem::Cylindrical;
+    m.grid.coord_system = CoordSystem::Cylindrical;
+    m.grid.delta_unit = 1e-3;
+    m.grid
+        .set_lines(0, (0..=18).map(|i| f64::from(i) * D))
+        .unwrap();
+    m.grid
+        .set_lines(1, (0..=NA / 2).map(|j| j as f64 * TAU / NA as f64))
+        .unwrap();
+    m.grid
+        .set_lines(2, (-18..=18).map(|i| f64::from(i) * D))
+        .unwrap();
+    let port = LumpedPort::new(1, 50.0, [y0, PI / 2.0, 0.0], [y0, PI / 2.0, D], Axis::Z)
+        .excite(1.0)
+        .add_to(&mut m)
+        .unwrap();
+    let mut b = Boundaries::all(Boundary::Pec);
+    b.set(Face::XMax, Boundary::pml(8));
+    b.set(Face::ZMax, Boundary::pml(8));
+    b.set(Face::ZMin, Boundary::pml(8));
+    let fdtd = Fdtd::new()
+        .waveform(Waveform::gaussian(1e9, 0.5e9))
+        .boundaries(b)
+        .end_criteria(EndCriteria::energy_decay_db(-50.0))
+        .max_timesteps(40_000);
+    let mut sim = Simulation::new(&m, &fdtd).unwrap();
+    let s = 8.0 * D;
+    let nb =
+        Nf2ffBox::new([0.0, 0.0, -s], [s, PI, s], vec![1e9]).mirror(Axis::Y, 0.0, MirrorKind::Pec);
+    let h = sim.add_nf2ff(&nb).unwrap();
+    let res = sim.run().unwrap();
+    let _ = port.analyze(&res, &[1e9]).unwrap();
+    let ff = sim.nf2ff(&h);
+    // The pair: |E| ∝ sinθ·|sin(k·y0·sinθ·sinφ)| on the real side.
+    let kw = ff.wavenumber(0);
+    let ky = kw * y0 * 1e-3;
+    let u = |t: f64, p: f64| (t.sin() * (ky * t.sin() * p.sin()).sin()).powi(2);
+    let (nt, np) = (90, 45);
+    let mut sum = 0.0;
+    for a in 0..nt {
+        let t = (a as f64 + 0.5) * PI / nt as f64;
+        for q in 0..np {
+            let p = (q as f64 + 0.5) * PI / np as f64;
+            sum += u(t, p) * t.sin();
+        }
+    }
+    sum *= (PI / nt as f64) * (PI / np as f64);
+    let d_want = 4.0 * PI * u(PI / 2.0, PI / 2.0) / sum;
+    let d = ff.max_directivity(0);
+    let p_box = ff.radiated_power(0);
+    let p_far = ff.radiated_power_far(0, 36, 24);
+    eprintln!(
+        "half-space dipole: D_max = {:.4} (pair {d_want:.4}) at θ = {:.1}°, φ = {:.1}°, \
+         P_far/P_box = {:.5}",
+        d.directivity,
+        d.theta.to_degrees(),
+        d.phi.to_degrees(),
+        p_far / p_box
+    );
+    assert!((d.directivity / d_want - 1.0).abs() < 0.02, "{d:?}");
+    assert!((d.theta - PI / 2.0).abs() < 0.05 && (d.phi - PI / 2.0).abs() < 0.05);
+    assert!((p_far / p_box - 1.0).abs() < 0.01);
+    let u0 = ff.radiation_intensity(0, PI / 2.0, PI / 2.0);
+    let mut worst = 0.0f64;
+    for &t in &[0.3, 0.8, 1.2, 2.0, 2.6] {
+        for &p in &[0.3, 1.0, 1.6, 2.4, 2.9] {
+            let want = u0 * u(t, p) / u(PI / 2.0, PI / 2.0);
+            worst = worst.max((ff.radiation_intensity(0, t, p) - want).abs() / u0);
+        }
+    }
+    eprintln!("half-space dipole: pattern within {worst:.2e} of the peak");
+    assert!(worst < 0.02, "{worst}");
 }

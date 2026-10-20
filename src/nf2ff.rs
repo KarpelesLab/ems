@@ -126,7 +126,13 @@
 //! full circle of a closed grid (the seam is interior there, so a sector
 //! box may also start or end on it). The phase centre defaults to the
 //! centre of the box's Cartesian bounding box (on the axis for a full
-//! cylinder). Mirrors are allowed normal to `z` only.
+//! cylinder).
+//!
+//! Mirrors are Cartesian planes on any grid. On a cylindrical grid a plane
+//! normal to `x` or `y` must not cut the box, and an α face lying in it
+//! (a sector `α ∈ [0, π]` and the plane `y = 0`, or `α ∈ [−π/2, π/2]`
+//! and `x = 0`: the PEC or PMC α boundaries of a half-space model) is
+//! skipped like any face on a mirror plane.
 
 use core::f64::consts::PI;
 
@@ -393,7 +399,6 @@ impl Nf2ff {
             faces,
             mirrors: Vec::new(),
             medium: self.medium,
-            cylindrical: self.cylindrical,
         }
     }
 }
@@ -584,15 +589,24 @@ impl Nf2ffBox {
         let mut faces = self.faces;
         let mut mirrors = Vec::new();
         for &(ax, pos, kind) in &self.mirrors {
-            if cyl && ax != Axis::Z {
-                return Err(Error::Unsupported(format!(
-                    "NF2FF mirror normal to {ax} on a cylindrical grid (only z mirrors are \
-                     supported there)"
-                )));
-            }
             let p = pos * unit;
             if !p.is_finite() {
                 return Err(Error::Invalid(format!("NF2FF mirror position {pos}")));
+            }
+            if cyl && ax != Axis::Z {
+                // A Cartesian x / y plane: only α faces can lie in it, and
+                // only if it passes through the axis.
+                let scale = grid.lines(Axis::X)[hi[0]].max(1e-30);
+                let al = grid.lines(Axis::Y);
+                for (max, node) in [(false, lo[1]), (true, hi[1])] {
+                    let (s, c) = al[node].sin_cos();
+                    let across = if ax == Axis::X { c } else { s };
+                    if p.abs() <= 1e-9 * scale && across.abs() <= 1e-9 {
+                        faces[Face::new(Axis::Y, max).index()] = false;
+                    }
+                }
+                mirrors.push(Mirror::new(ax, p, kind));
+                continue;
             }
             let l = grid.lines(ax);
             let i = ax.index();
@@ -635,7 +649,6 @@ impl Nf2ffHandle {
 /// Equivalent currents of one face.
 #[derive(Debug, Clone)]
 struct FaceData {
-    face: Face,
     /// Sample positions \[m\].
     points: Vec<[f64; 3]>,
     /// Trapezoidal area weights \[m²\].
@@ -713,7 +726,6 @@ impl FaceData {
             })
             .unzip();
         Self {
-            face: f.face,
             normals: vec![n; points.len()],
             points,
             weights,
@@ -793,7 +805,6 @@ impl FaceData {
             })
             .unzip();
         Self {
-            face,
             points,
             weights,
             normals,
@@ -802,13 +813,21 @@ impl FaceData {
         }
     }
 
+    /// Whether every sample point lies on one of the mirror planes (a face
+    /// normal to the plane's axis, or on a cylindrical grid an α face in
+    /// an x or y plane through the axis).
     fn on_mirror(&self, mirrors: &[Mirror]) -> bool {
-        let ax = self.face.axis();
-        let x = self.points.first().map_or(f64::NAN, |p| p[ax.index()]);
-        mirrors.iter().any(|m| {
-            m.axis == ax
-                && (x - m.position).abs() <= 1e-9 * x.abs().max(m.position.abs()).max(1e-30)
-        })
+        let scale = self
+            .points
+            .iter()
+            .flatten()
+            .fold(0.0f64, |m, x| m.max(x.abs()));
+        !self.points.is_empty()
+            && mirrors.iter().any(|m| {
+                let i = m.axis.index();
+                let tol = 1e-9 * scale.max(m.position.abs()).max(1e-30);
+                self.points.iter().all(|p| (p[i] - m.position).abs() <= tol)
+            })
     }
 }
 
@@ -878,8 +897,6 @@ pub struct Nf2ffResult {
     faces: Vec<FaceData>,
     mirrors: Vec<Mirror>,
     medium: Medium,
-    /// Faces of a cylindrical node box (mirrors normal to z only).
-    cylindrical: bool,
 }
 
 /// Unit vectors `(r̂, θ̂, φ̂)`.
@@ -950,16 +967,9 @@ impl Nf2ffResult {
     ///
     /// # Errors
     /// [`Error::Invalid`] if a mirror normal to the same axis exists, or if
-    /// the plane cuts through the box; [`Error::Unsupported`] for a mirror
-    /// not normal to z on a cylindrical grid.
+    /// the plane cuts through the box (on a cylindrical grid: through the
+    /// surface's sample points).
     pub fn with_mirror(mut self, m: Mirror) -> Result<Self> {
-        if self.cylindrical && m.axis != Axis::Z {
-            return Err(Error::Unsupported(format!(
-                "NF2FF mirror normal to {} on a cylindrical grid (only z mirrors are supported \
-                 there)",
-                m.axis
-            )));
-        }
         if self.mirrors.iter().any(|o| o.axis == m.axis) {
             return Err(Error::Invalid(format!(
                 "NF2FF: a mirror normal to {} is already set",
@@ -1250,7 +1260,6 @@ mod tests {
             let (a1, a2) = ((ax + 1) % 3, (ax + 2) % 3);
             let wt = trapezoid(&xs);
             let mut fd = FaceData {
-                face,
                 points: Vec::new(),
                 weights: Vec::new(),
                 normals: Vec::new(),
@@ -1280,7 +1289,6 @@ mod tests {
             faces,
             mirrors: Vec::new(),
             medium: Medium::VACUUM,
-            cylindrical: false,
         };
         // P_rad of the dipole: η (kIl)²/(12π).
         let p_exact = Z0 * kw * kw / (12.0 * PI);
@@ -1364,7 +1372,6 @@ mod tests {
             faces,
             mirrors: Vec::new(),
             medium: Medium::VACUUM,
-            cylindrical: true,
         };
         let p_exact = Z0 * kw * kw / (12.0 * PI);
         let p_box = res.radiated_power(0);
@@ -1381,8 +1388,118 @@ mod tests {
         }
         let d = res.max_directivity(0);
         assert!((d.directivity - 1.5).abs() < 5e-3, "{d:?}");
-        // Mirrors only along z.
-        let m = Mirror::new(Axis::Y, -1.0, MirrorKind::Pec);
-        assert!(matches!(res.with_mirror(m), Err(Error::Unsupported(_))));
+        // A Cartesian plane through the box is refused.
+        let m = Mirror::new(Axis::Y, p0[1], MirrorKind::Pec);
+        assert!(matches!(res.with_mirror(m), Err(Error::Invalid(_))));
+    }
+
+    /// A z dipole at height `y0` over a PEC plane `y = 0`, seen through a
+    /// half-cylinder (`ρ ≤ 0.45 m`, `α ∈ [0, π]`, `|z| ≤ 0.2 m`) whose two
+    /// α faces lie in the plane, with a mirror normal to y: the far field
+    /// of the dipole and its image (−Il at `−y0`), and the box power is the
+    /// real half-space's.
+    #[test]
+    fn analytic_dipole_over_a_y_mirror_on_a_half_cylinder() {
+        let f = 1e9;
+        let kw = 2.0 * PI * f / C0;
+        let (x0, y0) = (0.05, 0.12);
+        let lin = |lo: f64, hi: f64, n: usize| -> Vec<f64> {
+            (0..n)
+                .map(|i| lo + (hi - lo) * i as f64 / (n - 1) as f64)
+                .collect()
+        };
+        let c = [lin(0.0, 0.45, 46), lin(0.0, PI, 97), lin(-0.2, 0.2, 41)];
+        let fields = |p: [f64; 3]| {
+            let (e1, h1) = hertzian_fields(kw, [p[0] - x0, p[1] - y0, p[2]]);
+            let (e2, h2) = hertzian_fields(kw, [p[0] - x0, p[1] + y0, p[2]]);
+            (
+                [0, 1, 2].map(|a| e1[a] - e2[a]),
+                [0, 1, 2].map(|a| h1[a] - h2[a]),
+            )
+        };
+        let mut faces = Vec::new();
+        // No inner side (the box reaches the axis).
+        for face in Face::ALL.into_iter().filter(|&f| f != Face::XMin) {
+            let ax = face.axis().index();
+            let mut cc: [Vec<f64>; 3] = c.clone();
+            cc[ax] = vec![if face.is_max() {
+                c[ax][c[ax].len() - 1]
+            } else {
+                c[ax][0]
+            }];
+            let mut e = Vec::new();
+            let mut h = Vec::new();
+            for &rho in &cc[0] {
+                for &al in &cc[1] {
+                    let (sn, cs) = al.sin_cos();
+                    for &z in &cc[2] {
+                        let (ec, hc) = fields([rho * cs, rho * sn, z]);
+                        let cyl = |v: [Complex64; 3]| {
+                            [v[0] * cs + v[1] * sn, v[1] * cs - v[0] * sn, v[2]]
+                        };
+                        e.push(cyl(ec));
+                        h.push(cyl(hc));
+                    }
+                }
+            }
+            faces.push(FaceData::cylindrical_from(
+                face,
+                [&cc[0], &cc[1], &cc[2]],
+                &[e],
+                &[h],
+            ));
+        }
+        let center = [0.0; 3];
+        let res = Nf2ffResult {
+            freqs: vec![f],
+            center,
+            faces,
+            mirrors: Vec::new(),
+            medium: Medium::VACUUM,
+        }
+        .with_mirror(Mirror::new(Axis::Y, 0.0, MirrorKind::Pec))
+        .unwrap();
+        // The α faces (in the plane) are skipped.
+        assert_eq!(res.active().count(), 3);
+        let pair = |t: f64, ph: f64| {
+            let r = basis(t, ph).0;
+            let ph1 = kw * (r[0] * x0 + r[1] * y0);
+            let ph2 = kw * (r[0] * x0 - r[1] * y0);
+            Complex64::new(0.0, Z0 * kw * t.sin() / (4.0 * PI))
+                * (Complex64::cis(ph1) - Complex64::cis(ph2))
+        };
+        let mut worst = 0.0f64;
+        for &(t, ph) in &[(0.3, 0.7), (PI / 2.0, PI / 2.0), (1.2, 2.0), (2.2, 2.9)] {
+            let ff = res.far_field(0, t, ph);
+            let want = pair(t, ph);
+            worst = worst.max((ff.e_theta - want).norm() / want.norm());
+            assert!(ff.e_phi.norm() < 5e-3 * want.norm(), "{t} {ph}");
+        }
+        assert!(worst < 3e-3, "{worst}");
+        // Box power = far-field power over the real half-space = the
+        // analytic power of the pair there.
+        let (pb, pf) = (res.radiated_power(0), res.radiated_power_far(0, 60, 48));
+        assert!((pb / pf - 1.0).abs() < 3e-3, "{pb} vs {pf}");
+        let (nt, np) = (60, 24);
+        let mut pa = 0.0;
+        for a in 0..nt {
+            let t = (a as f64 + 0.5) * PI / nt as f64;
+            for b in 0..np {
+                let ph = (b as f64 + 0.5) * PI / np as f64;
+                pa += pair(t, ph).norm_sqr() / (2.0 * Z0) * t.sin();
+            }
+        }
+        pa *= (PI / nt as f64) * (PI / np as f64);
+        assert!((pb / pa - 1.0).abs() < 3e-3, "{pb} vs {pa}");
+        // A second y mirror, or one through the box, is refused.
+        assert!(
+            res.clone()
+                .with_mirror(Mirror::new(Axis::Y, -1.0, MirrorKind::Pec))
+                .is_err()
+        );
+        assert!(
+            res.with_mirror(Mirror::new(Axis::X, 0.0, MirrorKind::Pec))
+                .is_err()
+        );
     }
 }
