@@ -686,13 +686,40 @@ pub fn write_vtk_time(
     cylindrical: bool,
     opts: &DumpFileOptions,
 ) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    for s in snapshots {
+    let one = |s: &Snapshot| -> Result<PathBuf> {
         let p = dir.join(format!("{name}_{:010}.{}", s.step, vtk_ext(cylindrical)));
         write_file(&p, &vtk_time_file(sampler, s, cylindrical, opts))?;
-        out.push(p);
+        Ok(p)
+    };
+    // The files are independent (and compressing them is most of the
+    // work): written by several threads, results in snapshot order.
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(16)
+        .min(snapshots.len());
+    if threads <= 1 {
+        return snapshots.iter().map(one).collect();
     }
-    Ok(out)
+    let parts: Vec<Vec<(usize, Result<PathBuf>)>> = std::thread::scope(|sc| {
+        let workers: Vec<_> = (0..threads)
+            .map(|w| {
+                let one = &one;
+                sc.spawn(move || {
+                    (w..snapshots.len())
+                        .step_by(threads)
+                        .map(|i| (i, one(&snapshots[i])))
+                        .collect()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|h| h.join().expect("dump writer thread"))
+            .collect()
+    });
+    let mut all: Vec<(usize, Result<PathBuf>)> = parts.into_iter().flatten().collect();
+    all.sort_by_key(|(i, _)| *i);
+    all.into_iter().map(|(_, r)| r).collect()
 }
 
 /// The openEMS-normalised values of frequency `k` of a frequency dump:
