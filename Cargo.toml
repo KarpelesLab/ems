@@ -32,3 +32,8 @@ required-features = ["xml"]
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+# The test suite runs full FDTD simulations; optimised test builds keep it
+# fast (debug assertions and overflow checks stay on).
+[profile.test]
+opt-level = 2
