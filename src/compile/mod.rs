@@ -550,6 +550,16 @@ impl Compiled {
         if let Some(op) = cpml {
             h.cpml = Some(engine.add_operator(op));
         }
+        if !self.dispersive.is_empty() {
+            let mut d = Dispersive::new().with_scheme(self.dispersive_scheme);
+            for &e in &self.dispersive {
+                d.push_entry(e);
+            }
+            h.dispersive = Some(d.add_to(engine)?);
+        }
+        // After the dispersive poles: as slab hooks (see
+        // `engine::boundary::mur`) the Mur faces then still see the poles'
+        // correction of their interior edges, as the serial hook does.
         if !self.mur.is_empty() {
             let op = match &self.mur_media {
                 Some(m) => MurBoundary::with_faces_media(engine, &self.mur, &self.materials, m)?,
@@ -558,13 +568,6 @@ impl Compiled {
             .count_energy(self.openems_pmc)
             .openems_corners(self.openems_pmc);
             h.mur = Some(engine.add_operator(op));
-        }
-        if !self.dispersive.is_empty() {
-            let mut d = Dispersive::new().with_scheme(self.dispersive_scheme);
-            for &e in &self.dispersive {
-                d.push_entry(e);
-            }
-            h.dispersive = Some(d.add_to(engine)?);
         }
         if !self.sheets.is_empty() {
             let mut s = ConductingSheet::new(self.max_frequency);

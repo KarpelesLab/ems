@@ -77,20 +77,34 @@
 //!
 //! # Threads
 //!
-//! The operator runs on the calling thread with exclusive field access and
-//! processes its edges in a fixed order, so results are bit-identical for
-//! any engine thread count.
+//! Where every edge's interior neighbours lie in the edge's own x-slab
+//! (each slab holds at least two x-planes) and the engine merges no face
+//! copies (no periodic faces, Cartesian grid), the operator runs as
+//! [slab hooks](crate::engine::SlabHooks): each worker saves `u_b^n`,
+//! `u_1^n` of its slab's edges after its H update and writes the Mur
+//! values after its E update (face edges, then the corners), with no
+//! serial hook and no extra barrier. Otherwise it runs serially on the
+//! calling thread (`pre_e` / `post_e`). Either way every edge is updated
+//! by the same expression from the same values, so results are
+//! bit-identical for any engine thread count and in both modes.
+
+use std::sync::{Arc, Mutex};
 
 use crate::axis::Axis;
 use crate::constants::C0;
 use crate::engine::coeffs::Coefficients;
-use crate::engine::{EdgeMaterials, Engine, Fields, Hooks, Operator, StepContext};
+use crate::engine::{
+    EdgeMaterials, Engine, Fields, Hooks, Operator, SlabContext, SlabHooks, SlabMut, SlabPartition,
+    SlabRef, StepContext,
+};
 use crate::fdtd::Face;
 use crate::{Error, Result};
 
 /// A tangential face edge updated by one 1-D Mur update.
 #[derive(Debug, Clone)]
 struct Edge {
+    /// Position in the operator's global edge order (energy sums).
+    order: usize,
     axis: Axis,
     node: [usize; 3],
     inner: [usize; 3],
@@ -106,6 +120,8 @@ struct Edge {
 /// An edge on two Mur faces: average of two 1-D updates.
 #[derive(Debug, Clone)]
 struct Corner {
+    /// Position in the operator's global order, after all edges.
+    order: usize,
     axis: Axis,
     node: [usize; 3],
     inner: [[usize; 3]; 2],
@@ -179,10 +195,98 @@ impl MurMedia {
 #[derive(Debug, Clone)]
 pub struct MurBoundary {
     faces: Vec<(Face, Option<f64>)>,
+    /// The edges and corners (empty once handed to `slabs`).
     edges: Vec<Edge>,
     corners: Vec<Corner>,
+    /// Number of edges plus corners.
+    count: usize,
     count_energy: bool,
     openems_corners: bool,
+    /// Whether slab mode is allowed (no face merges in the engine).
+    slab_ok: bool,
+    /// Slab mode: the edges and corners of each x-slab.
+    slabs: Option<Arc<MurSlabs>>,
+}
+
+/// The edges and corners of one x-slab (slab mode).
+#[derive(Debug, Default)]
+struct MurSlab {
+    edges: Vec<Edge>,
+    corners: Vec<Corner>,
+}
+
+/// Slab-mode state of a [`MurBoundary`].
+#[derive(Debug)]
+struct MurSlabs {
+    slabs: Vec<Mutex<MurSlab>>,
+    openems_corners: bool,
+}
+
+/// Locks a slab's state (uncontended: only its own worker locks it during
+/// a step).
+fn lock(m: &Mutex<MurSlab>) -> std::sync::MutexGuard<'_, MurSlab> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The 1-D updates of `edges`, then the corner updates of `corners`, on
+/// a field accessed through `get`/`set` (shared by both modes).
+fn update(
+    edges: &mut [Edge],
+    corners: &mut [Corner],
+    openems_corners: bool,
+    get: &dyn Fn(Axis, [usize; 3]) -> f32,
+    set: &mut dyn FnMut(Axis, [usize; 3], f32),
+) {
+    for e in edges.iter_mut() {
+        let [b, i] = e.saved;
+        let v = i + e.k * (get(e.axis, e.inner) - b);
+        set(e.axis, e.node, v);
+        e.last = v;
+    }
+    // After the face edges: corner neighbours are face edges.
+    for c in corners.iter_mut() {
+        let [b, i0, i1] = c.saved;
+        let (n0, n1) = if openems_corners {
+            (0.0, 0.0)
+        } else {
+            (get(c.axis, c.inner[0]), get(c.axis, c.inner[1]))
+        };
+        let v0 = i0 + c.k[0] * (n0 - b);
+        let v1 = i1 + c.k[1] * (n1 - b);
+        let v = 0.5 * (v0 + v1);
+        set(c.axis, c.node, v);
+        c.last = v;
+    }
+}
+
+impl SlabHooks for MurSlabs {
+    fn post_h_slab(&self, _i: &mut SlabMut<'_>, u: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        let mut s = lock(&self.slabs[ctx.slab]);
+        let nz = u.nodes()[2];
+        let get = |a: Axis, n: [usize; 3]| u.plane(a, n[0])[n[1] * nz + n[2]];
+        for e in &mut s.edges {
+            e.saved = [get(e.axis, e.node), get(e.axis, e.inner)];
+        }
+        for c in &mut s.corners {
+            c.saved = [
+                get(c.axis, c.node),
+                get(c.axis, c.inner[0]),
+                get(c.axis, c.inner[1]),
+            ];
+        }
+    }
+
+    fn post_e_slab(&self, u: &mut SlabMut<'_>, _i: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        let mut s = lock(&self.slabs[ctx.slab]);
+        let MurSlab { edges, corners } = &mut *s;
+        let nz = u.nodes()[2];
+        let cell = core::cell::RefCell::new(u);
+        let get = |a: Axis, n: [usize; 3]| cell.borrow().plane(a, n[0])[n[1] * nz + n[2]];
+        let mut set = |a: Axis, n: [usize; 3], v: f32| {
+            cell.borrow_mut().plane_mut(a, n[0])[n[1] * nz + n[2]] = v
+        };
+        update(edges, corners, self.openems_corners, &get, &mut set);
+    }
 }
 
 impl MurBoundary {
@@ -390,6 +494,7 @@ impl MurBoundary {
                             .find(|&g| plane(g) == q && k_face[g.index()].is_some());
                         match other {
                             None => edges.push(Edge {
+                                order: 0,
                                 axis: t,
                                 node,
                                 inner: inner(face, node),
@@ -401,6 +506,7 @@ impl MurBoundary {
                             // Each domain edge is visited from both faces;
                             // keep it once (from the lower-index face).
                             Some(g) if face.index() < g.index() => corners.push(Corner {
+                                order: 0,
                                 axis: t,
                                 node,
                                 inner: [inner(face, node), inner(g, node)],
@@ -415,12 +521,29 @@ impl MurBoundary {
                 }
             }
         }
+        for (o, e) in edges.iter_mut().enumerate() {
+            e.order = o;
+        }
+        for (o, c) in corners.iter_mut().enumerate() {
+            c.order = edges.len() + o;
+        }
         Ok(Self {
             faces: faces.to_vec(),
+            count: edges.len() + corners.len(),
             edges,
             corners,
             count_energy: false,
             openems_corners: false,
+            // Slab hooks run before every serial hook: only when no operator
+            // registered before this one touches E serially around the E
+            // update (the serial order would change).
+            slab_ok: !grid.is_cylindrical()
+                && engine.periodic.is_none()
+                && !engine
+                    .ops
+                    .iter()
+                    .any(|r| r.hooks.intersects(Hooks::PRE_E | Hooks::POST_E)),
+            slabs: None,
         })
     }
 
@@ -454,10 +577,25 @@ impl MurBoundary {
     /// The energy of the boundary edges counted with
     /// [`count_energy`](Self::count_energy) \[J\] (`t = n·dt`).
     pub fn boundary_energy(&self) -> f64 {
-        let e = self.edges.iter().map(|e| (e.c, e.last));
-        let c = self.corners.iter().map(|c| (c.c, c.last));
-        e.chain(c)
-            .map(|(c, u)| 0.5 * c * f64::from(u) * f64::from(u))
+        // In the operator's global order, whatever the mode.
+        let mut v = vec![(0.0f64, 0.0f32); self.count];
+        let mut put = |edges: &[Edge], corners: &[Corner]| {
+            for e in edges {
+                v[e.order] = (e.c, e.last);
+            }
+            for c in corners {
+                v[c.order] = (c.c, c.last);
+            }
+        };
+        put(&self.edges, &self.corners);
+        if let Some(sl) = &self.slabs {
+            for m in &sl.slabs {
+                let s = lock(m);
+                put(&s.edges, &s.corners);
+            }
+        }
+        v.iter()
+            .map(|&(c, u)| 0.5 * c * f64::from(u) * f64::from(u))
             .sum()
     }
 
@@ -469,7 +607,13 @@ impl MurBoundary {
 
     /// Number of boundary edges updated each step.
     pub fn edge_count(&self) -> usize {
-        self.edges.len() + self.corners.len()
+        self.count
+    }
+
+    /// Whether the operator runs as slab hooks (see the
+    /// [module docs](self#threads)) rather than serially.
+    pub fn is_slab_parallel(&self) -> bool {
+        self.slabs.is_some()
     }
 
     /// The Mur coefficient `(v·dt − Δ)/(v·dt + Δ)` for phase velocity `v`,
@@ -481,7 +625,41 @@ impl MurBoundary {
 
 impl Operator for MurBoundary {
     fn hooks(&self) -> Hooks {
-        Hooks::PRE_E | Hooks::POST_E
+        if self.slabs.is_some() {
+            Hooks::NONE
+        } else {
+            Hooks::PRE_E | Hooks::POST_E
+        }
+    }
+
+    /// Slab mode where possible (see the [module docs](self#threads)).
+    fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {
+        if !self.slab_ok || self.slabs.is_some() {
+            return None;
+        }
+        let slab_of = |i: usize| (0..part.slabs()).find(|&s| part.planes(s).contains(&i));
+        let same = |node: [usize; 3], others: &[[usize; 3]]| -> Option<usize> {
+            let s = slab_of(node[0])?;
+            others
+                .iter()
+                .all(|o| part.planes(s).contains(&o[0]))
+                .then_some(s)
+        };
+        let mut per: Vec<MurSlab> = (0..part.slabs()).map(|_| MurSlab::default()).collect();
+        for e in &self.edges {
+            per[same(e.node, &[e.inner])?].edges.push(e.clone());
+        }
+        for c in &self.corners {
+            per[same(c.node, &c.inner)?].corners.push(c.clone());
+        }
+        self.edges.clear();
+        self.corners.clear();
+        let sl = Arc::new(MurSlabs {
+            slabs: per.into_iter().map(Mutex::new).collect(),
+            openems_corners: self.openems_corners,
+        });
+        self.slabs = Some(Arc::clone(&sl));
+        Some(sl)
     }
 
     fn pre_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
@@ -499,30 +677,16 @@ impl Operator for MurBoundary {
     }
 
     fn post_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        let u = &mut fields.u;
-        for e in &self.edges {
-            let [b, i] = e.saved;
-            let v = i + e.k * (u.get(e.axis, e.inner) - b);
-            u.set(e.axis, e.node, v);
-        }
-        for e in &mut self.edges {
-            e.last = u.get(e.axis, e.node);
-        }
-        // After the face edges: corner neighbours are face edges.
-        for c in &self.corners {
-            let [b, i0, i1] = c.saved;
-            let (n0, n1) = if self.openems_corners {
-                (0.0, 0.0)
-            } else {
-                (u.get(c.axis, c.inner[0]), u.get(c.axis, c.inner[1]))
-            };
-            let v0 = i0 + c.k[0] * (n0 - b);
-            let v1 = i1 + c.k[1] * (n1 - b);
-            u.set(c.axis, c.node, 0.5 * (v0 + v1));
-        }
-        for c in &mut self.corners {
-            c.last = u.get(c.axis, c.node);
-        }
+        let cell = core::cell::RefCell::new(&mut fields.u);
+        let get = |a: Axis, n: [usize; 3]| cell.borrow().get(a, n);
+        let mut set = |a: Axis, n: [usize; 3], v: f32| cell.borrow_mut().set(a, n, v);
+        update(
+            &mut self.edges,
+            &mut self.corners,
+            self.openems_corners,
+            &get,
+            &mut set,
+        );
     }
 
     /// [`boundary_energy`](Self::boundary_energy) with

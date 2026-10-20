@@ -464,7 +464,6 @@ impl Engine {
     /// [`Operator::hooks`] and [`Operator::slab_hooks`] are queried here,
     /// once.
     pub fn add_operator<T: Operator>(&mut self, mut op: T) -> OperatorHandle<T> {
-        let hooks = op.hooks();
         let part = SlabPartition {
             grid: &self.grid,
             dt: self.dt,
@@ -473,6 +472,9 @@ impl Engine {
         if let Some(s) = op.slab_hooks(&part) {
             write(&self.shared.slab_ops).0.push(s);
         }
+        // After `slab_hooks`: an operator may run serially only when it
+        // could not go slab-parallel.
+        let hooks = op.hooks();
         self.ops.push(Registered {
             op: Box::new(op),
             hooks,
