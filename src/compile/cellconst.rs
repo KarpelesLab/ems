@@ -14,6 +14,16 @@
 //! box grown or shrunk to the faces of the cells whose centres it contains
 //! (black-box comparison, `tests/openems_core.rs`). Metal is unaffected
 //! (csx's PEC mask is kept).
+//!
+//! On cylindrical grids the centre is the parameter-space midpoint
+//! `(ρ_{i+½}, α_{j+½}, z_{k+½})` (not the cell's centroid), the
+//! weighting functions are evaluated at its Cartesian position, and
+//! [`EdgeMaterials::from_cells`] weighs the cells with their annular
+//! areas. openEMS does the same: with `CellConstantMaterial="1"` a
+//! dielectric box with faces inside cells gives probes bit-identical to
+//! the box snapped to the faces of the cells whose midpoints it contains,
+//! with a radial face placed between a cell's midpoint and its centroid
+//! (`cyl_cellconst`, `tests/openems_cyl.rs`).
 
 use csx::properties::{MaterialQuantity, TypeMask};
 use csx::{CoordSystem, Vec3};
@@ -22,7 +32,7 @@ use crate::Result;
 use crate::engine::{CellMaterials, EdgeMaterials, Grid, Material};
 
 /// Replaces the ε, κ, μ, σ arrays of `materials` by the cell-centre
-/// values of `model` (see the module docs). Cartesian grids only.
+/// values of `model` (see the module docs).
 pub(crate) fn apply(
     model: &csx::ContinuousStructure,
     grid: &Grid,
@@ -30,6 +40,12 @@ pub(crate) fn apply(
 ) -> Result<()> {
     let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
     let cells = grid.cells();
+    let cyl = grid.is_cylindrical();
+    let cs = if cyl {
+        CoordSystem::Cylindrical
+    } else {
+        CoordSystem::Cartesian
+    };
     let mut cm = CellMaterials::vacuum(grid);
     for i in 0..cells[0] {
         for j in 0..cells[1] {
@@ -38,12 +54,18 @@ pub(crate) fn apply(
                 let p = Vec3(core::array::from_fn(|a| {
                     0.5 * (lines[a][c[a]] + lines[a][c[a] + 1])
                 }));
-                let Some(hit) = model.property_at(p, CoordSystem::Cartesian, TypeMask::MATERIALS)
-                else {
+                let Some(hit) = model.property_at(p, cs, TypeMask::MATERIALS) else {
                     continue;
                 };
                 let Some(m) = hit.property.kind.material() else {
                     continue;
+                };
+                // Weighting functions take Cartesian points.
+                let p = if cyl {
+                    let [r, a, z] = p.0;
+                    Vec3::new(r * a.cos(), r * a.sin(), z)
+                } else {
+                    p
                 };
                 cm.set(
                     c,

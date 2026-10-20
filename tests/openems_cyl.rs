@@ -148,3 +148,71 @@ fn cylindrical_plane_wave_is_ignored_like_openems() {
     sim.step(50);
     assert_eq!(sim.engine().energy(), 0.0);
 }
+
+/// The `keep:` probes of `case` (`meta.txt`).
+fn kept(case: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(fixture(case).join("meta.txt")).unwrap();
+    text.lines()
+        .find_map(|l| l.strip_prefix("keep:"))
+        .unwrap()
+        .split_whitespace()
+        .map(String::from)
+        .collect()
+}
+
+/// Relative L2 difference of each kept scalar probe of `case` (openEMS's
+/// files) against ems run on `model` (both codes step with the fixed
+/// `TimeStep` of the model, so the samples coincide).
+fn probe_l2(case: &str, model: &str) -> Vec<(String, f64)> {
+    let mut sim = Simulation::from_xml(fixture(case).join(model)).unwrap();
+    let res = sim.run().unwrap();
+    kept(case)
+        .into_iter()
+        .map(|n| {
+            let (t, v) = read_probe(&fixture(case).join(&n));
+            let p = res.probe(&n).unwrap();
+            let (et, ev) = (p.times(), p.scalar().unwrap());
+            let (mut num, mut den) = (0.0, 0.0);
+            for (&ti, &vi) in t.iter().zip(&v) {
+                let k = et.partition_point(|&x| x < ti - 1e-18);
+                let e = if k < et.len() && (et[k] - ti).abs() < 1e-18 {
+                    ev[k]
+                } else {
+                    0.0
+                };
+                num += (e - vi) * (e - vi);
+                den += vi * vi;
+            }
+            let e = (num / den).sqrt();
+            eprintln!("{case}/{model}/{n}: relative L2 {e:.2e}");
+            (n, e)
+        })
+        .collect()
+}
+
+/// `CellConstantMaterial` on a cylindrical grid (`cyl_cellconst`): openEMS
+/// samples each cell at its `(ρ, α, z)` midpoint (its probes are
+/// bit-identical to the box snapped to the cells whose midpoints it holds;
+/// the box's ρ_max face lies between the midpoint and the centroid of a
+/// cell), and so does ems. The edge averages of the cells then agree on
+/// every ρ and α edge (openEMS's material dump); z edges on a radial
+/// interface differ: openEMS weighs the two radial halves of their dual
+/// face by `Δρ_h·ρ` of the dual line bounding each half, ems by their
+/// exact annular areas (first order in `Δρ/ρ`, design §5.15), which shows
+/// as 5e-4…1.6e-3 in the probes.
+#[test]
+fn cylindrical_cell_constant_material_matches_openems() {
+    for (n, e) in probe_l2("cyl_cellconst", "model.xml") {
+        assert!(e < 4e-3, "{n}: {e:e}");
+    }
+    // The cell 6.5..7 mm (midpoint 6.75 inside the box face 6.752, its
+    // centroid 6.7531 outside) is dielectric: a ρ edge in it reads ε = 4.
+    let doc = csx::OpenEmsDocument::read_file(fixture("cyl_cellconst").join("model.xml")).unwrap();
+    let (fdtd, _) = ems::Fdtd::from_document(&doc).unwrap();
+    let c = ems::compile::compile(&doc.structure, &fdtd, &ems::CompileOptions::default()).unwrap();
+    // ρ lines 1, 1.5, …: line 11 is 6.5 mm; α line 4, z line 5 (inside).
+    let idx = c.grid.index([11, 4, 5]);
+    assert_eq!(c.materials.eps_r(ems::Axis::X)[idx], 4.0);
+    let idx = c.grid.index([12, 4, 5]);
+    assert_eq!(c.materials.eps_r(ems::Axis::X)[idx], 1.0);
+}

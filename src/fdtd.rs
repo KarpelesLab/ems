@@ -625,8 +625,8 @@ impl Fdtd {
 
     /// Samples materials once per cell, at the cell centre, instead of
     /// averaging sub-cell samples onto each edge (openEMS
-    /// `CellConstantMaterial`; see `compile/cellconst.rs`). Cartesian grids
-    /// only.
+    /// `CellConstantMaterial`; see `compile/cellconst.rs`). On cylindrical
+    /// grids the centre is the `(ρ, α, z)` midpoint of the cell, like openEMS.
     pub fn cell_constant_material(mut self, on: bool) -> Self {
         self.cell_constant_material = on;
         self

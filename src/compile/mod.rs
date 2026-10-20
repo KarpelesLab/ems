@@ -1081,15 +1081,7 @@ pub fn compile(
             .copy_from_slice(&node_map.reorder(&pec));
     }
     if fdtd.get_cell_constant_material() {
-        if cyl {
-            warnings.push(
-                "CellConstantMaterial is not available on cylindrical grids; materials are \
-                 averaged onto the edges"
-                    .into(),
-            );
-        } else {
-            cellconst::apply(model, &grid, &mut materials)?;
-        }
+        cellconst::apply(model, &grid, &mut materials)?;
     }
     // (Cylindrical grids: solid metal only, see compile::conformal.)
     let conformal = if opts.conformal {
