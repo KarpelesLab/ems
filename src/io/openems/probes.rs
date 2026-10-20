@@ -566,9 +566,11 @@ pub fn write_probe(
 /// the paths written.
 ///
 /// ```no_run
+/// # #[cfg(feature = "xml")] {
 /// let mut sim = ems::Simulation::from_xml("model.xml")?;
 /// let res = sim.run()?;
 /// ems::io::openems::write_probes(&res, "model_results")?;
+/// # }
 /// # Ok::<(), ems::Error>(())
 /// ```
 ///
