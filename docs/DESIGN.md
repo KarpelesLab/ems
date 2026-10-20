@@ -1019,8 +1019,11 @@ csx `PlaneWave` excitations (type 10) are injected with the TF/SF technique
   and body diagonals of a cubic mesh (all samples then sit half-way between
   auxiliary nodes, and the interpolation is a uniform filter of an exact
   discrete wave).
-- **Reference.** `E_inc = Excite·a(t − Delay)` at the box corner the wave
+- **Reference.** `E_inc = Excite·a(t − t_d)` at the box corner the wave
   enters first; the 1-D source runs ahead by the numerical travel time.
+  Through `Simulation` (XML/csx models), `t_d` is openEMS's lag, one time
+  step plus the travel time across the first cell, and `Delay` is ignored
+  like openEMS does (§5.16); the engine operator takes any `t_d`.
 - **Background.** Homogeneous, isotropic, possibly lossy (`ε_r`, `μ_r`,
   `κ`, `σ_m`). The compile step takes it from the effective edge materials
   of the box faces not on the domain boundary (`compile::planewave`,
@@ -1889,6 +1892,40 @@ faces on the mesh and off it, and on a coarse filled line:
   leapfrog `χ(Ω)` and differs from openEMS by 1–7 % at 1 mm / 1.8 ps and
   5 % on a 4 mm / 7 ps line. The explicit scheme adds a stability limit
   (`ω_0·dt < 2`, `ω_p·dt` small) that ems does not check.
+
+
+**Plane waves** (§5.11, `compile::planewave`). `Excite` is the incident
+E vector and `PropDir` the propagation direction in both codes (same
+signs, amplitude to 1e-4). openEMS's incident field lags ems's former
+reference (`a(t)` at the entry corner) by `dt + Σ_a |k̂_a|·Δ_a/v`: one
+time step plus the travel time across the box's first cell (measured for
+`+x`, `−y`, 30° in the xy plane with both polarisations, `(1,1,1)`, on
+uniform 1 mm and 0.5 mm meshes, a different `dt`, and a graded mesh with
+0.5 mm cells at the entry face). ems now adds this lag, and ignores
+`Delay` (with a warning): openEMS's output does not change with it.
+Remaining agreement 4e-4…1.5e-3 a few cells into 3-D boxes, 2e-2 after 20
+cells of 1 mm on a line (4e-3 at 0.5 mm): openEMS's own injection error,
+which also leaks −37 dB (1 mm) / −53 dB (0.5 mm) into its scattered-field
+region; ems's leakage stays below −120 dB, so scattered-field probes
+cannot be compared. In an ε_r = 4 background openEMS's plane wave is not
+usable (the scattered region holds a wave as large as the incident one);
+ems's is (§5.11), so that case is not matched. The lag's travel time uses
+the background speed, which only matters there.
+
+**Conducting sheets** (§5.9). openEMS's `ConductingSheet` (a
+"behavioural" model fitted to the loss of good conductors, per its
+documentation) is a different model, not reproduced:
+- copper (35 µm, 1–9 GHz, TEM line): its reflection loss `1 − |Γ|` is
+  0.48–0.52 of the exact slab value `≈ 2R_s/η0` that ems reproduces to
+  1 %, i.e. it behaves like a shunt impedance `≈ Z_s/2` (the two faces in
+  parallel: 0.80–0.94·Z_s/2, phase −5…−19°), with no shielding (it lets
+  −80…−90 dB through where the slab passes −230 dB);
+- `σ = 1e6 S/m`, `t = 20 µm` (`t/δ = 1.8…4.4`): loss 0.47–0.84 of the slab,
+  transmission +1…+20 dB above it;
+- a resistive sheet (`σ·t = 0.01 S`, `t ≪ δ`): openEMS transmits
+  −14…−34 dB below `2/(2 + η0σt)`, its effective impedance being nearly
+  capacitive; ems is within 0.02 dB.
+ems keeps the slab model; `tests/openems_adv.rs` records the copper ratio.
 
 
 ## 6. Engine architecture

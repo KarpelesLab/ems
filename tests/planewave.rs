@@ -589,12 +589,13 @@ fn csx_plane_wave_excitation() {
     };
     let (t, centre) = series("centre");
     let wave = fdtd.get_waveform().unwrap();
-    // Incident E_z = a(t − ξ/c), ξ = 6 mm from the entry face.
+    // Incident E_z = a(t − dt − (ξ + Δ)/c), ξ = 6 mm from the entry face,
+    // with openEMS's phase reference (one step plus one 1 mm cell).
     let dt = res.dt();
     let err = t
         .iter()
         .zip(&centre)
-        .map(|(&t, &v)| (v - wave.value(t - 6e-3 / C0, dt)).abs())
+        .map(|(&t, &v)| (v - wave.value(t - dt - 7e-3 / C0, dt)).abs())
         .fold(0.0, f64::max);
     let leak = ["before", "after"]
         .map(|n| common::peak(&series(n).1))
@@ -748,12 +749,13 @@ fn csx_dielectric_background_and_end_criterion() {
     let p = res.probe("centre").unwrap();
     let ez: Vec<f64> = p.vector().unwrap().iter().map(|v| v[2]).collect();
     let dt = res.dt();
-    // E_z = a(t − ξ/v), ξ = 4 mm, v = c0/2.
+    // E_z = a(t − dt − (ξ + Δ)/v), ξ = 4 mm, Δ = 1 mm, v = c0/2 (openEMS's
+    // phase reference).
     let werr = p
         .times()
         .iter()
         .zip(&ez)
-        .map(|(&t, &v)| (v - wave.value(t - 4e-3 * 2.0 / C0, dt)).abs())
+        .map(|(&t, &v)| (v - wave.value(t - dt - 5e-3 * 2.0 / C0, dt)).abs())
         .fold(0.0, f64::max);
     eprintln!(
         "csx ε_r = 4 background: max |E − a(t − ξ/v)| = {werr:.2e}; stopped by {:?} at \

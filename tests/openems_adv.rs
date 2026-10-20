@@ -128,3 +128,120 @@ fn lorentz_coarse_trapezoidal_differs() {
         assert!(e > 1e-2 && e < 0.2, "{f}: {e}");
     }
 }
+
+// ------------------------------------------------------------ sheets
+
+/// ems's signal of `name`'s probe `f` at the openEMS sample times of the
+/// fixture (they coincide: same `dt`).
+fn at_oe_times(name: &str, f: &str, res: &Results) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let oe = OeProbe::read(fixture_dir(name).join(f));
+    let p = res.probe(f).unwrap();
+    let (t, v) = (p.times(), p.scalar().unwrap());
+    let ems =
+        oe.t.iter()
+            .map(|&x| {
+                let k = t.partition_point(|&y| y < x - 1e-3 * res.dt());
+                if k < t.len() { v[k] } else { 0.0 }
+            })
+            .collect();
+    (oe.t.clone(), oe.values().to_vec(), ems)
+}
+
+/// openEMS's `ConductingSheet` is a different (fitted) model: a 35 µm
+/// copper sheet across a TEM line reflects with `1 − |Γ|` equal to
+/// 0.48–0.52 of the exact slab's `≈ 2R_s/η0` (it acts like a shunt `Z_s/2`),
+/// which ems reproduces (design §5.9, §5.16). The incident wave is the
+/// same in both codes (sheet removed: ems's reference run).
+#[test]
+fn conducting_sheet_copper_loss_is_half_in_openems() {
+    let name = "adv_sheet_copper";
+    let res = run(name, &CompileOptions::default());
+    let xml = std::fs::read_to_string(fixture_dir(name).join("model.xml")).unwrap();
+    let (a, b) = (
+        xml.find("<ConductingSheet").unwrap(),
+        xml.find("</ConductingSheet>").unwrap() + "</ConductingSheet>".len(),
+    );
+    let reference = format!("{}{}", &xml[..a], &xml[b..]);
+    let mut sim = Simulation::from_xml_str(&reference).unwrap();
+    let r = sim.run().unwrap();
+    let (t, oe, ems) = at_oe_times(name, "ut_a", &res);
+    let (_, _, inc) = at_oe_times(name, "ut_a", &r);
+    let dt = t[1] - t[0];
+    let freqs: Vec<f64> = (2..=9).map(|k| k as f64 * 1e9).collect();
+    let refl = |x: &[f64]| {
+        let d: Vec<f64> = x.iter().zip(&inc).map(|(a, b)| a - b).collect();
+        let (g, i) = (
+            ems::post::dft(t[0], dt, &d, &freqs),
+            ems::post::dft(t[0], dt, &inc, &freqs),
+        );
+        g.iter()
+            .zip(&i)
+            .map(|(g, i)| 1.0 - (*g / *i).norm())
+            .collect::<Vec<_>>()
+    };
+    let (l_oe, l_ems) = (refl(&oe), refl(&ems));
+    let (mu0, eta0) = (4e-7 * std::f64::consts::PI, 376.730_313_668);
+    for (k, f) in freqs.iter().enumerate() {
+        let rs = (std::f64::consts::PI * f * mu0 / 5.8e7).sqrt();
+        let exact = 2.0 * rs / eta0;
+        let (q_oe, q_ems) = (l_oe[k] / exact, l_ems[k] / exact);
+        eprintln!(
+            "{:.0} GHz: 1-|Γ| openEMS/slab {q_oe:.3}, ems/slab {q_ems:.3}",
+            f / 1e9
+        );
+        assert!((q_ems - 1.0).abs() < 0.05, "{f}: ems {q_ems}");
+        assert!((q_oe - 0.5).abs() < 0.05, "{f}: openEMS {q_oe}");
+    }
+}
+
+// ------------------------------------------------------------ plane waves
+
+// openEMS's incident field lags ems's reference (`a(t)` at the entry
+// corner) by one time step plus the travel time across the box's first
+// cell; with that (`compile::planewave::openems_lag`) the remaining
+// difference is openEMS's own injection error (its scattered-field
+// leakage is −37 dB at 1 mm, −53 dB at 0.5 mm, against below −120 dB in
+// ems), which grows with the distance into the box like a dispersion
+// error: 2e-2 after 20 cells of 1 mm, 4e-3 at 0.5 mm, 5e-4…1.5e-3 a few
+// cells into the 3-D boxes.
+
+/// TEM line (200 × 2 × 2 cells of 1 mm), plane wave along x in the box
+/// 40 ≤ x ≤ 160 mm with an ε_r = 4 slab at 100…120 mm: probes before the
+/// box (reflected wave), inside, and behind it. Measured 0.8–1.1e-2.
+#[test]
+fn plane_wave_line_slab() {
+    check("adv_pw_line_slab", 3e-2);
+}
+
+/// The same line without the slab at 0.5 mm cells: 4.0e-3.
+#[test]
+fn plane_wave_line_fine() {
+    check("adv_pw_line_fine", 1e-2);
+}
+
+/// Oblique incidence, 30° in the xy plane, E along z (30 × 30 × 24 cells,
+/// Mur, box 6…24 / 6…18 mm): 4.9–8.0e-4.
+#[test]
+fn plane_wave_oblique_te() {
+    check("adv_pw_oblique_te", 4e-3);
+}
+
+/// Oblique incidence, 30° in the xy plane, E in the plane of incidence:
+/// 5.0–7.9e-4.
+#[test]
+fn plane_wave_oblique_tm() {
+    check("adv_pw_oblique_tm", 4e-3);
+}
+
+/// Body-diagonal incidence `(1, 1, 1)`, E along `(1, −1, 0)`: 4.2–5.0e-4.
+#[test]
+fn plane_wave_diagonal() {
+    check("adv_pw_diagonal", 4e-3);
+}
+
+/// Incidence along −y, E along x (entry corner on the y_max face):
+/// 0.7–1.4e-3.
+#[test]
+fn plane_wave_minus_y() {
+    check("adv_pw_minus_y", 5e-3);
+}

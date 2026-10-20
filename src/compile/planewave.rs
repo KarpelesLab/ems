@@ -14,9 +14,14 @@
 //!   `Excite` the incident E field in V/m at amplitude 1 of the waveform.
 //!   A component of `Excite` along `PropDir` is removed (warning); weight
 //!   functions are not used for plane waves (warning if set).
-//! * The incident wave is `Excite·a(t − Delay − ξ/c)` with `ξ` the distance
-//!   along `PropDir` from the box corner the wave enters first (see
-//!   [`crate::engine::planewave`]).
+//! * The incident wave is `Excite·a(t − t_lag − ξ/v)` with `ξ` the
+//!   distance along `PropDir` from the box corner the wave enters first
+//!   (see [`crate::engine::planewave`]) and `t_lag` one time step plus the
+//!   travel time across the box's first cell ([`openems_lag`]): openEMS's
+//!   phase reference, measured from its output (design §5.16; the
+//!   polarisation and direction conventions agree). The excitation's
+//!   `Delay` is ignored with a warning, as openEMS ignores it for plane
+//!   waves (its output does not change).
 //! * The background medium is the material on the box surface
 //!   (after rasterisation): the effective edge
 //!   materials of the faces that do not lie on the domain boundary must be
@@ -123,6 +128,13 @@ pub(super) fn plane_wave_sources(
         if p.primitives.is_empty() {
             warnings.push(format!("plane wave {name:?}: no primitive; ignored"));
         }
+        let delay = ex.delay.value();
+        if delay != 0.0 {
+            warnings.push(format!(
+                "plane wave {name:?}: Delay = {delay:e} s ignored (openEMS does not delay \
+                 plane waves)"
+            ));
+        }
         for prim in &p.primitives {
             let (a, b) = snap_primitive(&model.grid, prim, "plane wave", name, warnings);
             let start = [0, 1, 2].map(|d| a[d].min(b[d]));
@@ -136,7 +148,7 @@ pub(super) fn plane_wave_sources(
             out.push(PlaneWaveSource {
                 name: name.clone(),
                 number: ex.number,
-                delay: ex.delay.value(),
+                delay: 0.0,
                 spec: PlaneWaveSpec::new(start, stop, k, pol)
                     .with_match_frequency(match_frequency(fdtd)),
             });
@@ -171,4 +183,31 @@ pub(super) fn set_backgrounds(
         }
     }
     Ok(())
+}
+
+/// Extra delay \[s\] of openEMS's incident wave relative to ems's
+/// reference (`E_inc = Excite·a(t − Delay)` at the entry corner `r_ref`),
+/// measured from openEMS output (design §5.16): one time step plus the
+/// travel time across the first cell of the box along the propagation
+/// direction, `dt + Σ_a |k̂_a|·Δ_a / v` with `Δ_a` the box's cell at the
+/// entry corner on axis `a` and `v` the background phase velocity.
+/// [`crate::Simulation`] adds it to the plane wave's `Delay`, so the
+/// incident field matches openEMS's in phase (to its dispersion error).
+pub(crate) fn openems_lag(spec: &PlaneWaveSpec, grid: &Grid, dt: f64) -> f64 {
+    let k = spec.direction;
+    let len = (k[0] * k[0] + k[1] * k[1] + k[2] * k[2]).sqrt();
+    let d: f64 = crate::axis::Axis::ALL
+        .iter()
+        .map(|&ax| {
+            let a = ax.index();
+            let cell = if k[a] >= 0.0 {
+                spec.start[a]
+            } else {
+                spec.stop[a] - 1
+            };
+            (k[a] / len).abs() * grid.delta(ax, cell)
+        })
+        .sum();
+    let v = crate::constants::C0 / (spec.eps_r * spec.mu_r).sqrt();
+    dt + d / v
 }

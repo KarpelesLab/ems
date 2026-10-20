@@ -489,7 +489,13 @@ pub(crate) fn map_sources(
     // Plane waves last: their corrections add to the final kernel values.
     for pw in &src.plane_waves {
         let Some(w) = waveform else { break };
-        let (wf, delay) = (w.clone(), pw.delay);
+        // openEMS's phase reference (design §5.16); not measured for the
+        // periodic (Bloch) variant, which keeps ems's.
+        let lag = match bloch {
+            None => crate::compile::planewave::openems_lag(&pw.spec, engine.grid(), dt),
+            Some(_) => 0.0,
+        };
+        let (wf, delay) = (w.clone(), pw.delay + lag);
         let amplitude = move |t| wf.value(t - delay, dt);
         if let Some(b) = bloch {
             let spec = match super::bloch::periodic_spec(pw, fdtd, nodes, b.k) {
