@@ -149,6 +149,9 @@ fn debye_poles(m: &DebyeMaterial, dir: usize, c: Vec3, out: &mut Vec<Pole>) {
 struct Sampler<'a> {
     index: csx::structure::SpatialIndex<'a>,
     lines: [&'a [f64]; 3],
+    /// The grid's coordinate system (`(ρ, α, z)` points for a cylindrical
+    /// grid).
+    cs: CoordSystem,
 }
 
 impl Sampler<'_> {
@@ -158,12 +161,17 @@ impl Sampler<'_> {
         let Some(h) = self.index.query(p) else {
             return;
         };
+        // Weighting functions take Cartesian coordinates.
+        let c = match self.cs {
+            CoordSystem::Cylindrical => Vec3::new(p[0] * p[1].cos(), p[0] * p[1].sin(), p[2]),
+            _ => p,
+        };
         match &h.property.kind {
             PropertyKind::LorentzMaterial(m) => {
-                lorentz_poles(m, field, dir, p, edge_inf, out);
+                lorentz_poles(m, field, dir, c, edge_inf, out);
             }
             PropertyKind::DebyeMaterial(m) if field == Field::Electric => {
-                debye_poles(m, dir, p, out);
+                debye_poles(m, dir, c, out);
             }
             _ => {}
         }
@@ -214,8 +222,8 @@ fn node_range(lines: &[f64], lo: f64, hi: f64) -> core::ops::Range<usize> {
 }
 
 /// The dispersive poles of `model` per engine edge (see the module docs).
-/// Invalid poles are dropped with a warning. The model's grid must be
-/// Cartesian.
+/// Invalid poles are dropped with a warning. On a cylindrical grid the
+/// midpoints are `(ρ, α, z)` points.
 pub(super) fn dispersive_poles(
     model: &csx::ContinuousStructure,
     node_map: &NodeMap,
@@ -242,12 +250,11 @@ pub(super) fn dispersive_poles(
     if bbox.is_empty() || !(bbox.min.is_finite() && bbox.max.is_finite()) {
         return Vec::new();
     }
+    let cs = model.grid.coord_system;
     let s = Sampler {
-        index: model.spatial_index(
-            CoordSystem::Cartesian,
-            TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
-        ),
+        index: model.spatial_index(cs, TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal)),
         lines: [0, 1, 2].map(|a| model.grid.lines(a)),
+        cs,
     };
     let dims = node_map.nodes();
     let ranges: [core::ops::Range<usize>; 3] =

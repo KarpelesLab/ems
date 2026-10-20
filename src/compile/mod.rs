@@ -988,12 +988,7 @@ pub fn compile(
         None
     };
 
-    let dispersive = if cyl {
-        cylindrical::no_dispersive(model, &mut warnings);
-        Vec::new()
-    } else {
-        dispersive::dispersive_poles(model, &node_map, &materials, &mut warnings)
-    };
+    let dispersive = dispersive::dispersive_poles(model, &node_map, &materials, &mut warnings);
     let thin_wires = wire::thin_wires(
         full_model,
         &grid,

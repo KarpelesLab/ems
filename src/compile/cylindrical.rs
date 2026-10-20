@@ -4,13 +4,13 @@
 //! grid's `(ρ, α, z)` coordinates (with the Jacobian in its volume
 //! weights), and the engine takes the geometry from the grid. Features
 //! whose models assume a Cartesian mesh are not available yet and are
-//! dropped with a warning: conducting sheets (treated as PEC), dispersive
-//! poles (the static part `ε∞`, `μ∞` stays), plane-wave excitations and SAR
-//! dumps. (Waveguide mode probes work on cylindrical grids with a `z`
-//! normal, see `compile/mode.rs`.)
+//! dropped with a warning: conducting sheets (treated as PEC), plane-wave
+//! excitations and SAR dumps. Dispersive poles are mapped (midpoint rule in
+//! `(ρ, α, z)`, physical edge areas; within 1e-3 of openEMS on a
+//! Drude-filled coax). Waveguide mode probes work with a `z` normal (exact
+//! sampling, see `compile/mode.rs`).
 
 use csx::discretize::MaterialGrid;
-use csx::properties::PropertyKind;
 
 use super::ProbeSpec;
 use super::sar::SarKind;
@@ -35,24 +35,6 @@ pub(super) fn sheets_as_pec(mg: &MaterialGrid, warnings: &mut Vec<String>) -> Sh
         ));
     }
     out
-}
-
-/// Warns about the dispersive properties of `model`, whose poles are not
-/// mapped on cylindrical grids.
-pub(super) fn no_dispersive(model: &csx::ContinuousStructure, warnings: &mut Vec<String>) {
-    for p in model.properties() {
-        if matches!(
-            p.kind,
-            PropertyKind::LorentzMaterial(_) | PropertyKind::DebyeMaterial(_)
-        ) && !p.primitives.is_empty()
-        {
-            warnings.push(format!(
-                "dispersive material {:?}: poles are not supported on cylindrical grids; \
-                 only its static values are used",
-                p.name
-            ));
-        }
-    }
 }
 
 /// Removes the SAR dumps from `dumps` (with a warning each).

@@ -129,6 +129,52 @@ fn lorentz_coarse_trapezoidal_differs() {
     }
 }
 
+// ------------------------------------------------------------ cylindrical grids
+
+// `CoordSystem="1"` grids with `CylinderCoords="1"` on `<FDTD>` (openEMS's
+// switch; `α` lines in radians).
+
+/// Coax `ρ = 2…8 mm` (12 cells), closed azimuth (16 cells), PEC ends,
+/// radial soft source over the whole circle: 1.1–1.6e-6 (radial voltages)
+/// and 7.8e-5 for the weak axial voltage.
+#[test]
+fn cylindrical_coax() {
+    check("adv_cyl_coax", 5e-4);
+}
+
+/// Annular cavity `ρ = 1…10 mm` without the axis, an off-centre Ez source:
+/// 1.4e-6…2.4e-5.
+#[test]
+fn cylindrical_cavity_without_axis() {
+    check("adv_cyl_noaxis", 2e-4);
+}
+
+/// The full cavity `ρ = 0…10 mm` with the axis: 4.4–5.1e-3, a 0.45 %
+/// amplitude and −2.7e-4 TM010 frequency difference that halves with the
+/// first radial cell (openEMS's axis cell is treated differently,
+/// `O(Δρ_0)`; without the axis the codes agree to 1e-6).
+#[test]
+fn cylindrical_cavity_with_axis() {
+    check("adv_cyl_axis", 1.5e-2);
+}
+
+/// The same cavity with `MultiGrid="4"`: 1.0–2.9e-2. openEMS's multigrid
+/// moves its own solution by 0.6–1 % (ems's by 0.1 %), on top of the
+/// axis difference.
+#[test]
+fn cylindrical_multigrid() {
+    check("adv_cyl_multigrid", 6e-2);
+}
+
+/// Drude-filled coax (`ε∞ = 2`, `f_p = 3 GHz`, `τ = 0.5 ns`): dispersive
+/// poles on a cylindrical grid (openEMS supports them; ems now maps them
+/// too): 4.8e-4…1.0e-3 (static `ε` alone agrees to 1e-6, the remainder is
+/// in the cylindrical pole coefficients).
+#[test]
+fn cylindrical_drude() {
+    check("adv_cyl_drude", 4e-3);
+}
+
 // ------------------------------------------------------------ waveguide probes
 
 /// TE10 in a 20 × 10 mm guide (PEC, 1 mm cells, `sin(πx/20)`-weighted Ey

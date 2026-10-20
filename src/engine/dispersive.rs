@@ -879,12 +879,22 @@ impl Dispersive {
             let k = key(e);
             let idx = grid.index(e.node);
             let (ab, ac) = e.axis.others();
+            // `m = X0·g`, `g` the dual face area over the edge length
+            // (cylindrical grids: the physical lengths and areas).
             let (coef, m) = match e.field {
+                Field::Electric if grid.is_cylindrical() => (
+                    co.cb(e.axis)[idx],
+                    EPS0 * grid.dual_face_area(e.axis, e.node) / grid.edge_length(e.axis, e.node),
+                ),
                 Field::Electric => (
                     co.cb(e.axis)[idx],
                     EPS0 * grid.dual_delta(ab, e.node[ab.index()])
                         * grid.dual_delta(ac, e.node[ac.index()])
                         / grid.delta(e.axis, e.node[e.axis.index()]),
+                ),
+                Field::Magnetic if grid.is_cylindrical() => (
+                    co.db(e.axis)[idx],
+                    MU0 * grid.face_area(e.axis, e.node) / grid.dual_edge_length(e.axis, e.node),
                 ),
                 Field::Magnetic => (
                     co.db(e.axis)[idx],

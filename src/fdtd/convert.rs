@@ -37,6 +37,7 @@ impl Fdtd {
     /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor) |
     /// | `cell_constant_material` | `true` → warning (ems averages materials onto edges) |
     /// | `coord_system` | `0` (Cartesian) or `1` (cylindrical) accepted: the coordinate system is that of the model's grid; anything else → [`Error::Unsupported`] |
+    /// | extra attribute `CylinderCoords` | `0` / `1` accepted silently (openEMS's switch for its cylindrical solver; ems follows the grid) |
     /// | `multi_grid` (`MultiGrid`) | [`multigrid`](Fdtd::multigrid): comma-separated radii in drawing units; unparsable → [`Error::Invalid`] |
     /// | `excitation` (`<Excitation>`) | [`waveform`](Fdtd::waveform) via [`Waveform::from_csx`] |
     /// | `boundary.faces` (`<BoundaryCond>`) | PEC / PMC / Mur / `PML_n` → [`Boundary`] with [`Cpml::cells`]`(n)` and default grading; absent → all PEC |
@@ -130,6 +131,13 @@ impl Fdtd {
             f.boundaries = boundaries_from_csx(b, &mut warn);
         }
         for (k, v) in &s.extra_attributes {
+            // openEMS selects its cylindrical solver with `CylinderCoords`
+            // (black-box: `CoordSystem` on `<FDTD>` is ignored by openEMS);
+            // ems takes the coordinate system from the model's grid, so
+            // both are only checked.
+            if k == "CylinderCoords" && matches!(v.trim(), "0" | "1") {
+                continue;
+            }
             warn.push(format!("FDTD attribute {k}={v:?} ignored"));
         }
 

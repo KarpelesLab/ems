@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openEMS>
+  <FDTD NumberOfTimesteps="4000" endCriteria="0" f_max="10e9" TimeStep="5e-13" CylinderCoords="1">
+    <Excitation Type="10" f0="10e9" Function="exp(-((t-3e-10)/7e-11)^2)*cos(2*pi*1e10*(t-3e-10))"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8</XLines>
+      <YLines>0,0.392699081698724,0.785398163397448,1.17809724509617,1.5707963267949,1.96349540849362,2.35619449019234,2.74889357189107,3.14159265358979,3.53429173528852,3.92699081698724,4.31968989868597,4.71238898038469,5.10508806208341,5.49778714378214,5.89048622548086,6.28318530717959</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="1,0,0">
+        <Primitives><Box Priority="0"><P1 X="2" Y="0" Z="5"/><P2 X="8" Y="6.28318530717958" Z="5"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="ur_a" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="2" Y="1.17809724509617" Z="15"/><P2 X="8" Y="1.17809724509617" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ur_b" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="2" Y="3.92699081698724" Z="25"/><P2 X="8" Y="3.92699081698724" Z="25"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="uz_c" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="5" Y="1.96349540849362" Z="10"/><P2 X="5" Y="1.96349540849362" Z="20"/></Box></Primitives>
+      </ProbeBox>
+
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

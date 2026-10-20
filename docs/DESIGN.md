@@ -1584,12 +1584,13 @@ Cartesian-style CPML layer, still available as `plane_rho_max()` for
 comparison, is alike).
 
 **Not available on cylindrical grids** (dropped with a warning or refused):
-conducting sheets (PEC instead), dispersive poles (static values only), plane
-waves, SAR dumps, NF2FF boxes, the MSL, CPW, stripline and
-rectangular-waveguide port helpers (`Error::Unsupported`). Lumped ports, lumped elements, voltage, current and
-field probes, waveguide mode probes on a `z`-normal plane (the weights of
-`compile/mode.rs` with the `ρ·Δα` metric), field dumps (VTK and HDF5) and
-the coaxial and circular-waveguide port helpers (`CoaxPort`,
+conducting sheets (PEC instead; openEMS does run its sheet model there),
+plane waves, SAR dumps, NF2FF boxes, the MSL, CPW, stripline and
+rectangular-waveguide port helpers (`Error::Unsupported`). Lumped ports,
+lumped elements, voltage, current and field probes, waveguide mode probes on
+a `z`-normal plane (the exact weights of `compile/mode.rs` with the `ρ·Δα`
+metric), field dumps (VTK and HDF5), dispersive materials (§5.16), the
+coaxial and circular-waveguide port helpers (`CoaxPort`,
 `CircWaveguidePort`, along `z` on the axis, §5.5) and `LumpedPort` /
 `CurvePort` work.
 
@@ -1955,6 +1956,37 @@ mesh; TE11-like field on a graded mesh), with mode functions `sin`, `1`,
   `RectWaveguidePort` keeps ems's exact overlap integrals
   (`emsModeSampling="exact"`), with which a matched guide reads
   −54…−63 dB instead of −49…−63 dB.
+
+
+**Cylindrical grids** (§5.15). openEMS selects its cylindrical solver
+with `CylinderCoords="1"` on `<FDTD>` (a `CoordSystem` attribute there is
+ignored by openEMS, which then runs the `(ρ, α, z)` lines as a Cartesian
+mesh); `α` lines are radians. ems follows the grid's `CoordSystem` and
+accepts `CylinderCoords` silently. With equal `dt` (openEMS's own rule
+gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
+2e-13 s on a 0.5 mm / 15° mesh; it warns but runs):
+- without the axis (coax, annular cavity, closed azimuth): 1e-6, also
+  static dielectrics;
+- with the axis: 4.4–5.1e-3, a 0.45 % amplitude and −2.7e-4 TM010
+  frequency difference, halving with the first radial cell: the axis
+  cell is discretised differently (`O(Δρ_0)`);
+- `MultiGrid`: 1–3e-2; openEMS's multigrid changes its own solution by
+  0.6–1 % against 0.1 % for ems's embedding (§5.15.1);
+- dispersive poles work in openEMS on cylindrical grids, and now in ems
+  (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
+  Drude-filled coax (static `ε` alone 1e-6);
+- conducting sheets run there in openEMS (its shunt model); ems still
+  uses PEC.
+
+**Lumped elements** (not changed here; shared with the Cartesian
+mapping). openEMS distributes a `LumpedElement`'s `R` differently from
+ems on edges whose dual faces are clipped or uneven: in a PMC-walled line
+with the element across the full width, its effective resistance is
+`R·N/Σ(w_e/Δ)` (N edges per row, `w_e` their in-domain dual widths), i.e.
+75 Ω for 50 Ω over 2 cells and 62.4 Ω over 4, where ems gives 50 Ω; on
+a closed-azimuth coax 21.5 Ω for 20 Ω (also with the α = 2π copy left
+out). A conductivity-like spreading over the dual areas would explain the
+Cartesian numbers.
 
 
 ## 6. Engine architecture
