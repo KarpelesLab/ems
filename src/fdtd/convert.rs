@@ -34,13 +34,13 @@ impl Fdtd {
     /// | csx field (XML attribute) | `Fdtd` |
     /// |---|---|
     /// | `number_of_timesteps` (`NumberOfTimesteps`) | [`max_timesteps`](Fdtd::max_timesteps); absent → 0 with a warning (openEMS runs nothing) |
-    /// | `end_criteria` (`endCriteria`) | [`EndCriteria::energy_ratio`]: a linear energy ratio (1e-6 = −60 dB); absent or `0` → [`OPENEMS_DEFAULT_END_CRITERIA`](Fdtd::OPENEMS_DEFAULT_END_CRITERIA) (as openEMS); checked like openEMS ([`openems_run`](Fdtd::openems_run) is set) |
+    /// | `end_criteria` (`endCriteria`) | [`EndCriteria::energy_ratio`]: a linear energy ratio (1e-6 = −60 dB); absent or `0` → [`OPENEMS_DEFAULT_END_CRITERIA`](Fdtd::OPENEMS_DEFAULT_END_CRITERIA) (as openEMS); negative → none (all steps run, as openEMS, with a warning); checked like openEMS ([`openems_run`](Fdtd::openems_run) is set) |
     /// | `f_max` (`f_max`) | [`max_frequency`](Fdtd::max_frequency); else the `f_max` of a Dirac / step signal (if > 0). Written back as [`Fdtd::get_max_frequency`] |
-    /// | `over_sampling` (`OverSampling`) | [`oversampling`](Fdtd::oversampling) (dump sampling interval) |
+    /// | `over_sampling` (`OverSampling`) | [`oversampling`](Fdtd::oversampling) (dump sampling interval); below 2 → default (4, as openEMS) |
     /// | `time_step_method` (`TimeStepMethod`) | [`timestep_method`](Fdtd::timestep_method): absent or 3 → [`TimestepMethod::Rennings`](crate::engine::TimestepMethod::Rennings), 1 → [`Cfl`](crate::engine::TimestepMethod::Cfl), other ids → `Cfl` with a warning (what openEMS does) |
     /// | `max_time` (`MaxTime`) | [`max_time`](Fdtd::max_time) |
     /// | `time_step` (`TimeStep`) | [`timestep`](Fdtd::timestep) |
-    /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor); absent → 1 (openEMS default) |
+    /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor); absent → 1 (openEMS default); outside `(0, 1]` → 1 with a warning (openEMS ignores it) |
     /// | `cell_constant_material` (`CellConstantMaterial`) | [`cell_constant_material`](Fdtd::cell_constant_material) |
     /// | `coord_system` | `0` (Cartesian) or `1` (cylindrical) accepted: the coordinate system is that of the model's grid; anything else → [`Error::Unsupported`] |
     /// | extra attribute `CylinderCoords` | `0` / `1` accepted silently (openEMS's switch for its cylindrical solver; ems follows the grid) |
@@ -92,6 +92,13 @@ impl Fdtd {
             .unwrap_or(Self::OPENEMS_DEFAULT_END_CRITERIA);
         f.end_criteria = if e == Self::NO_END_CRITERIA {
             None
+        } else if e < 0.0 {
+            // openEMS runs to the end ("end-criteria of -nandB").
+            warn.push(format!(
+                "FDTD endCriteria={e} is negative: no end criteria, all timesteps are run \
+                 (as openEMS)"
+            ));
+            None
         } else if e > 0.0 && e <= 1.0 {
             Some(EndCriteria::energy_ratio(e))
         } else {
@@ -110,7 +117,8 @@ impl Fdtd {
         f.max_time = s.max_time;
         // Used by field dumps to choose their sampling interval; probes still
         // record every timestep.
-        f.oversampling = s.over_sampling;
+        // openEMS: values below 2 select the default (4).
+        f.oversampling = s.over_sampling.filter(|&v| v >= 2);
 
         // openEMS: Rennings (3) by default; every other id selects its
         // CFL criterion (1), as observed with openEMS v0.37.
@@ -127,8 +135,19 @@ impl Fdtd {
             }
         });
         f.timestep = s.time_step;
-        // openEMS's default factor is 1.
-        f.timestep_factor = s.time_step_factor.unwrap_or(1.0);
+        // openEMS's default factor is 1; it ignores factors above 1
+        // (silently) and non-positive ones ("invalid timestep factor,
+        // skipping").
+        f.timestep_factor = match s.time_step_factor {
+            Some(v) if v > 0.0 && v <= 1.0 => v,
+            Some(v) => {
+                warn.push(format!(
+                    "FDTD TimeStepFactor={v} is outside (0, 1]; ignored (factor 1), as openEMS does"
+                ));
+                1.0
+            }
+            None => 1.0,
+        };
         f.cell_constant_material = s.cell_constant_material == Some(true);
 
         if let Some(sig) = &s.excitation {
@@ -452,8 +471,14 @@ mod tests {
         assert_eq!(none.to_csx().end_criteria, Some(Fdtd::NO_END_CRITERIA));
         let (back, _) = Fdtd::from_csx(&none.to_csx()).unwrap();
         assert!(back.get_end_criteria().is_none());
-        // dB values or ratios above 1 are rejected.
-        for bad in [-50.0, 2.0, f64::NAN] {
+        // A negative value (e.g. a dB value) never stops openEMS: no end
+        // criteria, with a warning.
+        s.end_criteria = Some(-50.0);
+        let (f, w) = Fdtd::from_csx(&s).unwrap();
+        assert!(f.get_end_criteria().is_none());
+        assert!(w.iter().any(|w| w.contains("endCriteria=-50")), "{w:?}");
+        // Ratios above 1 are rejected.
+        for bad in [2.0, f64::NAN] {
             s.end_criteria = Some(bad);
             assert!(Fdtd::from_csx(&s).is_err(), "{bad}");
         }
@@ -519,9 +544,21 @@ mod tests {
         let mut zero = FdtdSettings::new();
         zero.number_of_timesteps = Some(0);
         assert_eq!(Fdtd::from_csx(&zero).unwrap().0.get_max_timesteps(), 0);
-        let mut bad = FdtdSettings::new();
-        bad.time_step_factor = Some(1.5);
-        assert!(Fdtd::from_csx(&bad).is_err());
+        // openEMS ignores factors outside (0, 1], endCriteria < 0 runs
+        // every step, OverSampling < 2 is the default.
+        for v in [1.5, 0.0, -1.0] {
+            let mut odd = FdtdSettings::new();
+            odd.time_step_factor = Some(v);
+            let (f, w) = Fdtd::from_csx(&odd).unwrap();
+            assert_eq!(f.get_timestep_factor(), 1.0);
+            assert!(w.iter().any(|w| w.contains("TimeStepFactor")), "{w:?}");
+        }
+        let mut odd = FdtdSettings::new();
+        odd.end_criteria = Some(-1e-5);
+        odd.over_sampling = Some(1);
+        let (f, _) = Fdtd::from_csx(&odd).unwrap();
+        assert!(f.get_end_criteria().is_none());
+        assert_eq!(f.get_oversampling(), None);
         let mut bad = FdtdSettings::new();
         bad.excitation = Some(ExcitationSignal::Gaussian { f0: 1e9, fc: 0.0 });
         assert!(Fdtd::from_csx(&bad).is_err());

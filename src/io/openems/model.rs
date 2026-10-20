@@ -17,6 +17,8 @@
 //!   `PML 8`, `" PEC"`) is PEC, with openEMS's "unknown" warning. csx
 //!   accepts more spellings (case-insensitive, `PML 8`) and rejects some
 //!   that openEMS runs (`4`, `PML_8.0`).
+//! * **`OverSampling`** below 2 is the default, 4 (csx rejects negative
+//!   values).
 //! * **`DumpMode`**: a field dump (`DumpType` 0–5, 10–15) without the
 //!   attribute is mode 0 (no interpolation), not csx's 1 (design §8.1).
 //! * **Anisotropic materials** (`Isotropy="0"`): a list with fewer than
@@ -171,6 +173,15 @@ pub(crate) fn boundary_name(v: &str) -> (String, bool) {
 }
 
 fn fix_fdtd(fdtd: &mut Element, warnings: &mut Vec<String>) {
+    // OverSampling below 2 is openEMS's default (4); csx rejects negative
+    // values.
+    if fdtd
+        .attr("OverSampling")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .is_some_and(|v| v < 2.0)
+    {
+        fdtd.attrs.retain(|(k, _)| k != "OverSampling");
+    }
     let Some(bc) = child_mut(fdtd, "BoundaryCond") else {
         return;
     };
