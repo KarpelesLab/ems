@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  2.4 GHz probe-fed rectangular patch antenna on 1.6 mm FR4 (eps_r 4.3,
+  tan d 0.02 as Kappa), 50 Ohm lumped port, PML_8, NF2FF box dumps. Fixture: openEMS's time step fixed.
+  Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
+-->
+<openEMS>
+  <FDTD TimeStep="1.26758e-12" NumberOfTimesteps="5000" endCriteria="1e-30" f_max="3.4e9">
+    <Excitation Type="0" f0="2.4e9" fc="1e9"/>
+    <BoundaryCond xmin="PML_8" xmax="PML_8" ymin="PML_8" ymax="PML_8" zmin="PML_8" zmax="PML_8"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="FR4"><Property Epsilon="4.3" Kappa="0.0114825"/><Primitives><Box Priority="0"><P1 X="-30" Y="-30" Z="0"/><P2 X="30" Y="30" Z="1.6"/></Box></Primitives></Material>
+      <Metal Name="gnd"><Primitives><Box Priority="10"><P1 X="-30" Y="-30" Z="0"/><P2 X="30" Y="30" Z="0"/></Box></Primitives></Metal>
+      <Metal Name="patch"><Primitives><Box Priority="10"><P1 X="-14.75" Y="-19" Z="1.6"/><P2 X="14.75" Y="19" Z="1.6"/></Box></Primitives></Metal>
+      <LumpedElement Name="port_R" Direction="2" R="50" Caps="1"><Primitives><Box Priority="5"><P1 X="-7" Y="-0.5" Z="0"/><P2 X="-7" Y="0.5" Z="1.6"/></Box></Primitives></LumpedElement>
+      <Excitation Name="port_exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="5"><P1 X="-7" Y="-0.5" Z="0"/><P2 X="-7" Y="0.5" Z="1.6"/></Box></Primitives></Excitation>
+      <ProbeBox Name="port_ut" Type="0"><Primitives><Box Priority="0"><P1 X="-7" Y="0" Z="0"/><P2 X="-7" Y="0" Z="1.6"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="-7" Y="-0.5" Z="0.8"/><P2 X="-7" Y="0.5" Z="0.8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ut_edge" Type="0"><Primitives><Box Priority="0"><P1 X="14.75" Y="0" Z="0"/><P2 X="14.75" Y="0" Z="1.6"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ut_edge_fd" Type="0" ProbeType="0"><FD_Samples>2.2e9,2.3e9,2.4e9,2.5e9,2.6e9</FD_Samples><Primitives><Box Priority="0"><P1 X="14.75" Y="0" Z="0"/><P2 X="14.75" Y="0" Z="1.6"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_above" Type="3"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="6.6"/><P2 X="0" Y="0" Z="6.6"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="nf2ff_E_xn" DumpType="10" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="-35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_E_xp" DumpType="10" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_E_yn" DumpType="10" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="35.890046" Y="-35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_E_yp" DumpType="10" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="35.890046" Z="-1.853949"/><P2 X="35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_E_zn" DumpType="10" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="35.890046" Y="35.890046" Z="-1.853949"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_E_zp" DumpType="10" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="7.761433"/><P2 X="35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_H_xn" DumpType="11" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="-35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_H_xp" DumpType="11" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_H_yn" DumpType="11" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="35.890046" Y="-35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_H_yp" DumpType="11" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="35.890046" Z="-1.853949"/><P2 X="35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_H_zn" DumpType="11" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="-1.853949"/><P2 X="35.890046" Y="35.890046" Z="-1.853949"/></Box></Primitives></DumpBox>
+      <DumpBox Name="nf2ff_H_zp" DumpType="11" DumpMode="1" FileType="1"><FD_Samples>2.4e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="-35.890046" Y="-35.890046" Z="7.761433"/><P2 X="35.890046" Y="35.890046" Z="7.761433"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>-75,-71.089005,-67.178009,-63.267014,-59.356019,-55.445023,-51.534028,-47.623032,-43.712037,-39.801042,-35.890046,-32.393028,-30,-28.024699,-26.049397,-24.074096,-22.098795,-20.123493,-18.148192,-16.178806,-14.75,-13.544836,-12.339671,-11.134507,-9.929343,-8.825985,-8.044427,-7.5,-7,-6.5,-5.892742,-4.990778,-3.7272,-2.4074,-1.0876,0.2322,1.552,2.8718,4.1916,5.5114,6.8312,8.151,9.4708,10.7906,12.1104,13.4302,14.75,16.178806,18.148192,20.123493,22.098795,24.074096,26.049397,28.024699,30,32.393028,35.890046,39.801042,43.712037,47.623032,51.534028,55.445023,59.356019,63.267014,67.178009,71.089005,75</XLines>
+      <YLines>-75,-71.089005,-67.178009,-63.267014,-59.356019,-55.445023,-51.534028,-47.623032,-43.712037,-39.801042,-35.890046,-32.393028,-30,-28.074978,-26.149955,-24.224933,-22.29991,-20.383273,-19,-17.669596,-16.339192,-15.008788,-13.678385,-12.347981,-11.017577,-9.687173,-8.356769,-7.026365,-5.695961,-4.365557,-3.035154,-1.70475,-0.5,0.5,1.70475,3.035154,4.365557,5.695961,7.026365,8.356769,9.687173,11.017577,12.347981,13.678385,15.008788,16.339192,17.669596,19,20.383273,22.29991,24.224933,26.149955,28.074978,30,32.393028,35.890046,39.801042,43.712037,47.623032,51.534028,55.445023,59.356019,63.267014,67.178009,71.089005,75</YLines>
+      <ZLines>-36,-32.153599,-28.307198,-24.460798,-20.614397,-16.767996,-12.921595,-9.075529,-5.828843,-3.509883,-1.853949,-0.76928,0,0.8,1.6,2.386245,3.560289,5.302897,7.761433,11.218996,15.150219,19.081441,23.012664,26.943887,30.875109,34.806332,38.737555,42.668777,46.6</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

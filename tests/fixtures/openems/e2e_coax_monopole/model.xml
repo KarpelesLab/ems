@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Quarter-wave monopole (28 mm) on a ground disc fed by a 50 Ohm PTFE coax
+  (0.5 / 1.673 mm), cylindrical grid with closed azimuth, radial 1/rho
+  weighted coax excitation, Mur on rho_max and both z faces.
+  Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
+-->
+<openEMS>
+  <FDTD TimeStep="3e-13" NumberOfTimesteps="6000" endCriteria="1e-4" f_max="4e9" CylinderCoords="1">
+    <Excitation Type="0" f0="2.5e9" fc="1.5e9"/>
+    <BoundaryCond xmin="PEC" xmax="MUR" ymin="PEC" ymax="PEC" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <Properties>
+      <Material Name="PTFE"><Property Epsilon="2.1"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="-13"/><P2 X="1.673" Y="6.283185307" Z="0"/></Box></Primitives></Material>
+      <Metal Name="inner"><Primitives><Box Priority="10"><P1 X="0" Y="0" Z="-13"/><P2 X="0.5" Y="6.283185307" Z="28"/></Box></Primitives></Metal>
+      <Metal Name="outer"><Primitives><Box Priority="10"><P1 X="1.673" Y="0" Z="-13"/><P2 X="41" Y="6.283185307" Z="0"/></Box></Primitives></Metal>
+      <Excitation Name="exc" Type="0" Excite="1,0,0"><Weight X="0.5/rho" Y="0" Z="0"/><Primitives><Box Priority="5"><P1 X="0.5" Y="0" Z="-9.13807"/><P2 X="1.673" Y="6.283185307" Z="-9.13807"/></Box></Primitives></Excitation>
+      <ProbeBox Name="port_ut" Type="0"><Primitives><Box Priority="0"><P1 X="0.5" Y="0" Z="-6.473967"/><P2 X="1.673" Y="0" Z="-6.473967"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="-5.4609435"/><P2 X="1.0865" Y="6.283185307" Z="-5.4609435"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ez_far" Type="2"><FD_Samples>2e9,2.5e9,3e9</FD_Samples><Primitives><Box Priority="0"><P1 X="24" Y="0" Z="14"/><P2 X="24" Y="0" Z="14"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_near" Type="3"><Primitives><Box Priority="0"><P1 X="5" Y="0.3" Z="10"/><P2 X="5" Y="0.3" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="1">
+      <XLines>0,0.25,0.5,0.891,1.282,1.673,1.996717,2.426534,3,3.865621,5.012848,6.533378,8.548643,11.183041,14,16.888889,19.777778,22.666667,25.555556,28.444444,31.333333,34.222222,37.111111,40</XLines>
+      <YLines>0,1.570796327,3.141592654,4.71238898,6.283185307</YLines>
+      <ZLines>-12,-9.13807,-6.473967,-4.44792,-2.926128,-1.783085,-0.953977,-0.476988,0,0.488585,0.977169,1.848194,3.045351,4.650345,6.802078,9.602738,12.534246,15.465754,18.397262,21.197922,23.349655,24.954649,26.151806,27.022831,27.511415,28,28.4688,28.937599,29.717329,30.816448,32.272617,34.201756,36.748809,39.561607,42.374405,45.187202,48</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Microstrip open-stub low-pass filter (eps_r 3.38, h 0.813 mm, 50 Ohm
+  strip 1.85 mm), soft E feed, three-voltage/two-current probe ports on
+  both sides, Mur on every open face (fixture: instead of PML on the
+  line ends), ground as PEC zmin; openEMS's time step fixed (ems's Rennings
+  rule gives 2 % less on this layered, doubly graded mesh).
+  Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
+-->
+<openEMS>
+  <FDTD TimeStep="7.4648e-13" NumberOfTimesteps="2500" endCriteria="1e-30" f_max="10e9" OverSampling="6">
+    <Excitation Type="0" f0="5e9" fc="5e9"/>
+    <BoundaryCond xmin="MUR" xmax="MUR" ymin="MUR" ymax="MUR" zmin="PEC" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="RO4003"><Property Epsilon="3.38" Kappa="0.0005"/><Primitives><Box Priority="0"><P1 X="-25" Y="-15" Z="0"/><P2 X="25" Y="15" Z="0.813"/></Box></Primitives></Material>
+      <Metal Name="line"><Primitives><Box Priority="10"><P1 X="-25" Y="-0.925" Z="0.813"/><P2 X="25" Y="0.925" Z="0.813"/></Box></Primitives></Metal>
+      <Metal Name="stub0"><Primitives><Box Priority="10"><P1 X="-4.5" Y="0.925" Z="0.813"/><P2 X="-3.5" Y="9.925" Z="0.813"/></Box></Primitives></Metal>
+      <Metal Name="stub1"><Primitives><Box Priority="10"><P1 X="3.5" Y="0.925" Z="0.813"/><P2 X="4.5" Y="9.925" Z="0.813"/></Box></Primitives></Metal>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="5"><P1 X="-18.285714" Y="-0.925" Z="0"/><P2 X="-18.285714" Y="0.925" Z="0.813"/></Box></Primitives></Excitation>
+      <ProbeBox Name="port_ut1A" Type="0"><Primitives><Box Priority="0"><P1 X="-14.85" Y="0" Z="0"/><P2 X="-14.85" Y="0" Z="0.813"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut1B" Type="0"><Primitives><Box Priority="0"><P1 X="-14.275" Y="0" Z="0"/><P2 X="-14.275" Y="0" Z="0.813"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut1C" Type="0"><Primitives><Box Priority="0"><P1 X="-13.7" Y="0" Z="0"/><P2 X="-13.7" Y="0" Z="0.813"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it1A" Type="1" NormDir="0" Weight="1"><Primitives><Box Priority="0"><P1 X="-14.5625" Y="-1.525" Z="0.4065"/><P2 X="-14.5625" Y="1.525" Z="1.313"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it1B" Type="1" NormDir="0" Weight="1"><Primitives><Box Priority="0"><P1 X="-13.9875" Y="-1.525" Z="0.4065"/><P2 X="-13.9875" Y="1.525" Z="1.313"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut2A" Type="0"><Primitives><Box Priority="0"><P1 X="13.7" Y="0" Z="0"/><P2 X="13.7" Y="0" Z="0.813"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut2B" Type="0"><Primitives><Box Priority="0"><P1 X="14.275" Y="0" Z="0"/><P2 X="14.275" Y="0" Z="0.813"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut2C" Type="0"><Primitives><Box Priority="0"><P1 X="14.85" Y="0" Z="0"/><P2 X="14.85" Y="0" Z="0.813"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it2A" Type="1" NormDir="0" Weight="1"><Primitives><Box Priority="0"><P1 X="13.9875" Y="-1.525" Z="0.4065"/><P2 X="13.9875" Y="1.525" Z="1.313"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it2B" Type="1" NormDir="0" Weight="1"><Primitives><Box Priority="0"><P1 X="14.5625" Y="-1.525" Z="0.4065"/><P2 X="14.5625" Y="1.525" Z="1.313"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ez_stub" Type="2"><FD_Samples>3e9,5e9,7e9</FD_Samples><Primitives><Box Priority="0"><P1 X="0" Y="5.925" Z="0.4065"/><P2 X="0" Y="5.925" Z="0.4065"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="Ef_sub" DumpType="10" DumpMode="0" FileType="1" SubSampling="2,2,1"><FD_Samples>5e9</FD_Samples><Primitives><Box Priority="0"><P1 X="-24" Y="-14" Z="0.4065"/><P2 X="24" Y="14" Z="0.4065"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>-24,-23.428571,-22.857143,-22.285714,-21.714286,-21.142857,-20.571429,-20,-19.428571,-18.857143,-18.285714,-17.714286,-17.142857,-16.571429,-16,-15.425,-14.85,-14.275,-13.7,-13.125,-12.55,-11.975,-11.4,-10.825,-10.25,-9.675,-9.1,-8.525,-7.95,-7.375,-6.8,-6.225,-5.65,-5.075,-4.5,-4,-3.5,-2.916667,-2.333333,-1.75,-1.166667,-0.583333,0,0.583333,1.166667,1.75,2.333333,2.916667,3.5,4,4.5,5.075,5.65,6.225,6.8,7.375,7.95,8.525,9.1,9.675,10.25,10.825,11.4,11.975,12.55,13.125,13.7,14.275,14.85,15.425,16,16.571429,17.142857,17.714286,18.285714,18.857143,19.428571,20,20.571429,21.142857,21.714286,22.285714,22.857143,23.428571,24</XLines>
+      <YLines>-14,-12.553773,-11.107547,-9.66132,-8.215094,-6.768867,-5.322641,-3.876414,-2.581992,-1.792736,-1.358868,-0.925,-0.616667,-0.308333,0,0.308333,0.616667,0.925,1.36252,1.800039,2.341328,2.924687,3.508047,4.091406,4.674766,5.258125,5.841484,6.424844,7.008203,7.591562,8.174922,8.758281,9.341641,9.925,10.482382,11.380779,12.641259,14</YLines>
+      <ZLines>0,0.4065,0.813,1.189872,1.695377,2.412823,3.360321,4.609329,6</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

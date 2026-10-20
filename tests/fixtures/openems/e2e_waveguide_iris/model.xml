@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WR-90 rectangular waveguide (22.86 x 10.16 mm) with an inductive iris
+  (12 mm aperture) and a dielectric post, TE10 weighted E excitation,
+  mode-matching voltage/current probes on both sides, MUR on the ends.
+  Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="6000" endCriteria="1e-4" f_max="13e9">
+    <Excitation Type="0" f0="10e9" fc="3e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,1,0"><Weight X="0" Y="sin(3.14159265358979*x/22.86)" Z="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="-38"/><P2 X="22.86" Y="10.16" Z="-38"/></Box></Primitives></Excitation>
+      <Metal Name="iris"><Primitives><Box Priority="10"><P1 X="0" Y="0" Z="0"/><P2 X="5.43" Y="10.16" Z="0"/></Box><Box Priority="10"><P1 X="17.43" Y="0" Z="0"/><P2 X="22.86" Y="10.16" Z="0"/></Box></Primitives></Metal>
+      <Material Name="post"><Property Epsilon="2.2"/><Primitives><Box Priority="0"><P1 X="9.43" Y="0" Z="15"/><P2 X="13.43" Y="10.16" Z="20"/></Box></Primitives></Material>
+      <ProbeBox Name="port_ut1" Type="10" Weight="1" NormDir="2"><Attributes ModeFunctionX="0" ModeFunctionY="sin(3.14159265358979*x/22.86)" ModeFunctionZ="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="-30.714286"/><P2 X="22.86" Y="10.16" Z="-30.714286"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it1" Type="11" Weight="1" NormDir="2"><Attributes ModeFunctionX="sin(3.14159265358979*x/22.86)" ModeFunctionY="0" ModeFunctionZ="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="-30.714286"/><P2 X="22.86" Y="10.16" Z="-30.714286"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut2" Type="10" Weight="1" NormDir="2"><Attributes ModeFunctionX="0" ModeFunctionY="sin(3.14159265358979*x/22.86)" ModeFunctionZ="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="25"/><P2 X="22.86" Y="10.16" Z="25"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it2" Type="11" Weight="1" NormDir="2"><Attributes ModeFunctionX="sin(3.14159265358979*x/22.86)" ModeFunctionY="0" ModeFunctionZ="0"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="25"/><P2 X="22.86" Y="10.16" Z="25"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ey_mid" Type="2" ><Primitives><Box Priority="0"><P1 X="11.43" Y="5.08" Z="5"/><P2 X="11.43" Y="5.08" Z="5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1.3575,2.715,4.0725,5.43,6.93,8.43,9.93,11.43,12.93,14.43,15.93,17.43,18.7875,20.145,21.5025,22.86</XLines>
+      <YLines>0,1.451429,2.902857,4.354286,5.805714,7.257143,8.708571,10.16</YLines>
+      <ZLines>-50,-48.5,-47,-45.5,-44,-42.5,-41,-39.5,-38,-36.5,-35,-33.571429,-32.142857,-30.714286,-29.285714,-27.857143,-26.428571,-25,-23.529412,-22.058824,-20.588235,-19.117647,-17.647059,-16.176471,-14.705882,-13.235294,-11.764706,-10.294118,-8.823529,-7.352941,-5.882353,-4.411765,-2.941176,-1.470588,0,1.470588,2.941176,4.411765,5.882353,7.352941,8.823529,10.294118,11.764706,13.235294,14.705882,16.176471,17.647059,19.117647,20.588235,22.058824,23.529412,25,26.428571,27.857143,29.285714,30.714286,32.142857,33.571429,35,36.5,38,39.5,41,42.5,44,45.5,47,48.5,50</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
