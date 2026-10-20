@@ -1358,9 +1358,10 @@ comparison, is alike).
 
 **Not available on cylindrical grids** (dropped with a warning or refused):
 conducting sheets (PEC instead), dispersive poles (static values only), plane
-waves, SAR dumps, waveguide mode probes, NF2FF boxes, MSL and waveguide port
-helpers (`Error::Unsupported`). Lumped ports, lumped elements, voltage,
-current and field probes, field dumps (VTK and HDF5) work.
+waves, SAR dumps, NF2FF boxes, MSL and rectangular-waveguide port helpers
+(`Error::Unsupported`). Lumped ports, lumped elements, voltage, current and
+field probes, waveguide mode probes on a `z`-normal plane (the weights of
+`compile/mode.rs` with the `ρ·Δα` metric), field dumps (VTK and HDF5) work.
 
 **Validation.**
 

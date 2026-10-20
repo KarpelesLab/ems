@@ -642,13 +642,6 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                     pb.probe_type,
                     ProbeType::WaveguideVoltage | ProbeType::WaveguideCurrent
                 );
-                if waveguide && grid.is_cylindrical() {
-                    warnings.push(format!(
-                        "probe {:?}: waveguide mode probes need a Cartesian grid; ignored",
-                        p.name
-                    ));
-                    continue;
-                }
                 let mode_entries = if waveguide {
                     match mode::mode_entries(
                         model,

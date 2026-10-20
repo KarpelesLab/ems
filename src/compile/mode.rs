@@ -43,6 +43,31 @@
 //! y_{j+½})`), so `V/I` of a single mode is free of transverse sampling
 //! error; only the half-cell interpolation of H along the normal adds an
 //! `O((βΔ)²)` term.
+//!
+//! # Cylindrical grids
+//!
+//! On a cylindrical grid the probe plane must be normal to `z` (a `ρ`–`α`
+//! cross section; other normals are ignored with a warning). The mode
+//! function components are the `(ρ, α, z)` components (as for csx
+//! excitation weights on such grids) and it is evaluated at the Cartesian
+//! position of the sample point, so expressions may use `rho` and `a`
+//! (or `x`, `y`). The widths above become physical lengths: an `α` width
+//! `Δα` at radius `ρ` is `ρ·Δα`. With `u_ρ = E_ρ·Δρ`, `u_α = E_α·ρ_i·Δα`,
+//! `i_ρ = H_ρ·Δρ*`, `i_α = H_α·ρ_{i+½}·Δα*`:
+//!
+//! * `E_ρ` at `(ρ_{i+½}, α_j)`: weight `f_ρ·ρ_{i+½}·Δα*_j`;
+//!   `E_α` at `(ρ_i, α_{j+½})`: weight `f_α·Δρ*_i`.
+//! * `H_ρ` at `(ρ_i, α_{j+½})`: weight `f_ρ·ρ_i·Δα_j` (its strip
+//!   `Δρ*_i × ρ_i·Δα_j` over `l* = Δρ*_i`);
+//!   `H_α` at `(ρ_{i+½}, α_j)`: weight `f_α·Δρ_i/Δα*_j`.
+//!
+//! On a closed azimuth the edges on the `α = 0` and `α = 2π` lines are
+//! stored copies of one edge; the clipping gives each copy the half of the
+//! strip inside the box, so a box over the full `α` range counts each
+//! physical edge once. Edges on the axis (zero length or area) and samples
+//! where the mode function is not finite are skipped. Inside an azimuthal
+//! multigrid zone (design §5.15.1) the probe reads the stored (fine)
+//! representation, which is not the coarse field: a warning is issued.
 
 use csx::expr::{CompiledExpr, Expr};
 use csx::properties::{ProbeBox, ProbeType, WEIGHT_VARS, weight_vars};
@@ -103,6 +128,14 @@ pub(super) fn mode_entries(
         }
     };
     let n = normal.index();
+    let cyl = grid.is_cylindrical();
+    if cyl && normal != Axis::Z {
+        warnings.push(format!(
+            "waveguide probe {name:?}: on a cylindrical grid the probe plane must be \
+             normal to z; ignored"
+        ));
+        return None;
+    }
     if start[n] != stop[n] {
         warnings.push(format!(
             "waveguide probe {name:?}: box is not flat along its normal {normal}; the \
@@ -115,13 +148,27 @@ pub(super) fn mode_entries(
     let nodes = grid.nodes();
     let lines = |a: usize| grid.lines(Axis::from_index(a).expect("axis index in 0..3"));
     let eval = |c: usize, p: [f64; 3]| -> f64 {
+        let q = if cyl {
+            [p[0] * p[1].cos(), p[0] * p[1].sin(), p[2]]
+        } else {
+            p
+        };
         let vars = weight_vars(csx::Vec3::new(
-            p[0] / delta_unit,
-            p[1] / delta_unit,
-            p[2] / delta_unit,
+            q[0] / delta_unit,
+            q[1] / delta_unit,
+            q[2] / delta_unit,
         ));
         funcs[c].eval(&vars)
     };
+    // Metric factor of a width along axis `a` at the point `p`: the radius
+    // for `α` on a cylindrical grid, 1 otherwise.
+    let scale = |a: usize, p: [f64; 3]| -> f64 { if cyl && a == 1 { p[0] } else { 1.0 } };
+    if cyl && (lo[0]..hi[0].max(lo[0] + 1)).any(|i| grid.alpha_factor(i) > 1) {
+        warnings.push(format!(
+            "waveguide probe {name:?}: inside an azimuthal multigrid zone; it reads the \
+             stored fine-grid values, not the coarse field"
+        ));
+    }
     // Dual width through primary node `i` along `a`, clipped to [lo, hi].
     let clipped = |a: usize, i: usize| -> f64 {
         let l = lines(a);
@@ -153,7 +200,7 @@ pub(super) fn mode_entries(
                         p[n] = lines(n)[k];
                         p[ti] = 0.5 * (lines(ti)[it] + lines(ti)[it + 1]);
                         p[oi] = lines(oi)[io];
-                        let w = eval(ti, p) * clipped(oi, io);
+                        let w = eval(ti, p) * clipped(oi, io) * scale(oi, p);
                         if w != 0.0 && w.is_finite() {
                             out.push((t, node, w));
                         }
@@ -189,7 +236,7 @@ pub(super) fn mode_entries(
                         p[ti] = lines(ti)[it];
                         p[oi] = 0.5 * (lines(oi)[io] + lines(oi)[io + 1]);
                         let d_o = lines(oi)[io + 1] - lines(oi)[io];
-                        let base = eval(ti, p) * clipped(ti, it) * d_o / dual;
+                        let base = eval(ti, p) * clipped(ti, it) * d_o * scale(oi, p) / dual;
                         if base == 0.0 || !base.is_finite() {
                             continue;
                         }
@@ -286,5 +333,80 @@ mod tests {
             assert!((w - y * wo).abs() < 1e-15);
         }
         assert_eq!(e.len(), 3 * 2); // y = 0 rows have weight 0
+    }
+
+    /// A closed annulus `1 ≤ ρ ≤ 3` mm on a cylindrical grid: uniform
+    /// `f_ρ = 1` (voltage) and `f_α = 1` (current) integrate a unit field
+    /// to the annulus area `π(b² − a²)`, each seam copy counted once.
+    #[test]
+    fn cylindrical_annulus_area() {
+        use core::f64::consts::{PI, TAU};
+        let na = 12;
+        let mut m = ContinuousStructure::new();
+        m.coord_system = csx::CoordSystem::Cylindrical;
+        m.grid.coord_system = csx::CoordSystem::Cylindrical;
+        m.grid.delta_unit = 1e-3;
+        m.grid.set_lines(0, [1.0, 1.5, 2.5, 3.0]).unwrap();
+        m.grid
+            .set_lines(1, (0..=na).map(|j| j as f64 * TAU / na as f64))
+            .unwrap();
+        m.grid.set_lines(2, [0.0, 1.0, 3.0]).unwrap();
+        let grid = Grid::cylindrical([
+            m.grid.lines(0).iter().map(|x| x * 1e-3).collect(),
+            m.grid.lines(1).to_vec(),
+            m.grid.lines(2).iter().map(|x| x * 1e-3).collect(),
+        ])
+        .unwrap();
+        let area = PI * (3e-3f64.powi(2) - 1e-3f64.powi(2));
+        for (ty, fx, fy, axis) in [
+            (ProbeType::WaveguideVoltage, "1", "0", Axis::X),
+            (ProbeType::WaveguideCurrent, "0", "1", Axis::Y),
+        ] {
+            let mut p = Property::probe("p", ProbeBox::new(ty));
+            p.set_attribute("ModeFunctionX", fx);
+            p.set_attribute("ModeFunctionY", fy);
+            let pb = match &p.kind {
+                csx::PropertyKind::ProbeBox(pb) => pb.clone(),
+                _ => unreachable!(),
+            };
+            let mut w = Vec::new();
+            let e = mode_entries(&m, &p, &pb, &grid, 1e-3, [0, 0, 1], [3, na, 1], &mut w).unwrap();
+            assert!(w.is_empty(), "{w:?}");
+            // Unit field: u_ρ = Δρ, i_α = ρ_{i+½}·Δα* (the stored value).
+            let s: f64 = e
+                .iter()
+                .map(|&(a, n, wt)| {
+                    assert_eq!(a, axis);
+                    let edge = if ty == ProbeType::WaveguideVoltage {
+                        grid.delta(a, n[0])
+                    } else {
+                        grid.dual_edge_length(a, n)
+                    };
+                    wt * edge
+                })
+                .sum();
+            assert!((s / area - 1.0).abs() < 1e-12, "{ty:?}: {s} vs {area}");
+        }
+    }
+
+    #[test]
+    fn cylindrical_needs_z_normal() {
+        let mut m = ContinuousStructure::new();
+        m.coord_system = csx::CoordSystem::Cylindrical;
+        m.grid.coord_system = csx::CoordSystem::Cylindrical;
+        let grid =
+            Grid::cylindrical([vec![1e-3, 2e-3], vec![0.0, 0.5, 1.0], vec![0.0, 1e-3]]).unwrap();
+        let mut p = Property::probe("p", ProbeBox::new(ProbeType::WaveguideVoltage));
+        p.set_attribute("ModeFunctionY", "1");
+        let pb = match &p.kind {
+            csx::PropertyKind::ProbeBox(pb) => pb.clone(),
+            _ => unreachable!(),
+        };
+        let mut w = Vec::new();
+        assert!(mode_entries(&m, &p, &pb, &grid, 1e-3, [0, 0, 0], [1, 2, 0], &mut w).is_some());
+        assert!(w.is_empty(), "{w:?}");
+        let mut w = Vec::new();
+        assert!(mode_entries(&m, &p, &pb, &grid, 1e-3, [0, 1, 0], [1, 1, 1], &mut w).is_none());
+        assert!(!w.is_empty());
     }
 }

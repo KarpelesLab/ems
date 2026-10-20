@@ -5,8 +5,9 @@
 //! weights), and the engine takes the geometry from the grid. Features
 //! whose models assume a Cartesian mesh are not available yet and are
 //! dropped with a warning: conducting sheets (treated as PEC), dispersive
-//! poles (the static part `ε∞`, `μ∞` stays), plane-wave excitations, SAR
-//! dumps and waveguide mode probes.
+//! poles (the static part `ε∞`, `μ∞` stays), plane-wave excitations and SAR
+//! dumps. (Waveguide mode probes work on cylindrical grids with a `z`
+//! normal, see `compile/mode.rs`.)
 
 use csx::discretize::MaterialGrid;
 use csx::properties::PropertyKind;
