@@ -10,7 +10,8 @@
 //!   series, with comment-prefixed metadata lines.
 //! * `h5` (feature `hdf5`): HDF5 files for field dumps and probe series,
 //!   in an ems-native layout.
-//! * [`openems`]: openEMS-compatible dump files (VTK, HDF5).
+//! * [`openems`]: files in the formats openEMS writes (probe text files,
+//!   field dumps as VTK and HDF5), and readers for the probe files.
 
 mod base64;
 pub mod csv;

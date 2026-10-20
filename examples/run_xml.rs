@@ -6,7 +6,9 @@
 //!
 //! `--openems` writes the dumps (and SAR dumps) as the files openEMS writes
 //! for their `FileType` (`ems::io::openems::dump`: VTK, or HDF5 with the
-//! `hdf5` feature) instead of the ems formats described below.
+//! `hdf5` feature) instead of the ems formats described below, and every
+//! probe in openEMS's text format (`DIR/<probe>`, `DIR/<probe>_FD`; see
+//! `ems::io::openems::probes`).
 //!
 //! `--conformal` resolves solid metal below the cell size (conformal PEC,
 //! `ems::CompileOptions::conformal`) instead of the staircase mask.
@@ -191,6 +193,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         println!("wrote {}", path.display());
+    }
+    if args.openems {
+        for p in ems::io::openems::write_probes(&res, &out)? {
+            println!("wrote {}", p.display());
+        }
     }
     let probe_files: std::collections::HashSet<String> =
         res.probes().iter().map(|p| file_stem(p.name())).collect();
