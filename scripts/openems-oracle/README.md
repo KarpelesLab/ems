@@ -53,13 +53,16 @@ command line in the case's `meta.txt`:
 
 - `gen-core.sh [CASE...]` regenerates the core-semantics cases (those whose
   `model.xml` carries the "ems core parity fixture" comment: signals,
-  excitation kinds and delay, probe semantics, FD probes, time-step
-  methods, materials, lumped elements and ports, boundaries, end criteria;
+  excitation kinds and delay, probe semantics and skipped probe boxes,
+  FD probes, time-step methods, materials, lumped elements (also with
+  excitations over them and on graded meshes) and ports, boundaries, end
+  criteria;
   `tests/openems_core.rs`). It keeps every file openEMS writes (probe
   files, the excitation signals `et`/`ht`) and the console output
   without banner and timing lines (`console.txt`).
 - `gen-adv.sh [CASE...]` regenerates the `adv_*` cases (dispersive media,
-  plane waves, waveguide probes, cylindrical grids, boundaries;
+  plane waves, waveguide probes, cylindrical grids and lumped rings,
+  boundaries, the ignored `PML_Grading`;
   `tests/openems_adv.rs`), copying back the files listed on the `keep:`
   line of the case's `meta.txt`.
 - `gen-cyl.sh [CASE...]` regenerates the `cyl_*` cases (cylindrical-grid

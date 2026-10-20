@@ -307,6 +307,11 @@ be `Sync` (§8).
   implicitly with the edge voltage. This adds no stability limit.
   Series vs. parallel follows the csx property's documented semantics.
 - Branch energy (L/C states) is not yet included in `Engine::energy()`.
+- openEMS files (§5.16.1): parallel inductors use an explicit (leapfrog)
+  update instead (`LumpedElement::explicit_inductor`), parallel R/C
+  elements are spread like a material over edges of different sizes, and
+  an excitation over an element is openEMS's plain soft source with the
+  branch driven without it (`LumpedElement::branch_drive_source`).
 
 **Lumped port** = LumpedElement(R) + Excitation + voltage ProbeBox + current
 ProbeBox, emitted into csx by the helper.
@@ -2081,6 +2086,18 @@ ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
   StartTime/StopTime keep one extra sample (§ `ProbeResult`). The
   FDTD `f_max` attribute is ignored by openEMS. See §5.16.2 (current
   probes) for the graded microstrip that exposed the dual-plane rule.
+  H-type files (current, H field) end with the H after the last step,
+  `(N + ½)·dt`; ems adds that row for files from a look-ahead H update
+  (`Probe::lookahead_sample`, the machinery of the final dump step; not on
+  periodic, multigrid or axis/closed cylindrical grids), so the row counts
+  agree (`tests/openems_core.rs` now requires it). openEMS skips, with a
+  console error, a voltage probe whose raw box is not a line (a point, a
+  flat or solid box, also a thin box that snaps to one line) and a
+  current probe whose raw box extends along `NormDir` (or is solid
+  without one); ems does too for files, with a warning (fixture
+  `probe_skip`). `ems::port::LumpedPort` writes its current probe as a
+  flat box on the line above the port's middle dual plane, which both
+  codes read as that dual plane. `FD_Samples`: commas only (§8.1).
 - **Time step.** openEMS's time step depends on the materials, with both
   rules it offers (`TimeStep::OpenEms`, `engine::timestep`; ems's own CFL
   bound of §5.4 uses the vacuum speed). Observed with `--no-simulation`
@@ -2103,23 +2120,68 @@ ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
 - **Run control.** `endCriteria` absent or 0 → 1e-6; checked every Nyquist
   interval on the state after the interval (stops at a multiple of it);
   `MaxTime` → `⌊MaxTime/dt⌋` steps; no `NumberOfTimesteps` → 0 steps. The
-  energy measure differs slightly from the ems invariant (−32.283 vs
-  −32.287 dB at the same state).
+  energy measure agrees with the ems invariant to the printed digits in
+  PEC and PMC boxes (−30.1989 vs −30.19885 dB at the stop step). With
+  Mur faces openEMS also counts the face edges (with a full first dual
+  cell), which ems builds as PEC edges updated by the Mur operator;
+  `MurBoundary::count_energy` (on for files) adds them: −32.2843 vs
+  −32.2833 dB (−32.2868 before) in the `end_criteria` box, same stop step.
+  The remaining 1e-3 dB (2e-4 of the energy) was not resolved (the H on
+  the faces does not account for it).
 - **Materials.** Edge averaging agrees with csx's (anisotropic, weighted,
   lossy, μ, σ: ~1e-6); `CellConstantMaterial` samples cell centres.
 - **Boundaries.** PEC and Mur (with phase velocity) agree to ~1e-6; Mur
   without it, see §5.16.2. PMC: the wall is the outermost dual layer
   (tangential H there held at 0), half a cell inside. PML: formulation-level
-  difference (ems CPML, grading expressions not evaluated): ~0.2–0.4 % on
-  near-field probes behind an 8-cell layer (§5.16.2).
-- **Lumped elements.** A parallel element's C replaces the edge's medium
-  capacitance and its R the medium conductance; an excitation over it is a
-  plain soft source after the element update (ems: Thevenin source scaled
-  per edge, exact). Series RLC in vacuum ~1e-3; parallel L ~0.4 % and
-  series elements on dielectrics ~2–5 % (branch discretisation and medium
-  coupling differ); a series element with an excitation differs by ~30 %
-  (not reproduced). On clipped or uneven dual faces the resistance is
-  distributed differently, see §5.16.2.
+  difference (ems CPML): ~0.2–0.4 % on near-field probes behind an 8-cell
+  layer (§5.16.2). openEMS ignores `PML_Grading`: its operator dump and
+  probe files are bit-identical with any expression (also with unknown
+  variables, on `<BoundaryCond>` or `<FDTD>`, under a dozen plausible
+  attribute names; fixture `adv_pml_grading`); ems ignores it as well
+  (warning).
+- **Lumped elements** (identified from `--debug-operator` dumps, which
+  hold `vv`, `vi`, `iv`, `ii` per edge, and from full E/H dumps every
+  step, by regressing each edge's update; ems follows all of it for files):
+  - A parallel element's C replaces the edge's medium capacitance and its
+    R the medium conductance (`vv`, `vi` of the edge). Without an
+    inductor it is spread like a homogeneous material: `G_e = κ·A_e/l_e`,
+    `C_e = ε_L·A_e/l_e` (`A_e` the dual face with full cells at the mesh
+    boundary, `l_e` the edge), `κ`, `ε_L` uniform and set by the totals
+    (series sum of parallel sums). Measured on a graded mesh (`G_e`
+    over `A_e/l_e` constant to 6 digits, total 50.000 Ω) and on a coax
+    ring (`R_e ∝ 1/ρ`). Elements with an inductor and series elements are
+    spread in equal parts (csx's `R·p/s`; uniform meshes cannot tell).
+  - A parallel inductor is updated explicitly: `i_L^{n+½} = i_L^{n−½} +
+    (dt/L_e)·u^n`, `u^{n+1} = vv·u^n + vi·(Σi − i_L^{n+½})` (ems's
+    trapezoidal branch was 0.4–1.6 % off; `explicit_inductor`). It is
+    unstable once `dt²/(L_e·C_e)` approaches 4 (openEMS diverges at
+    `L` = 0.1 nH on a 1 mm vacuum edge); ems falls back to its
+    trapezoidal branch above 1 (warning).
+  - A series element is the trapezoidal (bilinear) discretisation of its
+    admittance, driven by the edge voltage `ū`, which is what ems's
+    branch is; a pure series R behaves as the parallel fold.
+  - An excitation over any element is a plain soft source added after
+    the update, and the element (inductor current, series branch) is
+    driven by the edge voltage *without* it: `u^n − V^{n−1}` resp.
+    `ū − V^{n−1}/2` in terms of the stored voltages (fit residuals
+    4e-7). A series element with an excitation was ~30 % off with ems's
+    Thevenin source (`branch_drive_source`).
+  - Agreement now (`lumped_exc`, `lumped_graded`, `lumped_l`,
+    `lumped_rc`, `lumped_port`): 1e-7…5e-5 with an excitation over the
+    element or a well-conditioned voltage; voltages over a nearly
+    shorted element stay at 4e-4 (`lumped_l`, the inductor voltage is
+    2e-5 of the field around it) and 1.3e-3 (`lumped_rc` series RLC):
+    the f32 round-off of the neighbouring fields, not a formulation
+    difference (ems's and openEMS's single-edge updates fit the same
+    coefficients). The "series elements on dielectrics 2–5 %" of the
+    earlier notes did not reproduce (7.6e-5 on ε_r = 4).
+  - Parallel R‖L with an excitation over it on a graded mesh still
+    differs by 0.6–3 % (each part alone agrees to 5e-7; not resolved).
+  - Large element values behave oddly in openEMS (not reproduced): a
+    series R above ~190 Ω per 1 mm vacuum edge gets a different,
+    unstable update (NaN within 16 steps at 2 kΩ), and a parallel
+    `L_e > dt²/(0.0732·C_e)` lowers the edge capacitance to
+    `dt²/(0.0732·L_e)` and diverges from ~3e-8 H.
 
 #### 5.16.2 Advanced physics
 
@@ -2226,9 +2288,19 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   static dielectrics;
 - with the axis: 4.4–5.1e-3, a 0.45 % amplitude and −2.7e-4 TM010
   frequency difference, halving with the first radial cell: the axis
-  cell is discretised differently (`O(Δρ_0)`);
+  cell is discretised differently (`O(Δρ_0)`). openEMS's operator dump
+  gives exactly ems's coefficients for every edge next to the axis (ρ
+  and z edges of the first ring, H_α at `ρ_½`, H_z of the first cell);
+  only the axis z edge is updated outside the dumped operator, and its
+  update is not a uniform sum of the H_α ring (fits of `Δu_axis` against
+  `Σ_j H_α(ρ_½, α_j)` leave 10–20 %, unlike ems's Ampère disc). Both
+  TM010 frequencies converge at second order to the Bessel value
+  (11.47425 GHz): −6.5e-4 (openEMS) and −7.0e-4 (ems) at `Δρ` = 0.5 mm,
+  −1.6e-4 and −1.7e-4 at 0.25 mm. Not resolved; ems keeps its
+  energy-conserving axis cell;
 - `MultiGrid`: 1–3e-2; openEMS's multigrid changes its own solution by
-  0.6–1 % against 0.1 % for ems's embedding (§5.15.1);
+  0.6–1 % against 0.1 % for ems's embedding (§5.15.1), so ems keeps its
+  embedding (accuracy rule of §5.16; not investigated further);
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
   Drude-filled coax (static `ε` alone 1e-6);
@@ -2249,14 +2321,17 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   (§5.9), so the codes do not agree on sheets on any grid;
   `tests/openems_cyl.rs` records the ratios.
 
-**Lumped elements** (see also §5.16.1; not reproduced). openEMS distributes a `LumpedElement`'s `R` differently from
-ems on edges whose dual faces are clipped or uneven: in a PMC-walled line
-with the element across the full width, its effective resistance is
-`R·N/Σ(w_e/Δ)` (N edges per row, `w_e` their in-domain dual widths), i.e.
-75 Ω for 50 Ω over 2 cells and 62.4 Ω over 4, where ems gives 50 Ω; on
-a closed-azimuth coax 21.5 Ω for 20 Ω (also with the α = 2π copy left
-out). A conductivity-like spreading over the dual areas would explain the
-Cartesian numbers.
+**Lumped elements** (see also §5.16.1). On a PMC-walled line with the
+element across the full width both codes give every edge `R·N/M` (the
+operator's boundary dual cells are full), so the probes agree to 6e-7:
+the "75 Ω for 50 Ω" is the TEM wave seeing the half-width boundary
+columns, in both codes. On a closed-azimuth coax ring openEMS spreads `R`
+like a conductivity (`R_e ∝ 1/ρ`, which ems now does) but normalises it
+over 17 α columns for 16 α cells, counting the α = 2π copy of each edge
+as a parallel column: the ring acts as 21.25 Ω for 20 Ω. ems keeps the
+nominal value (a genuine error of openEMS's, rule of §5.16): 1.5–4.5e-2
+difference; with `R = 20·17/16` in ems the codes agree to 1e-6
+(`adv_cyl_lumped_ring`).
 
 **Mur and PML** (§5.6). A Mur face without `MUR_PhaseVelocity` is tuned
 per edge to the local medium in openEMS: in an ε_r = 4 line it absorbs
@@ -2265,7 +2340,10 @@ does the same (`MurBoundary::with_faces_in`): 1e-6 agreement in ε_r = 4
 and in vacuum. openEMS's `PML_8` reflects −58 dB on a vacuum line at
 normal incidence (1 mm cells, 5 GHz pulse; opposite sign to ems's
 residual), ems's CPML −86 dB; ems keeps its CPML, so runs with PML differ
-by about 2e-3 (vacuum) to 4e-3 (ε_r = 4).
+by about 2e-3 (vacuum) to 4e-3 (ε_r = 4). openEMS's grading cannot be
+changed from the file (`PML_Grading` has no effect, §5.16.1), so an
+openEMS-matching PML would mean copying its fixed −58 dB profile; not
+done.
 
 **Current probes** (§5.16.1). On a graded microstrip mesh the voltages
 agree to 6e-7; the current probes (flat boxes on primary x planes around
@@ -2582,6 +2660,18 @@ These are reported here, not fixed in csx from this repo.
     circle only gets the edges with `α ≤ π`, and one at `α > π` none ("not
     on a mesh plane"). ems re-selects them on the grid's α range
     (`compile::cylindrical::wrapped_sheets`).
+15. **`FD_Samples` separators.** openEMS reads only comma-separated lists
+    (`1e9,2e9`, also with spaces after the commas and a trailing comma);
+    with spaces or semicolons as separators it writes no `_FD` file (and
+    runs). csx accepts spaces and semicolons too (lenient, harmless), but
+    rejects a Matlab-style range `1e9:1e9:3e9` with a hard parse error
+    where openEMS runs without FD output; csx should warn instead.
+16. **Boxes ending at α = 2π.** On a closed cylindrical grid, CSXCAD maps a
+    box whose α range ends exactly at 2π onto the α = 0 line only (a 2π
+    ring of lumped resistors becomes one α column, operator dump), whereas
+    a bound `2π − 1e-14` covers the whole ring. csx does not collapse it,
+    so such models differ by 60–130 % between the codes (black box,
+    §5.16.2); csx should decide whether to follow CSXCAD here.
 
 ### 8.2 Feedback for hdf5rs
 

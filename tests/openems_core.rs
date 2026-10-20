@@ -336,7 +336,7 @@ fn pmc_mur() {
 #[test]
 fn pml() {
     // Formulation-level: CPML (ems grading) vs openEMS's graded PML.
-    Check::new("pml").tol(2e-2).check();
+    Check::new("pml").tol(1e-2).check();
 }
 
 #[test]
