@@ -159,8 +159,11 @@ fn cylinder_error(per_radius: usize, conformal: bool) -> (f64, Option<ConformalR
 
 #[test]
 fn cylinder_tm010_converges_second_order() {
+    // (5 cells per radius: +0.17 %, past the asymptotic range; the
+    // interpolated small faces then reach across a sizeable part of the
+    // radius.)
     let mut conf = Vec::new();
-    for n in [5, 10, 20] {
+    for n in [10, 20, 40] {
         let (es, _) = cylinder_error(n, false);
         let (ec, rep) = cylinder_error(n, true);
         let rep = rep.unwrap();
@@ -180,7 +183,7 @@ fn cylinder_tm010_converges_second_order() {
         conf.push(ec.abs());
     }
     assert!(
-        conf[0] < 5e-3 && conf[1] < 1.2e-3 && conf[2] < 3e-4,
+        conf[0] < 1.2e-3 && conf[1] < 3e-4 && conf[2] < 8e-5,
         "{conf:?}"
     );
     let order = (conf[0] / conf[2]).log2() / 2.0;

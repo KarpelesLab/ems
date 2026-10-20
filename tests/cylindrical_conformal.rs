@@ -2,8 +2,8 @@
 //! PEC cavity whose axis is parallel to the grid's z axis but 30 mm off it,
 //! so its wall is not a coordinate surface of the `(ρ, α, z)` mesh. TM010
 //! and TE11 (PMC z walls) against the Bessel zeros, staircase vs conformal
-//! (Dey–Mittra with the cylindrical metric in the cut z faces), and the
-//! energy stays constant after the source.
+//! (Dey–Mittra with the cylindrical metric in the cut z faces, small faces
+//! interpolated), and the energy stays constant after the source.
 
 mod common;
 
@@ -191,11 +191,11 @@ fn offset_cylinder_tm010_conformal() {
 
 #[test]
 fn offset_cylinder_te11_conformal() {
-    // First order, as the Cartesian scheme gives for TE11 of a cylinder
-    // (+0.58 / +0.26 % at 10 / 20 cells per radius): the merged sliver
-    // faces carrying H_z, not the cylindrical metric.
+    // Second order since the small cut faces are interpolated instead of
+    // merged (+0.59 / +0.28 % before, design §5.13).
     let conf = offset_cylinder(true);
-    assert!(conf[0] < 8e-3 && conf[1] < 4e-3, "{conf:?}");
+    assert!(conf[0] < 1.5e-3 && conf[1] < 4e-4, "{conf:?}");
+    assert!(conf[0] > 3.0 * conf[1], "{conf:?}");
 }
 
 #[test]
