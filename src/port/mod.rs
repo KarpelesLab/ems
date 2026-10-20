@@ -19,6 +19,8 @@
 //! * [`LumpedPort`]: a resistor with a Thevenin source and V/I probes.
 //! * [`RectWaveguidePort`]: a TE_mn mode excitation and mode-matching
 //!   V/I probes in a rectangular waveguide.
+//! * [`CircWaveguidePort`]: the same for a TE_nm or TM_nm mode of a
+//!   circular waveguide, on Cartesian or cylindrical grids.
 //! * [`CurvePort`]: a lumped port whose terminals are joined by a PEC
 //!   polyline (a one-cell feed edge plus a csx `Curve` or `Wire`).
 //! * [`CoaxPort`]: a coaxial-line port (Cartesian or cylindrical grids),
@@ -50,6 +52,10 @@ use crate::{Error, Result};
 
 mod waveguide;
 pub use waveguide::{RectWaveguidePort, WaveguidePortProperties};
+
+mod bessel;
+mod circ_waveguide;
+pub use circ_waveguide::{CircMode, CircWaveguidePort, CircWaveguidePortProperties};
 
 /// The csx property names and ids of an added [`LumpedPort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
