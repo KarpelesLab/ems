@@ -2381,7 +2381,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-19, after wave 9)
+### Status (2026-10-20, after wave 10)
 
 | Step | State |
 |---|---|
@@ -2393,9 +2393,8 @@ Pulled forward from M2:
 - Second-order lumped-port reference plane.
 
 M1 is complete. M2 done: ConductingSheet, MSL and rectangular waveguide
-ports, AbsorbingBC sheets. M2 remaining: openEMS-compatible output files,
-blocked on reference files (the layout cannot be taken from openEMS's GPL
-scripts). M3 done: NF2FF, periodic boundaries, Bloch pairs (engine level).
+ports, AbsorbingBC sheets, and (wave 10) openEMS-compatible output files,
+observed with the black-box oracle. M3 done: NF2FF, periodic boundaries, Bloch pairs (engine level).
 Also done: plane-wave TF/SF sources (§5.11), SAR (M4, §5.12), energy
 invariant with magnetic poles and conducting sheets, medium-tuned CPML.
 
@@ -2410,18 +2409,27 @@ zero-thickness PEC sheets (§5.13.1, second order); plane waves and NF2FF in
 homogeneous non-vacuum backgrounds, plane-wave-aware energy end criterion
 (§5.10, §5.11).
 
+Wave 10 (openEMS parity, with the black-box oracle of
+`scripts/openems-oracle`, fixtures in `tests/fixtures/openems`, re-run by
+the `openEMS oracle` CI workflow): openEMS XML semantics (§5.16.1:
+signals, source timing, time-step rules, probe snapping, run control,
+CellConstantMaterial), advanced-physics conventions (§5.16.2: dispersive
+poles, plane-wave phase, waveguide probes, Mur in media, cylindrical),
+openEMS probe text files and field-dump files (§7.1: VTK, HDF5 current and
+legacy layouts, SAR), and coax, CPW, stripline, circular-waveguide and
+curve ports (§5.5). M2 is complete.
+
 Remaining:
-- openEMS output layout (M2, needs reference files).
-- Conformal PEC on cylindrical grids; NF2FF, plane waves, MSL/waveguide
-  ports, sheets and dispersive media on cylindrical grids; oblique wires on
-  cylindrical grids.
+- An openEMS command-line drop-in; `sar_calc` / `nf2ff` tool parity and
+  openEMS's in-run SAR averaging; the remaining numeric gaps of §5.16
+  (series lumped elements, PML grading expressions, energy measure, axis
+  cell and multigrid on cylindrical grids).
+- Conformal PEC, NF2FF, plane waves, SAR, MSL/CPW/stripline/waveguide
+  ports and sheets on cylindrical grids; oblique wires on cylindrical
+  grids.
 - Junctions of several oblique sheets in one cell (sub-cell gap); a csx
   way to express a feed on an oblique wire; layered/dispersive backgrounds
   for plane waves and NF2FF.
-
-Open conventions to confirm against real openEMS files:
-- Waveguide probe `ModeFunction*` coordinates are taken in drawing units
-  (like excitation weights).
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:

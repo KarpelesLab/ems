@@ -17,8 +17,9 @@ intended as a replacement for [openEMS](https://openems.de).
 * Goal: run existing openEMS XML models unchanged.
 * Edition 2024, MSRV 1.95.
 
-Status: early development (milestones 1, 3 and 4 done, milestone 2 done
-except the openEMS output-file layout). The API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
+Status: early development (milestones 1–4 done; openEMS parity work
+ongoing, checked against a black-box openEMS, see
+[scripts/openems-oracle](scripts/openems-oracle/README.md)). The API will still change. See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
 roadmap.
 
 ## Quick start
@@ -85,12 +86,12 @@ It prints warnings, progress and the outcome, and writes every probe as
 | boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave); stretched-radius cylindrical PML on ρ_max | |
 | sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF, homogeneous possibly lossy background); Gaussian, sine, Dirac, step, custom waveforms | |
 | lumped elements | R, L, C, parallel and series | |
-| probes | voltage, current, E/H field, waveguide mode voltage/current; DFT | |
-| dumps | E/H time and frequency domain, VTK `.vtr`, HDF5 (feature `hdf5`) | openEMS file layout (M2) |
-| ports | lumped, microstrip (`MslPort`) and rectangular waveguide (`RectWaveguidePort`) helpers; S-parameters, Z_in | |
+| probes | voltage, current, E/H field, waveguide mode voltage/current; DFT; openEMS probe text files (`ems::io::openems`) | openEMS mode-matching probe file format |
+| dumps | E, H, J, rot H, D, B in time and frequency domain, node/cell/native sampling, sub-sampling, OptResolution; ems VTK/HDF5 and the openEMS file layouts (VTK `.vtr`/`.vts`, HDF5 current and legacy) | |
+| ports | lumped, curve, microstrip, coplanar waveguide, stripline, coaxial, rectangular and circular waveguide helpers; S-parameters, Z_in | |
 | antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes; homogeneous lossless background | openEMS nf2ff file format |
-| SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps | rotated averaging cubes |
-| openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip | |
+| SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps; openEMS SAR dump files | openEMS's in-run averaging; `sar_calc` |
+| openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip; openEMS semantics (signals, timing, time step rules, probe snapping, end criteria) matched to ~1e-6 on the oracle fixtures | openEMS command-line drop-in |
 | engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |
 
 ## Features
