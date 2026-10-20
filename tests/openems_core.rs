@@ -187,13 +187,10 @@ impl Check {
                 .map_or(self.tol, |p| p.1);
             match a.domain {
                 ProbeDomain::Time => {
-                    // ems has no H state after the last step.
+                    // H files included: ems adds the H after the last
+                    // step like openEMS (`io::openems::write_probes`).
                     let n = b.rows.len();
-                    assert!(
-                        a.rows.len() == n || (b.kind.is_magnetic() && a.rows.len() == n + 1),
-                        "{case} {name}: {} vs {n} rows",
-                        a.rows.len()
-                    );
+                    assert_eq!(a.rows.len(), n, "{case} {name}: rows");
                     assert!(n > 0);
                     let ta = &a.abscissa()[..n];
                     let tb = b.abscissa();
