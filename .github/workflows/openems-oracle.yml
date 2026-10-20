@@ -1,0 +1,105 @@
+name: openEMS oracle
+
+# Regenerates the openEMS reference fixtures with a freshly built black-box
+# openEMS (scripts/openems-oracle, clean-room rules in its README) and runs
+# the test suite against them. Catches fixtures that no longer reproduce and
+# upstream behaviour changes. Light on purpose: weekly, on demand, and when
+# the fixtures or the oracle scripts change.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "tests/fixtures/openems/**"
+      - "scripts/openems-oracle/**"
+      - ".github/workflows/openems-oracle.yml"
+  pull_request:
+    paths:
+      - "tests/fixtures/openems/**"
+      - "scripts/openems-oracle/**"
+      - ".github/workflows/openems-oracle.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  oracle:
+    name: Regenerate fixtures and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: openEMS revision
+        id: rev
+        run: echo "rev=$(git ls-remote https://github.com/thliebig/openEMS-Project.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache oracle
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ems-openems
+          key: openems-oracle-ubuntu-24.04-${{ steps.rev.outputs.rev }}
+
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake libhdf5-dev libvtk9-dev libcgal-dev libtinyxml-dev \
+            libboost-program-options-dev libboost-thread-dev libboost-system-dev \
+            libboost-filesystem-dev libboost-chrono-dev libboost-date-time-dev \
+            libboost-serialization-dev >/dev/null
+
+      - name: Runtime libraries
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libhdf5-dev libvtk9-dev libtinyxml-dev \
+            libboost-program-options-dev libboost-thread-dev libboost-system-dev \
+            libboost-filesystem-dev libboost-chrono-dev libboost-date-time-dev \
+            libboost-serialization-dev >/dev/null
+
+      - name: Build oracle
+        env:
+          OPENEMS_REV: ${{ steps.rev.outputs.rev }}
+        run: sh scripts/openems-oracle/build-native.sh
+
+      - name: Regenerate fixtures
+        run: |
+          set -e
+          found=0
+          for s in scripts/openems-oracle/gen-*.sh; do
+            [ -e "$s" ] || continue
+            found=1
+            echo "::group::$s"; sh "$s"; echo "::endgroup::"
+          done
+          [ "$found" = 1 ] || echo "no gen-*.sh scripts yet"
+          {
+            echo "### Fixture changes after regeneration"
+            echo '```'
+            git status --short tests/fixtures/openems || true
+            git diff --stat tests/fixtures/openems | tail -n 1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test against regenerated fixtures
+        run: cargo test --all-features
+
+      - name: Upload regenerated fixtures
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: openems-fixtures
+          path: tests/fixtures/openems

@@ -31,6 +31,15 @@ Not allowed:
   scripts (the setup script deletes them; do not re-download them to read);
 - copying anything but observed *output formats* and *numbers*.
 
+## CI
+
+`.github/workflows/openems-oracle.yml` builds the oracle natively on Ubuntu
+(`build-native.sh`, cached per upstream revision), reruns every
+`gen-*.sh` script, and runs the tests against the regenerated fixtures:
+weekly, on demand, and when fixtures or these scripts change. The `gen-*.sh`
+scripts call `${OPENEMS:-~/.cache/ems-openems/openems}` and
+`${OEPY:-~/.cache/ems-openems/venv/bin/python}` from the repo root.
+
 Fixtures generated with the oracle live in `tests/fixtures/openems/`, each
 case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
