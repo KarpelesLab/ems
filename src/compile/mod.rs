@@ -1011,7 +1011,8 @@ pub fn compile(
     let mut plane_waves = planewave::plane_wave_sources(model, fdtd, &mut warnings);
     if cyl && !plane_waves.is_empty() {
         warnings.push(format!(
-            "{} plane-wave excitation(s) ignored: plane waves need a Cartesian grid",
+            "{} plane-wave excitation(s) ignored: plane waves need a Cartesian grid \
+             (openEMS ignores them on cylindrical grids too)",
             plane_waves.len()
         ));
         plane_waves.clear();

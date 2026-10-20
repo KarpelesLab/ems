@@ -10,6 +10,7 @@
 //! tube has half the loss (twice the `Q`), its thin resistive fin is
 //! nearly reactive (the mode detunes by −13 %), and its fin on the seam has
 //! no effect. ems's values are the analytic ones (`tests/cylindrical_sheet.rs`).
+//! Also: openEMS ignores plane waves on cylindrical grids (`cyl_planewave`).
 #![cfg(feature = "xml")]
 
 use std::f64::consts::TAU;
@@ -121,4 +122,29 @@ fn cylindrical_conducting_sheets_differ_from_openems_as_recorded() {
     assert!((seam_oe.0 / none_oe.0 - 1.0).abs() < 1e-6);
     assert!(seam_oe.1.abs() > 1e4);
     assert!((seam_em.1 / fin_em.1 - 1.0).abs() < 2e-3);
+}
+
+/// openEMS ignores a plane wave on a cylindrical grid (no field at all,
+/// no message; `cyl_planewave`); ems drops it with a warning.
+#[test]
+fn cylindrical_plane_wave_is_ignored_like_openems() {
+    let text = std::fs::read_to_string(fixture("cyl_planewave").join("e_in")).unwrap();
+    let rows: Vec<Vec<f64>> = text
+        .lines()
+        .filter(|l| !l.starts_with('%') && !l.trim().is_empty())
+        .map(|l| l.split_whitespace().map(|x| x.parse().unwrap()).collect())
+        .collect();
+    assert!(rows.len() > 10);
+    assert!(rows.iter().all(|r| r[1..].iter().all(|&x| x == 0.0)));
+    let mut sim = Simulation::from_xml(fixture("cyl_planewave").join("model.xml")).unwrap();
+    assert!(sim.plane_wave("pw").is_none());
+    assert!(
+        sim.warnings()
+            .iter()
+            .any(|w| w.contains("plane-wave excitation(s) ignored")),
+        "{:?}",
+        sim.warnings()
+    );
+    sim.step(50);
+    assert_eq!(sim.engine().energy(), 0.0);
 }

@@ -1970,8 +1970,8 @@ regeneration script and test file:
 - advanced physics (§5.16.2, `adv_*`): `gen-adv.sh`, `tests/openems_adv.rs`;
 - field dumps and SAR files (`dump_*`, `io::openems::dump`): `gen-dumps.sh`,
   `tests/openems_dumps.rs`;
-- cylindrical-grid features (`cyl_*`: conducting sheets, SAR files):
-  `gen-cyl.sh`, `tests/openems_cyl.rs`, `tests/openems_dumps.rs`;
+- cylindrical-grid features (`cyl_*`: conducting sheets, SAR files, plane
+  waves): `gen-cyl.sh`, `tests/openems_cyl.rs`, `tests/openems_dumps.rs`;
 - the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
@@ -2159,9 +2159,10 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
   Drude-filled coax (static `ε` alone 1e-6);
-- plane waves: openEMS ignores a `PlaneWave` excitation on a cylindrical
-  grid (fields identically zero, no message; the same box on a Cartesian
-  mesh runs); ems drops it with a warning;
+- plane waves (`cyl_planewave`): openEMS ignores a `PlaneWave` excitation
+  on a cylindrical grid (fields identically zero, no message, for
+  propagation along z and along ρ; the same box on a Cartesian mesh runs);
+  ems drops it with a warning;
 - SAR dumps run there in openEMS; see §5.12 (`cyl_sar`);
 - conducting sheets (`cyl_sheet_*`, half-wave coaxial cavity of §5.9,
   `Q` from the ring-down, same fit for both codes): openEMS's sheet model
