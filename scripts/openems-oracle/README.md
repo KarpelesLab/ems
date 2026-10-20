@@ -45,7 +45,7 @@ case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
 the committed fixtures only; CI does not need the oracle.
 
-Four scripts regenerate the fixture sets; run them from the repository
+The `gen-*.sh` scripts regenerate the fixture sets; run them from the repository
 root (`OPENEMS` overrides the oracle path, `OEPY` its python). Each runs
 openEMS deterministically (single-threaded `--engine=basic`) on the
 hand-written `model.xml` of every case and records the oracle revision and
@@ -90,6 +90,14 @@ command line in the case's `meta.txt`:
   and `nf2ff` transforms them (`nf2ff_dipole`), and `nf2ff` runs on the
   synthetic planes and job files written by `nf2ff-synth.py`
   (`nf2ff_synth`).
+- `gen-sweep.sh [CASE...]` regenerates the `sweep_*` cases of the XML
+  feature-coverage sweep (primitives, transformations, priorities,
+  materials, parameters, excitations, probe and dump boxes, boundary
+  spellings, absorbing sheets, FDTD settings; `tests/openems_sweep.rs`,
+  design §5.16.3): it copies back the files on the `keep:` line of the
+  case's `meta.txt` and records the exit status, the time step, the names
+  of all probe and dump files openEMS wrote (`files:`) and its warnings
+  (`console:`).
 - `gen-sar.sh` regenerates the `sar_calc_*` cases of the `sar_calc` tool
   (`tests/openems_sar_calc.rs`), from the raw SAR dump of `dump_sar` and
   from the synthetic tissue block of `sar-synth.py`.

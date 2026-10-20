@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems sweep fixture: AbsorbingBC sheet, NormalSignPositive=0 (absorbs +x) -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1500" endCriteria="1e-30" TimeStep="1.8e-12" >
+    <Excitation Type="0" f0="4e9" fc="4e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PMC" ymax="PMC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0"><XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100</XLines><YLines>0,1,2</YLines><ZLines>0,1,2</ZLines></RectilinearGrid>
+    
+    <Properties><Excitation Name="exc" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="10" Y="0" Z="0"/><P2 X="10" Y="2" Z="2"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ua" Type="0"><Primitives><Box Priority="0"><P1 X="40" Y="1" Z="0"/><P2 X="40" Y="1" Z="2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ub" Type="0"><Primitives><Box Priority="0"><P1 X="75" Y="1" Z="0"/><P2 X="75" Y="1" Z="2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="uc" Type="0"><Primitives><Box Priority="0"><P1 X="90" Y="1" Z="0"/><P2 X="90" Y="1" Z="2"/></Box></Primitives></ProbeBox>
+      
+      
+      <AbsorbingBC Name="abc" NormalSignPositive="0" PhaseVelocity="299792458" AbsorbingBoundaryType="0"><Primitives><Box Priority="0"><P1 X="80" Y="0" Z="0"/><P2 X="80" Y="2" Z="2"/></Box></Primitives></AbsorbingBC>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

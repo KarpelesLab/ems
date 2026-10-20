@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems sweep fixture: PolyhedronReader material from an ASCII STL file -->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30" TimeStep="1.5e-12" >
+    <Excitation Type="0" f0="4e9" fc="4e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0"><XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines><YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines><ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines></RectilinearGrid>
+    
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="4" Y="10" Z="8"/><P2 X="4" Y="10" Z="12"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="e1" Type="2"><Primitives><Box Priority="0"><P1 X="16" Y="10" Z="10"/><P2 X="16" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e2" Type="2"><Primitives><Box Priority="0"><P1 X="10" Y="5" Z="7"/><P2 X="10" Y="5" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e3" Type="2"><Primitives><Box Priority="0"><P1 X="11" Y="13" Z="12"/><P2 X="11" Y="13" Z="12"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h1" Type="3"><Primitives><Box Priority="0"><P1 X="12" Y="12" Z="10"/><P2 X="12" Y="12" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="16" Y="6" Z="8"/><P2 X="16" Y="6" Z="12"/></Box></Primitives></ProbeBox>
+      <Material Name="m" ><Property Epsilon="4"/><Primitives><PolyhedronReader Priority="0" FileName="tet.stl" FileType="STL"/></Primitives></Material>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>
