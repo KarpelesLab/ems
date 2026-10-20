@@ -1,0 +1,10 @@
+# openEMS reference outputs for ems tests; regenerate with
+# scripts/openems-oracle/gen-adv.sh adv_debye_slab
+revision: openEMS-Project e89286f (2026-10-18)
+revision:  openEMS c3a956b (v0.37.0-19)
+revision:  CSXCAD f90b407 (v0.7.0-1)
+revision:  fparser 4b9c845
+command: openEMS model.xml --engine=basic 
+dt: 1.8e-12
+keep: ut_a ut_b ut_c
+args: 

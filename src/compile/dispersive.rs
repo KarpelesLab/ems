@@ -14,39 +14,56 @@
 //!
 //! with `ε∞` the material's `Epsilon`, `f_plasma` =
 //! `EpsilonPlasmaFrequency`, `f_Lor` = `EpsilonLorPoleFrequency` (0 or
-//! absent: a Drude pole), `τ` = `EpsilonRelaxTime`, all frequencies in Hz;
-//! the Debye form is the one documented by csx (`EpsilonDelta`,
-//! `EpsilonRelaxTime`). In terms of [`Pole`]: `ω_p = 2π·f_plasma·√ε∞`
-//! (note the `ε∞` factor of the openEMS Lorentz/Drude form, which csx's
-//! own field docs omit), `ω_0 = 2π·f_Lor`, `γ = 1/τ`; a relaxation time of
-//! 0 means lossless (`γ = 0`, csx docs). The magnetic poles (`Mue…`) map
-//! the same way with `μ∞`. Debye: `Δε` and `τ` directly.
+//! absent: a Drude pole), `τ` = `EpsilonRelaxTime`, all frequencies in Hz
+//! (not rad/s) and `τ` a relaxation time (damping `γ = 1/τ`, not
+//! `1/(2τ)`); the Debye form is the one documented by csx (`EpsilonDelta`,
+//! `EpsilonRelaxTime`). In terms of [`Pole`]: `ω_p = 2π·f_plasma·√ε_e`,
+//! `ω_0 = 2π·f_Lor`, `γ = 1/τ`; a relaxation time of 0 means lossless
+//! (`γ = 0`, csx docs). The magnetic poles (`Mue…`) map the same way with
+//! `μ_e`. Debye: `Δε` and `τ` directly.
 //!
-//! # Which edges get which poles
+//! All of this was confirmed against openEMS v0.37 as a black box
+//! (fixtures `tests/fixtures/openems/adv_*`, `tests/openems_adv.rs`): with
+//! the same time step, probe signals agree to ~1e-6 for filled lines and
+//! slabs of every pole type, electric and magnetic, and for two-pole
+//! materials. A 1 % change of `f_plasma` or a factor 1.5 in `τ` moves the
+//! signals by 10–40 %, so the parameter meanings are unambiguous.
 //!
-//! `csx::discretize` only returns the static per-edge values (`ε∞`, `μ∞`).
-//! The poles are sampled here the same way csx samples `ε`: every E edge
-//! near a dispersive primitive is averaged over the (up to four) quarter
-//! cells of its dual face, each sampled at the centres of an `N×N×N`
-//! sub-grid ([`CompileOptions::subsampling`](super::CompileOptions::subsampling)),
-//! with the csx priority query (so a higher-priority material or metal
-//! overrides the dispersive one). A sample's poles enter with its volume
-//! weight divided by the total weight of the non-metal samples, exactly the
-//! weights of the static `ε` average: an edge on a mesh-aligned interface
-//! gets half the susceptibility, like it gets the mean `ε`. Identical
-//! poles are merged per edge. Magnetic poles are averaged arithmetically
-//! over the two half cells of the dual edge (exact for homogeneous dual
-//! edges; the static `μ` uses the harmonic mean). Weighting functions of
-//! the pole parameters are evaluated at each sample point.
+//! # Which edges get which poles (openEMS semantics)
 //!
-//! Limitations: sampling runs serially; the `ε∞` factor of a Lorentz pole
-//! is the material's own `ε` at the sample point (not the edge average).
+//! `csx::discretize` only returns the static per-edge values (`ε∞`, `μ∞`,
+//! averaged over the quarter / half cells as for any material). The poles
+//! are **not** averaged: an E edge gets the full poles of the dispersive
+//! property found at its **midpoint** (csx priority query with closed
+//! primitive bounds, so a higher-priority material or metal overrides the
+//! dispersive one, and an edge exactly on the surface of a box is inside);
+//! an H dual edge gets those at its midpoint (the centre of the primary
+//! face it pierces). The `√ε` factor of a Lorentz/Drude plasma frequency
+//! is the **edge's** effective static `ε_e` (resp. `μ_e`), i.e. the
+//! averaged value the engine uses, not the material's own `Epsilon`: on a
+//! mesh-aligned interface with vacuum the edge has `ε_e = (1 + ε∞)/2` and
+//! the full pole with `ω_p² = (2π·f_plasma)²·ε_e`. Both rules were
+//! identified from openEMS output: a slab whose face lies on a mesh line,
+//! 0.2 cells off it on either side, or cut through the edge midpoints,
+//! gives openEMS's signals to 1e-6 only with them (half-strength poles on
+//! the interface edges, ems's earlier volume-fraction average, differ by
+//! 5–17 %; the material's `ε∞` instead of the edge's by 2–7 %). Weighting
+//! functions of the pole parameters are evaluated at the midpoint.
+//!
+//! The poles are integrated with the scheme of
+//! [`CompileOptions::dispersive_scheme`](super::CompileOptions::dispersive_scheme)
+//! (openEMS's explicit leapfrog by default, see
+//! [`Scheme`](crate::engine::dispersive::Scheme)).
+//!
+//! Limitations: sampling runs serially; cylindrical grids are not
+//! supported (static values only, with a warning).
 
 use csx::properties::{Aniso, DebyeMaterial, LorentzMaterial, weight_vars};
 use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
 
 use super::NodeMap;
 use crate::axis::Axis;
+use crate::engine::EdgeMaterials;
 use crate::engine::Pole;
 use crate::engine::dispersive::{EdgePole, Field};
 
@@ -76,14 +93,18 @@ fn lorentz_pole(f_p: f64, f_l: f64, tau: f64, inf: f64) -> Pole {
     }
 }
 
-/// Poles of `field` along `dir` of a Lorentz material at Cartesian `c`.
-fn lorentz_poles(m: &LorentzMaterial, field: Field, dir: usize, c: Vec3, out: &mut Vec<Pole>) {
+/// Poles of `field` along `dir` of a Lorentz material at Cartesian `c`,
+/// on an edge whose effective static `ε` (or `μ`) is `inf`.
+fn lorentz_poles(
+    m: &LorentzMaterial,
+    field: Field,
+    dir: usize,
+    c: Vec3,
+    inf: f64,
+    out: &mut Vec<Pole>,
+) {
     let vars = weight_vars(c);
     let iso = m.material.isotropic;
-    let inf = match field {
-        Field::Electric => val(&m.material.epsilon, iso, dir, &vars),
-        Field::Magnetic => val(&m.material.mue, iso, dir, &vars),
-    };
     for p in &m.poles {
         let (fp, fl, tau) = match field {
             Field::Electric => (
@@ -128,142 +149,55 @@ fn debye_poles(m: &DebyeMaterial, dir: usize, c: Vec3, out: &mut Vec<Pole>) {
 struct Sampler<'a> {
     index: csx::structure::SpatialIndex<'a>,
     lines: [&'a [f64]; 3],
-    n_sub: usize,
-}
-
-/// Result of one point sample.
-enum Sample {
-    Metal,
-    Plain,
-    Poles,
 }
 
 impl Sampler<'_> {
-    fn sample(&self, p: Vec3, field: Field, dir: usize, out: &mut Vec<Pole>) -> Sample {
+    /// Poles of the dispersive property winning at `p` (none for metal,
+    /// plain materials or background).
+    fn sample(&self, p: Vec3, field: Field, dir: usize, edge_inf: f64, out: &mut Vec<Pole>) {
         let Some(h) = self.index.query(p) else {
-            return Sample::Plain;
+            return;
         };
         match &h.property.kind {
-            PropertyKind::Metal => Sample::Metal,
             PropertyKind::LorentzMaterial(m) => {
-                lorentz_poles(m, field, dir, p, out);
-                Sample::Poles
+                lorentz_poles(m, field, dir, p, edge_inf, out);
             }
             PropertyKind::DebyeMaterial(m) if field == Field::Electric => {
                 debye_poles(m, dir, p, out);
-                Sample::Poles
             }
-            _ => Sample::Plain,
+            _ => {}
         }
-    }
-
-    /// Integrates the box `[lo, hi]`: adds `(pole, weight)` pairs to
-    /// `acc` and returns the non-metal weight.
-    fn integrate(
-        &self,
-        lo: Vec3,
-        hi: Vec3,
-        field: Field,
-        dir: usize,
-        acc: &mut Vec<(Pole, f64)>,
-    ) -> f64 {
-        let n = self.n_sub;
-        let step = (hi - lo) / n as f64;
-        let w = (0..3).map(|d| step[d].abs()).product::<f64>();
-        let mut wsum = 0.0;
-        let mut poles = Vec::new();
-        for a in 0..n {
-            for b in 0..n {
-                for c in 0..n {
-                    let p = Vec3::new(
-                        lo[0] + step[0] * (a as f64 + 0.5),
-                        lo[1] + step[1] * (b as f64 + 0.5),
-                        lo[2] + step[2] * (c as f64 + 0.5),
-                    );
-                    poles.clear();
-                    match self.sample(p, field, dir, &mut poles) {
-                        Sample::Metal => continue,
-                        Sample::Plain => {}
-                        Sample::Poles => {
-                            for &pole in &poles {
-                                match acc.iter_mut().find(|(q, _)| *q == pole) {
-                                    Some((_, x)) => *x += w,
-                                    None => acc.push((pole, w)),
-                                }
-                            }
-                        }
-                    }
-                    wsum += w;
-                }
-            }
-        }
-        wsum
     }
 
     fn line(&self, a: usize, i: usize) -> f64 {
         self.lines[a][i]
     }
 
-    /// Signed half cell next to line `i` on side `s` along `a`.
-    fn half(&self, a: usize, i: usize, up: bool) -> Option<f64> {
-        let l = self.lines[a];
-        if up {
-            (i + 1 < l.len()).then(|| 0.5 * (l[i + 1] - l[i]))
-        } else {
-            (i >= 1).then(|| -0.5 * (l[i] - l[i - 1]))
-        }
+    fn mid(&self, a: usize, i: usize) -> f64 {
+        0.5 * (self.lines[a][i] + self.lines[a][i + 1])
     }
 
-    /// Effective poles of the E edge (`field = Electric`) or H dual edge
-    /// along `d` at node `n`.
-    fn edge_poles(&self, field: Field, d: usize, n: [usize; 3]) -> Vec<(Pole, f64)> {
+    /// Poles of the E edge (`field = Electric`) or H dual edge along `d`
+    /// at node `n`: those of the property at the edge's midpoint (see the
+    /// module docs).
+    fn edge_poles(&self, field: Field, d: usize, n: [usize; 3], edge_inf: f64) -> Vec<Pole> {
         let (t1, t2) = ((d + 1) % 3, (d + 2) % 3);
-        let mut acc = Vec::new();
-        let mut wsum = 0.0;
-        let (mut lo, mut hi) = (Vec3::ZERO, Vec3::ZERO);
+        let mut p = Vec3::ZERO;
         match field {
             Field::Electric => {
-                lo[d] = self.line(d, n[d]);
-                hi[d] = self.line(d, n[d] + 1);
-                for u1 in [false, true] {
-                    let Some(h1) = self.half(t1, n[t1], u1) else {
-                        continue;
-                    };
-                    for u2 in [false, true] {
-                        let Some(h2) = self.half(t2, n[t2], u2) else {
-                            continue;
-                        };
-                        lo[t1] = self.line(t1, n[t1]);
-                        hi[t1] = lo[t1] + h1;
-                        lo[t2] = self.line(t2, n[t2]);
-                        hi[t2] = lo[t2] + h2;
-                        wsum += self.integrate(lo, hi, field, d, &mut acc);
-                    }
-                }
+                p[d] = self.mid(d, n[d]);
+                p[t1] = self.line(t1, n[t1]);
+                p[t2] = self.line(t2, n[t2]);
             }
             Field::Magnetic => {
-                for t in [t1, t2] {
-                    lo[t] = self.line(t, n[t]);
-                    hi[t] = self.line(t, n[t] + 1);
-                }
-                for up in [false, true] {
-                    let Some(h) = self.half(d, n[d], up) else {
-                        continue;
-                    };
-                    lo[d] = self.line(d, n[d]);
-                    hi[d] = lo[d] + h;
-                    wsum += self.integrate(lo, hi, field, d, &mut acc);
-                }
+                p[d] = self.line(d, n[d]);
+                p[t1] = self.mid(t1, n[t1]);
+                p[t2] = self.mid(t2, n[t2]);
             }
         }
-        if wsum > 0.0 {
-            for (_, w) in &mut acc {
-                *w /= wsum;
-            }
-            acc
-        } else {
-            Vec::new()
-        }
+        let mut out = Vec::new();
+        self.sample(p, field, d, edge_inf, &mut out);
+        out
     }
 }
 
@@ -285,7 +219,7 @@ fn node_range(lines: &[f64], lo: f64, hi: f64) -> core::ops::Range<usize> {
 pub(super) fn dispersive_poles(
     model: &csx::ContinuousStructure,
     node_map: &NodeMap,
-    subsampling: usize,
+    materials: &EdgeMaterials,
     warnings: &mut Vec<String>,
 ) -> Vec<EdgePole> {
     let dispersive =
@@ -314,7 +248,6 @@ pub(super) fn dispersive_poles(
             TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
         ),
         lines: [0, 1, 2].map(|a| model.grid.lines(a)),
-        n_sub: subsampling.max(1),
     };
     let dims = node_map.nodes();
     let ranges: [core::ops::Range<usize>; 3] =
@@ -341,8 +274,12 @@ pub(super) fn dispersive_poles(
                         if !exists {
                             continue;
                         }
-                        for (pole, w) in s.edge_poles(field, d, n) {
-                            let pole = pole.scaled(w);
+                        let idx = node_map.engine_index(n);
+                        let edge_inf = match field {
+                            Field::Electric => materials.eps_r(axis)[idx],
+                            Field::Magnetic => materials.mu_r(axis)[idx],
+                        };
+                        for pole in s.edge_poles(field, d, n, edge_inf) {
                             if pole.validate().is_err() {
                                 bad += 1;
                                 continue;

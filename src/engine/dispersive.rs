@@ -361,6 +361,94 @@ impl Pole {
         let a = 2.0 * l / dt;
         (a, inv_c, a + r + 0.5 * dt * inv_c)
     }
+
+    /// Branch of the explicit leapfrog scheme ([`Scheme::Leapfrog`]) for
+    /// `m = X0·g`: `(k_a, k_b, 1/C_p, ½·L)` with
+    /// `j^{n+½} = k_a·j^{n−½} + k_b·(u^n − q^n/C_p)`. `None` for a pole
+    /// without inductance (Debye), which keeps the trapezoidal update.
+    fn leapfrog(&self, m: f64, dt: f64) -> Option<(f64, f64, f64, f64)> {
+        let (l, r, inv_c) = match *self {
+            Pole::Lorentz {
+                omega_p,
+                omega_0,
+                gamma,
+            } => {
+                let l = 1.0 / (m * omega_p * omega_p);
+                (l, gamma * l, omega_0 * omega_0 * l)
+            }
+            Pole::Drude { omega_p, gamma } => {
+                let l = 1.0 / (m * omega_p * omega_p);
+                (l, gamma * l, 0.0)
+            }
+            Pole::Debye { .. } => return None,
+        };
+        let d = l / dt + 0.5 * r;
+        Some(((l / dt - 0.5 * r) / d, 1.0 / d, inv_c, 0.5 * l))
+    }
+
+    /// The susceptibility the explicit leapfrog scheme
+    /// ([`Scheme::Leapfrog`]) realises at frequency `f` \[Hz\] with time
+    /// step `dt`, for a Lorentz or Drude pole (Debye poles are always
+    /// integrated trapezoidally, see [`discrete_susceptibility`](Self::discrete_susceptibility)).
+    ///
+    /// With `z = e^{jω·dt}`, the branch recursion gives the admittance
+    /// `1/(jΩ·L + cos(ω·dt/2)·R + 1/(jΩ·C_p))` between the half-step
+    /// current and the integer-time voltage, so (as for
+    /// [`discrete_susceptibility`](Self::discrete_susceptibility)) the
+    /// scheme is the Yee scheme with
+    /// `χ_d = ω_p² / (ω_0² − Ω² + j·Ω·γ·cos(ω·dt/2))`,
+    /// `Ω = (2/dt)·sin(ω·dt/2)`: the continuum `χ` at the Yee frequency
+    /// `Ω`, which differs from `χ(ω)` by `O((ω·dt)²)` (and from the
+    /// trapezoidal `χ(Ω_t)` by about twice that).
+    pub fn leapfrog_susceptibility(&self, f: f64, dt: f64) -> Complex64 {
+        let w = 2.0 * core::f64::consts::PI * f;
+        let c = (0.5 * w * dt).cos();
+        let om = 2.0 / dt * (0.5 * w * dt).sin();
+        let j = Complex64::I;
+        match *self {
+            Pole::Lorentz {
+                omega_p,
+                omega_0,
+                gamma,
+            } => omega_p * omega_p / (omega_0 * omega_0 - om * om + j * (om * gamma * c)),
+            Pole::Drude { omega_p, gamma } => {
+                omega_p * omega_p / (-(om * om) + j * (om * gamma * c))
+            }
+            Pole::Debye { .. } => self.discrete_susceptibility(f, dt),
+        }
+    }
+}
+
+/// Time integration of the Lorentz and Drude poles (Debye poles are always
+/// integrated with the trapezoidal rule, which is also what openEMS
+/// does: identical probe signals to `1e-6`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheme {
+    /// Semi-implicit trapezoidal rule coupled with the E update (module
+    /// docs): unconditionally stable, exact discrete energy balance,
+    /// `χ(Ω_t)` with the bilinear frequency map (default of the engine).
+    #[default]
+    Trapezoidal,
+    /// Explicit leapfrog, the scheme openEMS uses (identified from its
+    /// probe output to `1e-6`, see design §5.16): the branch current lives
+    /// at half steps and is driven by the start voltage,
+    ///
+    /// ```text
+    /// L·(j^{n+½} − j^{n−½})/dt + R·(j^{n+½} + j^{n−½})/2 + q^n/C_p = u^n
+    /// q^{n+1} = q^n + dt·j^{n+½},      u^{n+1} = u* − cb·Σ_p j_p^{n+½}
+    /// ```
+    ///
+    /// (for magnetic poles the same one half step earlier: the branch
+    /// voltage at `n·dt` is driven by `i^{n−½}`). This is the
+    /// polarisation-current ADE of T. Kashiwa and I. Fukai, *Microwave
+    /// Opt. Technol. Lett.* 3(6), 203–205, 1990 (see also Taflove &
+    /// Hagness ch. 9) written for edge quantities. Its susceptibility is
+    /// [`Pole::leapfrog_susceptibility`]. Being explicit, it adds a
+    /// stability limit (roughly `ω_0·dt < 2` and `ω_p·dt/√ε∞` well below
+    /// 2, combined with the Courant limit), and the reported pole energy
+    /// `½·L·j² + ½·q²/C_p` mixes time levels, so the engine energy is not
+    /// an exact invariant with these poles.
+    Leapfrog,
 }
 
 /// Which field a pole acts on.
@@ -399,16 +487,20 @@ struct Side {
     off: Vec<u32>,
     /// Saved field value at the start of the update (`u^n` / `i^{n−½}`).
     prev: Vec<f64>,
-    /// `Σ_p 1/z_p` per edge.
+    /// `Σ_p 1/z_p` per edge (trapezoidal poles only).
     sum_inv_z: Vec<f64>,
     /// End of each edge's poles in the pole arrays.
     pole_end: Vec<u32>,
-    /// `2L/dt` per pole.
+    /// `2L/dt` per pole (leapfrog poles: `k_a`).
     a: Vec<f64>,
     /// `1/C_p` per pole.
     inv_c: Vec<f64>,
-    /// `1/z_p` per pole.
+    /// `1/z_p` per pole (leapfrog poles: `k_b`).
     inv_z: Vec<f64>,
+    /// `½·L` per pole (energy).
+    half_l: Vec<f64>,
+    /// Whether the pole uses the explicit leapfrog update.
+    explicit: Vec<bool>,
     /// Branch current `j^n` (magnetic: voltage) per pole.
     j: Vec<f64>,
     /// Branch charge `q^n` per pole.
@@ -444,13 +536,25 @@ impl Side {
             let u_star = plane[off] as f64;
             let mut s = 0.0;
             for q in p0..p1 {
-                s +=
-                    (self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev) * self.inv_z[q];
+                if self.explicit[q] {
+                    // Leapfrog: j^{n+½} from u^n, then q^{n+1}.
+                    let j = self.a[q] * self.j[q]
+                        + self.inv_z[q] * (self.prev[e] - self.q[q] * self.inv_c[q]);
+                    self.j[q] = j;
+                    self.q[q] += dt * j;
+                    s += j;
+                } else {
+                    s += (self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev)
+                        * self.inv_z[q];
+                }
             }
             let u_new = ((u_star - cb * s) / (1.0 + 0.5 * cb * self.sum_inv_z[e])) as f32;
             plane[off] = u_new;
             let half_new = 0.5 * u_new as f64;
             for q in p0..p1 {
+                if self.explicit[q] {
+                    continue;
+                }
                 let k = self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev;
                 let jb = (k + half_new) * self.inv_z[q];
                 self.j[q] = 2.0 * jb - self.j[q];
@@ -462,9 +566,9 @@ impl Side {
 
     /// Adds `Σ ½·L·j² + ½·q²/C_p` to `w`, in pole order (one running
     /// sum over all slabs keeps the order independent of the partition).
-    fn add_energy(&self, dt: f64, w: &mut f64) {
+    fn add_energy(&self, w: &mut f64) {
         for q in 0..self.a.len() {
-            *w += 0.25 * self.a[q] * dt * self.j[q] * self.j[q]
+            *w += self.half_l[q] * self.j[q] * self.j[q]
                 + 0.5 * self.inv_c[q] * self.q[q] * self.q[q];
         }
     }
@@ -483,8 +587,9 @@ struct EdgeBranches {
     field: Field,
     axis: Axis,
     node: [usize; 3],
-    /// `(2L/dt, 1/C_p, 1/z)` per pole.
-    poles: Vec<(f64, f64, f64)>,
+    /// Per pole: `(2L/dt, 1/C_p, 1/z, ½·L, false)` (trapezoidal) or
+    /// `(k_a, 1/C_p, k_b, ½·L, true)` (leapfrog).
+    poles: Vec<(f64, f64, f64, f64, bool)>,
 }
 
 /// The slab hooks: per-slab state.
@@ -546,6 +651,7 @@ impl SlabHooks for Parts {
 #[derive(Debug, Default)]
 pub struct Dispersive {
     entries: Vec<EdgePole>,
+    scheme: Scheme,
     /// Built at installation, partitioned at registration.
     built: Vec<EdgeBranches>,
     nodes: [usize; 3],
@@ -556,9 +662,22 @@ pub struct Dispersive {
 }
 
 impl Dispersive {
-    /// An empty medium.
+    /// An empty medium (trapezoidal scheme, [`Scheme::Trapezoidal`]).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets the time integration of the Lorentz and Drude poles (default
+    /// [`Scheme::Trapezoidal`]; Debye poles are always trapezoidal).
+    #[must_use]
+    pub fn with_scheme(mut self, scheme: Scheme) -> Self {
+        self.scheme = scheme;
+        self
+    }
+
+    /// The time integration of the Lorentz and Drude poles.
+    pub fn scheme(&self) -> Scheme {
+        self.scheme
     }
 
     /// Adds `pole` to the edge of `field` type along `axis` at `node`
@@ -789,12 +908,22 @@ impl Dispersive {
                     poles: Vec::new(),
                 });
             }
-            let (a, inv_c, z) = e.pole.branch(m, dt);
+            let leap = match self.scheme {
+                Scheme::Leapfrog => e.pole.leapfrog(m, dt),
+                Scheme::Trapezoidal => None,
+            };
+            let branch = match leap {
+                Some((ka, kb, inv_c, half_l)) => (ka, inv_c, kb, half_l, true),
+                None => {
+                    let (a, inv_c, z) = e.pole.branch(m, dt);
+                    (a, inv_c, 1.0 / z, 0.25 * a * dt, false)
+                }
+            };
             built
                 .last_mut()
                 .expect("edge just pushed")
                 .poles
-                .push((a, inv_c, 1.0 / z));
+                .push(branch);
         }
         drop(co);
         self.built = built;
@@ -825,8 +954,8 @@ impl Dispersive {
         for s in 0..p.slabs.len() {
             let st = p.slab(s);
             match field {
-                Field::Electric => st.e.add_energy(p.dt, &mut w),
-                Field::Magnetic => st.h.add_energy(p.dt, &mut w),
+                Field::Electric => st.e.add_energy(&mut w),
+                Field::Magnetic => st.h.add_energy(&mut w),
             }
         }
         w
@@ -878,13 +1007,17 @@ impl Operator for Dispersive {
             side.off.push((eb.node[1] * nz + eb.node[2]) as u32);
             side.prev.push(0.0);
             let mut sum = 0.0;
-            for (a, inv_c, inv_z) in eb.poles {
+            for (a, inv_c, inv_z, half_l, explicit) in eb.poles {
                 side.a.push(a);
                 side.inv_c.push(inv_c);
                 side.inv_z.push(inv_z);
+                side.half_l.push(half_l);
+                side.explicit.push(explicit);
                 side.j.push(0.0);
                 side.q.push(0.0);
-                sum += inv_z;
+                if !explicit {
+                    sum += inv_z;
+                }
             }
             side.sum_inv_z.push(sum);
             side.pole_end.push(side.a.len() as u32);

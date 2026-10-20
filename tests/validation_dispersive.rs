@@ -21,7 +21,7 @@ use std::f64::consts::PI;
 
 use common::*;
 use ems::compile::{CompileOptions, compile};
-use ems::engine::dispersive::{Dispersive, Field};
+use ems::engine::dispersive::{Dispersive, Field, Scheme};
 use ems::engine::{CellMaterials, EdgeSource, Engine, Grid, Material, Pole, Probe};
 use ems::{Axis, Boundaries, Boundary, Complex64, Cpml, Face, Fdtd};
 
@@ -561,7 +561,10 @@ fn deterministic_across_threads() {
 /// (e) The Drude half-space as a csx `LorentzMaterial` (openEMS
 /// parameters: Epsilon = 2, EpsilonPlasmaFrequency = 4 GHz,
 /// EpsilonRelaxTime = 0.2 ns) compiled from a csx model gives the same
-/// probe signal as the engine-level setup, and no dispersion warning.
+/// probe signal as the engine-level setup with openEMS's rules (full
+/// poles on the interface edges with their averaged `ε∞ = 1.5`, explicit
+/// leapfrog scheme; `ems::compile::dispersive`), and no dispersion
+/// warning.
 #[test]
 fn csx_lorentz_material_matches_engine_setup() {
     let _t = Timer::start("csx_lorentz_material_matches_engine_setup");
@@ -571,7 +574,30 @@ fn csx_lorentz_material_matches_engine_setup() {
     let mut l = Line::new(DZ, cells);
     l.src = SRC;
     l.probes = vec![PRB, IFACE + 5];
-    let (_, want) = run_line(&l, Some((&drude_medium(), IFACE..cells)), steps);
+    let want = {
+        let mut ll = l.clone();
+        ll.layers = vec![(
+            IFACE..cells,
+            Material {
+                eps_r: [2.0; 3],
+                ..Material::VACUUM
+            },
+        )];
+        let (mut e, hs) = ll.build(sine_pulse(F0, BW));
+        let mut d = Dispersive::new().with_scheme(Scheme::Leapfrog);
+        for k in IFACE..=cells {
+            let eps_e: f64 = if k == IFACE { 1.5 } else { 2.0 };
+            for node in ll.edges(k) {
+                let p = Pole::drude(TAU2PI * 4e9 * eps_e.sqrt(), 1.0 / 0.2e-9);
+                d.push(Field::Electric, Axis::X, node, p);
+            }
+        }
+        d.add_to(&mut e).unwrap();
+        e.run(steps);
+        hs.iter()
+            .map(|h| e.operator(h).values().to_vec())
+            .collect::<Vec<_>>()
+    };
 
     // csx model: same line, millimetre drawing units.
     let mut model = csx::ContinuousStructure::new();

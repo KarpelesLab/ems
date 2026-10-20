@@ -78,12 +78,14 @@
 //! contribute their static part (`Epsilon`, `Mue`, … = `ε∞`, `μ∞`)
 //! through `discretize` like any material, and their poles through
 //! [`Compiled::dispersive`]: per E edge (and H dual edge for magnetic
-//! Lorentz poles), sampled with csx's priority query over the same
-//! quarter / half cells as the static average. [`Compiled::build`]
-//! installs them as one [`Dispersive`] operator. Parameter conventions
-//! (openEMS documentation) and the sampling rules are documented in
-//! [`dispersive`]; in short: `ω_p = 2π·f_plasma·√ε∞`,
-//! `ω_0 = 2π·f_Lor`, `γ = 1/τ` (0 for `τ = 0`), Debye `Δε`, `τ` as given.
+//! Lorentz poles), the full poles of the dispersive property at the edge
+//! midpoint (openEMS semantics). [`Compiled::build`] installs them as one
+//! [`Dispersive`] operator, with openEMS's explicit leapfrog scheme by
+//! default ([`CompileOptions::dispersive_scheme`]). Parameter conventions
+//! and the sampling rules (both confirmed against openEMS output) are
+//! documented in [`dispersive`]; in short: `ω_p = 2π·f_plasma·√ε_e` with
+//! the edge's static `ε_e`, `ω_0 = 2π·f_Lor`, `γ = 1/τ` (0 for `τ = 0`),
+//! Debye `Δε`, `τ` as given.
 //!
 //! # Absorbing sheets
 //!
@@ -151,6 +153,7 @@ use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::MurBoundary;
+use crate::engine::dispersive::Scheme as DispersiveScheme;
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
     EdgePole, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires, OperatorHandle, SheetEdge,
@@ -189,6 +192,11 @@ pub struct CompileOptions {
     /// Options of the conformal scheme (stability floor and check), used
     /// when [`conformal`](Self::conformal) is set.
     pub conformal_options: ConformalOptions,
+    /// Time integration of Lorentz/Drude poles (default
+    /// [`Scheme::Leapfrog`](crate::engine::dispersive::Scheme::Leapfrog),
+    /// the scheme openEMS uses, so XML models give the same signals; see
+    /// [`dispersive`]).
+    pub dispersive_scheme: DispersiveScheme,
 }
 
 impl CompileOptions {
@@ -215,6 +223,7 @@ impl Default for CompileOptions {
             mesh_check: true,
             conformal: false,
             conformal_options: ConformalOptions::default(),
+            dispersive_scheme: DispersiveScheme::Leapfrog,
         }
     }
 }
@@ -389,6 +398,9 @@ pub struct Compiled {
     /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
     /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
     pub dispersive: Vec<EdgePole>,
+    /// Time integration of the Lorentz/Drude poles of
+    /// [`dispersive`](Self::dispersive) ([`CompileOptions::dispersive_scheme`]).
+    pub dispersive_scheme: DispersiveScheme,
     /// Thin wires (csx `Wire` primitives thinner than the staircase; see
     /// [`crate::engine::wire`]), already applied to
     /// [`materials`](Self::materials).
@@ -479,7 +491,7 @@ impl Compiled {
             h.mur = Some(engine.add_operator(op));
         }
         if !self.dispersive.is_empty() {
-            let mut d = Dispersive::new();
+            let mut d = Dispersive::new().with_scheme(self.dispersive_scheme);
             for &e in &self.dispersive {
                 d.push_entry(e);
             }
@@ -977,7 +989,7 @@ pub fn compile(
         cylindrical::no_dispersive(model, &mut warnings);
         Vec::new()
     } else {
-        dispersive::dispersive_poles(model, &node_map, opts.subsampling, &mut warnings)
+        dispersive::dispersive_poles(model, &node_map, &materials, &mut warnings)
     };
     let thin_wires = wire::thin_wires(
         full_model,
@@ -1038,6 +1050,7 @@ pub fn compile(
         node_map,
         abc,
         dispersive,
+        dispersive_scheme: opts.dispersive_scheme,
         thin_wires,
         oblique_wires,
         sheets: sheet_map.edges,
