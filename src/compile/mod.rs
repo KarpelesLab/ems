@@ -148,6 +148,7 @@ mod conformal;
 pub(crate) mod cylindrical;
 pub mod dispersive;
 mod mode;
+mod openems;
 pub mod planewave;
 pub mod sar;
 pub mod sheet;
@@ -987,6 +988,9 @@ pub fn compile(
             .with_snap_tolerance(opts.snap_tolerance),
     )?;
     oblique.renumber_warnings(&mut mg.warnings);
+    if fdtd.get_openems_run() {
+        openems::strict_surfaces(model, mg.dims, &mut mg.pec);
+    }
     let node_map = NodeMap::new(grid.nodes());
     if mg.dims != grid.nodes() {
         return Err(Error::Invalid(format!(
