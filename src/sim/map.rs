@@ -822,7 +822,19 @@ pub(crate) fn map_sources(
                 if let Some(samples) = &p.mode_samples {
                     pr = pr.mode_purity(samples.clone(), weight);
                 }
-                let at = |idx: [usize; 3]| Axis::ALL.map(|a| grid.lines(a)[idx[a.index()]]);
+                // openEMS prints the α of cylindrical grids (radians) times the
+                // drawing unit as well.
+                let alpha_unit = if grid.is_cylindrical() {
+                    src.delta_unit
+                } else {
+                    1.0
+                };
+                let at = |idx: [usize; 3]| {
+                    Axis::ALL.map(|a| {
+                        let v = grid.lines(a)[idx[a.index()]];
+                        if a == Axis::Y { v * alpha_unit } else { v }
+                    })
+                };
                 let location = p.mode_range.map(|(start, stop)| ProbeLocation {
                     start,
                     stop,
@@ -851,7 +863,19 @@ pub(crate) fn map_sources(
         let prim = |c: [f64; 3]| Axis::ALL.map(|a| snap_lower(grid.lines(a), c[a.index()]));
         let dual = |c: [f64; 3]| Axis::ALL.map(|a| snap_dual(grid.lines(a), c[a.index()]));
         let (start, stop) = (prim(p.corners[0]), prim(p.corners[1]));
-        let at = |idx: [usize; 3]| Axis::ALL.map(|a| grid.lines(a)[idx[a.index()]]);
+        // openEMS prints the α of cylindrical grids (radians) times the
+        // drawing unit as well.
+        let alpha_unit = if grid.is_cylindrical() {
+            src.delta_unit
+        } else {
+            1.0
+        };
+        let at = |idx: [usize; 3]| {
+            Axis::ALL.map(|a| {
+                let v = grid.lines(a)[idx[a.index()]];
+                if a == Axis::Y { v * alpha_unit } else { v }
+            })
+        };
         let primary_location = ProbeLocation {
             start,
             stop,
