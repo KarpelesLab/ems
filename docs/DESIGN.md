@@ -1046,12 +1046,39 @@ recorded near fields, by the surface equivalence principle (Balanis,
   `P_far/P_box = 1.0007 / 0.9987`, `P_box/P_Hertz = 1.002 / 1.005`, `sin²θ`
   pattern without φ dependence to 1 %; monopole over a PEC `z` plane with
   a `z` mirror `D = 3.005`. openEMS does write frequency-domain field
-  dumps on cylindrical grids (`dump_cyl`), but its far-field transform was
-  not compared (its nf2ff tool's input is not documented in its user
-  docs).
-- **Not done.** Lossy and inhomogeneous (layered) backgrounds.
-  Frequency-dependent phase centres and openEMS's nf2ff file format are
-  out of scope: openEMS's nf2ff code is GPL and was not consulted.
+  dumps on cylindrical grids (`dump_cyl`); its `nf2ff` tool (below) was
+  not compared on them.
+- **Not done.** Lossy and inhomogeneous (layered) backgrounds;
+  frequency-dependent phase centres.
+- **openEMS's `nf2ff` tool** (`io::openems::nf2ff`, binary `ems-nf2ff`,
+  feature `hdf5`). openEMS transforms its NF2FF box dumps with a separate
+  program, `nf2ff <job.xml>`, that reads E/H dumps named in an XML file
+  and writes a far-field HDF5 file. Its XML schema and output layout were
+  found by black-box experiments only (error messages, trial XML files,
+  synthetic h5py dumps; no openEMS source or scripts consulted):
+  - XML: `<nf2ff freq Outfile [Radius Center Eps_r Mue_r Verbose
+    NumThreads]>` with `<theta>`/`<phi>` lists in radians, one
+    `<Planes E_Field H_Field/>` per face and optional
+    `<Mirror Dir="0|1|2" Type="PEC|PMC" Pos/>` (images of images
+    included). File names are relative to the working directory.
+  - Input: openEMS dumps on one plane each (one line along the normal),
+    frequency domain (also legacy layout) or, if the frequency is not
+    stored, time domain with `F = 2Σx(t)e^{−jωt}Δt`; E and H on the same
+    lines.
+  - Transform: the formulas above with trapezoidal node weights, the
+    normal pointing away from `Center`, `k`/`η` from `Eps_r`/`Mue_r`.
+    Output: `/Mesh/{theta,phi,r}` (f32), `/nf2ff/{E_theta,E_phi}/FD/f%d`
+    (complex), `P_rad` = `|E|²/(2η)` at `Radius`, attributes `Prad` (box
+    Poynting flux, doubled per mirror), `Dmax = 4πr² max P_rad/Prad`,
+    `Frequency` (f32).
+  - Agreement (`tests/openems_nf2ff.rs`, `gen-nf2ff.sh`): same file
+    structure; on the same synthetic inputs ≤ 4.5e-6 relative (openEMS
+    computes in single precision somewhere; ~3e-7 without materials). A
+    short dipole run by both solvers with the same NF2FF box dumps
+    (DumpType 10/11, DumpMode 1, FileType 1 on the six faces): ems's
+    face dumps are within 5e-4 of openEMS's, the far fields within 1e-5,
+    the box flux `Prad` within 1 % (the near field of a small box is
+    strongly reactive), `Dmax` 1.49 vs 1.50.
 
 ### 5.11 Plane waves (total-field / scattered-field)
 
@@ -1200,6 +1227,44 @@ averages to the local value everywhere (incl. boundary voxels and graded
 meshes), a linear gradient to the centre value (1e-12), the air rule and
 boundary cubes on a half-space and a one-voxel slab, results independent of
 the thread count.
+
+**openEMS methods** (`post::sar::AveragingMethod`; black-box openEMS v0.37,
+no source consulted). openEMS's in-run averaged dumps (DumpType 21/22) are
+identical to `sar_calc --method SIMPLE` on the raw dump (no DumpBox
+attribute selecting another method was found). Observed, with synthetic
+raw dumps fed to `sar_calc`:
+
+- *Cubes.* Centred on the voxel centre, clipped by the domain; air
+  (`ρ = 0`) and the outside count as no mass; voxels are weighted by the
+  product of their per-axis overlap fractions (and the `Volume` dataset).
+  The average is the tissue power over the tissue mass of that cube.
+- *Size.* openEMS solves the cube size only to ±5 % of the mass (starting
+  from the analytic size `(m/ρ_voxel)^{1/3}`, at least two voxels wide,
+  then secant-type steps whose exact start for clipped cubes was not
+  identified), so its averages are exact where the first size is (uniform
+  tissue clear of air and of the boundary) and slightly off elsewhere.
+  ems solves the mass exactly.
+- *SIMPLE*: every tissue voxel gets its centred cube, whatever the air;
+  no cube of the mass → 0. *IEEE_C95_3*/*IEEE_62704*: a centred cube is
+  valid when inside the domain and, it seems, with no face in air (an air
+  pocket inside is allowed, 5 % air at a face is not); invalid voxels take
+  the maximum of the valid cubes overlapping (C95.3) or containing (62704)
+  them; 62704's remaining voxels use a cube with the voxel at a face. ems
+  implements SIMPLE with this rule and both IEEE methods with its own
+  procedure above.
+- Agreement (`tests/openems_sar_calc.rs`, `gen-sar.sh`): SIMPLE equal to
+  6e-8 on the voxels with an unclipped cube, within 1 % (tissue block) and
+  2.9 % (the 7×7×6-voxel `dump_sar` block, all cubes clipped) of the peak
+  elsewhere; same cube counts. IEEE_62704 on the block: same counts, 97 %
+  of the voxels equal.
+
+`io::openems::sar_calc` and the binary `ems-sar-calc` (feature `hdf5`) take
+`sar_calc`'s command line (`-i -o -m --method -n -v -e
+--legacyHDF5Dumps`; `-a` is not supported) and write its output layout:
+root `@mass`, `@proc_time`; `/Mesh` copied; `/FieldData/FD` with
+`@frequency` (f32), the cube counts and `f%d` (f32, `@maxSAR`,
+`@maxSAR_idx`, `@power`); `-e` adds `f0_Cube{Mass,Type,Vol}`; the legacy
+layout is `[nz, ny, nx]` with `@legacy_fmt`.
 
 ### 5.13 Conformal PEC
 
@@ -1976,7 +2041,11 @@ regeneration script and test file:
   `tests/openems_dumps.rs`;
 - cylindrical-grid features (`cyl_*`: conducting sheets, SAR files, plane
   waves): `gen-cyl.sh`, `tests/openems_cyl.rs`, `tests/openems_dumps.rs`;
-- the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`.
+- the command-line program (`cli_*`, §7.2): `gen-cli.sh`, `tests/cli.rs`;
+- the `nf2ff` tool (`nf2ff_*`, §5.10): `gen-nf2ff.sh`,
+  `tests/openems_nf2ff.rs`;
+- the `sar_calc` tool (`sar_calc_*`, §5.12): `gen-sar.sh`,
+  `tests/openems_sar_calc.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
 ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
@@ -2369,7 +2438,9 @@ H `(n+½)·dt`, intervals `⌊N/OverSampling⌋` and `min(N, ⌊1/(2f·dt)⌋)`,
 FD normalisation `2·Σ x·e^{−jωt}·K·dt`, start/stop window, the step after
 the last one); dump types J, rot H, D and B are implemented. ems output
 agrees with the fixtures to ≲ 1e-6 relative (float32), except mass-averaged
-SAR at tissue surfaces (openEMS's in-run `SIMPLE` rule is not reproduced).
+SAR where the averaging cube is clipped by air or the box (method `SIMPLE`
+as openEMS, but openEMS's cube size is only solved to ±5 % of the mass,
+§5.12: 2.9 % of the peak on `dump_sar`).
 The module docs hold the full description.
 
 ### 7.2 The `ems` command-line program (openEMS drop-in)

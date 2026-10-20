@@ -82,3 +82,11 @@ command line in the case's `meta.txt`:
   (`structure.txt`); `cli_exit` holds openEMS's exit status for
   command-line errors and special invocations (`codes.txt`) and the
   options its `--help` lists (`options.txt`).
+- `gen-nf2ff.sh` regenerates the `nf2ff_*` cases of the `nf2ff` tool
+  (`tests/openems_nf2ff.rs`): openEMS runs a dipole with NF2FF box dumps
+  and `nf2ff` transforms them (`nf2ff_dipole`), and `nf2ff` runs on the
+  synthetic planes and job files written by `nf2ff-synth.py`
+  (`nf2ff_synth`).
+- `gen-sar.sh` regenerates the `sar_calc_*` cases of the `sar_calc` tool
+  (`tests/openems_sar_calc.rs`), from the raw SAR dump of `dump_sar` and
+  from the synthetic tissue block of `sar-synth.py`.
