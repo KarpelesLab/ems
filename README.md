@@ -117,7 +117,7 @@ the options; design §7.2 has the details.
 | ports | lumped, curve, microstrip, coplanar waveguide, stripline, coaxial, rectangular and circular waveguide helpers; S-parameters, Z_in | |
 | antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes; homogeneous lossless background; Cartesian and cylindrical grids; openEMS's `nf2ff` tool (`ems-nf2ff`, feature `hdf5`) | layered backgrounds |
 | SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps, also on cylindrical grids (local); openEMS SAR dump files and in-run averaging; openEMS's `sar_calc` tool (`ems-sar-calc`) | exact openEMS averaging where cubes reach air or the domain edge (within ~3 %); `sar_calc -a`; averaging on cylindrical grids |
-| openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip; openEMS semantics (signals, timing, time step rules, probe snapping, end criteria) matched to ~1e-6 on the oracle fixtures; `ems` binary, a drop-in for the `openEMS` executable | |
+| openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip; openEMS semantics (signals, timing, time step rules, probe snapping, end criteria) matched to ~1e-6 on the oracle fixtures; openEMS's reading rules (`ems::io::openems::read_model`: boundary spellings, defaults, probe and dump boxes); a 169-model feature sweep (every primitive, transformation, material and probe kind) agrees on 148 models to ≲1e-4 (design §5.16.3); `ems` binary, a drop-in for the `openEMS` executable | openEMS's PML profile; surface ties of polyhedra and polygon vertices |
 | engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |
 
 ## Features

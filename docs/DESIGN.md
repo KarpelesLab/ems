@@ -2054,10 +2054,14 @@ regeneration script and test file:
 - the `nf2ff` tool (`nf2ff_*`, §5.10): `gen-nf2ff.sh`,
   `tests/openems_nf2ff.rs`;
 - the `sar_calc` tool (`sar_calc_*`, §5.12): `gen-sar.sh`,
-  `tests/openems_sar_calc.rs`.
+  `tests/openems_sar_calc.rs`;
+- the XML feature-coverage sweep (§5.16.3, `sweep_*`): `gen-sweep.sh`,
+  `tests/openems_sweep.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
 ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
+Files are read with openEMS's reading rules (`io::openems::read_model`,
+§5.16.3) where they differ from csx's.
 "Agreement" is the relative L2 difference of the probe signals.
 
 #### 5.16.1 Core semantics
@@ -2365,6 +2369,105 @@ outer mesh lines openEMS's loop stays inside the domain (a box over the
 whole cross-section of a PMC/PEC line reads about half the TEM current,
 ems 0).
 
+#### 5.16.3 Feature coverage
+
+A sweep over everything csx's XML reader understands (primitives,
+transformations, priorities, properties, FDTD attributes and boundary
+variants, parameters), one small hand-written model per feature, run in
+both codes (openEMS single-threaded `--engine=basic`, ems through
+`read_model`) and compared file by file: probe and dump files, and the
+`--debug-PEC` / `--debug-material` dumps, which isolate the discretisation
+(identical PEC edge sets and edge materials pin a difference on the
+solver, a different edge set on the geometry). Most models are a 20³-cell
+PEC box of 1 mm cells, a soft Gaussian line source, five E/H/voltage
+probes and the feature under test in the middle, 600 steps of 1.5 ps;
+"agreement" is the relative L2 difference over all probe columns, ~1e-5
+(`f32` round-off over the ring-down of a closed box) where the
+formulations agree. 53 of the models are fixtures (`sweep_*`,
+`scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
+
+Matrix (169 models; 148 agree to ≲ 1e-4, 18 differ, 3 are rejected by
+openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
+on the set-up):
+
+| area | models | agree | differ (magnitude) |
+|---|---|---|---|
+| primitives: Box (on/off grid, reversed, metal volume/sheet/line), MultiBox, Sphere, SphericalShell, Cylinder (axis, oblique, thin), CylindricalShell, Polygon (z, x), LinPoly (z, y), RotPoly (full, half), Polyhedron, PolyhedronReader (STL, PLY), Curve, Wire, Point, UserDefined, Box in cylindrical coordinates; surfaces through edge midpoints and sample points (`tie_*`) | 46 | 38 | Polyhedron surfaces on sample points 0.5 % (material) – 2 % (metal; 34 % for a metal cube whose faces lie on mesh lines); LinPoly vertices on mesh nodes 2 %; UserDefined rejected by openEMS |
+| transformations: Translate, Rotate_X/Y/Z, Rotate_Origin, Scale, Scale3, Matrix, order, on spheres, cylinders and sheets | 12 | 11 | a rotated cylinder with sample points within 1e-13 of its radius: 4.6 % |
+| priorities: overlaps, reversed, metal in material and under it, two metals | 6 | 6 | |
+| materials: ε, κ, μ, σ, `Isotropy` with 1/2/3 values and weights, weights of x, y, z, ρ and per axis, Density, background, Lorentz/Drude/Debye (with weights, with κ) | 19 | 18 | magnetic conductivity σ_m 0.6 % (openEMS's dual-edge average is asymmetric at the faces: `2σ` on the entry, 0 on the exit face, `--debug-material`) |
+| parameters, mesh: ParameterSet (Const, Linear) in coordinates, values and weights, `term:`, unsorted/duplicate lines, DeltaUnit 1, graded | 9 | 7 | `term:` prefixes and expressions in mesh lines rejected by openEMS (ems reads them) |
+| excitations: soft/hard E and H, vector, weights (with parameters), delay, Enabled, Number, on metal, off-grid, on Sphere/Curve, 3-D box, transformed, two sources | 16 | 16 | |
+| probes: weights, solid/off-grid/point E and H boxes, diagonal and reversed voltage boxes, current NormDir variants, FD samples of all types, Start/StopTime, two primitives, transformed, Cylinder/Curve/Point/Polygon primitives, ten shapes for field probes and dumps | 17 | 15 | current-probe coordinates exactly half-way between lines (openEMS: 8.5 → 9 at the lower, 11.5 → 11 at the upper corner) 4.6 %; a zero-length Cylinder as current probe (openEMS: a point box) |
+| dumps: VTK/HDF5, SubSampling, OptResolution (modes 0–2), FD, without DumpMode, two primitives, transformed | 8 | 8 | |
+| boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 12 | PML 0.8 % (open box, probes ≥ 4 cells from the layer) to 4–13 % (PEC waveguide below cut-off, probes 4–8 cells from the layer): formulation difference (§5.16.2) |
+| lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper and resistive sheets | 6 | 5 | resistive ConductingSheet (§5.16.2) |
+| FDTD: OverSampling, f_max, TimeStepFactor, TimeStepMethod 1 and 3 (graded), MaxTime, CellConstantMaterial, endCriteria, CoordSystem, 0 steps, odd values | 11 | 10 | 0 steps: openEMS writes the t = 0 row of E-type probes, ems none |
+| other properties: unknown property element, properties without primitives | 2 | 2 | |
+
+Fixed in ems by the sweep (each was 2–270 % off, or did not run):
+
+- **Reading rules** (`ems::io::openems::read_model` / `parse_model`, used
+  by `Simulation::from_xml`, `from_xml_str` and the `ems` binary; they
+  rewrite the raw XML before csx reads it):
+  - boundary values: `PEC`, `PMC`, `MUR`, `PML_<n>` are case sensitive;
+    a value starting with a digit or sign is its integer prefix (`1.7` →
+    PMC, `2.000000e+00` → MUR, `0x1` → PEC; 3 → `PML_8`, other numbers
+    PEC); `PML_<n>` takes the integer prefix of `n` (`PML_08`, `PML_8.7`),
+    `n ≤ 0` or no digits is PEC; any other spelling (`pec`, `Mur`, `PML`,
+    `PML 8`, `" PEC"`) is PEC with openEMS's "unknown" warning. Measured
+    by matching the probe signal of each spelling against the four
+    boundary kinds (30 spellings);
+  - a field dump without `DumpMode` is mode 0 (§8.1 item 13);
+  - `Isotropy="0"` with fewer than three values (or weights) sets the
+    leading components only, the others keep the default (ε_r = μ_r = 1,
+    κ = σ = 0, weight 1; `--debug-material`): csx copied a single value to
+    all axes (60 % off) and filled a short list with 0 (no run);
+  - a `ProbeBox`/`DumpBox` with N primitives is N probes `<name>_<i>`
+    (files `u2_0`, `E2_0.h5`, …); a primitive's `<Transformation>` is
+    ignored for probe and dump boxes (the raw P1/P2 box is used; excitations
+    and materials do apply it); a voltage probe on anything but a `Box`
+    (MultiBox, Wire, Curve, Cylinder) is skipped, field probes and dumps
+    take the bounding box of any primitive (as ems did); lumped elements
+    on non-Box primitives are skipped;
+  - `OverSampling` < 2 is the default 4 (also negative, which csx
+    rejected); `TimeStepFactor` outside (0, 1] is ignored; a negative
+    `endCriteria` runs every step (`Fdtd::from_csx`).
+- **Metal surfaces** (`compile::openems`, files only): openEMS's metal
+  Sphere, SphericalShell and Wire are open (an edge whose midpoint lies
+  on the surface is not PEC), Box, Cylinder and CylindricalShell closed,
+  as csx is everywhere; ems now clears those edges (identical
+  `--debug-PEC` dumps on every metal case of the sweep).
+- **AbsorbingBC**: `NormalSignPositive="1"` absorbs waves travelling
+  along `−a` (the normal points into the terminated region); ems had the
+  opposite sign. Now 1e-6 on a terminated TEM line; MUR_1ST_SA gives
+  openEMS's MUR_1ST output bit for bit there.
+- **Dump sampling**: `OptResolution` compared metre distances without
+  tolerance (a line exactly one resolution away was taken: 2, 4, 6, 8,
+  11, … instead of every second line); raw H/B dumps snap their box to
+  the dual lines (openEMS: H at 5.5 … 12.5 for a box 6 … 12).
+
+Not reproduced (documented differences):
+
+- **Polyhedron surfaces.** A point on a face of a Polyhedron or STL mesh
+  is inside or outside depending on the face (the faces of a cube on
+  mesh lines: inside on its +x/+y/+z faces, outside on −x/−y/−z, mixed
+  along the cube's edges), as a ray-casting test would give; csx's test
+  is closed. Not emulated (the edge cases are not consistent enough to
+  copy safely).
+- **Polygon vertices.** A LinPoly whose vertex lies on a mesh node: openEMS
+  drops the edges through the first-edge vertices (two corners of a
+  square) or the lowest vertex.
+- **Round-off at ties.** openEMS compares without tolerance; csx's inside
+  tests accept points within ~1e-9 of the size outside (a rotated
+  cylinder through sample points: 4.6 %); §8.1 item 17.
+- **PML, conducting sheets, σ_m averaging**: see §5.16.1–2.
+- openEMS rejects `term:` prefixes, expressions in mesh lines and the
+  `UserDefined` primitive as written by csx (ems reads them); ems
+  rejects `endCriteria` > 1, a Gaussian with `fc = 0` and a sinusoid with
+  `f0 = 0` (openEMS runs the first two with an empty signal and crashes
+  on the third).
+
 ## 6. Engine architecture
 
 ```
@@ -2577,9 +2680,9 @@ current directory. Everything below was observed on the black-box oracle
   `Simulation::run` (`Probe::lookahead`, the rule of the dumps' final
   sample) and writes it, so all files have openEMS's rows. Agreement on
   `cli_run`: 1e-8…2e-6 relative L2.
-- **Gaps:** probe files are written at the end, not during the run; a
-  `DumpBox` without `DumpMode` is mode 0 (no interpolation) in openEMS but
-  parsed as 1 by csx (§8.1).
+- **Gaps:** probe files are written at the end, not during the run.
+  (A `DumpBox` without `DumpMode`, mode 0 in openEMS and 1 in csx, is
+  read as mode 0 by `read_model`, §5.16.3.)
 
 ## 8. What ems needs from csx
 
@@ -2657,6 +2760,7 @@ These are reported here, not fixed in csx from this repo.
     `DumpMode` attribute mode 1 (node interpolation); openEMS v0.37 uses
     mode 0 (no interpolation: an `HField` dump without the attribute is
     written on the dual mesh, `dual_mesh = 1`, observed on the oracle).
+    ems works around it in `io::openems::read_model` (§5.16.3).
 14. **Planar sheets on cylindrical grids.** `discretize` selects the edges
     of a planar metal or conducting-sheet primitive within its bounding
     box, whose α range `Primitive::bounding_box_in` normalises to
@@ -2676,6 +2780,37 @@ These are reported here, not fixed in csx from this repo.
     a bound `2π − 1e-14` covers the whole ring. csx does not collapse it,
     so such models differ by 60–130 % between the codes (black box,
     §5.16.2); csx should decide whether to follow CSXCAD here.
+
+17. **Inside tolerance and open surfaces.** csx's inside tests accept
+    points up to ~1e-9 (relative) outside a primitive; openEMS compares
+    exactly. On exact ties openEMS is closed for Box, Cylinder and
+    CylindricalShell but open for Sphere, SphericalShell and Wire (an
+    edge midpoint on the surface is not metal), and its Polyhedron and
+    polygon tests depend on the face (ray-casting-like: a cube's +x/+y/+z
+    faces inside, −x/−y/−z outside; a polygon's first-edge or lowest
+    vertex outside). ems emulates the open spheres and wires for metal
+    (`compile::openems`), not the material sampling or the polyhedra
+    (§5.16.3). csx could offer an openEMS-compatible tie mode.
+18. **Short anisotropic lists.** With `Isotropy="0"`, openEMS keeps the
+    default for the components a short list leaves out (`Epsilon="3"` is
+    `3,1,1`, weights default to 1); csx copies a single value to all
+    axes and fills missing ones with 0 (ε_r = 0: the model does not
+    run). ems rewrites the lists before csx reads them (§5.16.3).
+19. **Boundary spellings.** `Boundary::from_str` is case-insensitive and
+    accepts `PML 8`/`PML-8`; openEMS reads exactly `PEC`, `PMC`, `MUR`,
+    `PML_<n>` and integer prefixes (`2.000000e+00` is MUR, `PML_8.0` is
+    `PML_8`, `4` is PEC) and treats everything else as PEC; csx rejects
+    `4`, `-1`, `PML_8.0` and `PML_x`, which openEMS runs. ems normalises
+    the attribute values before csx parses them (§5.16.3).
+20. **Probe and dump boxes.** openEMS ignores a primitive's
+    `<Transformation>` for `ProbeBox`/`DumpBox` (not for materials or
+    excitations), runs one probe per primitive (`<name>_<i>`) and needs a
+    `Box` for voltage probes and lumped elements. csx keeps all primitives
+    and transformations (correct as a model); a documented helper for
+    "the box of a probe primitive" would avoid every solver redoing this.
+21. **OverSampling.** `FdtdSettings` stores `OverSampling` as `u32`, so a
+    negative value is a parse error; openEMS reads any value below 2 as
+    its default (4).
 
 ### 8.2 Feedback for hdf5rs
 
@@ -2794,7 +2929,20 @@ the end criterion, skipped probe boxes, PML_Grading (ignored by openEMS
 too; §5.16); conducting sheets, SAR, NF2FF and conformal PEC volumes on
 cylindrical grids (§5.15; openEMS ignores plane waves there).
 
+Wave 12 (XML feature-coverage sweep, §5.16.3): 169 models over every
+primitive, transformation, property, probe/dump variant and FDTD
+attribute csx reads, 148 agree with openEMS to ≲ 1e-4; fixed: openEMS's
+reading rules (`io::openems::read_model`: boundary spellings, DumpMode
+default, short anisotropic lists, probe/dump boxes with several
+primitives or transformations, non-Box voltage probes and lumped
+elements, odd OverSampling/TimeStepFactor/endCriteria), open metal
+spheres and wires, the AbsorbingBC normal sign, OptResolution round-off
+and raw H dump snapping.
+
 Remaining:
+- From the sweep: openEMS's polyhedron and polygon-vertex surface ties,
+  tie round-off (csx tolerance), σ_m averaging, E rows of 0-step runs,
+  current probes exactly between lines.
 - SAR averaging where cubes reach air or the domain edge (SIMPLE within
   ~3 %, IEEE validity rules partly reproduced), `sar_calc -a`; parallel
   R‖L with an excitation on graded meshes (0.6–3 %); the cylindrical axis
