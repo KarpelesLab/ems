@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "sine_delay_soft_h": sinusoid with excitation Delay (whole steps) on a soft H source; time step shortened to fit the period
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30">
+    <Excitation Type="1" f0="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="2" Excite="0,0,1" Delay="2e-10"><Primitives><Box Priority="0"><P1 X="9.5" Y="9.5" Z="10"/><P2 X="10.5" Y="10.5" Z="10"/></Box></Primitives></Excitation>
+      <ProbeBox Name="hz" Type="3"><FD_Samples>2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="10.5" Y="10.5" Z="10.5"/><P2 X="10.5" Y="10.5" Z="10.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ut" Type="0"><Primitives><Box Priority="0"><P1 X="11" Y="9" Z="10"/><P2 X="11" Y="11" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ef" Type="2"><Primitives><Box Priority="0"><P1 X="11" Y="10" Z="10"/><P2 X="11" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

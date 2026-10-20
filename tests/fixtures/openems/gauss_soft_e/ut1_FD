@@ -1,0 +1,8 @@
+% frequency-domain voltage integration by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 10:49:47 2026
+% start-coordinates: (0.012,0.01,0.009) m -> [12,10,9]
+% stop-coordinates: (0.012,0.01,0.011) m -> [12,10,11]
+% f/Hz	voltage	
+%	real	imag
+1e+09	7.42725e-14	-1.56128e-13
+2e+09	9.08138e-14	1.63083e-13
+2.5e+09	1.01669e-13	-1.54831e-13

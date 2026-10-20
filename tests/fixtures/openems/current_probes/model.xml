@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "current_probes": current probe planes (nearest dual line of the flat box) and loop extents; openEMS writes no file for boxes with a normal extent
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="40" endCriteria="1e-30" TimeStepFactor="0.99">
+    <Excitation Type="2"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="10"/><P2 X="10" Y="10" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="i_normal_extent" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9" Y="9" Z="9"/><P2 X="11" Y="11" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_on_node" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9" Y="9" Z="10"/><P2 X="11" Y="11" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_off_node" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9" Y="9" Z="10.3"/><P2 X="11" Y="11" Z="10.3"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_upper" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9" Y="9" Z="10.7"/><P2 X="11" Y="11" Z="10.7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_off_grid" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9.4" Y="9.4" Z="10.5"/><P2 X="10.6" Y="10.6" Z="10.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_flat_auto" Type="1"><Primitives><Box Priority="0"><P1 X="9" Y="9" Z="10"/><P2 X="11" Y="11" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_point" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="10.5"/><P2 X="10" Y="10" Z="10.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u_snap" Type="0"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="10.4"/><P2 X="10" Y="10" Z="11.4"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

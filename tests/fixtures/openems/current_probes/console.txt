@@ -1,0 +1,10 @@
+Create FDTD operator
+Operator::SetTimestepFactor: Setting timestep factor to 0.99
+FDTD simulation size: 21x21x21 --> 9261 FDTD cells 
+FDTD timestep is: 1.90657e-12 s; Nyquist rate: 1 timesteps @2.6225e+11 Hz
+Excitation signal length is: 2 timesteps (3.81315e-12s)
+Max. number of timesteps: 40 ( --> 20 * Excitation signal length)
+Create FDTD engine
+ProcessCurrent::DefineStartStopCoord(): Warning Current Integration Box "" has an expansion in normal direction! --> disabled
+Running FDTD engine... this may take a while... grab a cup of coffee?!?
+Exact-endcriteria: evaluating the end criteria every 1 timestep(s) (this excitation's Nyquist rate)

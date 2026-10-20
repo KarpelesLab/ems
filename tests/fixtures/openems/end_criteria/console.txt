@@ -1,0 +1,9 @@
+Create FDTD operator
+FDTD simulation size: 21x21x21 --> 9261 FDTD cells 
+FDTD timestep is: 1.92583e-12 s; Nyquist rate: 57 timesteps @4.55488e+09 Hz
+Excitation signal length is: 992 timesteps (1.91043e-09s)
+Max. number of timesteps: 5000 ( --> 5.04032 * Excitation signal length)
+Create FDTD engine
+Running FDTD engine... this may take a while... grab a cup of coffee?!?
+Exact-endcriteria: evaluating the end criteria every 57 timestep(s) (this excitation's Nyquist rate)
+RunFDTD: end-criteria of -30dB reached after 798 timesteps (-32.2833dB)

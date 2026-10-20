@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "pml": PML_8 on the x faces of a longer box (formulation-level difference: ems uses CPML with its own grading)
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30">
+    <Excitation Type="0" f0="5e9" fc="4e9"/>
+    <BoundaryCond xmin="PML_8" xmax="PML_8" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="9"/><P2 X="10" Y="10" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><FD_Samples>1e9,2e9,2.5e9</FD_Samples><Primitives><Box Priority="0"><P1 X="12" Y="10" Z="9"/><P2 X="12" Y="10" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="it1" Type="1" NormDir="2"><FD_Samples>1e9,2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="8" Y="8" Z="10"/><P2 X="12" Y="12" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="et1" Type="2"><FD_Samples>1e9,2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="13" Y="10" Z="10"/><P2 X="13" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ht1" Type="3"><FD_Samples>1e9,2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="13" Y="10" Z="10"/><P2 X="13" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>-10,-9,-8,-7,-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

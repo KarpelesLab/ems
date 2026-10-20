@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "lumped_rc": parallel R||C element on a lossy dielectric (C replaces the cell capacitance, R its conductance), series RLC element in vacuum, Caps="0"
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1200" endCriteria="1e-30">
+    <Excitation Type="0" f0="3e9" fc="2e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="d"><Property Epsilon="4" Kappa="0.5"/><Primitives><Box Priority="1"><P1 X="5" Y="5" Z="5"/><P2 X="15" Y="15" Z="15"/></Box></Primitives></Material>
+      <LumpedElement Name="rc" Direction="2" R="50" C="1e-12" LEtype="0"><Primitives><Box Priority="5"><P1 X="9" Y="10" Z="9"/><P2 X="11" Y="10" Z="11"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="rlc" Direction="2" R="20" C="1e-12" L="1e-9" LEtype="1" Caps="0"><Primitives><Box Priority="5"><P1 X="4" Y="4" Z="9"/><P2 X="4" Y="4" Z="11"/></Box></Primitives></LumpedElement>
+      <ProbeBox Name="urlc" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="9"/><P2 X="4" Y="4" Z="11"/></Box></Primitives></ProbeBox>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="15" Y="10" Z="9"/><P2 X="15" Y="10" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut" Type="0"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="9"/><P2 X="10" Y="10" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="it" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="9" Y="10" Z="10"/><P2 X="11" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ue" Type="0"><Primitives><Box Priority="0"><P1 X="15" Y="10" Z="9"/><P2 X="15" Y="10" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ef" Type="2"><Primitives><Box Priority="0"><P1 X="12" Y="12" Z="10"/><P2 X="12" Y="12" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

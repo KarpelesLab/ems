@@ -1,0 +1,7 @@
+% frequency-domain current integration by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 10:49:48 2026
+% start-coordinates: (0.007,0.007,0.0096) m -> [7,7,9]
+% stop-coordinates: (0.012,0.012,0.0096) m -> [14,12,9]
+% f/Hz	current	
+%	real	imag
+1e+09	1.10904e-17	3.97573e-18
+2e+09	-9.02879e-18	-9.47182e-18

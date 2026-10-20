@@ -1,0 +1,7 @@
+% frequency-domain electric field probe by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 10:49:49 2026
+% start-coordinates: (0.013,0.01,0.01) m -> [13,10,10]
+% stop-coordinates: (0.013,0.01,0.01) m -> [13,10,10]
+% f/Hz	Ex/(V/m)		Ey/(V/m)		Ez/(V/m)	
+%	real	imag	real	imag	real	imag
+1e+09	2.80541e-14	1.60622e-14	2.15845e-14	1.07234e-14	-3.51031e-12	1.03117e-11
+2e+09	-4.20746e-14	-7.26874e-14	-3.6839e-14	-4.97783e-14	1.64109e-11	1.27488e-12

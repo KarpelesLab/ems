@@ -1,0 +1,7 @@
+% frequency-domain magnetic field probe by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 10:49:47 2026
+% start-coordinates: (0.012,0.009,0.009) m -> [12,9,9]
+% stop-coordinates: (0.012,0.009,0.009) m -> [12,9,9]
+% f/Hz	Hx/(A/m)		Hy/(A/m)		Hz/(A/m)	
+%	real	imag	real	imag	real	imag
+1e+09	-4.09121e-15	5.98576e-15	-6.91069e-15	1.01272e-14	3.91047e-20	-5.29711e-20
+2e+09	-2.11459e-15	-6.14673e-15	-3.59448e-15	-1.0397e-14	2.43742e-20	5.47536e-20

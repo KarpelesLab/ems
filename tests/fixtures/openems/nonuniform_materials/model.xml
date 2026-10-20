@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "nonuniform_materials": non-uniform mesh (Rennings time step), anisotropic lossy material with magnetic loss, weighted (graded) lossy dielectric
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="500" endCriteria="1e-30">
+    <Excitation Type="0" f0="2e9" fc="1.5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="aniso" Isotropy="0"><Property Epsilon="2,3,4" Mue="1,1.5,2" Kappa="0.01,0.02,0.05" Sigma="100,200,300"/><Primitives><Box Priority="1"><P1 X="0" Y="0" Z="0"/><P2 X="20" Y="20" Z="7.3"/></Box></Primitives></Material>
+      <Material Name="graded"><Property Epsilon="3" Kappa="0.1"/><Weight Epsilon="1+x/10" Kappa="y/20"/><Primitives><Box Priority="2"><P1 X="0" Y="0" Z="13.2"/><P2 X="20" Y="20" Z="20"/></Box></Primitives></Material>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="9.6"/><P2 X="10" Y="10" Z="10.4"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><FD_Samples>1e9,2e9,2.5e9</FD_Samples><Primitives><Box Priority="0"><P1 X="12" Y="10" Z="9"/><P2 X="12" Y="10" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="it1" Type="1" NormDir="2"><FD_Samples>1e9,2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="8" Y="8" Z="10"/><P2 X="12" Y="12" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="et1" Type="2"><FD_Samples>1e9,2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="13" Y="10" Z="10"/><P2 X="13" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ht1" Type="3"><FD_Samples>1e9,2e9</FD_Samples><Primitives><Box Priority="0"><P1 X="13" Y="10" Z="10"/><P2 X="13" Y="10" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,9.5,10,10.5,11,12,13,14,15,16,18,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1.5,3,4,5,6,7,8,9,9.6,10,10.4,11,12,13,14,15,16,17,18.5,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
