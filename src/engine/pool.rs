@@ -6,7 +6,8 @@
 //! the neighbour slab(s) for reading (see [`fields`](super::fields)) for
 //! the kernel and for the operators' [slab hooks](super::SlabHooks).
 //! Between the half-steps one barrier separates H from E. Only where
-//! registered operators have serial hooks ([`Gaps`]) does the caller stop
+//! registered operators need serial hooks at a step ([`GAP_A`], from
+//! [`Operator::hooks_at`](super::Operator::hooks_at)) does the caller stop
 //! the workers at an extra barrier and run those hooks while they wait.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -55,20 +56,20 @@ pub(crate) struct Shared {
     step0: AtomicU64,
     dt_bits: AtomicU64,
     energy_first: AtomicBool,
-    gap_a: AtomicBool,
-    gap_b: AtomicBool,
+    /// The gap bits of each step of the published plan.
+    sched: RwLock<Vec<u8>>,
     /// Measure of a [`CMD_ENERGY`] phase (`true`: openEMS).
     energy_oe: AtomicBool,
 }
 
-/// Where the caller must stop the workers to run serial hooks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Gaps {
-    /// Between E and the next H (`post_e`, then `pre_h`).
-    pub(crate) a: bool,
-    /// Between H and E (`post_h`, then `pre_e`).
-    pub(crate) b: bool,
-}
+/// Where the caller stops the workers to run serial hooks, per step of a
+/// [`Plan`]: bit [`GAP_A`] between the E update and the next H update
+/// (`post_e`, then `pre_h` of the next step), bit [`GAP_B`] between H and
+/// E (`post_h`, then `pre_e`). Steps whose operators need no serial hook
+/// run without the extra barriers.
+pub(crate) const GAP_A: u8 = 1;
+/// See [`GAP_A`].
+pub(crate) const GAP_B: u8 = 2;
 
 /// `steps` whole steps starting at engine step `step0`.
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +79,6 @@ pub(crate) struct Plan {
     pub(crate) dt: f64,
     /// Record the energy invariant in the first H update.
     pub(crate) energy_first: bool,
-    pub(crate) gaps: Gaps,
 }
 
 /// A serial hook point, passed to the caller's callback with the step
@@ -118,8 +118,7 @@ impl Shared {
             step0: AtomicU64::new(0),
             dt_bits: AtomicU64::new(0),
             energy_first: AtomicBool::new(false),
-            gap_a: AtomicBool::new(false),
-            gap_b: AtomicBool::new(false),
+            sched: RwLock::new(Vec::new()),
             energy_oe: AtomicBool::new(false),
         }
     }
@@ -138,13 +137,16 @@ impl Shared {
         }
     }
 
-    fn publish(&self, p: &Plan) {
+    fn publish(&self, p: &Plan, sched: &[u8]) {
         self.steps.store(p.steps, Ordering::Relaxed);
         self.step0.store(p.step0, Ordering::Relaxed);
         self.dt_bits.store(p.dt.to_bits(), Ordering::Relaxed);
         self.energy_first.store(p.energy_first, Ordering::Relaxed);
-        self.gap_a.store(p.gaps.a, Ordering::Relaxed);
-        self.gap_b.store(p.gaps.b, Ordering::Relaxed);
+        {
+            let mut s = write(&self.sched);
+            s.clear();
+            s.extend_from_slice(sched);
+        }
         self.cmd.store(CMD_RUN, Ordering::Release);
     }
 
@@ -154,10 +156,6 @@ impl Shared {
             step0: self.step0.load(Ordering::Relaxed),
             dt: f64::from_bits(self.dt_bits.load(Ordering::Relaxed)),
             energy_first: self.energy_first.load(Ordering::Relaxed),
-            gaps: Gaps {
-                a: self.gap_a.load(Ordering::Relaxed),
-                b: self.gap_b.load(Ordering::Relaxed),
-            },
         }
     }
 
@@ -433,16 +431,18 @@ fn worker(sh: Arc<Shared>, s: usize) {
         }
         let p = sh.plan();
         let ops = read(&sh.slab_ops).clone();
+        let sched = read(&sh.sched).clone();
         for t in 0..p.steps {
             let step = p.step0 + t;
+            let g = sched[t as usize];
             sh.h(s, p.energy_first && t == 0, &ops, step, p.dt);
             sh.barrier.wait();
-            if p.gaps.b {
+            if g & GAP_B != 0 {
                 sh.barrier.wait(); // caller runs post_h / pre_e
             }
             sh.e(s, &ops, step, p.dt);
             sh.barrier.wait();
-            if p.gaps.a && t + 1 < p.steps {
+            if g & GAP_A != 0 && t + 1 < p.steps {
                 sh.barrier.wait(); // caller runs post_e / pre_h
             }
         }
@@ -452,17 +452,22 @@ fn worker(sh: Arc<Shared>, s: usize) {
 
 /// Runs `plan` on all slabs: slab 0 on the calling thread, the others on
 /// the workers of `pool` (none when single-threaded). `hook` is called on
-/// the calling thread at every serial hook point of `plan.gaps`, with the
-/// workers parked (one extra barrier per gap and step).
+/// the calling thread at every serial hook point of `sched` (the gap bits
+/// of each step, see [`GAP_A`]; `pre_h0`: the `pre_h` hooks before the
+/// first step), with the workers parked (one extra barrier per gap and
+/// step).
 pub(crate) fn drive(
     mut pool: Option<&mut Pool>,
     sh: &Shared,
     plan: &Plan,
+    sched: &[u8],
+    pre_h0: bool,
     hook: &mut dyn FnMut(Gap),
 ) {
     if plan.steps == 0 {
         return;
     }
+    assert_eq!(sched.len() as u64, plan.steps, "one gap entry per step");
     sh.refresh_kernel();
     let threaded = pool.is_some();
     let wait = || {
@@ -470,26 +475,27 @@ pub(crate) fn drive(
             sh.barrier.wait();
         }
     };
-    if plan.gaps.a {
+    if pre_h0 {
         hook(Gap::PreH(0));
     }
     let ops = read(&sh.slab_ops).clone();
     if let Some(p) = pool.as_deref_mut() {
         p.busy = true;
-        sh.publish(plan);
+        sh.publish(plan, sched);
         sh.barrier.wait();
     }
     for t in 0..plan.steps {
         let step = plan.step0 + t;
+        let g = sched[t as usize];
         sh.h(0, plan.energy_first && t == 0, &ops, step, plan.dt);
         wait();
-        if plan.gaps.b {
+        if g & GAP_B != 0 {
             hook(Gap::Mid(t));
             wait();
         }
         sh.e(0, &ops, step, plan.dt);
         wait();
-        if plan.gaps.a {
+        if g & GAP_A != 0 {
             hook(Gap::PostE(t));
             if t + 1 < plan.steps {
                 hook(Gap::PreH(t + 1));

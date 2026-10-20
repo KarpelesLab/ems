@@ -122,6 +122,21 @@ impl Operator for EdgeSource {
         }
     }
 
+    /// A soft source whose amplitude is zero at this step adds nothing:
+    /// not needed then (hard sources always are).
+    fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
+        let t = match self.kind {
+            SourceKind::SoftE => ctx.h_time(),
+            SourceKind::SoftH => ctx.time(),
+            SourceKind::HardE | SourceKind::HardH => return self.hooks(),
+        };
+        if (self.amplitude)(t) as f32 == 0.0 {
+            Hooks::NONE
+        } else {
+            self.hooks()
+        }
+    }
+
     fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let t = match self.kind {
             SourceKind::SoftH => ctx.time(),

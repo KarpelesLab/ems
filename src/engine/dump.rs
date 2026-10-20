@@ -1366,6 +1366,16 @@ impl<S: DumpSink> Operator for TimeDump<S> {
             DumpTiming::OpenEms => Hooks::POST_H,
         }
     }
+
+    /// openEMS timing with a fixed step interval: only at the due steps.
+    fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
+        match (self.sampler.timing, &self.scheduler.schedule) {
+            (DumpTiming::OpenEms, Schedule::Every(k)) if !ctx.step.is_multiple_of((*k).max(1)) => {
+                Hooks::NONE
+            }
+            _ => self.hooks(),
+        }
+    }
 }
 
 /// Frequency-domain field dump operator: a running DFT of every sample
@@ -1643,6 +1653,15 @@ impl Operator for FreqDump {
         match self.sampler.timing {
             DumpTiming::State => Hooks::PRE_H | Hooks::POST_E,
             DumpTiming::OpenEms => Hooks::POST_H,
+        }
+    }
+
+    /// openEMS timing: only at the sampled steps.
+    fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
+        if self.sampler.timing == DumpTiming::OpenEms && !ctx.step.is_multiple_of(self.interval) {
+            Hooks::NONE
+        } else {
+            self.hooks()
         }
     }
 }

@@ -207,7 +207,7 @@ use crate::fdtd::Face;
 use crate::{Error, Result};
 use boundary::periodic::Periodic;
 use fields::{FieldStore, Layout, read, write};
-use pool::{Gap, Gaps, Plan, Pool, Shared};
+use pool::{GAP_A, GAP_B, Gap, Plan, Pool, Shared};
 
 /// Configures and builds an [`Engine`]; see [`Engine::builder`].
 #[derive(Debug, Clone)]
@@ -692,13 +692,49 @@ impl Engine {
             step0: self.step,
             dt: self.dt,
             energy_first,
-            gaps: Gaps {
-                a: mask.intersects(Hooks::PRE_H | Hooks::POST_E)
-                    || self.periodic.is_some()
-                    || self.axis.is_some()
-                    || self.multigrid.is_some(),
-                b: mask.intersects(Hooks::POST_H | Hooks::PRE_E) || self.multigrid.is_some(),
-            },
+        };
+        // The serial gaps of each step: where some operator needs a hook
+        // at that step (`Operator::hooks_at`), or always for the face and
+        // axis merges.
+        let force_a = self.periodic.is_some() || self.axis.is_some() || self.multigrid.is_some();
+        let force_b = self.multigrid.is_some();
+        let (sched, pre_h0) = {
+            let co = read(&self.shared.coeffs);
+            let need = |step: u64| -> Hooks {
+                if mask == Hooks::NONE {
+                    return Hooks::NONE;
+                }
+                let ctx = StepContext {
+                    step,
+                    dt: self.dt,
+                    grid: &self.grid,
+                    coefficients: &co,
+                };
+                self.ops
+                    .iter()
+                    .filter(|r| r.hooks != Hooks::NONE)
+                    .fold(Hooks::NONE, |m, r| m | (r.op.hooks_at(&ctx) & r.hooks))
+            };
+            let mut sched = Vec::with_capacity(n as usize);
+            let mut cur = need(plan.step0);
+            let pre_h0 = force_a || cur.contains(Hooks::PRE_H);
+            for t in 0..n {
+                let next = if t + 1 < n {
+                    need(plan.step0 + t + 1)
+                } else {
+                    Hooks::NONE
+                };
+                let mut g = 0u8;
+                if force_a || cur.contains(Hooks::POST_E) || next.contains(Hooks::PRE_H) {
+                    g |= GAP_A;
+                }
+                if force_b || cur.intersects(Hooks::POST_H | Hooks::PRE_E) {
+                    g |= GAP_B;
+                }
+                sched.push(g);
+                cur = next;
+            }
+            (sched, pre_h0)
         };
         let Self {
             grid,
@@ -772,7 +808,7 @@ impl Engine {
                 m.merge_h(&mut f.i, &co);
             }
         };
-        pool::drive(pool.as_mut(), shared, &plan, &mut hook);
+        pool::drive(pool.as_mut(), shared, &plan, &sched, pre_h0, &mut hook);
         self.step += n;
     }
 }

@@ -60,6 +60,13 @@ impl core::ops::BitOrAssign for Hooks {
     }
 }
 
+impl core::ops::BitAnd for Hooks {
+    type Output = Self;
+    fn bitand(self, o: Self) -> Self {
+        Self(self.0 & o.0)
+    }
+}
+
 /// Information about the step being performed, passed to every hook.
 ///
 /// Step `n` (= [`step`](Self::step)) advances the H currents from
@@ -145,6 +152,20 @@ pub trait Operator: Any + Send {
     /// operator whose hooks are all empty may return [`Hooks::NONE`].
     fn hooks(&self) -> Hooks {
         Hooks::ALL
+    }
+
+    /// The hooks this operator needs at step `ctx.step` (default
+    /// [`hooks`](Self::hooks)): a subset of [`hooks`](Self::hooks), asked
+    /// before every run of steps. The engine stops its workers for a
+    /// serial phase only at steps where some operator needs it, so an
+    /// operator that acts only on some steps (a probe sampling every `K`
+    /// steps, a soft source whose signal is zero) saves the barriers of
+    /// the others. A declared hook may still be called at a step where
+    /// it was not asked for (another operator needed that phase), so
+    /// hooks must stay correct whenever they are called.
+    fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
+        let _ = ctx;
+        self.hooks()
     }
 
     /// Slab-parallel work for the engine's x-slab `partition` (default

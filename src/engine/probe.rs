@@ -197,6 +197,15 @@ impl Operator for Probe {
         }
     }
 
+    /// Only at the sampling steps.
+    fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
+        if ctx.step.is_multiple_of(self.interval) {
+            self.hooks()
+        } else {
+            Hooks::NONE
+        }
+    }
+
     fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         if self.quantity == ProbeQuantity::Current && ctx.step.is_multiple_of(self.interval) {
             self.sample(&fields.i, ctx.h_time());
