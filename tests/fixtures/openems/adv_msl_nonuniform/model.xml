@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openEMS>
+  <FDTD NumberOfTimesteps="3000" endCriteria="0" f_max="10e9" TimeStep="3e-13">
+    <Excitation Type="10" f0="6e9" Function="exp(-((t-1.5e-10)/4e-11)^2)*cos(2*pi*6e9*(t-1.5e-10))"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11.25,12.5,13.75,15,16.25,17.5,18.75,20,21.25,22.5,23.75,25,26.25,27.5,28.75,30,31.25,32.5,33.75,35,36.25,37.5,38.75,40,41.25,42.5,43.75,45,46.25,47.5,48.75,50</XLines>
+      <YLines>-10,-7,-5,-3.5,-2.5,-1.8,-1.2,-0.8,-0.6,-0.3,0,0.3,0.6,0.8,1.2,1.8,2.5,3.5,5,7,10</YLines>
+      <ZLines>0,0.2,0.4,0.6,0.8,1.1,1.5,2.1,3,4,5</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Material Name="sub" >
+        <Property Epsilon="3.66"/>
+        <Primitives><Box Priority="0"><P1 X="-1" Y="-11" Z="0"/><P2 X="51" Y="11" Z="0.8"/></Box></Primitives>
+      </Material>
+      <Metal Name="strip" >
+        <Primitives><Box Priority="10"><P1 X="0" Y="-0.8" Z="0.8"/><P2 X="50" Y="0.8" Z="0.8"/></Box></Primitives>
+      </Metal>
+      <Excitation Name="exc" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="5"><P1 X="5" Y="-0.8" Z="0"/><P2 X="5" Y="0.8" Z="0.8"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="u1" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="20" Y="0" Z="0"/><P2 X="20" Y="0" Z="0.8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="u2" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="35" Y="0" Z="0"/><P2 X="35" Y="0" Z="0.8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i1" Type="1" Weight="1" NormDir="0">
+        <Primitives><Box Priority="0"><P1 X="22.5" Y="-1.8" Z="0.4"/><P2 X="22.5" Y="1.8" Z="1.5"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i2" Type="1" Weight="1" NormDir="0">
+        <Primitives><Box Priority="0"><P1 X="36.25" Y="-1.2" Z="0.6"/><P2 X="36.25" Y="1.2" Z="1.1"/></Box></Primitives>
+      </ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

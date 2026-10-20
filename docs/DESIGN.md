@@ -2001,6 +2001,22 @@ residual), ems's CPML −86 dB; ems keeps its CPML, so runs with PML differ
 by about 2e-3 (vacuum) to 4e-3 (ε_r = 4).
 
 
+**Current probes** (not changed here; shared with the Cartesian probe
+mapping). On a graded microstrip mesh the voltages agree to 6e-7, the
+current probes (flat boxes on primary x planes around the strip) by
+33 %. openEMS's file header shows the indices it uses: the box's lower
+corner moves down by one line on every axis, the upper stays. So its H
+loop runs on the dual lines just outside the box in the transverse
+directions (as ems's does), but on the dual plane *before* a flat box's
+primary plane `k` (`k − ½`), where ems uses `k + ½`; with `k − ½` ems
+agrees to 6e-7. For a box coordinate between mesh lines openEMS takes the
+dual plane nearest to it (a box at a dual position, e.g. z = 6.5 on a
+1 mm mesh, uses that plane, ems's current choice there), so the rule
+needs the unsnapped coordinate. Where the box touches the outer mesh
+lines openEMS's loop stays inside the domain (a box over the whole
+cross-section of a PMC/PEC line reads about half the TEM current, ems 0).
+
+
 ## 6. Engine architecture
 
 ```

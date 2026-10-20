@@ -9,6 +9,7 @@
 //! measured agreement (typically 1e-6, the `f32` round-off of the fields
 //! and the 12-digit probe files) to absorb last-bit differences of a fresh
 //! openEMS build; the numbers are in each test's doc comment.
+#![cfg(feature = "xml")]
 
 #[path = "common/oe_probe.rs"]
 mod oe_probe;
@@ -126,6 +127,27 @@ fn lorentz_coarse_trapezoidal_differs() {
     let res = run("adv_lorentz_coarse", &opts);
     for (f, e) in compare("adv_lorentz_coarse", &res) {
         assert!(e > 1e-2 && e < 0.2, "{f}: {e}");
+    }
+}
+
+// ------------------------------------------------------------ microstrip
+
+/// Microstrip (ε_r = 3.66, h = 0.8 mm, w = 1.6 mm, PEC box) on a mesh
+/// graded in x, y and z, soft feed under the strip: the voltages agree to
+/// 5.5–6.3e-7. The fixture's current probes `i1`, `i2` (flat boxes on
+/// primary x planes) differ by 33 %: openEMS integrates a flat current box
+/// at primary plane `k` on the dual plane `k − ½` (nearest dual plane to
+/// the box coordinate, ties to the lower one), ems on `k + ½`; with that
+/// one change they agree to 6e-7 (design §5.16, not changed here: the
+/// probe mapping is shared with the Cartesian probe work).
+#[test]
+fn microstrip_nonuniform_voltages() {
+    let name = "adv_msl_nonuniform";
+    let res = run(name, &CompileOptions::default());
+    for (f, e) in compare(name, &res) {
+        if f.starts_with('u') {
+            assert!(e < 2e-5, "{name}/{f}: relative L2 {e:.3e}");
+        }
     }
 }
 
