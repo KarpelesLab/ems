@@ -118,6 +118,46 @@ struct Corner {
     last: f32,
 }
 
+/// Per-edge phase velocities for the face edges of Mur faces without a
+/// fixed velocity, overriding the edge-averaged medium of
+/// [`MurBoundary::with_faces_in`] (see [`MurBoundary::with_faces_media`]).
+///
+/// Keyed by face, edge axis and node (engine indices); edges without an
+/// entry fall back to the averaged medium.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MurMedia {
+    v: std::collections::BTreeMap<(usize, usize, [usize; 3]), f64>,
+}
+
+impl MurMedia {
+    /// No entries.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the phase velocity \[m/s\] of the edge along `axis` at `node`
+    /// on `face`.
+    pub fn insert(&mut self, face: Face, axis: Axis, node: [usize; 3], v: f64) {
+        self.v.insert((face.index(), axis.index(), node), v);
+    }
+
+    /// The phase velocity of the edge along `axis` at `node` on `face`,
+    /// if set.
+    pub fn get(&self, face: Face, axis: Axis, node: [usize; 3]) -> Option<f64> {
+        self.v.get(&(face.index(), axis.index(), node)).copied()
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.v.len()
+    }
+
+    /// Whether there are no entries.
+    pub fn is_empty(&self) -> bool {
+        self.v.is_empty()
+    }
+}
+
 /// First-order Mur absorbing boundary on one or more outer faces, as an
 /// engine [`Operator`]. See the [module docs](self) for the scheme, the
 /// treatment of domain edges and the requirements.
@@ -142,6 +182,7 @@ pub struct MurBoundary {
     edges: Vec<Edge>,
     corners: Vec<Corner>,
     count_energy: bool,
+    openems_corners: bool,
 }
 
 impl MurBoundary {
@@ -165,7 +206,7 @@ impl MurBoundary {
     /// [`FaceCondition::Pec`](crate::engine::FaceCondition::Pec).
     pub fn with_faces(engine: &Engine, faces: &[(Face, f64)]) -> Result<Self> {
         let faces: Vec<(Face, Option<f64>)> = faces.iter().map(|&(f, v)| (f, Some(v))).collect();
-        Self::build(engine, &faces, None)
+        Self::build(engine, &faces, None, None)
     }
 
     /// Mur boundary on several faces like [`with_faces`](Self::with_faces),
@@ -184,13 +225,30 @@ impl MurBoundary {
         faces: &[(Face, Option<f64>)],
         materials: &EdgeMaterials,
     ) -> Result<Self> {
-        Self::build(engine, faces, Some(materials))
+        Self::build(engine, faces, Some(materials), None)
+    }
+
+    /// [`with_faces_in`](Self::with_faces_in) where the face edges listed
+    /// in `media` take its phase velocity instead of the averaged medium
+    /// (used for openEMS files, which sample the medium at one point per
+    /// edge, design §5.16.1).
+    ///
+    /// # Errors
+    /// See [`with_faces_in`](Self::with_faces_in).
+    pub fn with_faces_media(
+        engine: &Engine,
+        faces: &[(Face, Option<f64>)],
+        materials: &EdgeMaterials,
+        media: &MurMedia,
+    ) -> Result<Self> {
+        Self::build(engine, faces, Some(materials), Some(media))
     }
 
     fn build(
         engine: &Engine,
         faces: &[(Face, Option<f64>)],
         materials: Option<&EdgeMaterials>,
+        media: Option<&MurMedia>,
     ) -> Result<Self> {
         let grid = engine.grid();
         let n = grid.nodes();
@@ -278,9 +336,14 @@ impl MurBoundary {
             // `o`, lowest corner at the smaller of the two planes.
             let mut hf = node;
             hf[a.index()] = node[a.index()].min(inner[a.index()]);
-            let eps = m.eps_r(t)[grid.index(inner)];
-            let mu = m.mu_r(o)[grid.index(hf)];
-            let v = C0 / (eps * mu).sqrt();
+            let v = match media.and_then(|md| md.get(face, t, node)) {
+                Some(v) => v,
+                None => {
+                    let eps = m.eps_r(t)[grid.index(inner)];
+                    let mu = m.mu_r(o)[grid.index(hf)];
+                    C0 / (eps * mu).sqrt()
+                }
+            };
             if !(v.is_finite() && v > 0.0) {
                 return Err(Error::Invalid(format!(
                     "Mur boundary on {face}: local phase velocity {v} at {node:?} must be \
@@ -357,7 +420,21 @@ impl MurBoundary {
             edges,
             corners,
             count_energy: false,
+            openems_corners: false,
         })
+    }
+
+    /// openEMS's update of the edges where two Mur faces meet (default
+    /// off): each of the two 1-D updates takes the interior neighbour at
+    /// `n + 1` as 0, `u_c^{n+1} = ½·(u_1^n + u_2^n) − ½·(k_1 + k_2)·u_c^n`,
+    /// as if each face read the other's edges before they were updated.
+    /// Identified by least-squares fits of the corner edges of an all-Mur
+    /// box from openEMS's per-step field dumps (black box, residual 4e-8;
+    /// design §5.16.1); ems's own corner average uses the updated
+    /// neighbours.
+    pub fn openems_corners(mut self, on: bool) -> Self {
+        self.openems_corners = on;
+        self
     }
 
     /// Counts the energy of the boundary edges in
@@ -434,8 +511,13 @@ impl Operator for MurBoundary {
         // After the face edges: corner neighbours are face edges.
         for c in &self.corners {
             let [b, i0, i1] = c.saved;
-            let v0 = i0 + c.k[0] * (u.get(c.axis, c.inner[0]) - b);
-            let v1 = i1 + c.k[1] * (u.get(c.axis, c.inner[1]) - b);
+            let (n0, n1) = if self.openems_corners {
+                (0.0, 0.0)
+            } else {
+                (u.get(c.axis, c.inner[0]), u.get(c.axis, c.inner[1]))
+            };
+            let v0 = i0 + c.k[0] * (n0 - b);
+            let v1 = i1 + c.k[1] * (n1 - b);
             u.set(c.axis, c.node, 0.5 * (v0 + v1));
         }
         for c in &mut self.corners {

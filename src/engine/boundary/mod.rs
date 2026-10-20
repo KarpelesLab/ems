@@ -14,4 +14,4 @@ pub mod periodic;
 
 pub use abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 pub use cpml::{CpmlBoundary, CpmlCoefficients};
-pub use mur::MurBoundary;
+pub use mur::{MurBoundary, MurMedia};

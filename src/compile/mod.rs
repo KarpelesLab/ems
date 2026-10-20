@@ -163,7 +163,7 @@ pub use planewave::PlaneWaveSource;
 use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
-use crate::engine::boundary::mur::MurBoundary;
+use crate::engine::boundary::mur::{MurBoundary, MurMedia};
 use crate::engine::dispersive::Scheme as DispersiveScheme;
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
@@ -173,11 +173,12 @@ use crate::engine::{
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
 
+use crate::constants::C0;
 use csx::discretize::{
     DiscretizeOptions, ExcitationField, LumpedEdge, MaterialGrid, SheetInfo, discretize,
 };
-use csx::properties::{AbcType, DumpType, ExcitationType, ProbeType};
-use csx::{CoordSystem, PropertyKind};
+use csx::properties::{AbcType, DumpType, ExcitationType, MaterialQuantity, ProbeType, TypeMask};
+use csx::{CoordSystem, PropertyKind, Vec3};
 
 /// Options of [`compile`].
 #[derive(Debug, Clone, PartialEq)]
@@ -415,6 +416,11 @@ pub struct Compiled {
     pub openems_pmc: bool,
     /// Mur faces and their phase velocities \[m/s\].
     pub mur: Vec<(Face, Option<f64>)>,
+    /// openEMS files ([`Fdtd::openems_run`], Cartesian grids): the local
+    /// phase velocity of every face edge of a Mur face without a fixed
+    /// velocity, from the material at one point (see [`mur_point_media`]);
+    /// `None` uses the edge-averaged medium.
+    pub mur_media: Option<MurMedia>,
     /// PML faces and their parameters.
     pub pml: Vec<(Face, Cpml)>,
     /// Time step choice.
@@ -514,6 +520,13 @@ impl Compiled {
         let mut h = BoundaryHandles::default();
         if self.openems_pmc {
             pmc_half_cell(engine, &self.faces);
+            let upper: Vec<Face> = self
+                .mur
+                .iter()
+                .map(|&(f, _)| f)
+                .filter(|f| f.is_max())
+                .collect();
+            upper_face_normal_h(engine, &upper);
         }
         // The CPML tunes σ_max to the mean refractive index of each layer,
         // read from the coefficients: before the conformal scaling, which
@@ -538,8 +551,12 @@ impl Compiled {
             h.cpml = Some(engine.add_operator(op));
         }
         if !self.mur.is_empty() {
-            let op = MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?
-                .count_energy(self.openems_pmc);
+            let op = match &self.mur_media {
+                Some(m) => MurBoundary::with_faces_media(engine, &self.mur, &self.materials, m)?,
+                None => MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?,
+            }
+            .count_energy(self.openems_pmc)
+            .openems_corners(self.openems_pmc);
             h.mur = Some(engine.add_operator(op));
         }
         if !self.dispersive.is_empty() {
@@ -653,6 +670,106 @@ fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
                         da[idx] = 0.0;
                         db[idx] = 0.0;
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The local phase velocity `c0/√(ε_r·μ_r)` of every face edge of the Mur
+/// faces in `mur` without a fixed velocity, as openEMS chooses it
+/// (black-box: fits of the per-edge Mur coefficient from full-rate dumps
+/// on layered microstrip faces, design §5.16.1): the material at a single
+/// point, not averaged — the edge's start node in the face's transverse
+/// coordinates and, along the face normal, the middle of the boundary
+/// cell (closed bounds, highest priority; vacuum outside every material).
+/// So an `E_z` edge starting on the top face of a substrate takes the
+/// substrate's `ε` and a substrate ending on the last interior mesh line
+/// does not count. `ε_r` along the edge, `μ_r` along the third axis (the H
+/// component of the 1-D wave).
+fn mur_point_media(
+    model: &csx::ContinuousStructure,
+    grid: &Grid,
+    mur: &[(Face, Option<f64>)],
+) -> MurMedia {
+    let mut media = MurMedia::new();
+    let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
+    let n = grid.nodes();
+    for &(face, v) in mur {
+        if v.is_some() {
+            continue;
+        }
+        let a = face.axis();
+        let ai = a.index();
+        if n[ai] < 2 || lines[ai].len() != n[ai] {
+            continue;
+        }
+        let (plane, inner) = if face.is_max() {
+            (n[ai] - 1, n[ai] - 2)
+        } else {
+            (0, 1)
+        };
+        let mid = 0.5 * (lines[ai][plane] + lines[ai][inner]);
+        for t in Axis::ALL.into_iter().filter(|&t| t != a) {
+            let o = Axis::ALL
+                .into_iter()
+                .find(|&x| x != a && x != t)
+                .expect("three axes");
+            for p in 0..n[t.index()] - 1 {
+                for q in 0..n[o.index()] {
+                    let mut node = [0; 3];
+                    node[ai] = plane;
+                    node[t.index()] = p;
+                    node[o.index()] = q;
+                    let mut pt = [0.0; 3];
+                    for b in 0..3 {
+                        pt[b] = lines[b][node[b]];
+                    }
+                    pt[ai] = mid;
+                    let pt = Vec3(pt);
+                    let (eps, mu) = model
+                        .property_at(pt, CoordSystem::Cartesian, TypeMask::MATERIALS)
+                        .and_then(|hit| hit.property.kind.material())
+                        .map_or((1.0, 1.0), |m| {
+                            (
+                                m.values_at(MaterialQuantity::Epsilon, pt)[t.index()],
+                                m.values_at(MaterialQuantity::Mue, pt)[o.index()],
+                            )
+                        });
+                    let v = C0 / (eps * mu).sqrt();
+                    if v.is_finite() && v > 0.0 {
+                        media.insert(face, t, node, v);
+                    }
+                }
+            }
+        }
+    }
+    media
+}
+
+/// openEMS does not update the H component normal to an upper (max) face
+/// in that face's plane: it stays 0 (observed on Mur faces, where the
+/// tangential E of the face is not zero; on PEC faces it is 0 anyway).
+/// That H feeds no E update (the face's tangential E is set by the
+/// boundary operator), so it only shows in the end-criterion energy and
+/// in probes and dumps on the face; for files ems holds it at 0 too.
+fn upper_face_normal_h(engine: &mut Engine, faces: &[Face]) {
+    let n = engine.grid().nodes();
+    let mut co = engine.coefficients_mut();
+    for face in faces {
+        let t = face.axis();
+        let ti = t.index();
+        let layer = n[ti] - 1;
+        let (da, db) = co.h_mut(t);
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                for k in 0..n[2] {
+                    if [i, j, k][ti] != layer {
+                        continue;
+                    }
+                    let idx = (i * n[1] + j) * n[2] + k;
+                    da[idx] = 0.0;
+                    db[idx] = 0.0;
                 }
             }
         }
@@ -1169,12 +1286,14 @@ pub fn compile(
     let (probes, dumps) = probe_specs(model, &grid, &mut warnings);
     let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);
     let abc = abc_specs(model, &mut warnings);
+    let mur_media = (fdtd.get_openems_run() && !cyl).then(|| mur_point_media(model, &grid, &mur));
     Ok(Compiled {
         grid,
         delta_unit: model.grid.delta_unit,
         materials,
         faces,
         openems_pmc: fdtd.get_openems_run(),
+        mur_media,
         mur,
         pml,
         timestep,
