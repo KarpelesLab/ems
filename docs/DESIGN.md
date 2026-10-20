@@ -1252,6 +1252,29 @@ bit-identical results for 1 and 3 threads. The sphere's lowest mode is
 triply degenerate and split by the mesh, which limits the frequency
 estimate of a single probe at these resolutions.
 
+**Cylindrical grids** (§5.15). Solid metal works with the same scheme on
+the `(ρ, α, z)` edges and faces; the metal test is made at their
+`(ρ, α, z)` points. Edge fractions are the same in parameter and physical
+length (α edges are arcs of constant radius), and so are the face
+fractions of ρ and α faces; a cut z face (area element `ρ·dρ·dα`) is
+measured by `∮ ρ²/2 dα` over its open polygon instead of the shoelace
+formula. Thin conformal sheets (§5.13.1) are Cartesian only. Validation
+(`tests/cylindrical_conformal.rs`): a circular PEC cavity (`a = 10 mm`)
+whose axis is 30 mm off the grid axis (its wall is no coordinate
+surface), α cells of the radial cell size at 30 mm, 2 cells in z:
+
+| mode | cells per radius | staircase | conformal |
+|---|---|---|---|
+| TM010 | 10 / 20 | −3.69 / −1.91 % | −0.117 / −0.029 % (order 2.0) |
+| TE11 (PMC z walls) | 10 / 20 | −7.00 / −3.50 % | +0.586 / +0.279 % |
+
+stability estimates 0.84–0.94, energy constant to 3e-8 after the source,
+bit-identical for 1 and 3 threads. TE11 converges at first order here, and
+equally on a Cartesian mesh (the same cavity centred off the nodes:
++0.576 / +0.261 %), so it is a property of the scheme (the merged sliver
+faces carry `H_z`), not of the metric; for these walls the annular z-face
+measure itself changes the frequencies by under 0.02 %.
+
 **Limitations.** Solid metal here, thin sheets in §5.13.1; metal intruding
 into a face without crossing its edges and features thinner than half a
 cell between the edge samples are not seen. Voltage probes on cut edges
@@ -1671,8 +1694,8 @@ comparison, is alike).
 **Not available on cylindrical grids** (dropped with a warning or refused):
 plane waves (openEMS ignores them there too: no field at all, no message;
 §5.16.2), mass-averaged SAR dumps (`SAR1g`, `SAR10g`: the averaging cubes
-are defined in physical coordinates; §5.12), conformal PEC (staircase with
-a warning), `CellConstantMaterial` (edge averaging with a warning), oblique
+are defined in physical coordinates; §5.12), thin conformal PEC sheets
+(§5.13.1; solid conformal metal works, §5.13), `CellConstantMaterial` (edge averaging with a warning), oblique
 thin wires, NF2FF mirrors not normal to `z`, and the MSL, CPW, stripline
 and rectangular-waveguide port helpers (`Error::Unsupported`). Lumped
 ports, lumped elements, voltage, current and field probes, waveguide mode

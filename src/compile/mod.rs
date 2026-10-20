@@ -1079,12 +1079,8 @@ pub fn compile(
             cellconst::apply(model, &grid, &mut materials)?;
         }
     }
-    if opts.conformal && cyl {
-        warnings.push(
-            "conformal PEC is not available on cylindrical grids; using the staircase".into(),
-        );
-    }
-    let conformal = if opts.conformal && !cyl {
+    // (Cylindrical grids: solid metal only, see compile::conformal.)
+    let conformal = if opts.conformal {
         let pec: [&[bool]; 3] = [
             materials.pec_mask(Axis::X),
             materials.pec_mask(Axis::Y),

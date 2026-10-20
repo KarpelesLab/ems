@@ -33,6 +33,18 @@
 //! formula gives `f_A`. Metal intruding into a face without crossing its
 //! edges is not seen.
 //!
+//! # Cylindrical grids
+//!
+//! On a cylindrical grid (design §5.15) the edges and faces are those of
+//! the `(ρ, α, z)` lines, and the metal test is made at their `(ρ, α, z)`
+//! points. The open fraction of an edge is the same in parameter and in
+//! physical length (ρ and z edges are straight, α edges are arcs of
+//! constant radius). So is the open area of ρ and α faces (constant
+//! metric); a z face has the area element `ρ·dρ·dα`, so its open polygon
+//! (straight in `(ρ, α)`) is measured by `∮ ρ²/2 dα` instead of the
+//! shoelace formula. Thin conformal sheets (`sheets`) are not available
+//! there (csx's sheet handling applies, with its warnings).
+//!
 //! # PEC mask
 //!
 //! An edge with `f_e = 0` is PEC. A cut edge (`0 < f_e < 1`) is made
@@ -157,13 +169,21 @@ impl Ctx<'_> {
     }
 }
 
-/// Union of the bounding boxes of solid metal primitives.
+/// Union of the bounding boxes of solid metal primitives, in the grid's
+/// coordinates (cylindrical: `(ρ, α, z)`, conservative; the caller ignores
+/// the α range, which csx normalises to `[−π, π)`).
 fn metal_bbox(model: &csx::ContinuousStructure) -> BoundingBox {
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
     let mut bb = BoundingBox::EMPTY;
     for p in model.properties_of(TypeMask::of(PropertyType::Metal)) {
         for q in &p.primitives {
             if q.dimension() == 3 {
-                bb = bb.union(&q.bounding_box(model.coord_system));
+                let b = if cyl {
+                    q.bounding_box_in(CoordSystem::Cylindrical, model.coord_system)
+                } else {
+                    q.bounding_box(model.coord_system)
+                };
+                bb = bb.union(&b);
             }
         }
     }
@@ -219,6 +239,10 @@ pub(super) fn geometry(
     warnings: &mut Vec<String>,
 ) -> Geometry {
     let mut out = solid_geometry(model, pec, threads);
+    if model.grid.coord_system == CoordSystem::Cylindrical {
+        // Thin conformal sheets need a Cartesian grid.
+        return out;
+    }
     let (edges, faces) = sheets::geometry(model, snap, threads, warnings);
     for e in edges {
         out.conformal.push_sheet_edge(e);
@@ -245,15 +269,21 @@ fn solid_geometry(
     if bb.is_empty() || !(bb.min.is_finite() && bb.max.is_finite()) {
         return out;
     }
+    let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
     let ctx = Ctx {
         index: model.spatial_index(
-            CoordSystem::Cartesian,
+            model.grid.coord_system,
             TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
         ),
         lines,
     };
-    let r: [core::ops::Range<usize>; 3] =
-        core::array::from_fn(|a| range(lines[a], bb.min[a], bb.max[a]));
+    let r: [core::ops::Range<usize>; 3] = core::array::from_fn(|a| {
+        if cyl && a == 1 {
+            0..dims[1]
+        } else {
+            range(lines[a], bb.min[a], bb.max[a])
+        }
+    });
     let (rx, ry, rz) = (r[0].clone(), r[1].clone(), r[2].clone());
     let eidx = |n: [usize; 3]| (n[0] * dims[1] + n[1]) * dims[2] + n[2];
     // Node states inside the range (outside: open).
@@ -358,11 +388,13 @@ fn solid_geometry(
                     }
                     let lb = lines[b][n[b] + 1] - lines[b][n[b]];
                     let lc = lines[c][n[c] + 1] - lines[c][n[c]];
-                    let fa = face_fraction(
-                        [profile(b, n), profile(c, nb), profile(b, nc), profile(c, n)],
-                        lb,
-                        lc,
-                    );
+                    let e = [profile(b, n), profile(c, nb), profile(b, nc), profile(c, n)];
+                    // z faces of a cylindrical grid: b = ρ, c = α.
+                    let fa = if cyl && axis == Axis::Z {
+                        face_fraction_annular(e, lines[0][n[0]], lb, lc)
+                    } else {
+                        face_fraction(e, lb, lc)
+                    };
                     if fa < 1.0 {
                         out.conformal.push_face(ConformalFace {
                             axis,
@@ -377,11 +409,9 @@ fn solid_geometry(
     out
 }
 
-/// Open area fraction of a face from the profiles of its edges, in
-/// perimeter order: `[b at n, c at n+e_b, b at n+e_c, c at n]` (the last
-/// two are traversed backwards); `lb`, `lc` are the side lengths.
-fn face_fraction(e: [Profile; 4], lb: f64, lc: f64) -> f64 {
-    // Perimeter position (u, v) of edge `q` at its own parameter `t`.
+/// The open polygon of a face (see [`face_fraction`]) in local `(u, v)`
+/// coordinates.
+fn open_polygon(e: &[Profile; 4], lb: f64, lc: f64) -> Vec<(f64, f64)> {
     let pos = |q: usize, t: f64| match q {
         0 => (t * lb, 0.0),
         1 => (lb, t * lc),
@@ -391,7 +421,6 @@ fn face_fraction(e: [Profile; 4], lb: f64, lc: f64) -> f64 {
     let mut poly: Vec<(f64, f64)> = Vec::new();
     for (q, p) in e.iter().enumerate() {
         let forward = q < 2;
-        // State at the traversal start corner and transitions in order.
         let (start_metal, ts): (bool, Vec<f64>) = if forward {
             (p.start_metal, p.transitions.clone())
         } else {
@@ -406,6 +435,40 @@ fn face_fraction(e: [Profile; 4], lb: f64, lc: f64) -> f64 {
             poly.push(pos(q, t));
         }
     }
+    poly
+}
+
+/// [`face_fraction`] for a z face of a cylindrical grid, `u = ρ − ρ0`
+/// along the `lb` side and `v = α` along `lc`: the open area
+/// `∬ ρ dρ dα = ∮ ρ²/2 dα` over the polygon (straight sides in `(ρ, α)`:
+/// `Δα·(ρ_0² + ρ_0ρ_1 + ρ_1²)/6` per side) over the face area
+/// `lc·((ρ0 + lb)² − ρ0²)/2`.
+fn face_fraction_annular(e: [Profile; 4], rho0: f64, lb: f64, lc: f64) -> f64 {
+    let poly = open_polygon(&e, lb, lc);
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0;
+    for q in 0..poly.len() {
+        let (u0, v0) = poly[q];
+        let (u1, v1) = poly[(q + 1) % poly.len()];
+        let (r0, r1) = (rho0 + u0, rho0 + u1);
+        a += (v1 - v0) * (r0 * r0 + r0 * r1 + r1 * r1) / 6.0;
+    }
+    let total = lc * 0.5 * ((rho0 + lb) * (rho0 + lb) - rho0 * rho0);
+    if total <= 0.0 {
+        return 1.0;
+    }
+    let f = a.abs() / total;
+    // (Rounding of the uncut face.)
+    if f > 1.0 - 1e-12 { 1.0 } else { f.max(0.0) }
+}
+
+/// Open area fraction of a face from the profiles of its edges, in
+/// perimeter order: `[b at n, c at n+e_b, b at n+e_c, c at n]` (the last
+/// two are traversed backwards); `lb`, `lc` are the side lengths.
+fn face_fraction(e: [Profile; 4], lb: f64, lc: f64) -> f64 {
+    let poly = open_polygon(&e, lb, lc);
     if poly.len() < 3 {
         return 0.0;
     }
@@ -474,5 +537,45 @@ mod tests {
             1.0,
         );
         assert!((f - 0.6).abs() < 1e-12, "{f}");
+    }
+
+    #[test]
+    fn annular_face_polygons() {
+        let open = || p(false, &[]);
+        let metal = || p(true, &[]);
+        let (r0, lb, lc) = (2.0, 1.0, 0.3);
+        assert_eq!(
+            face_fraction_annular([open(), open(), open(), open()], r0, lb, lc),
+            1.0
+        );
+        // Metal for ρ < r0 + 0.3·lb (a cut along α): annulus share.
+        let f = face_fraction_annular(
+            [p(true, &[0.3]), open(), p(true, &[0.3]), metal()],
+            r0,
+            lb,
+            lc,
+        );
+        let (r1, r2) = (r0 + 0.3 * lb, r0 + lb);
+        let want = (r2 * r2 - r1 * r1) / (r2 * r2 - r0 * r0);
+        assert!((f - want).abs() < 1e-12, "{f} {want}");
+        // Metal for α < 0.4·lc (a radial cut): the α share, any radius.
+        let f = face_fraction_annular(
+            [metal(), p(true, &[0.4]), open(), p(true, &[0.4])],
+            r0,
+            lb,
+            lc,
+        );
+        assert!((f - 0.6).abs() < 1e-12, "{f}");
+        // On the axis (r0 = 0) a corner triangle in (ρ, α): ∫∫ρ.
+        let f = face_fraction_annular(
+            [p(false, &[0.5]), metal(), metal(), p(false, &[0.5])],
+            0.0,
+            lb,
+            lc,
+        );
+        // Open region u ≤ 0.5·lb·(1 − v/(0.5·lc)), v ≤ 0.5·lc:
+        // ∫_0^{0.5 lc} (0.5 lb (1 − 2v/lc))²/2 dv = lb² lc/48.
+        let want = (lb * lb * lc / 48.0) / (0.5 * lc * lb * lb);
+        assert!((f - want).abs() < 1e-12, "{f} {want}");
     }
 }

@@ -7,7 +7,9 @@
 //! dropped with a warning: plane-wave excitations (openEMS ignores them on
 //! cylindrical grids too) and mass-averaged SAR dumps (local SAR works,
 //! with the `ρ` metric in the cell volumes). Conducting sheets run their slab
-//! model with the cylindrical metric ([`sheet_edges`]). Dispersive poles are mapped (midpoint rule in
+//! model with the cylindrical metric ([`sheet_edges`]); conformal PEC
+//! handles solid metal (`compile::conformal`, cut z faces with the `ρ`
+//! metric), not thin conformal sheets. Dispersive poles are mapped (midpoint rule in
 //! `(ρ, α, z)`, physical edge areas; within 1e-3 of openEMS on a
 //! Drude-filled coax). Waveguide mode probes work with a `z` normal (exact
 //! sampling, see `compile/mode.rs`).
