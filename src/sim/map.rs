@@ -326,20 +326,26 @@ fn openems_nyquist(fdtd: &Fdtd, dt: f64) -> u64 {
 }
 
 /// The sample indices of a dump along each axis (openEMS snapping, see
-/// [`oe::sample_indices`]); `None` if the box is outside the mesh.
+/// [`oe::sample_indices`]); `None` if the box is outside the mesh. The box
+/// snaps to the dual lines (cell centres) for cell interpolation and for
+/// the raw values of the dual-mesh quantities H and B (`DumpMode` 0, as
+/// openEMS: a box from 6 to 12 on a 1 mm mesh dumps H at 5.5 … 12.5).
 fn dump_indices(
     grid: &crate::Grid,
     d: &crate::compile::ProbeSpec<csx::properties::DumpBox>,
     pos: DumpPosition,
+    q: DumpQuantity,
     delta_unit: f64,
 ) -> Option<[Vec<usize>; 3]> {
+    let dual = pos == DumpPosition::CellCenters
+        || (pos == DumpPosition::Native && matches!(q, DumpQuantity::H | DumpQuantity::B));
     let s = &d.settings;
     let mut out: [Vec<usize>; 3] = Default::default();
     for a in Axis::ALL {
         let i = a.index();
         let l = grid.lines(a);
         let n = l.len();
-        let cand: Vec<f64> = if pos == DumpPosition::CellCenters {
+        let cand: Vec<f64> = if dual {
             (0..n)
                 .map(|j| {
                     if j + 1 < n {
@@ -1031,7 +1037,7 @@ pub(crate) fn map_sources(
             DumpMode::NoInterpolation => DumpPosition::Native,
             _ => DumpPosition::Nodes,
         };
-        let Some(indices) = dump_indices(&grid, d, pos, src.delta_unit) else {
+        let Some(indices) = dump_indices(&grid, d, pos, q, src.delta_unit) else {
             warnings.push(format!(
                 "dump {:?}: box is outside the mesh; disabled",
                 d.name

@@ -41,8 +41,9 @@
 //! lower corner to the first line at or above the upper one (clamped to
 //! the mesh). `SubSampling` takes every `s`-th line from the first one;
 //! `OptResolution` (drawing units) walks from the first line, each time
-//! to the farthest line closer than the resolution (or the next line),
-//! up to the last.
+//! to the farthest line strictly closer than the resolution (a line at
+//! exactly that distance, up to round-off, is not; or the next line), up
+//! to the last.
 //!
 //! # Sampling in time
 //!
@@ -209,7 +210,7 @@ pub fn sample_indices(
             out.push(c);
             while c < b {
                 let mut next = c + 1;
-                while next < b && lines[next + 1] - lines[c] < r {
+                while next < b && lines[next + 1] - lines[c] < r - tol {
                     next += 1;
                 }
                 c = next;
@@ -1602,6 +1603,14 @@ mod tests {
         let ry = |res| sample_indices(&y, (0.0, 20.0), 0.0, 20.0, 1, Some(res)).unwrap();
         assert_eq!(ry(3.0), [0, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(ry(4.0), [0, 3, 4, 5, 6, 7, 8, 9]);
+        // In metres, a line exactly one resolution away is not "closer"
+        // despite the round-off of `l[k] − l[c]` (openEMS: every second
+        // line of a 1 mm mesh for 3 mm, fixture sweep_dump_optres).
+        let xm: Vec<f64> = (2..=18).map(|i| f64::from(i) * 1e-3).collect();
+        let rm =
+            |res: f64| sample_indices(&xm, (0.002, 0.018), 0.002, 0.018, 1, Some(res)).unwrap();
+        assert_eq!(rm(3e-3), (0..=16).step_by(2).collect::<Vec<_>>());
+        assert_eq!(rm(2e-3), (0..=16).collect::<Vec<_>>());
         let z = [0.0, 2.0, 4.0, 6.0];
         assert_eq!(
             sample_indices(&z, (0.0, 6.0), 0.0, 6.0, 1, Some(10.0)).unwrap(),
