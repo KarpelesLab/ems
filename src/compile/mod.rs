@@ -515,11 +515,26 @@ impl Compiled {
         if self.openems_pmc {
             pmc_half_cell(engine, &self.faces);
         }
+        // The CPML tunes σ_max to the mean refractive index of each layer,
+        // read from the coefficients: before the conformal scaling, which
+        // gives a cut edge the capacitance C/f_e (slivers would read as
+        // ε_r ~ 1/f_e and switch the absorption off, design §5.13).
+        let cpml = if self.pml.is_empty() {
+            None
+        } else {
+            Some(CpmlBoundary::new(engine, self.pml.iter().copied())?)
+        };
         if let Some(c) = &self.conformal {
-            h.conformal = Some(c.apply(engine)?);
+            h.conformal = Some(match &cpml {
+                Some(op) => {
+                    let mut c = c.clone();
+                    c.set_cpml(op);
+                    c.apply(engine)?
+                }
+                None => c.apply(engine)?,
+            });
         }
-        if !self.pml.is_empty() {
-            let op = CpmlBoundary::new(engine, self.pml.iter().copied())?;
+        if let Some(op) = cpml {
             h.cpml = Some(engine.add_operator(op));
         }
         if !self.mur.is_empty() {
@@ -1147,6 +1162,9 @@ pub fn compile(
             .property_by_name(&f.name)
             .is_none_or(|p| !matches!(&p.kind, PropertyKind::Excitation(e) if !e.enabled))
     });
+    if let Some(c) = &conformal {
+        conformal::scale_excitations(c, &node_map, &mut excitations);
+    }
     cylindrical::multigrid_edge_warnings(&grid, &node_map, &excitations, &lumped, &mut warnings);
     let (probes, dumps) = probe_specs(model, &grid, &mut warnings);
     let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);

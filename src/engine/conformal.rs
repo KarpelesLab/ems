@@ -30,44 +30,75 @@
 //! Dey–Mittra), so the engine's energy invariant (module docs of
 //! [`engine`](super)) stays exact. Edges with `f_e = 0` are PEC.
 //!
-//! # Small cut faces: merging
+//! # Small cut faces: interpolation
 //!
 //! A face that keeps a long open edge but little area has a small `f_A·L`
 //! and a local resonance far above the Courant limit of the uncut grid:
 //! plain Dey–Mittra needs a time step `∝ √f_A,min`. Raising `f_A` to a
 //! minimum cures that only for minima around 0.3–0.5, and then costs most
-//! of the accuracy gain (first-order convergence again; measured with the
-//! cylinder cavity of tests/conformal.rs). Instead, every face with
-//! `f_A <` [`ConformalOptions::merge_below`] is **merged** with an in-plane
-//! neighbour, in the spirit of the enlarged-cell technique (cell
-//! borrowing; e.g. T. Xiao, Q. H. Liu, IEEE MWCL 14(12), 2004) and of the
-//! uniformly stable conformal scheme (I. Zagorodnov, R. Schuhmann,
-//! T. Weiland, IEEE T-MTT 51(4), 2003):
+//! of the accuracy gain (first-order convergence again). Every face with
+//! `f_A <` [`ConformalOptions::merge_below`] therefore loses its own
+//! current: its current is a fixed combination of the currents of
+//! neighbouring faces, `i = P·g` with `g` the remaining (reduced)
+//! currents, and the reduced system is the Galerkin (Ritz) restriction of
+//! Dey–Mittra to that subspace, in the spirit of the uniformly stable
+//! conformal scheme (I. Zagorodnov, R. Schuhmann, T. Weiland, "A uniformly
+//! stable conformal FDTD-method in Cartesian grids", Int. J. Numer. Model.
+//! 16, 2003):
 //!
-//! * the neighbour is the one across the small face's most-open edge
-//!   (largest `f_e`, ties to the larger neighbour area); a group still
-//!   below the threshold merges again with a neighbour of any member;
-//! * a group carries **one** current `i_g` on all its faces, with
-//!   `L_g = Σ f_A·L`, `R_g = Σ f_A·R` and the circulation of the merged
-//!   contour `Σ_f K_f·u` (edges shared inside the group cancel);
-//! * Ampère reads `i_g` on every face of the group, which is the transpose
-//!   of that circulation, so the scheme stays symmetric: in matrix form
-//!   `K → P·K` with the 0/1 merge matrix `P`.
+//! ```text
+//! C·du/dt = Kᵀ·P·g,     (PᵀLP)·dg/dt + (PᵀRP)·g = −Pᵀ·K·u ,
+//! ```
 //!
-//! A merged contour has the open perimeter of its faces but at least the
-//! area of the host face, so its local resonance stays near that of an
-//! uncut face. The group update runs in the serial `post_h` hook of the
-//! [`MergedFaces`] operator; the merged faces get `da = 1`, `db = 0`, so the
-//! kernel leaves them alone, and the operator reports the group energy
-//! `½·L_g·i_g^{n−½}·i_g^{n+½}` ([`Operator::energy`], computed in
-//! `post_e`), so the invariant remains exact. A small face without an
-//! open in-plane neighbour keeps its own current with `f_A` raised to the
-//! threshold ([`ConformalReport::floored`]).
+//! symmetric, so the energy `½uᵀCu + ½gᵀ(PᵀLP)g` is conserved, and
+//! `PᵀLP ≥` the reduced faces' own inductances, so no small mass is left.
 //!
+//! * **Interpolation** (the default): the small face's `H` is the affine
+//!   interpolation, at the centroid of its open area, of three faces of
+//!   the same plane with their own current: the *host* across its most
+//!   open edge and one neighbour of the host along each in-plane axis
+//!   (preferably away from the small face; barycentric weights, at most
+//!   2.5 in magnitude). Reproducing affine fields makes the restriction
+//!   second-order accurate for every field component, including `E`
+//!   tangential to the wall (TE modes). The hosts sharing small faces are
+//!   coupled through `PᵀLP`: they form blocks solved each step with an
+//!   envelope Cholesky factor (reverse Cuthill–McKee order), cheap because
+//!   a block is a band along the wall.
+//! * **Merging** (fallback, and the scheme of faces given without a
+//!   centroid, [`ConformalPec::push_face`]): `P` is 0/1, the small face
+//!   shares the current of the neighbour across its most-open edge (a group
+//!   still below the threshold merges again), with `L_g = Σ f_A·L` and the
+//!   circulation of the merged contour, in the spirit of the enlarged-cell
+//!   technique (T. Xiao, Q. H. Liu, IEEE MWCL 14(12), 2004). Constant
+//!   extrapolation of `H` over a cell is first order: measured on TE11 of
+//!   a circular cavity, +0.58 / +0.26 % at 10 / 20 cells per radius, against
+//!   +0.076 / +0.018 % interpolated. It remains for small faces without a
+//!   valid stencil (no host, a degenerate or too extrapolating triangle) and
+//!   inside absorbing layers.
+//!
+//! The reduced currents are updated in the serial `post_h` hook of the
+//! [`MergedFaces`] operator, which writes every face they drive; those
+//! faces get `da = 1`, `db = 0`, so the kernel leaves them alone, and the
+//! operator reports `½·g^{n−½}ᵀ·(PᵀLP)·g^{n+½}` ([`Operator::energy`]), so
+//! the invariant remains exact. A small face without an open in-plane
+//! neighbour keeps its own current with `f_A` raised to the threshold
+//! ([`ConformalReport::floored`]).
+//!
+//! # Absorbing layers
+//!
+//! Inside CPML layers ([`ConformalPec::set_cpml`]) small faces are merged,
+//! not interpolated (interpolation across the graded stretching grew
+//! exponentially), and no stencil reaches into a layer. The CPML corrects
+//! only faces with a kernel `db`, so the merge groups apply its H-side
+//! correction to their members themselves (`Ψ ← b·Ψ + a·T`, circulation
+//! `+ (1/κ − 1)·T + Ψ`, with the CPML's grading); without it the field at
+//! the conductors was not absorbed (a conformal coaxial line in CPML read
+//! a 30 % impedance error from the reflection).
+
 //! # Stability check
 //!
 //! The lossless scheme is stable iff `λ_max(S) < 4` for the symmetric
-//! `S = √cb·(PK)ᵀ·(dt/L)·(PK)·√cb` (`cb·db = dt²/(L·C)`).
+//! `S = √cb·(PK)ᵀ·dt·(PᵀLP)⁻¹·(PK)·√cb` (`cb·db = dt²/(L·C)`).
 //! [`ConformalPec::apply`] estimates `s = √λ_max(S)/2` by a deterministic
 //! power iteration ([`stability_factor`]) started on the cut cells, where
 //! an unstable mode would be localised (`s < 1`: stable; an uncut grid at
@@ -95,12 +126,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::Engine;
 use super::coeffs::Coefficients;
 use super::fields::Fields;
 use super::kernel::flush;
 use super::operator::{Hooks, Operator, StepContext};
+use super::{Engine, Grid};
+use crate::Face;
 use crate::axis::Axis;
+use crate::engine::boundary::cpml::{CpmlBoundary, CpmlCoefficients};
 use crate::{Error, Result};
 
 mod sheets;
@@ -134,8 +167,9 @@ pub struct ConformalFace {
 /// Options of [`ConformalPec::apply`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConformalOptions {
-    /// Faces with an open area fraction below this are merged with a
-    /// neighbour (default 0.5; see the [module docs](self)).
+    /// Faces with an open area fraction below this lose their own current:
+    /// interpolated from neighbours, or merged with one (default 0.5; see
+    /// the [module docs](self#small-cut-faces-interpolation)).
     pub merge_below: f64,
     /// Accepted stability factor `s = √λ_max/2` (default 0.999).
     pub max_stability: f64,
@@ -156,14 +190,21 @@ impl Default for ConformalOptions {
     }
 }
 
-/// What [`ConformalPec::apply`] did.
+/// What [`ConformalPec::apply`] did. `merged` and `groups` count the
+/// merge fallback, `interpolated` and `hosts` the interpolation (see the
+/// [module docs](self#small-cut-faces-interpolation)).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConformalReport {
     /// Cut edges scaled (including fully covered ones made PEC).
     pub edges: usize,
     /// Cut faces with their own current (`db → db/f_A`).
     pub faces: usize,
-    /// Faces merged into groups (cut faces and their hosts).
+    /// Small cut faces whose current is interpolated from neighbours.
+    pub interpolated: usize,
+    /// Faces whose currents the interpolated faces read (each keeps its
+    /// own current, updated by the operator).
+    pub hosts: usize,
+    /// Faces merged into groups (small faces and their merge partners).
     pub merged: usize,
     /// Merge groups (one current each).
     pub groups: usize,
@@ -209,6 +250,17 @@ impl ConformalReport {
 pub struct ConformalPec {
     edges: Vec<ConformalEdge>,
     faces: Vec<ConformalFace>,
+    /// Open-area centroids of the faces (parallel to `faces`), in units of
+    /// the face sides: `[t_b, t_c]` in `[0, 1]²` with `(b, c) =
+    /// axis.others()`.
+    centroids: Vec<Option<[f64; 2]>>,
+    /// Cells of the absorbing layer on each face (by [`Face::index`]),
+    /// where small faces are merged, not interpolated.
+    absorbing: [usize; 6],
+    /// H-side CPML grading of the Cartesian-type layers
+    /// ([`set_cpml`](Self::set_cpml)), per cell of the layer in increasing
+    /// index order.
+    cpml_h: Vec<(Face, usize, Vec<CpmlCoefficients>)>,
     sheet_edges: Vec<SheetCutEdge>,
     sheet_faces: Vec<SheetCutFace>,
     options: ConformalOptions,
@@ -216,6 +268,14 @@ pub struct ConformalPec {
 
 /// Face key: `(normal axis index, engine node index)`.
 type Key = (usize, usize);
+
+/// Interpolation stencil of a small face: `(key, node, weight on the
+/// current)` of the faces it reads.
+type Stencil = Vec<(Key, [usize; 3], f64)>;
+
+/// A circulation term at a located field position: `(axis, (slab,
+/// offset), weight)`.
+type FlatTerm = (usize, (usize, usize), f64);
 
 impl ConformalPec {
     /// Empty geometry with default options.
@@ -240,9 +300,75 @@ impl ConformalPec {
         self.edges.push(e);
     }
 
-    /// Adds a cut face.
+    /// Adds a cut face without its open-area centroid. A small face
+    /// (`f_A <` [`ConformalOptions::merge_below`]) added this way cannot be
+    /// interpolated and is merged with a neighbour instead (first-order
+    /// accurate, see the [module docs](self#small-cut-faces-interpolation));
+    /// prefer [`push_face_with_centroid`](Self::push_face_with_centroid).
     pub fn push_face(&mut self, f: ConformalFace) {
         self.faces.push(f);
+        self.centroids.push(None);
+    }
+
+    /// Adds a cut face with the centroid of its open area, `[t_b, t_c]`
+    /// in units of the face sides along `(b, c) = f.axis.others()`
+    /// (`[0.5, 0.5]` for an uncut face; on a cylindrical grid the centroid
+    /// of the open polygon in the `(ρ, α, z)` parameters).
+    pub fn push_face_with_centroid(&mut self, f: ConformalFace, centroid: [f64; 2]) {
+        self.faces.push(f);
+        self.centroids.push(Some(centroid));
+    }
+
+    /// Declares absorbing layers (CPML): `(face, cells)`. Small faces in
+    /// them, or whose interpolation stencil would reach into them, are
+    /// merged instead of interpolated (see the
+    /// [module docs](self#absorbing-layers)).
+    pub fn set_absorbing_layers(&mut self, layers: impl IntoIterator<Item = (Face, usize)>) {
+        for (f, n) in layers {
+            self.absorbing[f.index()] = self.absorbing[f.index()].max(n);
+        }
+    }
+
+    /// Declares the CPML layers of `cpml` as absorbing layers
+    /// ([`set_absorbing_layers`](Self::set_absorbing_layers)) and keeps
+    /// their H-side grading: the faces of merge groups inside a layer get
+    /// the stretched-coordinate correction of the CPML in the group update
+    /// (the [`CpmlBoundary`] skips them, their kernel `db` being 0; see the
+    /// [module docs](self#absorbing-layers)). Call before
+    /// [`apply`](Self::apply). The cylindrical PML of a `ρ_max` face
+    /// counts as absorbing but is not applied to merged faces.
+    pub fn set_cpml(&mut self, cpml: &CpmlBoundary) {
+        for (face, params) in cpml.layers() {
+            self.set_absorbing_layers([(face, params.cells)]);
+            if cpml.is_cylindrical_rho_max() && face == Face::XMax {
+                continue;
+            }
+            if let Some(h) = cpml.h_profile(face) {
+                self.cpml_h.retain(|l| l.0 != face);
+                self.cpml_h.push((face, params.cells, h.to_vec()));
+            }
+        }
+    }
+
+    /// Whether the face normal to `a` at `p` touches an absorbing layer
+    /// (including its interface plane).
+    fn in_absorbing(&self, a: Axis, p: [usize; 3], n: [usize; 3]) -> bool {
+        Face::ALL.into_iter().any(|f| {
+            let cells = self.absorbing[f.index()];
+            if cells == 0 {
+                return false;
+            }
+            let d = f.axis().index();
+            let last = n[d] - 1;
+            let normal = d == a.index();
+            if f.is_max() {
+                // Cells last − cells .. last.
+                p[d] + usize::from(!normal) > last.saturating_sub(cells)
+                    || (normal && p[d] >= last.saturating_sub(cells))
+            } else {
+                p[d] < cells || (normal && p[d] <= cells)
+            }
+        })
     }
 
     /// The cut edges.
@@ -294,12 +420,13 @@ impl ConformalPec {
     /// [`Error::Invalid`] for fractions outside `[0, 1]` or edges / faces
     /// that do not exist on the grid.
     pub fn apply(&self, engine: &mut Engine) -> Result<ConformalReport> {
-        let n = engine.grid().nodes();
         let grid = engine.grid().clone();
+        let n = grid.nodes();
         let cyl = grid.is_cylindrical();
+        let copy_grid = grid.clone();
         let copies = move |a: Axis, p: [usize; 3]| {
             if cyl {
-                crate::engine::cylindrical::e_edge_copies(&grid, a, p)
+                crate::engine::cylindrical::e_edge_copies(&copy_grid, a, p)
             } else {
                 vec![p]
             }
@@ -337,8 +464,9 @@ impl ConformalPec {
                 .map(|p| p.construct(&co, n, dt, tau, &volume_faces, &copies));
             let empty = HashSet::new();
             let owned = built.as_ref().map_or(&empty, |b| &b.owned);
-            let (mut coeffs, groups, mut report) = self.construct(&co, n, dt, tau, owned);
-            let mut gterms = group_terms(&groups, n);
+            let (mut coeffs, merged, mut report) = self.construct(&co, &grid, dt, tau, owned);
+            let mut gterms = group_terms(&merged.groups[..merged.scalar], n);
+            let bterms = merged.block_terms(n);
             let mut extra = Vec::new();
             if let Some(b) = &built {
                 b.apply_coefficients(&mut coeffs, n);
@@ -353,7 +481,15 @@ impl ConformalPec {
             }
             let last = round + 1 == rounds || tau >= 1.0;
             if self.options.iterations > 0 {
-                let s = stability(&coeffs, n, &gterms, &extra, &seeds, self.options.iterations);
+                let s = stability(
+                    &coeffs,
+                    n,
+                    &gterms,
+                    &bterms,
+                    &extra,
+                    &seeds,
+                    self.options.iterations,
+                );
                 report.stability = s;
                 report.verified = s <= self.options.max_stability;
             }
@@ -364,8 +500,8 @@ impl ConformalPec {
                 if let Some(b) = built {
                     engine.add_operator(b.op);
                 }
-                if !groups.is_empty() {
-                    engine.add_operator(MergedFaces::new(groups));
+                if !merged.is_empty() {
+                    engine.add_operator(merged);
                 }
                 return Ok(report);
             }
@@ -384,30 +520,36 @@ impl ConformalPec {
                 return Err(Error::Invalid(format!("invalid conformal edge {e:?}")));
             }
         }
-        for f in &self.faces {
-            if !(0.0..=1.0).contains(&f.fraction) || !face_exists(f.axis, f.node, n) {
+        for (f, c) in self.faces.iter().zip(&self.centroids) {
+            let bad_centroid = c.is_some_and(|c| !c.iter().all(|t| (0.0..=1.0).contains(t)));
+            if !(0.0..=1.0).contains(&f.fraction) || !face_exists(f.axis, f.node, n) || bad_centroid
+            {
                 return Err(Error::Invalid(format!("invalid conformal face {f:?}")));
             }
         }
         sheets::validate(&self.sheet_edges, &self.sheet_faces, n, copies)
     }
 
-    /// Coefficients (edge scaling already in `co`), merge groups and
-    /// counts for merge threshold `tau`; the faces in `owned` belong to the
-    /// thin-sheet system and are left alone.
+    /// Coefficients (edge scaling already in `co`), the operator holding
+    /// the interpolated and merged faces, and counts, for merge threshold
+    /// `tau`; the faces in `owned` belong to the thin-sheet system and are
+    /// left alone.
     fn construct(
         &self,
         co: &Coefficients,
-        n: [usize; 3],
+        grid: &Grid,
         dt: f64,
         tau: f64,
         owned: &HashSet<Key>,
-    ) -> (Coefficients, Vec<Group>, ConformalReport) {
+    ) -> (Coefficients, MergedFaces, ConformalReport) {
+        let n = grid.nodes();
         let idx = |p: [usize; 3]| index(n, p);
         let mut out = co.clone();
         let mut report = ConformalReport {
             edges: self.edges.len(),
             faces: 0,
+            interpolated: 0,
+            hosts: 0,
             merged: 0,
             groups: 0,
             floored: 0,
@@ -420,17 +562,19 @@ impl ConformalPec {
             sheet_merged: 0,
             sheet_floored: 0,
         };
-        let face_frac: HashMap<Key, f64> = self
+        let face_info: HashMap<Key, (f64, Option<[f64; 2]>)> = self
             .faces
             .iter()
-            .map(|f| ((f.axis.index(), idx(f.node)), f.fraction))
+            .zip(&self.centroids)
+            .map(|(f, &c)| ((f.axis.index(), idx(f.node)), (f.fraction, c)))
             .collect();
         let edge_frac: HashMap<Key, f64> = self
             .edges
             .iter()
             .map(|e| ((e.axis.index(), idx(e.node)), e.fraction))
             .collect();
-        let fa_of = |a: Axis, p: [usize; 3]| *face_frac.get(&(a.index(), idx(p))).unwrap_or(&1.0);
+        let fa_of =
+            |a: Axis, p: [usize; 3]| face_info.get(&(a.index(), idx(p))).map_or(1.0, |x| x.0);
         let open = |a: Axis, p: [usize; 3]| co.cb(a)[idx(p)] > 0.0;
         let fe_of = |a: Axis, p: [usize; 3]| {
             if open(a, p) {
@@ -443,114 +587,403 @@ impl ConformalPec {
             !owned.contains(&(a.index(), idx(p)))
                 && face_edges(a, p).iter().any(|&(e, q)| open(e, q))
         };
+        // Inductance and resistance of the full face, from (da, db).
+        let lr_full = |a: Axis, k: usize| -> (f64, f64) {
+            let (da, db) = (co.da(a)[k] as f64, co.db(a)[k] as f64);
+            if db > 0.0 {
+                (dt * (1.0 + da) / (2.0 * db), (1.0 - da) / db)
+            } else {
+                (0.0, 0.0)
+            }
+        };
+        // Position of the (open part of the) face in its plane, in grid
+        // coordinates along (b, c).
+        let pos = |a: Axis, p: [usize; 3]| -> [f64; 2] {
+            let t = face_info
+                .get(&(a.index(), idx(p)))
+                .and_then(|x| x.1)
+                .unwrap_or([0.5, 0.5]);
+            let (b, c) = a.others();
+            let at = |d: Axis, t: f64| {
+                let l = grid.lines(d);
+                let i = p[d.index()];
+                l[i] + t * (l[i + 1] - l[i])
+            };
+            [at(b, t[0]), at(c, t[1])]
+        };
 
-        // Union-find over faces; each root keeps its member list (sorted)
-        // and total open area.
-        let mut uf = Groups::default();
         let small: Vec<&ConformalFace> = self
             .faces
             .iter()
             .filter(|f| f.fraction < tau && live(f.axis, f.node))
             .collect();
-        for f in &small {
-            uf.add((f.axis.index(), idx(f.node)), f.node, f.fraction);
-        }
-        for _pass in 0..small.len().max(1) {
-            let mut changed = false;
-            for f in &small {
-                let k0 = (f.axis.index(), idx(f.node));
-                let root = uf.find(k0);
-                // Once per group and pass: by its first member.
-                if uf.area[&root] >= tau || uf.members[&root][0] != k0 {
+
+        // Interpolation stencil of a small face (see `interpolation_weights`):
+        // its host, the in-plane neighbour across its most open edge (as for
+        // merging), and one neighbour of the host along each in-plane axis,
+        // preferably on the side away from the small face; all with their
+        // own current (f_A ≥ τ, not merged, outside absorbing layers) and
+        // reached through open edges. Returns `(key, node, weight on the
+        // current)`.
+        let stencil = |f: &ConformalFace, uf: &Groups| -> Option<Stencil> {
+            let a = f.axis;
+            let k0 = (a.index(), idx(f.node));
+            face_info.get(&k0)?.1?;
+            if self.in_absorbing(a, f.node, n) {
+                return None;
+            }
+            let free = |p: [usize; 3]| {
+                let k = (a.index(), idx(p));
+                live(a, p)
+                    && fa_of(a, p) >= tau
+                    && co.db(a)[k.1] > 0.0
+                    && !uf.contains(k)
+                    && !self.in_absorbing(a, p, n)
+            };
+            let mut host: Option<((f64, f64), [usize; 3])> = None;
+            for (e, q, nb) in in_plane_neighbours(a, f.node, n) {
+                let fe = fe_of(e, q);
+                if fe <= 0.0 || !free(nb) {
                     continue;
                 }
-                let mut best: Option<((f64, f64), Key, [usize; 3])> = None;
-                for m in uf.members[&root].clone() {
-                    let p = uf.node[&m];
-                    for (e, q, nb) in in_plane_neighbours(f.axis, p, n) {
-                        let fe = fe_of(e, q);
-                        if fe <= 0.0 || !live(f.axis, nb) {
-                            continue;
-                        }
-                        let kn = (f.axis.index(), idx(nb));
-                        if uf.contains(kn) && uf.find(kn) == root {
-                            continue;
-                        }
-                        let score = (fe, fa_of(f.axis, nb));
-                        if best.is_none_or(|b| score > b.0) {
-                            best = Some((score, kn, nb));
-                        }
+                let score = (fe, fa_of(a, nb));
+                if host.is_none_or(|h| score > h.0) {
+                    host = Some((score, nb));
+                }
+            }
+            let host = host?.1;
+            let (b, c) = a.others();
+            let scale = [
+                grid.delta(b, f.node[b.index()]),
+                grid.delta(c, f.node[c.index()]),
+            ];
+            // Offsets from the small face's centroid, in its cell sides.
+            let xs = pos(a, f.node);
+            let rel = |p: [usize; 3]| {
+                let x = pos(a, p);
+                [(x[0] - xs[0]) / scale[0], (x[1] - xs[1]) / scale[1]]
+            };
+            let dh = rel(host);
+            let mut pts = vec![(host, dh)];
+            for (q, d) in [b, c].into_iter().enumerate() {
+                let mut pick: Option<(bool, [usize; 3], [f64; 2])> = None;
+                for (e, en, nb) in in_plane_neighbours(a, host, n) {
+                    if nb[d.index()] == host[d.index()]
+                        || nb == f.node
+                        || fe_of(e, en) <= 0.0
+                        || !free(nb)
+                    {
+                        continue;
+                    }
+                    let r = rel(nb);
+                    // Away from the small face: farther from it along d.
+                    let toward = r[q].abs() < dh[q].abs();
+                    if pick.is_none_or(|p| p.0 && !toward) {
+                        pick = Some((toward, nb, r));
                     }
                 }
-                let Some(((_, fa_nb), kn, nb)) = best else {
-                    continue;
-                };
-                if !uf.contains(kn) {
-                    uf.add(kn, nb, fa_nb);
+                match pick {
+                    Some((_, nb, r)) => pts.push((nb, r)),
+                    // Without a neighbour along d the stencil is exact only
+                    // if the centroid has no offset along d.
+                    None if dh[q].abs() > 1e-9 => return None,
+                    None => {}
                 }
-                uf.union(root, kn);
-                changed = true;
             }
-            if !changed {
+            let d: Vec<[f64; 2]> = pts.iter().map(|p| p.1).collect();
+            let w = interpolation_weights(&d)?;
+            let ls = grid.dual_edge_length(a, f.node);
+            Some(
+                pts.iter()
+                    .zip(w)
+                    .map(|(p, w)| {
+                        let k = (a.index(), idx(p.0));
+                        (k, p.0, w * ls / grid.dual_edge_length(a, p.0))
+                    })
+                    .collect(),
+            )
+        };
+
+        // Small faces without a stencil are merged with a neighbour
+        // (union-find over faces; each root keeps its member list, sorted,
+        // and total open area); faces in merge groups no longer serve as
+        // stencil faces, so the stencils are rebuilt until no new face
+        // fails.
+        let mut uf = Groups::default();
+        let mut merge_seeds: Vec<&ConformalFace> = Vec::new();
+        let mut stencils: Vec<(Key, Axis, [usize; 3], Stencil)>;
+        loop {
+            stencils = Vec::new();
+            let mut failing = Vec::new();
+            for f in &small {
+                let k = (f.axis.index(), idx(f.node));
+                if uf.contains(k) {
+                    continue;
+                }
+                match stencil(f, &uf) {
+                    Some(s) => stencils.push((k, f.axis, f.node, s)),
+                    None => failing.push(*f),
+                }
+            }
+            if failing.is_empty() {
                 break;
+            }
+            for f in &failing {
+                uf.add((f.axis.index(), idx(f.node)), f.node, f.fraction);
+            }
+            merge_seeds.extend(failing);
+            for _pass in 0..merge_seeds.len().max(1) {
+                let mut changed = false;
+                for f in &merge_seeds {
+                    let k0 = (f.axis.index(), idx(f.node));
+                    let root = uf.find(k0);
+                    // Once per group and pass: by its first member.
+                    if uf.area[&root] >= tau || uf.members[&root][0] != k0 {
+                        continue;
+                    }
+                    let mut best: Option<((f64, f64), Key, [usize; 3])> = None;
+                    for m in uf.members[&root].clone() {
+                        let p = uf.node[&m];
+                        for (e, q, nb) in in_plane_neighbours(f.axis, p, n) {
+                            let fe = fe_of(e, q);
+                            if fe <= 0.0 || !live(f.axis, nb) {
+                                continue;
+                            }
+                            let kn = (f.axis.index(), idx(nb));
+                            if uf.contains(kn) && uf.find(kn) == root {
+                                continue;
+                            }
+                            let score = (fe, fa_of(f.axis, nb));
+                            if best.is_none_or(|b| score > b.0) {
+                                best = Some((score, kn, nb));
+                            }
+                        }
+                    }
+                    let Some(((_, fa_nb), kn, nb)) = best else {
+                        continue;
+                    };
+                    if !uf.contains(kn) {
+                        uf.add(kn, nb, fa_nb);
+                    }
+                    uf.union(root, kn);
+                    changed = true;
+                }
+                if !changed {
+                    break;
+                }
             }
         }
 
-        let mut grouped: HashMap<Key, ()> = HashMap::new();
+        let mut grouped: HashSet<Key> = HashSet::new();
         let mut groups = Vec::new();
+        let mut driven: Vec<Driven> = Vec::new();
+        let mut freeze = |out: &mut Coefficients, k: Key| {
+            let a = Axis::from_index(k.0).expect("axis in 0..3");
+            let (da_m, db_m) = out.h_mut(a);
+            da_m[k.1] = 1.0;
+            db_m[k.1] = 0.0;
+            grouped.insert(k);
+        };
         for (_, members) in uf.groups() {
             let (mut l, mut r) = (0.0, 0.0);
-            let mut terms: HashMap<Key, (Axis, [usize; 3], i32)> = HashMap::new();
+            let mut terms: HashMap<Key, (Axis, [usize; 3], f64)> = HashMap::new();
             let mut faces = Vec::with_capacity(members.len());
             for &k in &members {
                 let a = Axis::from_index(k.0).expect("axis in 0..3");
                 let p = uf.node[&k];
-                let (da, db) = (co.da(a)[k.1] as f64, co.db(a)[k.1] as f64);
-                if db > 0.0 {
-                    // L, R of the full face from (da, db), scaled by f_A.
-                    let fa = fa_of(a, p);
-                    l += fa * dt * (1.0 + da) / (2.0 * db);
-                    r += fa * (1.0 - da) / db;
-                }
-                for ((e, q), sign) in face_edges(a, p).into_iter().zip(SIGNS) {
-                    terms
-                        .entry((e.index(), idx(q)))
-                        .and_modify(|t| t.2 += sign)
-                        .or_insert((e, q, sign));
-                }
+                let (lf, rf) = lr_full(a, k.1);
+                let fa = fa_of(a, p);
+                l += fa * lf;
+                r += fa * rf;
+                add_terms(&mut terms, a, p, 1.0, n);
                 faces.push((a, p));
-                grouped.insert(k, ());
-                let (da_m, db_m) = out.h_mut(a);
-                da_m[k.1] = 1.0;
-                db_m[k.1] = 0.0;
+                freeze(&mut out, k);
             }
             report.merged += members.len();
-            let mut terms: Vec<(Axis, [usize; 3], f64)> = terms
-                .into_values()
-                .filter(|t| t.2 != 0)
-                .map(|t| (t.0, t.1, t.2 as f64))
-                .collect();
-            terms.sort_by_key(|t| (t.0.index(), idx(t.1)));
             if l <= 0.0 {
                 continue;
             }
-            let den = l + 0.5 * r * dt;
-            groups.push(Group {
-                faces,
-                terms,
-                da: (l - 0.5 * r * dt) / den,
-                db: dt / den,
-                l,
-                dt_over_l: dt / l,
-                i: 0.0,
-            });
+            let g = groups.len();
+            groups.push(Group::new(sorted_terms(terms, n), l, r, dt));
+            driven.extend(faces.into_iter().map(|(a, p)| (a, p, vec![(g, 1.0)])));
         }
         report.groups = groups.len();
+        // CPML stretching of the merged faces inside the layers.
+        let mut pml = Vec::new();
+        for (g, (a, p, _)) in driven
+            .iter()
+            .enumerate()
+            .map(|(q, d)| (d.2[0].0, (d.0, d.1, q)))
+        {
+            for (face, cells, h) in &self.cpml_h {
+                let d = face.axis();
+                if d == a {
+                    continue;
+                }
+                let (np, k) = (n[d.index()], p[d.index()]);
+                let pos = if face.is_max() {
+                    let inner = np - 1 - cells;
+                    (k >= inner).then(|| k - inner)
+                } else {
+                    (k < *cells).then_some(k)
+                };
+                let Some(c) = pos.and_then(|q| h.get(q)) else {
+                    continue;
+                };
+                // T_d = sign·(u_o(p + e_d) − u_o(p)), the part of the curl
+                // of face a differentiating along d (CPML module docs).
+                let (sign, other) = if d == a.next() {
+                    (1.0, a.prev())
+                } else {
+                    (-1.0, a.next())
+                };
+                let mut hi = p;
+                hi[d.index()] += 1;
+                pml.push(PmlTerm {
+                    group: g,
+                    other,
+                    nodes: [hi, p],
+                    at: None,
+                    sign,
+                    b: c.b,
+                    a: c.a,
+                    k: 1.0 / c.kappa - 1.0,
+                    psi: 0.0,
+                });
+            }
+        }
+
+        // Interpolation: every stencil face becomes a reduced current
+        // ("host") with its own circulation plus the weighted circulations
+        // of the small faces reading it (`PᵀK`), and the hosts sharing small
+        // faces form blocks with the consistent inductance `PᵀLP` (and
+        // `PᵀRP`), see `Block`.
+        struct Host {
+            axis: Axis,
+            node: [usize; 3],
+            terms: HashMap<Key, (Axis, [usize; 3], f64)>,
+        }
+        let mut hosts: std::collections::BTreeMap<Key, Host> = Default::default();
+        for (_, a, p, st) in &stencils {
+            for &(kh, ph, w) in st {
+                let h = hosts.entry(kh).or_insert_with(|| {
+                    let mut terms = HashMap::new();
+                    add_terms(&mut terms, *a, ph, 1.0, n);
+                    Host {
+                        axis: *a,
+                        node: ph,
+                        terms,
+                    }
+                });
+                add_terms(&mut h.terms, *a, *p, w, n);
+            }
+        }
+        // Host number (in key order) and the mass / loss entries.
+        let host_keys: Vec<Key> = hosts.keys().copied().collect();
+        let local: HashMap<Key, usize> =
+            host_keys.iter().enumerate().map(|(q, &k)| (k, q)).collect();
+        let mut ml: Vec<HashMap<usize, (f64, f64)>> = vec![HashMap::new(); host_keys.len()];
+        for (q, &kh) in host_keys.iter().enumerate() {
+            let h = &hosts[&kh];
+            let (lh, rh) = lr_full(h.axis, kh.1);
+            let fh = fa_of(h.axis, h.node);
+            ml[q].insert(q, (fh * lh, fh * rh));
+        }
+        let mut link = Groups::default();
+        for (q, _) in host_keys.iter().enumerate() {
+            link.add((0, q), [0; 3], 0.0);
+        }
+        for (k, a, p, st) in &stencils {
+            let (lf, rf) = lr_full(*a, k.1);
+            let fa = fa_of(*a, *p);
+            for &(kj, _, wj) in st {
+                let j = local[&kj];
+                for &(kk, _, wk) in st {
+                    let kq = local[&kk];
+                    let e = ml[j].entry(kq).or_insert((0.0, 0.0));
+                    e.0 += wj * wk * fa * lf;
+                    e.1 += wj * wk * fa * rf;
+                }
+                link.union((0, local[&st[0].0]), (0, j));
+            }
+        }
+        let first_host = groups.len();
+        for (kh, h) in hosts {
+            let q = local[&kh];
+            let g = first_host + q;
+            let (l, r) = ml[q][&q];
+            groups.push(Group::new(sorted_terms(h.terms, n), l, r, dt));
+            driven.push((h.axis, h.node, vec![(g, 1.0)]));
+            freeze(&mut out, kh);
+        }
+        // Blocks: connected hosts, components in order of their first host.
+        let mut comps: Vec<Vec<usize>> = Vec::new();
+        let mut seen_root: HashMap<Key, usize> = HashMap::new();
+        for q in 0..host_keys.len() {
+            let r = link.find((0, q));
+            let c = *seen_root.entry(r).or_insert_with(|| {
+                comps.push(Vec::new());
+                comps.len() - 1
+            });
+            comps[c].push(q);
+        }
+        let mut blocks = Vec::with_capacity(comps.len());
+        for comp in comps {
+            let adj = |q: usize| -> Vec<usize> {
+                let mut v: Vec<usize> = ml[q].keys().copied().filter(|&k| k != q).collect();
+                v.sort_unstable();
+                v
+            };
+            let order = rcm_order(&comp, adj);
+            let pos_of: HashMap<usize, usize> =
+                order.iter().enumerate().map(|(i, &q)| (q, i)).collect();
+            let rows = |f: &dyn Fn(f64, f64) -> f64| -> Vec<Vec<(usize, f64)>> {
+                order
+                    .iter()
+                    .map(|&q| {
+                        let mut row: Vec<(usize, f64)> = ml[q]
+                            .iter()
+                            .map(|(&k, &(l, r))| (pos_of[&k], f(l, r)))
+                            .collect();
+                        row.sort_by_key(|e| e.0);
+                        row
+                    })
+                    .collect()
+            };
+            let m = rows(&|l, _| l);
+            let a = rows(&|l, r| l + 0.5 * dt * r);
+            let b = rows(&|l, r| l - 0.5 * dt * r);
+            let factor = Envelope::factor(&a).expect("PᵀLP is positive definite");
+            let mfactor = if a == m {
+                None
+            } else {
+                Some(Envelope::factor(&m).expect("PᵀLP is positive definite"))
+            };
+            blocks.push(Block {
+                members: order.iter().map(|&q| first_host + q).collect(),
+                factor,
+                mfactor,
+                m,
+                b,
+                dt,
+            });
+        }
+        report.hosts = host_keys.len();
+        report.interpolated = stencils.len();
+        for (k, a, p, st) in stencils {
+            driven.push((
+                a,
+                p,
+                st.iter().map(|s| (first_host + local[&s.0], s.2)).collect(),
+            ));
+            freeze(&mut out, k);
+        }
+
         // Remaining cut faces keep their own current with db/f_A (raised
-        // to the threshold if small and not merged).
+        // to the threshold if small and neither interpolated nor merged).
         for f in &self.faces {
             let k = idx(f.node);
-            if grouped.contains_key(&(f.axis.index(), k)) || !live(f.axis, f.node) {
+            if grouped.contains(&(f.axis.index(), k)) || !live(f.axis, f.node) {
                 // (Faces owned by the sheet system are not live.)
                 continue;
             }
@@ -565,8 +998,222 @@ impl ConformalPec {
             }
             report.faces += 1;
         }
-        (out, groups, report)
+        (
+            out,
+            MergedFaces::new(groups, first_host, blocks, driven, pml),
+            report,
+        )
     }
+}
+
+/// Largest accepted interpolation weight magnitude.
+const MAX_WEIGHT: f64 = 2.5;
+
+/// Weights `w_q` with `Σ w_q = 1` and `Σ w_q·d_q = 0` for the stencil
+/// points `d_q` (offsets from the small face's centroid in units of its
+/// cell sides): the barycentric coordinates of the centroid in the
+/// triangle of three points, the linear ones on the line of two, or `[1]`
+/// for a single point. Exact for affine fields. `None` for a degenerate
+/// stencil, a centroid off the line or point of a shorter one, or a
+/// weight above [`MAX_WEIGHT`].
+fn interpolation_weights(d: &[[f64; 2]]) -> Option<Vec<f64>> {
+    // Offsets below this (in cell sides) count as on the point / line.
+    const ON: f64 = 1e-6;
+    let w = match d {
+        [p] if p[0].hypot(p[1]) < ON => vec![1.0],
+        [_] => return None,
+        [p, q] => {
+            // p + t·(q − p) = 0 on the line through both.
+            let e = [q[0] - p[0], q[1] - p[1]];
+            let len2 = e[0] * e[0] + e[1] * e[1];
+            if len2 < 1e-6 {
+                return None;
+            }
+            let t = -(p[0] * e[0] + p[1] * e[1]) / len2;
+            if (p[0] + t * e[0]).hypot(p[1] + t * e[1]) > ON {
+                return None;
+            }
+            vec![1.0 - t, t]
+        }
+        [p, q, r] => {
+            let det = (q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]);
+            if det.abs() < 1e-3 {
+                return None;
+            }
+            // Barycentric coordinates of the origin.
+            let wq = ((-p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (-p[1])) / det;
+            let wr = ((q[0] - p[0]) * (-p[1]) - (-p[0]) * (q[1] - p[1])) / det;
+            vec![1.0 - wq - wr, wq, wr]
+        }
+        _ => return None,
+    };
+    w.iter().all(|w| w.abs() <= MAX_WEIGHT).then_some(w)
+}
+
+/// Adds `w` times the curl of face `(a, p)` to a circulation.
+fn add_terms(
+    terms: &mut HashMap<Key, (Axis, [usize; 3], f64)>,
+    a: Axis,
+    p: [usize; 3],
+    w: f64,
+    n: [usize; 3],
+) {
+    for ((e, q), sign) in face_edges(a, p).into_iter().zip(SIGNS) {
+        terms
+            .entry((e.index(), index(n, q)))
+            .and_modify(|t| t.2 += w * sign as f64)
+            .or_insert((e, q, w * sign as f64));
+    }
+}
+
+/// The non-zero terms of a circulation in index order.
+fn sorted_terms(
+    terms: HashMap<Key, (Axis, [usize; 3], f64)>,
+    n: [usize; 3],
+) -> Vec<(Axis, [usize; 3], f64)> {
+    let mut t: Vec<(Axis, [usize; 3], f64)> =
+        terms.into_values().filter(|t| t.2.abs() > 1e-12).collect();
+    t.sort_by_key(|t| (t.0.index(), index(n, t.1)));
+    t
+}
+
+/// Hosts coupled by the small faces they interpolate: the update
+/// `A·g^{n+½} = B·g^{n−½} − dt·PᵀK·u^n` with `A = M + (dt/2)·R`,
+/// `B = M − (dt/2)·R`, `M = PᵀLP`, `R = PᵀRP` (rows in the block's
+/// elimination order, local indices).
+#[derive(Debug, Clone, PartialEq)]
+struct Block {
+    /// Group indices, in elimination order.
+    members: Vec<usize>,
+    /// Envelope Cholesky factor of `A`.
+    factor: Envelope,
+    /// Factor of `M` if it differs from `A` (lossy), for the stability
+    /// check.
+    mfactor: Option<Envelope>,
+    m: Vec<Vec<(usize, f64)>>,
+    b: Vec<Vec<(usize, f64)>>,
+    dt: f64,
+}
+
+impl Block {
+    /// Writes `g^{n+½}` of the members into `out` (group-indexed), from
+    /// the currents `g^{n−½}` of `groups` and the circulations `c`
+    /// (group-indexed); `x` is scratch.
+    fn advance(&self, groups: &[Group], c: &[f64], x: &mut Vec<f64>, out: &mut [f64]) {
+        x.clear();
+        x.extend(self.b.iter().zip(&self.members).map(|(row, &q)| {
+            row.iter()
+                .map(|&(k, v)| v * groups[self.members[k]].i)
+                .sum::<f64>()
+                - self.dt * c[q]
+        }));
+        self.factor.solve(x);
+        for (&q, &v) in self.members.iter().zip(x.iter()) {
+            out[q] = flush(v as f32) as f64;
+        }
+    }
+}
+
+/// Lower-triangular Cholesky factor stored by rows from the first non-zero
+/// column (envelope / profile storage; e.g. A. George, J. W. Liu,
+/// *Computer Solution of Large Sparse Positive Definite Systems*, 1981).
+#[derive(Debug, Clone, PartialEq)]
+struct Envelope {
+    first: Vec<usize>,
+    /// Row `i`: entries for columns `first[i]..=i`.
+    rows: Vec<Vec<f64>>,
+}
+
+impl Envelope {
+    /// Factors the symmetric matrix given by its rows (`(column, value)`,
+    /// both triangles); `None` if it is not positive definite.
+    fn factor(a: &[Vec<(usize, f64)>]) -> Option<Self> {
+        let n = a.len();
+        let first: Vec<usize> = a
+            .iter()
+            .enumerate()
+            .map(|(i, r)| r.iter().map(|e| e.0).min().unwrap_or(i).min(i))
+            .collect();
+        let mut rows: Vec<Vec<f64>> = (0..n).map(|i| vec![0.0; i - first[i] + 1]).collect();
+        for (i, r) in a.iter().enumerate() {
+            for &(j, v) in r {
+                if j <= i {
+                    rows[i][j - first[i]] += v;
+                }
+            }
+        }
+        for i in 0..n {
+            for j in first[i]..=i {
+                let lo = first[i].max(first[j]);
+                let mut s = rows[i][j - first[i]];
+                for k in lo..j {
+                    s -= rows[i][k - first[i]] * rows[j][k - first[j]];
+                }
+                if j == i {
+                    if s.is_nan() || s <= 0.0 {
+                        return None;
+                    }
+                    rows[i][i - first[i]] = s.sqrt();
+                } else {
+                    rows[i][j - first[i]] = s / rows[j][j - first[j]];
+                }
+            }
+        }
+        Some(Self { first, rows })
+    }
+
+    /// Solves `L·Lᵀ·x = b` in place.
+    fn solve(&self, x: &mut [f64]) {
+        let n = x.len();
+        for i in 0..n {
+            let f = self.first[i];
+            let r = &self.rows[i];
+            let mut s = x[i];
+            for j in f..i {
+                s -= r[j - f] * x[j];
+            }
+            x[i] = s / r[i - f];
+        }
+        for i in (0..n).rev() {
+            let f = self.first[i];
+            let r = &self.rows[i];
+            x[i] /= r[i - f];
+            let xi = x[i];
+            for j in f..i {
+                x[j] -= r[j - f] * xi;
+            }
+        }
+    }
+}
+
+/// Reverse Cuthill–McKee order of the nodes `comp` (one connected
+/// component) with neighbours `adj` (E. Cuthill, J. McKee, 1969; reversed
+/// as proposed by A. George), which keeps the envelope narrow; starts from
+/// the first node of minimum degree, deterministic.
+fn rcm_order(comp: &[usize], adj: impl Fn(usize) -> Vec<usize>) -> Vec<usize> {
+    let deg: HashMap<usize, usize> = comp.iter().map(|&q| (q, adj(q).len())).collect();
+    let mut done: HashSet<usize> = HashSet::new();
+    let mut order = Vec::with_capacity(comp.len());
+    let mut starts: Vec<usize> = comp.to_vec();
+    starts.sort_by_key(|q| (deg[q], *q));
+    for s in starts {
+        if !done.insert(s) {
+            continue;
+        }
+        let mut queue = std::collections::VecDeque::from([s]);
+        while let Some(q) = queue.pop_front() {
+            order.push(q);
+            let mut nb: Vec<usize> = adj(q).into_iter().filter(|k| !done.contains(k)).collect();
+            nb.sort_by_key(|k| (deg.get(k).copied().unwrap_or(0), *k));
+            for k in nb {
+                if done.insert(k) {
+                    queue.push_back(k);
+                }
+            }
+        }
+    }
+    order.reverse();
+    order
 }
 
 /// Engine flat index of node `p`.
@@ -688,57 +1335,157 @@ impl Groups {
     }
 }
 
-/// One merge group: a single current on several faces.
+/// One reduced current: a merge group or an interpolation host.
 #[derive(Debug, Clone, PartialEq)]
 struct Group {
-    faces: Vec<(Axis, [usize; 3])>,
-    /// Circulation terms `(edge axis, edge node, sign)` of the merged
-    /// contour.
+    /// Circulation terms `(edge axis, edge node, weight)`.
     terms: Vec<(Axis, [usize; 3], f64)>,
     da: f64,
     db: f64,
-    /// Group inductance \[H\].
+    /// Inductance \[H\].
     l: f64,
     /// `dt/L` (lossless update factor, for the stability check).
     dt_over_l: f64,
-    /// Current `i_g` (after the last H update).
+    /// Current (after the last H update).
     i: f64,
 }
 
-/// The merge groups of a [`ConformalPec`], registered by
-/// [`ConformalPec::apply`]: updates each group's single current after the
-/// H kernel and reports the group energy; see the
-/// [module docs](self#small-cut-faces-merging).
+impl Group {
+    fn new(terms: Vec<(Axis, [usize; 3], f64)>, l: f64, r: f64, dt: f64) -> Self {
+        let den = l + 0.5 * r * dt;
+        Self {
+            terms,
+            da: (l - 0.5 * r * dt) / den,
+            db: dt / den,
+            l,
+            dt_over_l: dt / l,
+            i: 0.0,
+        }
+    }
+}
+
+/// A face whose current the operator writes: `Σ w·i_g` over
+/// `(group, weight)`.
+type Driven = (Axis, [usize; 3], Vec<(usize, f64)>);
+
+/// The reduced currents of a [`ConformalPec`] (merge groups and
+/// interpolation hosts), registered by [`ConformalPec::apply`]: updates
+/// each after the H kernel, writes the faces they drive (members of a
+/// group, hosts, interpolated small faces) and reports their energy; see
+/// the [module docs](self#small-cut-faces-interpolation).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedFaces {
+    /// Merge groups (`..scalar`, own `da`, `db`) and hosts (in `blocks`).
     groups: Vec<Group>,
-    energy: f64,
+    scalar: usize,
+    blocks: Vec<Block>,
+    faces: Vec<Driven>,
+    /// Circulations of the groups (scratch of `post_h`; after `post_e`,
+    /// those of `u^{n+1}` for the energy look-ahead).
+    circ: Vec<f64>,
+    next: Vec<f64>,
+    scratch: Vec<f64>,
+    /// Field positions of the circulation terms (per group: axis, slab,
+    /// offset, weight) and of the driven faces, filled on first use.
+    flat_terms: Vec<Vec<FlatTerm>>,
+    flat_faces: Vec<(usize, (usize, usize))>,
+    /// CPML corrections of merged faces in absorbing layers.
+    pml: Vec<PmlTerm>,
+}
+
+/// The CPML correction of one merged face in a layer (H side, one
+/// derivative direction): `Ψ ← b·Ψ + a·T`, circulation `+= (1/κ − 1)·T + Ψ`
+/// with `T = sign·(u_other(nodes[0]) − u_other(nodes[1]))`; see
+/// [`crate::engine::boundary::cpml`].
+#[derive(Debug, Clone, PartialEq)]
+struct PmlTerm {
+    group: usize,
+    other: Axis,
+    nodes: [[usize; 3]; 2],
+    /// Located `nodes` (filled on first use).
+    at: Option<[(usize, usize); 2]>,
+    sign: f64,
+    b: f64,
+    a: f64,
+    /// `1/κ − 1`.
+    k: f64,
+    psi: f64,
 }
 
 impl MergedFaces {
-    fn new(groups: Vec<Group>) -> Self {
+    fn new(
+        groups: Vec<Group>,
+        scalar: usize,
+        blocks: Vec<Block>,
+        faces: Vec<Driven>,
+        pml: Vec<PmlTerm>,
+    ) -> Self {
+        let n = groups.len();
         Self {
+            pml,
             groups,
-            energy: 0.0,
+            scalar,
+            blocks,
+            faces,
+            circ: vec![0.0; n],
+            next: vec![0.0; n],
+            scratch: Vec::new(),
+            flat_terms: Vec::new(),
+            flat_faces: Vec::new(),
         }
     }
 
-    /// Number of groups.
+    fn locate(&mut self, f: &Fields<'_>) {
+        if self.flat_terms.len() == self.groups.len() {
+            return;
+        }
+        self.flat_terms = self
+            .groups
+            .iter()
+            .map(|g| {
+                g.terms
+                    .iter()
+                    .map(|&(a, p, w)| (a.index(), f.u.locate(p), w))
+                    .collect()
+            })
+            .collect();
+        self.flat_faces = self
+            .faces
+            .iter()
+            .map(|(a, p, _)| (a.index(), f.i.locate(*p)))
+            .collect();
+    }
+
+    fn circulations(&mut self, f: &Fields<'_>) {
+        self.locate(f);
+        for (c, t) in self.circ.iter_mut().zip(&self.flat_terms) {
+            *c = t
+                .iter()
+                .map(|&(a, at, w)| w * f.u.get_at(a, at) as f64)
+                .sum();
+        }
+    }
+
+    /// `g^{n+½}` of every reduced current from the currents and the
+    /// circulations `c`, into `out`.
+    fn advance(&self, c: &[f64], x: &mut Vec<f64>, out: &mut [f64]) {
+        for (q, g) in self.groups[..self.scalar].iter().enumerate() {
+            out[q] = flush((g.da * g.i - g.db * c[q]) as f32) as f64;
+        }
+        for b in &self.blocks {
+            b.advance(&self.groups, c, x, out);
+        }
+    }
+
+    /// Number of reduced currents.
     pub fn len(&self) -> usize {
         self.groups.len()
     }
 
-    /// Whether there are no groups.
+    /// Whether there are no reduced currents.
     pub fn is_empty(&self) -> bool {
         self.groups.is_empty()
     }
-}
-
-fn circulation(g: &Group, f: &Fields<'_>) -> f64 {
-    g.terms
-        .iter()
-        .map(|&(a, p, s)| s * f.u.get(a, p) as f64)
-        .sum()
 }
 
 impl Operator for MergedFaces {
@@ -747,28 +1494,53 @@ impl Operator for MergedFaces {
     }
 
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        for g in &mut self.groups {
-            let c = circulation(g, f);
-            g.i = flush((g.da * g.i - g.db * c) as f32) as f64;
-            for &(a, p) in &g.faces {
-                f.i.set(a, p, g.i as f32);
-            }
+        self.circulations(f);
+        for t in &mut self.pml {
+            let at = *t
+                .at
+                .get_or_insert_with(|| [f.u.locate(t.nodes[0]), f.u.locate(t.nodes[1])]);
+            let o = t.other.index();
+            let d = t.sign * (f.u.get_at(o, at[0]) as f64 - f.u.get_at(o, at[1]) as f64);
+            t.psi = t.b * t.psi + t.a * d;
+            self.circ[t.group] += t.k * d + t.psi;
+        }
+        let (mut next, mut x) = (
+            core::mem::take(&mut self.next),
+            core::mem::take(&mut self.scratch),
+        );
+        self.advance(&self.circ, &mut x, &mut next);
+        for (g, &i) in self.groups.iter_mut().zip(&next) {
+            g.i = i;
+        }
+        (self.next, self.scratch) = (next, x);
+        for ((_, _, w), &(a, at)) in self.faces.iter().zip(&self.flat_faces) {
+            let i: f64 = w.iter().map(|&(g, w)| w * self.groups[g].i).sum();
+            f.i.set_at(a, at, i as f32);
         }
     }
 
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        // ½·L·i^{n+½}·i^{n+3/2} for the energy at t = (n + 1)·dt, with the
-        // expression the next post_h will evaluate.
-        let mut w = 0.0;
-        for g in &self.groups {
-            let next = flush((g.da * g.i - g.db * circulation(g, f)) as f32) as f64;
-            w += 0.5 * g.l * g.i * next;
-        }
-        self.energy = w;
+        // For the energy at t = (n + 1)·dt (`energy`).
+        self.circulations(f);
     }
 
+    /// `½·i^{n+½}ᵀ·M·i^{n+3/2}` at `t = (n + 1)·dt`, with `i^{n+3/2}` the
+    /// expression the next `post_h` evaluates (from the circulations of
+    /// `post_e`; solved here, on demand).
     fn energy(&self) -> f64 {
-        self.energy
+        let mut next = vec![0.0; self.groups.len()];
+        self.advance(&self.circ, &mut Vec::new(), &mut next);
+        let mut w = 0.0;
+        for (g, n) in self.groups[..self.scalar].iter().zip(&next) {
+            w += 0.5 * g.l * g.i * n;
+        }
+        for b in &self.blocks {
+            for (row, &q) in b.m.iter().zip(&b.members) {
+                let mn: f64 = row.iter().map(|&(k, v)| v * next[b.members[k]]).sum();
+                w += 0.5 * self.groups[q].i * mn;
+            }
+        }
+        w
     }
 }
 
@@ -788,7 +1560,33 @@ pub fn stability_factor(
     seeds: &[(usize, usize)],
     iterations: usize,
 ) -> f64 {
-    stability(co, nodes, &[], &[], seeds, iterations)
+    stability(co, nodes, &[], &[], &[], seeds, iterations)
+}
+
+/// A block of coupled hosts for [`apply_s`]: the circulation terms of each
+/// member (as in [`GroupTerms`], local order), the factor of `M` and `dt`.
+type BlockTerms<'a> = (Vec<Vec<(usize, usize, f64)>>, &'a Envelope, f64);
+
+impl MergedFaces {
+    fn block_terms(&self, n: [usize; 3]) -> Vec<BlockTerms<'_>> {
+        self.blocks
+            .iter()
+            .map(|b| {
+                let terms = b
+                    .members
+                    .iter()
+                    .map(|&q| {
+                        self.groups[q]
+                            .terms
+                            .iter()
+                            .map(|&(a, p, s)| (a.index(), index(n, p), s))
+                            .collect()
+                    })
+                    .collect();
+                (terms, b.mfactor.as_ref().unwrap_or(&b.factor), b.dt)
+            })
+            .collect()
+    }
 }
 
 /// A merge group for [`apply_s`]: `dt/L_g` and the circulation terms
@@ -816,6 +1614,7 @@ fn stability(
     co: &Coefficients,
     n: [usize; 3],
     gterms: &[GroupTerms],
+    bterms: &[BlockTerms<'_>],
     extra: &[f64],
     seeds: &[(usize, usize)],
     iterations: usize,
@@ -862,7 +1661,7 @@ fn stability(
         for x in v.iter_mut().flatten() {
             *x /= norm;
         }
-        apply_s(n, &sq, &db, gterms, &v, &mut h, &mut w);
+        apply_s(n, &sq, &db, (gterms, bterms), &v, &mut h, &mut w);
         lambda = v
             .iter()
             .flatten()
@@ -882,7 +1681,7 @@ fn apply_s(
     n: [usize; 3],
     sq: &[Vec<f64>; 4],
     db: &[&[f32]; 3],
-    groups: &[GroupTerms],
+    (groups, blocks): (&[GroupTerms], &[BlockTerms<'_>]),
     v: &[Vec<f64>; 4],
     h: &mut [Vec<f64>; 3],
     w: &mut [Vec<f64>; 4],
@@ -930,6 +1729,18 @@ fn apply_s(
         let f = d * curl;
         for &(a, k, s) in terms {
             w[a][k] += s * f;
+        }
+    }
+    for (terms, m, dt) in blocks {
+        let mut y: Vec<f64> = terms
+            .iter()
+            .map(|t| t.iter().map(|&(a, k, s)| s * x[a][k]).sum())
+            .collect();
+        m.solve(&mut y);
+        for (t, y) in terms.iter().zip(y) {
+            for &(a, k, s) in t {
+                w[a][k] += s * dt * y;
+            }
         }
     }
     for a in 0..4 {
@@ -1040,6 +1851,113 @@ mod tests {
         let a = e.energy();
         let b = e.step_with_energy();
         assert_eq!(a, b);
+    }
+
+    /// [`sliver`] with the centroids of the open areas: the sliver (2 % of
+    /// the face along its full x edge at y = 5) and its neighbours.
+    fn sliver_with_centroids() -> ConformalPec {
+        let mut c = ConformalPec::new();
+        c.push_face_with_centroid(
+            ConformalFace {
+                axis: Axis::Z,
+                node: [5, 5, 5],
+                fraction: 0.02,
+            },
+            [0.5, 0.01],
+        );
+        for e in sliver().edges() {
+            c.push_edge(*e);
+        }
+        c
+    }
+
+    #[test]
+    fn sliver_face_is_interpolated_and_stable() {
+        let mut e = engine(0.99);
+        let r = sliver_with_centroids().apply(&mut e).unwrap();
+        assert!(r.verified, "{r:?}");
+        // Host across the full x edge (y − 1) and its neighbours along x
+        // and y (away from the sliver).
+        assert_eq!((r.interpolated, r.hosts, r.merged), (1, 3, 0), "{r:?}");
+        assert!(r.stability < 0.999 && r.stability > 0.9, "{r:?}");
+        let n = e.grid().nodes();
+        for p in [[5, 5, 5], [5, 4, 5], [5, 3, 5]] {
+            assert_eq!(e.coefficients().db(Axis::Z)[index(n, p)], 0.0, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn interpolated_scheme_conserves_energy() {
+        let mut e = engine(0.99);
+        let r = sliver_with_centroids().apply(&mut e).unwrap();
+        assert!(r.verified);
+        {
+            let mut f = e.fields_mut();
+            f.u.set(Axis::X, [5, 5, 5], 1.0);
+            f.u.set(Axis::Y, [4, 4, 4], -0.5);
+            f.u.set(Axis::Y, [3, 7, 4], 0.25);
+        }
+        e.run(1);
+        let w0 = e.energy();
+        let mut dev: f64 = 0.0;
+        for _ in 0..50 {
+            e.run(100);
+            dev = dev.max((e.energy() / w0 - 1.0).abs());
+        }
+        assert!(dev < 1e-5, "{dev}");
+        let a = e.energy();
+        let b = e.step_with_energy();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn weights_are_affine_exact() {
+        for d in [
+            vec![[0.0, 0.0]],
+            vec![[0.6, 0.0], [1.6, 0.0]],
+            vec![[0.6, 0.2], [1.6, 0.25], [0.55, -0.8]],
+        ] {
+            let w = interpolation_weights(&d).unwrap();
+            let s: f64 = w.iter().sum();
+            assert!((s - 1.0).abs() < 1e-12, "{w:?}");
+            for ax in 0..2 {
+                let m: f64 = w.iter().zip(&d).map(|(w, d)| w * d[ax]).sum();
+                assert!(m.abs() < 1e-12, "{d:?} {w:?}");
+            }
+        }
+        // Off the point or line, too far an extrapolation, degenerate
+        // triangles.
+        assert!(interpolation_weights(&[[0.7, 0.1]]).is_none());
+        assert!(interpolation_weights(&[[0.6, 0.1], [1.6, 0.0]]).is_none());
+        assert!(interpolation_weights(&[[5.0, 0.0], [6.0, 0.0]]).is_none());
+        assert!(interpolation_weights(&[[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]).is_none());
+    }
+
+    #[test]
+    fn envelope_cholesky_solves() {
+        // A banded SPD matrix with one long-range entry (ring closure).
+        let n = 7;
+        let mut a: Vec<Vec<(usize, f64)>> = (0..n).map(|i| vec![(i, 4.0 + i as f64)]).collect();
+        let mut link = |i: usize, j: usize, v: f64| {
+            a[i].push((j, v));
+            a[j].push((i, v));
+        };
+        for i in 0..n - 1 {
+            link(i, i + 1, -1.0);
+        }
+        link(0, n - 1, 0.5);
+        let f = Envelope::factor(&a).unwrap();
+        let x: Vec<f64> = (0..n).map(|i| (i as f64).sin() + 0.3).collect();
+        let mut b: Vec<f64> = a
+            .iter()
+            .map(|row| row.iter().map(|&(j, v)| v * x[j]).sum())
+            .collect();
+        f.solve(&mut b);
+        for (p, q) in b.iter().zip(&x) {
+            assert!((p - q).abs() < 1e-12, "{b:?} {x:?}");
+        }
+        // Not positive definite.
+        assert!(Envelope::factor(&[vec![(0, 1.0), (1, 2.0)], vec![(0, 2.0), (1, 1.0)]]).is_none());
     }
 
     #[test]

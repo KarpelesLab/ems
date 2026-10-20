@@ -165,6 +165,25 @@ impl FieldArrays<'_> {
         *self.get_mut(axis, node) = v;
     }
 
+    /// `(slab, offset)` of `node`, for operators that cache positions
+    /// ([`get_at`](Self::get_at), [`set_at`](Self::set_at)).
+    #[inline]
+    pub(crate) fn locate(&self, node: [usize; 3]) -> (usize, usize) {
+        self.layout.locate(node)
+    }
+
+    /// Value of component `axis` at a [`locate`](Self::locate)d position.
+    #[inline]
+    pub(crate) fn get_at(&self, axis: usize, (s, o): (usize, usize)) -> f32 {
+        self.blocks[s][axis][o]
+    }
+
+    /// Sets component `axis` at a [`locate`](Self::locate)d position.
+    #[inline]
+    pub(crate) fn set_at(&mut self, axis: usize, (s, o): (usize, usize), v: f32) {
+        self.blocks[s][axis][o] = v;
+    }
+
     /// The x-plane `i` of component `axis` (`ny·nz` values, index
     /// `j·nz + k`).
     pub fn plane(&self, axis: Axis, i: usize) -> &[f32] {

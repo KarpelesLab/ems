@@ -21,6 +21,8 @@
 //! samples are missed). Otherwise the edge is sampled at 9 points and every
 //! state change is located by bisection to `2⁻³⁰` of the edge length; the
 //! open fraction `f_e` is the total length of the open intervals.
+//! Transitions within `1e-6` of an end are moved onto it (a surface
+//! through a node otherwise leaves a `2⁻³⁰` sliver on one side).
 //!
 //! # Faces
 //!
@@ -30,8 +32,10 @@
 //! metal boundary is approximated by a straight chord (the standard
 //! conformal face construction, exact for planar surfaces and
 //! second-order accurate for smooth ones). Its area by the shoelace
-//! formula gives `f_A`. Metal intruding into a face without crossing its
-//! edges is not seen.
+//! formula gives `f_A`, its centroid the position the engine interpolates
+//! small faces at. A corner is open if either edge meeting there is open
+//! at it. Metal intruding into a face without crossing its edges is not
+//! seen.
 //!
 //! # Cylindrical grids
 //!
@@ -52,7 +56,17 @@
 //! non-PEC and listed as a [`ConformalEdge`], unless its PEC flag came
 //! from something other than solid metal (csx marks it PEC but its midpoint
 //! is not in solid metal: a sheet or wire), in which case it stays PEC.
-//! Uncut open edges keep csx's flag.
+//! Uncut open edges keep csx's flag. The edges of a face with no open
+//! area are PEC: their open part lies on the metal surface, where the
+//! tangential E vanishes (left open, such an edge is bordered by
+//! zero-area faces and held an undamped local resonance; it happens
+//! whenever the surface passes through mesh nodes, e.g. a centred
+//! circle of radius `5·h` through `(±3h, ±4h)`).
+//!
+//! # Sources
+//!
+//! E-field excitations on a cut edge are scaled by `f_e`
+//! ([`scale_excitations`]): the engine stores `u = E·l_open` there.
 
 use crate::axis::Axis;
 use crate::engine::{ConformalEdge, ConformalFace, ConformalPec};
@@ -65,6 +79,9 @@ mod sheets;
 const BISECT: usize = 30;
 /// Samples per edge (intervals) when refining.
 const SAMPLES: usize = 8;
+/// Transitions closer than this (relative) to an edge end are moved onto
+/// the end.
+const SNAP: f64 = 1e-6;
 
 /// The conformal geometry and the PEC mask changes (engine layout).
 pub(super) struct Geometry {
@@ -88,6 +105,22 @@ impl Profile {
             start_metal: metal,
             transitions: Vec::new(),
         }
+    }
+
+    /// Drops transitions within [`SNAP`] of the ends (the end takes the
+    /// state beyond the transition): a surface through a node is located
+    /// to the bisection precision, `2⁻³⁰` of the edge, on one side or the
+    /// other; snapping puts it on the node, so the faces on the metal side
+    /// have no open area at all (see [`solid_geometry`] on such faces).
+    fn snapped(mut self) -> Self {
+        while self.transitions.first().is_some_and(|&t| t < SNAP) {
+            self.transitions.remove(0);
+            self.start_metal = !self.start_metal;
+        }
+        while self.transitions.last().is_some_and(|&t| t > 1.0 - SNAP) {
+            self.transitions.pop();
+        }
+        self
     }
 
     /// Open length fraction.
@@ -167,6 +200,7 @@ impl Ctx<'_> {
             start_metal: s0,
             transitions,
         }
+        .snapped()
     }
 }
 
@@ -254,6 +288,38 @@ pub(super) fn geometry(
     out
 }
 
+/// Scales the amplitudes of E-field excitations on cut edges by their open
+/// fraction `f_e`: the engine stores `u = E·l_open` there (design §5.13),
+/// so a source of field `E` adds `E·l·f_e`, not `E·l`. Without it a soft
+/// source on a sliver edge (`f_e ≪ 1`, capacitance `C/f_e`) charges it with
+/// `1/f_e` times the intended field and energy, which its tiny `cb` then
+/// barely relaxes: a quasi-static charge that keeps the energy end
+/// criterion from ever being met.
+pub(super) fn scale_excitations(
+    c: &ConformalPec,
+    node_map: &super::NodeMap,
+    excitations: &mut [csx::discretize::ExcitationField],
+) {
+    if c.edges().is_empty() {
+        return;
+    }
+    let cut: HashMap<(Axis, [usize; 3]), f64> = c
+        .edges()
+        .iter()
+        .map(|e| ((e.axis, e.node), e.fraction))
+        .collect();
+    for ex in excitations {
+        if !ex.excitation_type.is_electric() {
+            continue;
+        }
+        for (edge, a) in &mut ex.amplitudes {
+            if let Some(f) = cut.get(&node_map.edge(*edge)) {
+                *a *= f;
+            }
+        }
+    }
+}
+
 /// The solid-metal part of [`geometry`].
 fn solid_geometry(
     model: &csx::ContinuousStructure,
@@ -331,6 +397,7 @@ fn solid_geometry(
         v
     });
     let mut profiles: HashMap<(usize, [usize; 3]), Profile> = HashMap::new();
+    let mut cut = Vec::new();
     for (a, n, sm, prof) in edges.into_iter().flatten() {
         let axis = Axis::from_index(a).expect("axis in 0..3");
         let f = prof.open_fraction();
@@ -342,7 +409,7 @@ fn solid_geometry(
                 // PEC from a sheet or wire: keep it.
             } else {
                 out.pec.push((axis, k, false));
-                out.conformal.push_edge(ConformalEdge {
+                cut.push(ConformalEdge {
                     axis,
                     node: n,
                     fraction: f,
@@ -351,6 +418,13 @@ fn solid_geometry(
         }
         profiles.insert((a, n), prof);
     }
+    // Edges of faces without open area: the face is metal up to its
+    // boundary, so an open part of such an edge lies on the metal surface,
+    // where the tangential E vanishes; they are made PEC. (Left open, an
+    // edge on the surface is bordered by faces of zero area that cannot
+    // carry its circulation: measured on a circular guide meshed through
+    // its extreme points, it held a local resonance that never decayed.)
+    let mut surface: std::collections::HashSet<(usize, [usize; 3])> = Default::default();
     // Faces.
     let profile = |a: usize, n: [usize; 3]| -> Profile {
         profiles
@@ -392,19 +466,41 @@ fn solid_geometry(
                     let e = [profile(b, n), profile(c, nb), profile(b, nc), profile(c, n)];
                     // z faces of a cylindrical grid: b = ρ, c = α.
                     let fa = if cyl && axis == Axis::Z {
-                        face_fraction_annular(e, lines[0][n[0]], lb, lc)
+                        face_fraction_annular(e.clone(), lines[0][n[0]], lb, lc)
                     } else {
-                        face_fraction(e, lb, lc)
+                        face_fraction(e.clone(), lb, lc)
                     };
+                    if fa <= 0.0 {
+                        surface.extend(keys);
+                        continue;
+                    }
                     if fa < 1.0 {
-                        out.conformal.push_face(ConformalFace {
-                            axis,
-                            node: n,
-                            fraction: fa,
-                        });
+                        let centroid = open_centroid(&e, lb, lc);
+                        out.conformal.push_face_with_centroid(
+                            ConformalFace {
+                                axis,
+                                node: n,
+                                fraction: fa,
+                            },
+                            centroid,
+                        );
                     }
                 }
             }
+        }
+    }
+    for &(a, n) in &surface {
+        let open = profiles
+            .get(&(a, n))
+            .map_or(!state(n), |p| p.open_fraction() > 0.0);
+        if open {
+            let axis = Axis::from_index(a).expect("axis in 0..3");
+            out.pec.push((axis, eidx(n), true));
+        }
+    }
+    for e in cut {
+        if !surface.contains(&(e.axis.index(), e.node)) {
+            out.conformal.push_edge(e);
         }
     }
     out
@@ -419,24 +515,60 @@ fn open_polygon(e: &[Profile; 4], lb: f64, lc: f64) -> Vec<(f64, f64)> {
         2 => (t * lb, lc),
         _ => (0.0, t * lc),
     };
-    let mut poly: Vec<(f64, f64)> = Vec::new();
-    for (q, p) in e.iter().enumerate() {
-        let forward = q < 2;
-        let (start_metal, ts): (bool, Vec<f64>) = if forward {
-            (p.start_metal, p.transitions.clone())
-        } else {
+    // Per edge in perimeter order: (metal at its start, transitions, metal
+    // at its end).
+    let walk: Vec<(bool, Vec<f64>, bool)> = e
+        .iter()
+        .enumerate()
+        .map(|(q, p)| {
             let end_metal = p.start_metal ^ (p.transitions.len() % 2 == 1);
-            (end_metal, p.transitions.iter().rev().copied().collect())
-        };
-        let t0 = if forward { 0.0 } else { 1.0 };
-        if !start_metal {
+            if q < 2 {
+                (p.start_metal, p.transitions.clone(), end_metal)
+            } else {
+                let ts = p.transitions.iter().rev().copied().collect();
+                (end_metal, ts, p.start_metal)
+            }
+        })
+        .collect();
+    let mut poly: Vec<(f64, f64)> = Vec::new();
+    for (q, (start_metal, ts, _)) in walk.iter().enumerate() {
+        let t0 = if q < 2 { 0.0 } else { 1.0 };
+        // A corner is open if either edge meeting there is open at it
+        // (they can disagree when a surface through the corner was snapped
+        // onto it on one edge only).
+        if !start_metal || !walk[(q + 3) % 4].2 {
             poly.push(pos(q, t0));
         }
-        for t in ts {
+        for &t in ts {
             poly.push(pos(q, t));
         }
     }
     poly
+}
+
+/// Centroid of the open polygon of a face (see [`face_fraction`]) in
+/// units of the sides `lb`, `lc`, `[0.5, 0.5]` if it is degenerate. On a
+/// cylindrical grid this is the centroid in the `(ρ, α)` parameters, not
+/// under the `ρ·dρ·dα` measure: the two differ by `O(h²/ρ)`, which keeps
+/// the interpolation of the engine second-order accurate.
+fn open_centroid(e: &[Profile; 4], lb: f64, lc: f64) -> [f64; 2] {
+    let poly = open_polygon(e, lb, lc);
+    let (mut a2, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for q in 0..poly.len() {
+        let (x0, y0) = poly[q];
+        let (x1, y1) = poly[(q + 1) % poly.len()];
+        let cr = x0 * y1 - x1 * y0;
+        a2 += cr;
+        cx += (x0 + x1) * cr;
+        cy += (y0 + y1) * cr;
+    }
+    if poly.len() < 3 || a2.abs() <= 1e-12 * lb * lc {
+        return [0.5, 0.5];
+    }
+    [
+        (cx / (3.0 * a2 * lb)).clamp(0.0, 1.0),
+        (cy / (3.0 * a2 * lc)).clamp(0.0, 1.0),
+    ]
 }
 
 /// [`face_fraction`] for a z face of a cylindrical grid, `u = ρ − ρ0`
@@ -538,6 +670,61 @@ mod tests {
             1.0,
         );
         assert!((f - 0.6).abs() < 1e-12, "{f}");
+    }
+
+    #[test]
+    fn snapped_surface_through_a_corner() {
+        let open = || p(false, &[]);
+        let metal = || p(true, &[]);
+        // Surface through the corner (lb, 0): edge 1 metal right after it,
+        // edge 0 open up to it.
+        let e1 = p(false, &[1e-9]).snapped();
+        assert!(e1.start_metal && e1.transitions.is_empty());
+        // The open corner is kept (edge 0 is open at it): the face is the
+        // triangle (0, 0), (lb, 0), (0, lc) with edge 2 metal and edge 3
+        // open, not the degenerate segment.
+        let f = face_fraction(
+            [
+                open(),
+                e1.clone(),
+                metal(),
+                p(false, &[1.0 - 1e-9]).snapped(),
+            ],
+            1.0,
+            1.0,
+        );
+        assert!((f - 0.5).abs() < 1e-12, "{f}");
+        // Only one open edge and no area: zero.
+        let f = face_fraction([e1, metal(), metal(), open()], 1.0, 1.0);
+        assert_eq!(f, 0.0);
+    }
+
+    #[test]
+    fn open_centroids() {
+        let open = || p(false, &[]);
+        let metal = || p(true, &[]);
+        let c = open_centroid(&[open(), open(), open(), open()], 1.0, 2.0);
+        assert!((c[0] - 0.5).abs() < 1e-12 && (c[1] - 0.5).abs() < 1e-12);
+        // Metal below v = 0.3·lc: open strip 0.3..1 along c.
+        let c = open_centroid(
+            &[metal(), p(true, &[0.3]), open(), p(true, &[0.3])],
+            2.0,
+            1.0,
+        );
+        assert!(
+            (c[0] - 0.5).abs() < 1e-12 && (c[1] - 0.65).abs() < 1e-12,
+            "{c:?}"
+        );
+        // Open corner triangle (0,0), (0.5 lb, 0), (0, 0.5 lc).
+        let c = open_centroid(
+            &[p(false, &[0.5]), metal(), metal(), p(false, &[0.5])],
+            1.0,
+            2.0,
+        );
+        assert!(
+            (c[0] - 1.0 / 6.0).abs() < 1e-12 && (c[1] - 1.0 / 6.0).abs() < 1e-12,
+            "{c:?}"
+        );
     }
 
     #[test]
