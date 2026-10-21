@@ -617,7 +617,10 @@ impl Engine {
     /// The energy measure openEMS uses for its end criteria \[J/m\],
     /// [`EnergyMeasure::OpenEms`]: `ε0·Σ (u^n)² + μ0·Σ (i^{n+½})²` over
     /// every edge, with no material or cell-size weighting and no operator
-    /// state; `i^{n+½}` is evaluated as in [`energy`](Self::energy). Not
+    /// state; `i^{n+½}` is evaluated as in [`energy`](Self::energy), plus
+    /// the corrections of slab hooks that complete the H update of some
+    /// edges themselves ([`SlabHooks::energy_openems_slab`], openEMS's
+    /// PML [`OpenEmsPml`](boundary::upml::OpenEmsPml)). Not
     /// conserved on graded meshes or in media, but it is what openEMS
     /// compares against its end criterion (established by black-box
     /// comparison, design §5.16.1).

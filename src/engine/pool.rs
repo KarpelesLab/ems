@@ -272,8 +272,33 @@ impl Shared {
         let mut planes = vec![0.0f64; self.store.layout.n[0]];
         for s in 0..self.store.layout.slabs() {
             energy_h_slab::<false>(&self.store, &rows, s, measure, &mut |gi, w| planes[gi] = w);
+            if measure == EnergyMeasure::OpenEms {
+                self.openems_correction(s, &co, &mut |gi, w| planes[gi] += w);
+            }
         }
         scale_energy(planes.iter().sum::<f64>(), dt, measure)
+    }
+
+    /// The slab hooks' corrections to openEMS's measure for slab `s`
+    /// ([`SlabHooks::energy_openems_slab`]), in registration order.
+    fn openems_correction(&self, s: usize, co: &Coefficients, add: &mut dyn FnMut(usize, f64)) {
+        let ops = read(&self.slab_ops).clone();
+        if ops.0.is_empty() {
+            return;
+        }
+        let st = &self.store;
+        let (p0, p1) = st.layout.planes(s);
+        let uo = read(&st.u[s]);
+        let un = st.u.get(s + 1).map(read);
+        let src = SlabRef {
+            n: st.layout.n,
+            planes: p0..p1,
+            block: &uo,
+            neighbour: un.as_deref().map(|b| (p1, b, 0)),
+        };
+        for op in &ops.0 {
+            op.energy_openems_slab(s, &src, co, add);
+        }
     }
 
     /// Records the energy share of slab `s` of the current state in
@@ -282,9 +307,17 @@ impl Shared {
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
         let rows = kc.view(&co);
+        let (p0, p1) = self.store.layout.planes(s);
+        let mut planes = vec![0.0f64; p1 - p0];
         energy_h_slab::<false>(&self.store, &rows, s, measure, &mut |gi, w| {
-            self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
+            planes[gi - p0] = w;
         });
+        if measure == EnergyMeasure::OpenEms {
+            self.openems_correction(s, &co, &mut |gi, w| planes[gi - p0] += w);
+        }
+        for (l, w) in planes.into_iter().enumerate() {
+            self.plane_energy[p0 + l].store(w.to_bits(), Ordering::Relaxed);
+        }
     }
 
     /// The per-plane sums of `plane_energy` in plane order, scaled for

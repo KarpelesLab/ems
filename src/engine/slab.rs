@@ -39,7 +39,7 @@ impl SlabPartition<'_> {
     }
 }
 
-/// Information passed to every [`SlabHooks`] call.
+/// Information passed to the [`SlabHooks`] half-step calls.
 #[derive(Debug, Clone, Copy)]
 pub struct SlabContext<'a> {
     /// Index of the slab (in `0..`[`SlabPartition::slabs`]).
@@ -189,4 +189,23 @@ pub trait SlabHooks: Send + Sync + 'static {
     /// at `(n + 1)·dt`, `i` (read, own planes plus the last plane of the
     /// previous slab) at `(n + ½)·dt`.
     fn post_e_slab(&self, _u: &mut SlabMut<'_>, _i: &SlabRef<'_>, _ctx: &SlabContext<'_>) {}
+
+    /// Correction \[J/m\] to openEMS's energy measure
+    /// ([`Engine::energy_openems`](super::Engine::energy_openems)) for the
+    /// dual edges of slab `slab` whose `i^{n+½}` the kernel's read-only H
+    /// look-ahead does not produce, because [`post_h_slab`](Self::post_h_slab)
+    /// completes their update: call `add(gi, w)` with the correction
+    /// `μ0·Σ (i_true² − i_kernel²)` of each x-plane `gi` (summed in a fixed
+    /// order, so the measure stays independent of the partition). `u` is
+    /// the state after `n` steps (own planes plus the first plane of the
+    /// next slab). Called on the thread of the slab, with the workers
+    /// evaluating the energy.
+    fn energy_openems_slab(
+        &self,
+        _slab: usize,
+        _u: &SlabRef<'_>,
+        _coefficients: &Coefficients,
+        _add: &mut dyn FnMut(usize, f64),
+    ) {
+    }
 }

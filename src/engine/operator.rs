@@ -8,6 +8,7 @@ use super::coeffs::Coefficients;
 use super::fields::Fields;
 use super::grid::Grid;
 use super::slab::{SlabHooks, SlabPartition};
+use crate::axis::Axis;
 
 /// A set of serial operator hooks, returned by [`Operator::hooks`] to tell
 /// the engine which ones an operator implements.
@@ -186,6 +187,24 @@ pub trait Operator: Any + Send {
     /// the coupled scheme (see [`LumpedElement`](super::LumpedElement)).
     fn energy(&self) -> f64 {
         0.0
+    }
+
+    /// Whether [`lookahead_current`](Self::lookahead_current) may return
+    /// a value (default `false`; queried once per look-ahead).
+    fn has_lookahead_currents(&self) -> bool {
+        false
+    }
+
+    /// The current `i^{N+½}` of the H dual edge along `axis` at `node`,
+    /// for an operator that completes the H update of that edge itself
+    /// (in a hook), from the kernel's value `kernel` of the H update
+    /// evaluated locally on the current state (`da·i − db·∮u`); `None`
+    /// for the edges it does not own (default). Used by the look-ahead H
+    /// samples of probes and dumps after the last step
+    /// ([`Probe::lookahead`](super::Probe::lookahead)).
+    fn lookahead_current(&self, axis: Axis, node: [usize; 3], kernel: f32) -> Option<f32> {
+        let _ = (axis, node, kernel);
+        None
     }
 }
 

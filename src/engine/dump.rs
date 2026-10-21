@@ -1672,7 +1672,10 @@ impl Operator for FreqDump {
 /// without running the step (see [`FieldSampler::sample_lookahead`]);
 /// `None` on periodic and multigrid grids and on cylindrical grids with
 /// the axis or a closed azimuth, where the H update has extra terms.
-/// Operators acting on H (CPML, H sources) are not applied.
+/// Operators that complete the H update of their edges themselves
+/// ([`Operator::lookahead_current`](super::Operator::lookahead_current):
+/// openEMS's PML) are applied; other operators acting on H (CPML, H
+/// sources) are not.
 pub(crate) fn with_lookahead_currents<R>(
     engine: &Engine,
     f: impl FnOnce(&dyn Fn(Axis, [usize; 3]) -> f64) -> R,
@@ -1688,6 +1691,12 @@ pub(crate) fn with_lookahead_currents<R>(
     let fields = engine.shared.store.lock();
     let n = g.nodes();
     let (u, i) = (&fields.u, &fields.i);
+    let owners: Vec<&dyn super::Operator> = engine
+        .ops
+        .iter()
+        .map(|r| &*r.op)
+        .filter(|o| o.has_lookahead_currents())
+        .collect();
     // u_c at p + â (0 outside the domain).
     let up = |c: Axis, mut p: [usize; 3], a: Axis| -> f32 {
         p[a.index()] += 1;
@@ -1702,7 +1711,13 @@ pub(crate) fn with_lookahead_currents<R>(
         let idx = g.index(p);
         let curl = (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p));
         let (da, db) = (co.da(c)[idx], co.db(c)[idx]);
-        f64::from(da * i.get(c, p) - db * curl)
+        let k = da * i.get(c, p) - db * curl;
+        f64::from(
+            owners
+                .iter()
+                .find_map(|o| o.lookahead_current(c, p, k))
+                .unwrap_or(k),
+        )
     };
     Some(f(&get))
 }
