@@ -128,11 +128,11 @@ pub(in crate::compile::conformal) fn geometry(
     snap: f64,
     threads: usize,
     warnings: &mut Vec<String>,
-) -> (Vec<SheetCutEdge>, Vec<SheetCutFace>) {
+) -> SheetGeometry {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
     let dims = lines.map(<[f64]>::len);
     if dims.iter().any(|&d| d < 2) {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let tau = core::f64::consts::TAU;
     let al = lines[1];
@@ -159,6 +159,7 @@ pub(in crate::compile::conformal) fn geometry(
             if s.bbox.is_empty() || !(s.bbox.min.is_finite() && s.bbox.max.is_finite()) {
                 continue;
             }
+            s.set_tolerance();
             cbox = cbox.union(&s.bbox);
             let label = format!("property {:?} primitive #{pi} (", p.name);
             warnings.retain(|w| !(w.starts_with(&label) && w.contains("sheet")));
@@ -166,7 +167,7 @@ pub(in crate::compile::conformal) fn geometry(
         }
     }
     if sheets.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     // ρ range of the Cartesian box (distance of its xy rectangle from the
     // axis), all α lines, the box's z range.
@@ -184,7 +185,7 @@ pub(in crate::compile::conformal) fn geometry(
     let param = |n: [usize; 3]| [lines[0][n[0]], lines[1][n[1]], lines[2][n[2]]];
     let eidx = |n: [usize; 3]| (n[0] * dims[1] + n[1]) * dims[2] + n[2];
     let (ry, rz) = (r[1].clone(), r[2].clone());
-    type EdgeOut = ((usize, [usize; 3]), Vec<Cross>);
+    type EdgeOut = ((usize, [usize; 3]), Vec<Cross>, bool);
     let found: Vec<Vec<EdgeOut>> = par(threads, r[0].clone(), |i| {
         let mut v = Vec::new();
         for j in ry.clone() {
@@ -201,7 +202,10 @@ pub(in crate::compile::conformal) fn geometry(
                     let mut m = n;
                     m[a] += 1;
                     let (q0, q1) = (param(n), param(m));
+                    let mut qm = q0;
+                    qm[a] = 0.5 * (q0[a] + q1[a]);
                     let mut cs = Vec::new();
+                    let mut inside = false;
                     for (s, sh) in sheets.iter().enumerate() {
                         let xs = if a == 1 {
                             // Bounding box of the arc: its chord box grown
@@ -229,17 +233,28 @@ pub(in crate::compile::conformal) fn geometry(
                         for (t, metal) in xs {
                             cs.push(Cross { t, sheet: s, metal });
                         }
+                        inside |= sh.contains_edge(cart(q0), cart(qm), cart(q1));
                     }
-                    if !cs.is_empty() {
+                    if !cs.is_empty() || inside {
                         cs.sort_by(|x, y| x.t.total_cmp(&y.t));
-                        v.push(((a, n), cs));
+                        v.push(((a, n), cs, inside));
                     }
                 }
             }
         }
         v
     });
-    let crossings: HashMap<(usize, [usize; 3]), Vec<Cross>> = found.into_iter().flatten().collect();
+    let mut in_sheet = Vec::new();
+    let crossings: HashMap<(usize, [usize; 3]), Vec<Cross>> = found
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, cs, inside)| {
+            if inside {
+                in_sheet.push(k);
+            }
+            (!cs.is_empty()).then_some((k, cs))
+        })
+        .collect();
     // The canonical copy of an edge (seam: α index 0; axis: α index 0).
     let canonical = |a: usize, n: [usize; 3]| -> bool {
         let seam = closed && a != 1 && n[1] == dims[1] - 1;
@@ -404,7 +419,27 @@ pub(in crate::compile::conformal) fn geometry(
              partition of one of them (small leaks at sheet junctions)"
         ));
     }
-    (cut_edges, out_faces)
+    // PEC mask overrides (see the Cartesian `geometry`), on every copy.
+    let others = other_primitives(model, &sheets);
+    let mut pec = Vec::new();
+    for e in &cut_edges {
+        let a = e.axis.index();
+        let (q0, mut q1) = (param(e.node), param(e.node));
+        q1[a] = lines[a][e.node[a] + 1];
+        let mut qm = q0;
+        qm[a] = 0.5 * (q0[a] + q1[a]);
+        if !covered(model, &others, cart(q0), cart(q1), Some(cart(qm))) {
+            for c in copies(a, e.node) {
+                pec.push((e.axis, eidx(c), false));
+            }
+        }
+    }
+    for &(a, n) in &in_sheet {
+        for c in copies(a, n) {
+            pec.push((Axis::from_index(a).expect("axis"), eidx(c), true));
+        }
+    }
+    (cut_edges, out_faces, pec)
 }
 
 #[cfg(test)]

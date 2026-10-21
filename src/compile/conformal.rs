@@ -274,11 +274,12 @@ pub(super) fn geometry(
     warnings: &mut Vec<String>,
 ) -> Geometry {
     let mut out = solid_geometry(model, pec, threads);
-    let (edges, faces) = if model.grid.coord_system == CoordSystem::Cylindrical {
+    let (edges, faces, pec) = if model.grid.coord_system == CoordSystem::Cylindrical {
         sheets::cylindrical_geometry(model, snap, threads, warnings)
     } else {
         sheets::geometry(model, snap, threads, warnings)
     };
+    out.pec.extend(pec);
     for e in edges {
         out.conformal.push_sheet_edge(e);
     }

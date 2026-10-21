@@ -22,6 +22,13 @@
 //! sheet's actual extent (polygon, plate rectangle, cylinder length). Cuts
 //! are kept at least `1e-6` of the edge from its ends and from each other.
 //!
+//! Exact hits do not depend on rounding: `φ` is zero within `1e-12` of the
+//! coordinate scale (a node on the sheet is on the positive side), roots
+//! within `1e-9` of an edge end are on it, edges lying in a sheet are made
+//! PEC, and cut edges are taken off csx's PEC mask, where its point query
+//! puts an edge whose midpoint is on the sheet (unless another primitive
+//! may have put it there).
+//!
 //! # Faces
 //!
 //! Every face around a cut edge is split by the sheet trace. For the
@@ -66,10 +73,14 @@ enum Surf {
 }
 
 struct Sheet<'a> {
+    prim: &'a Primitive,
     shape: Cow<'a, Shape>,
     transform: Option<&'a Transform>,
     surf: Surf,
     bbox: BoundingBox,
+    /// `|φ|` below which a point is on the surface (rounding level, see
+    /// [`Sheet::set_tolerance`]).
+    tol: f64,
 }
 
 impl Sheet<'_> {
@@ -77,8 +88,31 @@ impl Sheet<'_> {
         self.transform.map_or(p, |t| t.apply_inverse(p))
     }
 
+    /// Sets [`Sheet::tol`] from the magnitude of the coordinates around the
+    /// (Cartesian) bounding box `bbox`, world and local: a node on the sheet
+    /// then has `φ = 0` whether the transformation (or the libm behind it)
+    /// rounds it onto the surface or an ulp off, so the side of every node,
+    /// the crossings and the regions do not depend on that rounding.
+    fn set_tolerance(&mut self) {
+        let b = self.bbox;
+        let mut s = (b.max - b.min).norm();
+        for k in 0..8 {
+            let c = Vec3::new(
+                if k & 1 == 0 { b.min[0] } else { b.max[0] },
+                if k & 2 == 0 { b.min[1] } else { b.max[1] },
+                if k & 4 == 0 { b.min[2] } else { b.max[2] },
+            );
+            s = s.max(c.norm()).max(self.local(c).norm());
+        }
+        self.tol = match self.surf {
+            Surf::Plane { val, .. } => 1e-12 * (s + val.abs()),
+            Surf::Cyl { r, .. } | Surf::Sph { r, .. } => 1e-12 * (s + r) * (s + r),
+        };
+    }
+
+    /// The side function, zero within [`Sheet::tol`] of the surface.
     fn phi(&self, q: Vec3) -> f64 {
-        match self.surf {
+        let f = match self.surf {
             Surf::Plane { nrm, val } => q[nrm] - val,
             Surf::Cyl { a, ax, r, .. } => {
                 let w = q - a;
@@ -86,7 +120,20 @@ impl Sheet<'_> {
                 perp.norm_sq() - r * r
             }
             Surf::Sph { c, r } => (q - c).norm_sq() - r * r,
-        }
+        };
+        if f.abs() <= self.tol { 0.0 } else { f }
+    }
+
+    /// Whether the segment `p0 → p1` (world; `mid` its midpoint, which
+    /// differs from the chord's for α arcs) lies in the sheet: all three
+    /// points on the surface, the midpoint on the sheet's extent. csx's
+    /// point query puts such edges on the PEC mask only when they are
+    /// exactly on the sheet; they are PEC whatever the rounding.
+    fn contains_edge(&self, p0: Vec3, mid: Vec3, p1: Vec3) -> bool {
+        let q = self.local(mid);
+        [p0, p1].iter().all(|&p| self.phi(self.local(p)) == 0.0)
+            && self.phi(q) == 0.0
+            && self.on_metal(self.project(q))
     }
 
     /// Whether the surface point `q` (local) is on the sheet.
@@ -139,14 +186,28 @@ impl Sheet<'_> {
     /// Crossing parameters of the segment `p0 → p1` (world) with the
     /// unbounded surface, consistent with the end sides, and whether each
     /// crossing is on the sheet.
+    ///
+    /// The sides are those of the snapped [`Sheet::phi`]: roots within
+    /// `1e-9` of an end are moved onto it, and a crossing is reported where
+    /// the side changes (at an end when that end is on the surface and the
+    /// edge leaves to the negative side), so a sheet through a node, or
+    /// along an edge, gives the same crossings whether rounding puts it an
+    /// ulp to either side.
     fn crossings(&self, p0: Vec3, p1: Vec3) -> Vec<(f64, bool)> {
+        const END: f64 = 1e-9;
         let (q0, q1) = (self.local(p0), self.local(p1));
-        let (f0, f1) = (self.phi(q0), self.phi(q1));
-        let odd = (f0 >= 0.0) != (f1 >= 0.0);
         let d = q1 - q0;
-        let mut ts: Vec<f64> = match self.surf {
-            Surf::Plane { .. } => {
-                if odd {
+        let at = |t: f64| match t {
+            0.0 => q0,
+            1.0 => q1,
+            t => q0 + d * t,
+        };
+        let side = |t: f64| self.phi(at(t)) >= 0.0;
+        let (s0, s1) = (side(0.0), side(1.0));
+        let raw: Vec<f64> = match self.surf {
+            Surf::Plane { nrm, val } => {
+                let (f0, f1) = (q0[nrm] - val, q1[nrm] - val);
+                if f0 != f1 {
                     vec![f0 / (f0 - f1)]
                 } else {
                     Vec::new()
@@ -163,27 +224,47 @@ impl Sheet<'_> {
                 roots(d.norm_sq(), 2.0 * w.dot(d), w.norm_sq() - r * r)
             }
         };
-        ts.retain(|t| (0.0..=1.0).contains(t));
-        if (ts.len() % 2 == 1) != odd {
-            // Rounding at a grazing or end-point root: bisect the side
-            // function instead (one root if the ends differ, none else).
-            ts.clear();
-            if odd {
-                let (mut lo, mut hi) = (0.0, 1.0);
-                for _ in 0..60 {
-                    let m = 0.5 * (lo + hi);
-                    if (self.phi(q0 + d * m) >= 0.0) == (f0 >= 0.0) {
-                        lo = m;
-                    } else {
-                        hi = m;
-                    }
+        let mut ts: Vec<f64> = raw
+            .into_iter()
+            .filter(|&t| t > END && t < 1.0 - END)
+            .collect();
+        ts.sort_by(f64::total_cmp);
+        if ts.is_empty() && s0 != s1 {
+            // Rounding lost the root (or it is at an end): bisect the side
+            // function.
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for _ in 0..60 {
+                let m = 0.5 * (lo + hi);
+                if side(m) == s0 {
+                    lo = m;
+                } else {
+                    hi = m;
                 }
-                ts.push(0.5 * (lo + hi));
+            }
+            ts.push(0.5 * (lo + hi));
+        }
+        // Sides of the parts between the roots, and the changes.
+        let mut bounds = vec![0.0];
+        bounds.extend(&ts);
+        bounds.push(1.0);
+        let parts: Vec<bool> = bounds
+            .windows(2)
+            .map(|w| side(0.5 * (w[0] + w[1])))
+            .collect();
+        let mut out = Vec::new();
+        if parts[0] != s0 {
+            out.push(0.0);
+        }
+        for (k, &t) in ts.iter().enumerate() {
+            if parts[k] != parts[k + 1] {
+                out.push(t);
             }
         }
-        ts.sort_by(f64::total_cmp);
-        ts.into_iter()
-            .map(|t| (t, self.on_metal(self.project(q0 + d * t))))
+        if parts[parts.len() - 1] != s1 {
+            out.push(1.0);
+        }
+        out.into_iter()
+            .map(|t| (t, self.on_metal(self.project(at(t)))))
             .collect()
     }
 }
@@ -256,10 +337,12 @@ fn surface<'a>(prim: &'a Primitive, default_cs: CoordSystem) -> Option<Sheet<'a>
         return None;
     };
     Some(Sheet {
+        prim,
         shape,
         transform,
         surf,
         bbox: prim.bounding_box(default_cs),
+        tol: 0.0,
     })
 }
 
@@ -299,15 +382,30 @@ struct Cross {
     metal: bool,
 }
 
+/// The conformal sheets' cut edges, cut faces and PEC mask overrides
+/// `(axis, engine index, pec)`.
+pub(in crate::compile::conformal) type SheetGeometry = (
+    Vec<SheetCutEdge>,
+    Vec<SheetCutFace>,
+    Vec<(Axis, usize, bool)>,
+);
+
 /// Cut edges and faces of the conformal sheets of `model` (engine
 /// layout); `snap` is csx's relative snapping tolerance. Warnings of csx
 /// about the sheets handled here are removed from `warnings`.
+///
+/// PEC mask overrides: csx's point query puts an edge on the PEC mask when
+/// its midpoint is on a sheet (within rounding), which for an oblique
+/// sheet depends on how the transformation rounds. Edges that lie in a
+/// sheet ([`Sheet::contains_edge`]) are made PEC; cut edges, which the
+/// sheet splits instead, are cleared unless another primitive could have
+/// put them there ([`covered`]).
 pub(super) fn geometry(
     model: &csx::ContinuousStructure,
     snap: f64,
     threads: usize,
     warnings: &mut Vec<String>,
-) -> (Vec<SheetCutEdge>, Vec<SheetCutFace>) {
+) -> SheetGeometry {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
     let dims = lines.map(<[f64]>::len);
     let mut sheets = Vec::new();
@@ -323,16 +421,17 @@ pub(super) fn geometry(
             if on_mesh_plane(&b, lines, snap) {
                 continue;
             }
-            let Some(s) = surface(prim, model.coord_system) else {
+            let Some(mut s) = surface(prim, model.coord_system) else {
                 continue;
             };
+            s.set_tolerance();
             let label = format!("property {:?} primitive #{pi} (", p.name);
             warnings.retain(|w| !(w.starts_with(&label) && w.contains("sheet")));
             sheets.push(s);
         }
     }
     if sheets.is_empty() || dims.iter().any(|&d| d < 2) {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let bb = sheets
         .iter()
@@ -342,8 +441,8 @@ pub(super) fn geometry(
     let node = |n: [usize; 3]| Vec3::new(lines[0][n[0]], lines[1][n[1]], lines[2][n[2]]);
     let eidx = |n: [usize; 3]| (n[0] * dims[1] + n[1]) * dims[2] + n[2];
     let (ry, rz) = (r[1].clone(), r[2].clone());
-    // Crossings of every edge in range.
-    type EdgeOut = ((usize, [usize; 3]), Vec<Cross>);
+    // Crossings of every edge in range, and whether it lies in a sheet.
+    type EdgeOut = ((usize, [usize; 3]), Vec<Cross>, bool);
     let found: Vec<Vec<EdgeOut>> = par(threads, r[0].clone(), |i| {
         let mut v = Vec::new();
         for j in ry.clone() {
@@ -358,6 +457,7 @@ pub(super) fn geometry(
                     let (p0, p1) = (node(n), node(m));
                     let eb = BoundingBox::from_corners(p0, p1);
                     let mut cs = Vec::new();
+                    let mut inside = false;
                     for (s, sh) in sheets.iter().enumerate() {
                         let pad = 1e-9 * (p1[a] - p0[a]);
                         if !sh.bbox.expanded(pad).intersects(&eb) {
@@ -366,17 +466,28 @@ pub(super) fn geometry(
                         for (t, metal) in sh.crossings(p0, p1) {
                             cs.push(Cross { t, sheet: s, metal });
                         }
+                        inside |= sh.contains_edge(p0, (p0 + p1) * 0.5, p1);
                     }
-                    if !cs.is_empty() {
+                    if !cs.is_empty() || inside {
                         cs.sort_by(|x, y| x.t.total_cmp(&y.t));
-                        v.push(((a, n), cs));
+                        v.push(((a, n), cs, inside));
                     }
                 }
             }
         }
         v
     });
-    let crossings: HashMap<(usize, [usize; 3]), Vec<Cross>> = found.into_iter().flatten().collect();
+    let mut in_sheet = Vec::new();
+    let crossings: HashMap<(usize, [usize; 3]), Vec<Cross>> = found
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, cs, inside)| {
+            if inside {
+                in_sheet.push(k);
+            }
+            (!cs.is_empty()).then_some((k, cs))
+        })
+        .collect();
     // Cuts.
     let mut cut_edges: Vec<SheetCutEdge> = Vec::new();
     let mut cuts: HashMap<(usize, [usize; 3]), Vec<f64>> = HashMap::new();
@@ -489,7 +600,62 @@ pub(super) fn geometry(
              partition of one of them (small leaks at sheet junctions)"
         ));
     }
-    (cut_edges, out_faces)
+    let others = other_primitives(model, &sheets);
+    let mut pec = Vec::new();
+    for e in &cut_edges {
+        let a = e.axis.index();
+        let mut m = e.node;
+        m[a] += 1;
+        if !covered(model, &others, node(e.node), node(m), None) {
+            pec.push((e.axis, eidx(e.node), false));
+        }
+    }
+    for &(a, n) in &in_sheet {
+        pec.push((Axis::from_index(a).expect("axis"), eidx(n), true));
+    }
+    (cut_edges, out_faces, pec)
+}
+
+/// The primitives other than the conformal `sheets` that can put an edge
+/// on the PEC mask (metal and conducting sheets), and whether each is
+/// solid metal.
+fn other_primitives<'a>(
+    model: &'a csx::ContinuousStructure,
+    sheets: &[Sheet<'_>],
+) -> Vec<(&'a Primitive, bool)> {
+    let mask = TypeMask::of(PropertyType::Metal) | TypeMask::of(PropertyType::ConductingSheet);
+    model
+        .properties_of(mask)
+        .flat_map(|p| {
+            let metal = p.property_type() == PropertyType::Metal;
+            p.primitives
+                .iter()
+                .map(move |q| (q, metal && q.dimension() == 3))
+        })
+        .filter(|(q, _)| !sheets.iter().any(|s| core::ptr::eq(s.prim, *q)))
+        .collect()
+}
+
+/// Whether one of `others` may put the edge `p0 → p1` (Cartesian; `mid`
+/// its midpoint if not the chord's) on the PEC mask: solid metal
+/// containing the midpoint, or any other primitive near the edge
+/// (conservative: sheets, wires and conducting sheets select edges by
+/// their own rules).
+fn covered(
+    model: &csx::ContinuousStructure,
+    others: &[(&Primitive, bool)],
+    p0: Vec3,
+    p1: Vec3,
+    mid: Option<Vec3>,
+) -> bool {
+    let mid = mid.unwrap_or((p0 + p1) * 0.5);
+    let eb = BoundingBox::from_corners(p0, p1).union(&BoundingBox::from_corners(mid, mid));
+    let pad = 1e-9 * (p1 - p0).norm().max((mid - p0).norm());
+    others.iter().any(|&(q, solid)| {
+        let b = q.bounding_box_in(CoordSystem::Cartesian, model.coord_system);
+        b.expanded(pad).intersects(&eb)
+            && (!solid || q.contains_in(mid, CoordSystem::Cartesian, model.coord_system))
+    })
 }
 
 /// Perimeter coordinate in `[0, 4)` of edge `q` at its own parameter `t`
@@ -738,6 +904,119 @@ mod tests {
         assert!((r[0].fraction - 0.4).abs() < 1e-12, "{r:?}");
         assert!((r[1].fraction - 0.6).abs() < 1e-12, "{r:?}");
         assert_eq!(r[1].pieces, vec![(1, 1), (2, 0), (3, 1)]);
+    }
+
+    /// The diagonal plate `y = x` over `[0, 4]²` (x cells of 1, y cells of
+    /// 0.8: the y edges on `x = 2` have their midpoints on the plate),
+    /// rotated by `rotate_axis` or by the exact matrix.
+    fn diagonal(exact: bool) -> csx::ContinuousStructure {
+        let mut m = csx::ContinuousStructure::new();
+        m.grid.set_lines(0, (0..=4).map(f64::from)).unwrap();
+        m.grid
+            .set_lines(1, (0..=5).map(|j| 0.8 * f64::from(j)))
+            .unwrap();
+        m.grid.set_lines(2, [0.0, 1.0, 2.0]).unwrap();
+        let mut t = Transform::new();
+        if exact {
+            let r = core::f64::consts::FRAC_1_SQRT_2;
+            t.push_matrix(&csx::Mat4::from_row_major(&[
+                r, -r, 0.0, 0.0, r, r, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ]));
+        } else {
+            t.rotate_axis(2, core::f64::consts::FRAC_PI_4);
+        }
+        let plate = Primitive::new(csx::primitives::BoxShape::new(
+            [-1.0, 0.0, -1.0],
+            [4.0 * 2f64.sqrt() + 1.0, 0.0, 3.0],
+        ))
+        .with_transform(t);
+        let metal = m.add_property(csx::Property::metal("plate"));
+        m.add_primitive(metal, plate).unwrap();
+        m
+    }
+
+    #[test]
+    fn plate_through_nodes_does_not_depend_on_rounding() {
+        let run = |exact| {
+            let mut w = Vec::new();
+            let (e, f, mut p) = geometry(&diagonal(exact), 1e-6, 1, &mut w);
+            p.sort_by_key(|&(a, k, v)| (a.index(), k, v));
+            (e, f, p)
+        };
+        let (e0, f0, p0) = run(false);
+        let (e1, f1, p1) = run(true);
+        assert_eq!(p0, p1);
+        assert_eq!(e0.len(), e1.len());
+        for (a, b) in e0.iter().zip(&e1) {
+            assert_eq!(
+                (a.axis, a.node, a.cuts.len()),
+                (b.axis, b.node, b.cuts.len())
+            );
+            for (x, y) in a.cuts.iter().zip(&b.cuts) {
+                assert!((x - y).abs() < 1e-12, "{a:?} {b:?}");
+            }
+        }
+        assert_eq!(f0.len(), f1.len());
+        for (a, b) in f0.iter().zip(&f1) {
+            assert_eq!(a.regions.len(), b.regions.len(), "{a:?} {b:?}");
+            for (x, y) in a.regions.iter().zip(&b.regions) {
+                assert_eq!(x.pieces, y.pieces);
+                assert!((x.fraction - y.fraction).abs() < 1e-12);
+            }
+        }
+        let dims = [5, 6, 3];
+        let eidx = |n: [usize; 3]| (n[0] * dims[1] + n[1]) * dims[2] + n[2];
+        for k in 0..3 {
+            // The y edge from (2, 1.6) to (2, 2.4) is cut at its midpoint:
+            // not PEC, whatever csx's point query found there.
+            assert!(p0.contains(&(Axis::Y, eidx([2, 2, k]), false)), "{p0:?}");
+        }
+        for k in 0..2 {
+            // The z edges at the corner nodes lie in the plate.
+            for n in [[0, 0, k], [4, 5, k]] {
+                assert!(p0.contains(&(Axis::Z, eidx(n), true)), "{p0:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sphere_through_a_node_does_not_depend_on_rounding() {
+        // A sphere through the node (1, 1, 1), its centre moved by a few
+        // ulps: the node is on the surface (φ = 0) and the edges from it
+        // are cut at the same points.
+        let node = Vec3::new(1.0, 1.0, 1.0);
+        let crossings = |dx: f64| {
+            let c = Vec3::new(0.1 + dx, 0.2, 0.3);
+            let prim = Primitive::new(csx::primitives::SphericalShell::new(
+                [c[0], c[1], c[2]],
+                (node - Vec3::new(0.1, 0.2, 0.3)).norm(),
+                0.0,
+            ));
+            let mut sh = surface(&prim, CoordSystem::Cartesian).unwrap();
+            sh.set_tolerance();
+            assert!(sh.side(node));
+            let mut out = Vec::new();
+            for a in 0..3 {
+                for s in [-1.0, 1.0] {
+                    let mut p = node;
+                    p[a] += s;
+                    out.push(sh.crossings(node, p));
+                }
+            }
+            out
+        };
+        let base = crossings(0.0);
+        for dx in [-2.0 * f64::EPSILON * 0.1, 2.0 * f64::EPSILON * 0.1] {
+            let other = crossings(dx);
+            for (a, b) in base.iter().zip(&other) {
+                assert_eq!(a.len(), b.len(), "{base:?} {other:?}");
+                for (x, y) in a.iter().zip(b) {
+                    assert!((x.0 - y.0).abs() < 1e-9 && x.1 == y.1, "{base:?} {other:?}");
+                }
+            }
+        }
+        // Edges leaving to the inside are cut at their start.
+        assert!(base.iter().any(|c| c.len() == 1 && c[0].0 < 1e-9));
     }
 
     #[test]
