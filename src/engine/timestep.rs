@@ -30,27 +30,38 @@
 //!
 //! # Method 3 (Rennings, the openEMS default)
 //!
-//! For every E edge along `a` at node `n` and its two transverse axes
-//! `b`, `c` (with `n ± e_b` the neighbouring nodes),
+//! For every E edge along `a` at node `n` and each of its two transverse
+//! axes `b` (with `c` the third axis and `n ± e_b` the neighbouring
+//! nodes),
 //!
 //! ```text
-//! T_b   = ¼·[ 1/L_c(n−e_b)·(1/C_a(n−e_b) + 1/C_a(n)) + 1/L_c(n)·(1/C_a(n) + 1/C_a(n+e_b)) ]
-//! O_b   = ½·(1/L_c(n−e_b) + 1/L_c(n)) · ½·(1/C_b(n) + 1/C_b(n+e_a))
-//! O⁰_b  =      1/L_c(n)               · ½·(1/C_b(n) + 1/C_b(n+e_a))
-//! ω²    = T_b + T_c + O_b + O_c − O⁰_b'          (b' the lower of b, c)
+//! T_b = ¼·[ 1/L'_c(n−e_b)·(1/C'_a(n−e_b) + 1/C'_a(n)) + 1/L_c(n)·(1/C_a(n) + 1/C_a(n+e_b)) ]
+//! Q_b = ½·(1/C_b(n) + 1/C_b(n+e_a))
+//! O_b = ½·(1/L_c(n−e_b) + 1/L_c(n))·Q_b      D_b = ½·(1/L_c(n−e_b) − 1/L_c(n))·Q_b
+//! ω²  = T_b + T_c + max(O_c + |D_b|, O_b + |D_c|)
 //! ```
 //!
-//! and `dt = 1/max ω`. On a uniform mesh this is exactly the Courant
-//! limit `1/(c·√(Σ 1/Δ²))`. The criterion is not symmetric: a cell that
-//! grows *upwards* (`Δ_{n} > Δ_{n−1}`) lowers the time step, the mirrored
-//! mesh does not. openEMS evaluates it on every node index including the
-//! last one of each axis, where the missing cells and dual lengths are
-//! those of the last cell (and the dual length at the first node is the
-//! full first cell, not a half cell); ems does the same. With this rule
-//! the formula reproduces openEMS to its printed 6 digits on meshes whose
-//! finest cells are not at the upper end of two axes at once; there,
-//! openEMS's time step can be up to a few percent smaller (the boundary
-//! terms of openEMS are not fully reproduced, see DESIGN §5.4).
+//! and `dt = 1/max ω`. `L'`, `C'` are `L`, `C` with the material of
+//! the (dual) edge one node lower along `c` (the geometry stays that of the
+//! edge) when `(a, b)` runs against the cyclic order (`b = a − 1`: (x, z),
+//! (y, x), (z, y)); otherwise `L' = L`, `C' = C`. On a uniform mesh
+//! `T_b = c²/Δ_b²` and the `max` term is `c²/Δ_a²`, the exact Courant limit
+//! `1/(c·√(Σ 1/Δ²))`. `D_b` measures how the cells along `b` change at
+//! the node; the criterion is not symmetric: a cell that grows *upwards*
+//! (`Δ_{n} > Δ_{n−1}`) lowers the time step more than the mirrored mesh.
+//! openEMS evaluates it on every node index including the last one of each
+//! axis, where the missing cells and dual lengths are those of the last
+//! cell (and the dual length at the first node is the full first cell, not
+//! a half cell); ems does the same.
+//!
+//! This reproduces openEMS to its printed 6 digits on ~1 600 random
+//! meshes (graded along one, two or three axes, cell ratios up to 30;
+//! vacuum, grid-aligned and off-grid boxes and layers of ε, μ, κ and
+//! anisotropic media; DESIGN §5.16.1). The `|D|` terms and the shifted
+//! materials were fitted from those runs: the earlier form
+//! `T_b + T_c + O_b + O_c − L_c(n)·Q_b` (lower `b`, unshifted) agrees
+//! where the cells grow along the transverse axes and was up to 8 % off
+//! elsewhere.
 //!
 //! Materials enter through `εr` of the E edges and `μr` of the H dual
 //! edges (positions outside the mesh use the nearest edge's). PEC edges
@@ -153,19 +164,31 @@ impl Geo {
 
 /// `1/C` \[1/F\] of the E edge along `a` at `n` (clamped).
 fn inv_c(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3]) -> f64 {
+    inv_c_mat_at(g, m, a, n, n)
+}
+
+/// [`inv_c`] with the geometry of the edge at `n` but the permittivity of
+/// the edge (along `a`) at `mat` (both clamped).
+fn inv_c_mat_at(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3], mat: [isize; 3]) -> f64 {
     let (b, c) = ((a + 1) % 3, (a + 2) % 3);
     let mut along = [false; 3];
     along[a] = true;
-    let eps = m.eps_r(Axis::ALL[a])[g.idx(n, along)];
+    let eps = m.eps_r(Axis::ALL[a])[g.idx(mat, along)];
     g.p(a, n[a]) / (EPS0 * eps * g.d(b, n[b]) * g.d(c, n[c]))
 }
 
 /// `1/L` \[1/H\] of the H dual edge along `a` at `n` (clamped).
 fn inv_l(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3]) -> f64 {
+    inv_l_mat_at(g, m, a, n, n)
+}
+
+/// [`inv_l`] with the geometry of the dual edge at `n` but the
+/// permeability of the dual edge (along `a`) at `mat` (both clamped).
+fn inv_l_mat_at(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3], mat: [isize; 3]) -> f64 {
     let (b, c) = ((a + 1) % 3, (a + 2) % 3);
     let mut across = [true; 3];
     across[a] = false;
-    let mu = m.mu_r(Axis::ALL[a])[g.idx(n, across)];
+    let mu = m.mu_r(Axis::ALL[a])[g.idx(mat, across)];
     g.d(a, n[a]) / (MU0 * mu * g.p(b, n[b]) * g.p(c, n[c]))
 }
 
@@ -291,25 +314,29 @@ fn rennings(grid: &Grid, m: &EdgeMaterials) -> f64 {
     let mut w2max = 0.0f64;
     for a in 0..3 {
         for n in nodes_iter(g.n) {
-            let mut w2 = 0.0;
-            let mut own0 = None;
-            for b in 0..3 {
-                if b == a {
-                    continue;
-                }
+            // Per transverse axis b: T_b, O_b and D_b of the module docs.
+            let mut tod = [(0.0, 0.0, 0.0); 2];
+            for (slot, b) in [(a + 1) % 3, (a + 2) % 3].into_iter().enumerate() {
                 let c = 3 - a - b;
                 let lm = tb.l(c, shift(n, b, -1));
                 let l0 = tb.l(c, n);
-                let t = 0.25
-                    * (lm * (tb.c(a, shift(n, b, -1)) + tb.c(a, n))
-                        + l0 * (tb.c(a, n) + tb.c(a, shift(n, b, 1))));
+                // The face below along b: for (a, b) against the cyclic
+                // order its dual edge and its two E edges take their
+                // materials one node lower along c.
+                let t_below = if (b + 3 - a) % 3 == 2 {
+                    let f = shift(n, b, -1);
+                    inv_l_mat_at(&g, m, c, f, shift(f, c, -1))
+                        * (inv_c_mat_at(&g, m, a, f, shift(f, c, -1))
+                            + inv_c_mat_at(&g, m, a, n, shift(n, c, -1)))
+                } else {
+                    lm * (tb.c(a, shift(n, b, -1)) + tb.c(a, n))
+                };
+                let t = 0.25 * (t_below + l0 * (tb.c(a, n) + tb.c(a, shift(n, b, 1))));
                 let q = 0.5 * (tb.c(b, n) + tb.c(b, shift(n, a, 1)));
-                w2 += t + 0.5 * (lm + l0) * q;
-                if own0.is_none() {
-                    own0 = Some(l0 * q);
-                }
+                tod[slot] = (t, 0.5 * (lm + l0) * q, 0.5 * (lm - l0) * q);
             }
-            w2 -= own0.unwrap_or(0.0);
+            let [(t0, o0, d0), (t1, o1, d1)] = tod;
+            let w2 = t0 + t1 + (o1 + d0.abs()).max(o0 + d1.abs());
             w2max = w2max.max(w2);
         }
     }
@@ -398,6 +425,50 @@ mod tests {
             TimestepMethod::Rennings,
         );
         assert!((mirrored / 1.92583e-12 - 1.0).abs() < 3e-6);
+    }
+
+    #[test]
+    fn doubly_graded_meshes_match_openems() {
+        let dt3 = |c: [&[f64]; 3]| {
+            let g = Grid::new(c.map(lines)).unwrap();
+            openems_timestep(&g, &EdgeMaterials::vacuum(&g), TimestepMethod::Rennings)
+        };
+        // A fine x cell next to cells shrinking along y (the first y cell
+        // is larger): |D_y| (the earlier rule gave 1.3361e-12, 4.9 % more).
+        let got = dt3([&[1., 0.35, 1.], &[2., 1., 1., 1.], &[1., 1., 1., 1.]]);
+        assert!((got / 1.27416e-12 - 1.0).abs() < 5e-6, "{got:e}");
+        // Cells shrinking along both transverse axes at once.
+        let got = dt3([
+            &[1.11, 0.84, 0.65, 0.31, 0.8],
+            &[1.96, 0.46, 0.55, 0.83, 1.42],
+            &[1.68, 1.6, 1.41, 1.37, 1.47],
+        ]);
+        assert!((got / 1.00192e-12 - 1.0).abs() < 5e-6, "{got:e}");
+    }
+
+    #[test]
+    fn layered_media_match_openems() {
+        // y edges at (1, 0, 2), one node above an ε / μ layer in z cell
+        // 0: the face below along x takes its materials one node lower.
+        let g = Grid::new([
+            lines(&[1., 2., 1.]),
+            lines(&[0.3, 1., 1.]),
+            lines(&[1., 1., 2., 1.]),
+        ])
+        .unwrap();
+        let rennings = |layer: crate::engine::Material| {
+            let mut cells = crate::engine::CellMaterials::vacuum(&g);
+            cells.fill_box([0..3, 0..3, 0..1], layer);
+            let m = EdgeMaterials::from_cells(&g, &cells).unwrap();
+            openems_timestep(&g, &m, TimestepMethod::Rennings)
+        };
+        let vacuum = rennings(crate::engine::Material::VACUUM);
+        assert!((vacuum / 7.99521e-13 - 1.0).abs() < 5e-6, "{vacuum:e}");
+        // openEMS: 8.08869e-13 with ε_r = 4, 8.03134e-13 with μ_r = 4.
+        let eps = rennings(crate::engine::Material::dielectric(4.0));
+        assert!((eps / 8.08869e-13 - 1.0).abs() < 5e-6, "{eps:e}");
+        let mu = rennings(crate::engine::Material::VACUUM.with_mu_r(4.0));
+        assert!((mu / 8.03134e-13 - 1.0).abs() < 5e-6, "{mu:e}");
     }
 
     #[test]

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   2.4 GHz probe-fed rectangular patch antenna on 1.6 mm FR4 (eps_r 4.3,
-  tan d 0.02 as Kappa), 50 Ohm lumped port, PML_8, NF2FF box dumps. Fixture: openEMS's time step fixed.
+  tan d 0.02 as Kappa), 50 Ohm lumped port, PML_8, NF2FF box dumps.
   Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
 -->
 <openEMS>
-  <FDTD TimeStep="1.26758e-12" NumberOfTimesteps="5000" endCriteria="1e-30" f_max="3.4e9">
+  <FDTD NumberOfTimesteps="5000" endCriteria="1e-30" f_max="3.4e9">
     <Excitation Type="0" f0="2.4e9" fc="1e9"/>
     <BoundaryCond xmin="PML_8" xmax="PML_8" ymin="PML_8" ymax="PML_8" zmin="PML_8" zmax="PML_8"/>
   </FDTD>

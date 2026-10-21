@@ -3,12 +3,12 @@
   Microstrip open-stub low-pass filter (eps_r 3.38, h 0.813 mm, 50 Ohm
   strip 1.85 mm), soft E feed, three-voltage/two-current probe ports on
   both sides, Mur on every open face (fixture: instead of PML on the
-  line ends), ground as PEC zmin; openEMS's time step fixed (ems's Rennings
-  rule gives 2 % less on this layered, doubly graded mesh).
+  line ends), ground as PEC zmin; openEMS's own (Rennings) time step on
+  this layered, doubly graded mesh.
   Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
 -->
 <openEMS>
-  <FDTD TimeStep="7.4648e-13" NumberOfTimesteps="2500" endCriteria="1e-30" f_max="10e9" OverSampling="6">
+  <FDTD NumberOfTimesteps="2500" endCriteria="1e-30" f_max="10e9" OverSampling="6">
     <Excitation Type="0" f0="5e9" fc="5e9"/>
     <BoundaryCond xmin="MUR" xmax="MUR" ymin="MUR" ymax="MUR" zmin="PEC" zmax="MUR"/>
   </FDTD>

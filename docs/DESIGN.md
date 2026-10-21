@@ -2664,18 +2664,42 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     `Δ/(2c)`, 0.866 of the CFL limit. Any other unknown id behaves as 1.
   - The default (`3`, reported as "Rennings_2", asymmetric in the mesh
     grading) gives the exact CFL value on uniform vacuum meshes of any
-    aspect ratio and `dt ∝ √ε` in a filled medium. The simple per-node
-    rule `max_h (1/L_h)·½(1/C_e1 + 1/C_e2)` matches layered media only
-    (2–17 % off on graded meshes and 3-D inclusions); the formula in
-    `engine::timestep` is exact on ~120 random meshes except where the
-    finest cells sit at the upper end of two axes (openEMS up to ~7 %
-    smaller there). In layered media on meshes graded along two axes it is
-    not exact either: openEMS's step is 2 % larger on the `e2e_msl_filter`
-    mesh (substrate under fine y and z cells; uniform y or z, or no
-    substrate: exact) and 0.5 % on `e2e_patch`, at the same limiting edge
-    (an air edge two cells above the substrate). Taking the interface
-    edges' `ε` at their node (the substrate's) instead of the average
-    closes 80 % of the gap; not resolved, the fixtures fix `TimeStep`.
+    aspect ratio and `dt ∝ √ε` in a filled medium. It is a per-edge rule
+    (`engine::timestep`): for the E edge along `a` at node `n` and its
+    transverse axes `b`, `c`,
+    `ω² = T_b + T_c + max(O_c + |D_b|, O_b + |D_c|)`, where `T_b` couples
+    the edge to its two faces along `b` (`¼·Σ_f (1/L_f)·(1/C_a + 1/C_a')`
+    over the face's two `a` edges), `O_b ± D_b = (1/L_c(n−e_b) or
+    1/L_c(n))·½(1/C_b(n) + 1/C_b(n+e_a))` (the `b` edges at both ends of
+    the edge, with the dual edge below resp. at the node), and, when
+    `(a, b)` runs against the cyclic order, the face below along `b`
+    takes its `ε` and `μ` one node lower along `c` (geometry unchanged).
+    Fitted from black-box runs in three steps (wave 13): meshes with a
+    fine x cell next to y cells that shrink upwards isolated the `|D|`
+    term (openEMS's `O` factor was `(3 − r)/2` instead of `(1 + r)/2` for
+    a cell ratio `r < 1`; cells shrinking along both transverse axes fixed
+    the `max`); then the coefficient of `1 − 1/ε_avg` (resp. `1 − 1/μ`)
+    in `1/dt²` for layers below an air edge (it is linear, and it
+    matched the face below along `x` of a `y` edge one node lower)
+    located the shifted materials. Agreement to the printed 6 digits:
+    ~1 000 random vacuum meshes graded along one to three axes (cell
+    ratios up to 30; the earlier form, `O_b + O_c − L_c(n)·Q_b` for the
+    lower `b`, was off on 73 of 420 doubly graded ones, by up to 8 %,
+    where cells shrink along a transverse axis), ~240 meshes with
+    grid-aligned ε and μ layers and boxes, and 560 runs of the `ems`
+    binary against openEMS with grid-aligned and off-grid ε, μ, κ,
+    anisotropic and metal boxes. Full precision (the `time` attribute of
+    HDF5 dumps): bit-identical in 3 of 4 random vacuum meshes, the others
+    1e-7 apart (openEMS single-precision round-off somewhere; not
+    reproduced). The `e2e_patch` and `e2e_msl_filter` fixtures (were 0.5
+    and 2 % off) now run on openEMS's own time step (no `TimeStep`
+    attribute; regenerated; filter ports 6e-7…1.1e-6, were 2e-7…5e-7 with
+    the same rounded step), and every Cartesian
+    fixture without a fixed step agrees. Not reproduced: a metal box under
+    a higher-priority material sharing its face (3 of 60 random cases,
+    1.4 % and less; the PEC-edge tie, §5.16.3), and cylindrical grids,
+    where openEMS's rule differs (ems applies the Cartesian formula to the
+    coordinate lines; the cylindrical fixtures fix `TimeStep`).
 - **Run control.** `endCriteria` absent or 0 → 1e-6; checked every Nyquist
   interval on the state after the interval (stops at a multiple of it);
   `MaxTime` → `⌊MaxTime/dt⌋` steps; no `NumberOfTimesteps` → 0 steps.
@@ -3280,7 +3304,7 @@ compared the same way during development):
 | model | features | agreement (relative L2 unless noted) |
 |---|---|---|
 | `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 1.4e-7…2.7e-6, Zin 7.6e-7, resonance identical (2.29 GHz, −15.7 dB), far field 1.5e-6, Dmax and Prad < 1e-5 (with the CPML: probes 6e-5…6e-4, Zin 9e-4, far field 1e-3) |
-| `e2e_msl_filter` | microstrip open-stub low-pass, soft feed, 3 V + 2 I probes per port, Mur on every open face, FD dump | ports 2e-7…5e-7, `U2/U1` 8e-6 dB, dump 1.3e-3 of max |
+| `e2e_msl_filter` | microstrip open-stub low-pass, soft feed, 3 V + 2 I probes per port, Mur on every open face, FD dump | ports 6e-7…1.1e-6 (own time step, 7e-8 apart), `U2/U1` 9e-6 dB, dump 1.3e-3 of max |
 | `e2e_waveguide_iris` | WR-90, inductive iris + dielectric post, weighted TE10 source, mode-matching V/I probes, Mur ends, energy end criterion | 4e-7, purity 1e-6, same stop step, `U2/U1` 7e-7 |
 | `e2e_coax_monopole` | coax-fed λ/4 monopole, cylindrical grid (closed azimuth, axis in metal), 1/ρ weighted source, Mur faces | V and fields 7.4e-7…1.8e-6 (2e-4 before openEMS's axis update, §5.16.2), I after the `(N−1)/N` factor 4.6e-7 |
 | `e2e_drude_slab` | plane wave on a Drude slab + lossy Lorentz layer, E/H probes with FD samples, FD dump | 7e-4…1e-3 (openEMS's plane-wave injection), R/T 9e-4 |
@@ -3292,10 +3316,10 @@ microstrip filter with `PML_8` line ends 3e-3; WR-90 with `PML_8`
 and the iris are now fixtures (`pml_msl_filter`, `pml_wg_iris`, 2e-7…7e-7,
 §5.16.2). They led to the energy measure (§5.16.1),
 the Mur corner and point-medium rules (§5.16.1, §5.16.2), the α header
-scaling, and the open items above (time step in layered doubly graded
-meshes, α current loops). The patch and filter fixtures fix openEMS's
-time step and the patch a step count (the PML end-criterion energies
-then differed; they agree since wave 13, `pml_end`).
+scaling, the Rennings time step on layered doubly graded meshes
+(§5.16.1), and the open items above (α current loops). The patch fixture
+fixes a step count (the PML end-criterion energies then differed; they
+agree since wave 13, `pml_end`).
 
 ## 6. Engine architecture
 

@@ -24,9 +24,8 @@
 //! reflection, far field). Tolerances are a few times the measured
 //! agreement, given in each test's doc comment; the documented formulation
 //! differences (design §5.16: plane-wave injection, cylindrical α
-//! current loops) set them where they apply. The patch and filter models
-//! fix openEMS's time step (ems's Rennings rule is 0.5–2 % off on these
-//! layered, doubly graded meshes, design §5.16.1).
+//! current loops) set them where they apply. All Cartesian models run with
+//! openEMS's own time step, which ems reproduces (design §5.16.1).
 #![cfg(feature = "xml")]
 
 #[cfg(feature = "hdf5")]
@@ -84,9 +83,20 @@ fn run(case: &str) -> (PathBuf, String) {
     (dir, console)
 }
 
-/// The run made as many steps as openEMS's (`steps:` of `meta.txt`;
-/// `Time for N iterations` on the console).
+/// The run used openEMS's time step (`dt:` of `meta.txt`, 6 digits) and
+/// made as many steps (`steps:`; `Time for N iterations` on the console).
 fn check_steps(case: &str, console: &str) {
+    let dt: f64 = console
+        .lines()
+        .find_map(|l| l.strip_prefix("FDTD timestep is: "))
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .expect("FDTD timestep line");
+    let want: f64 = meta(case, "dt").parse().unwrap();
+    assert!(
+        (dt / want - 1.0).abs() < 6e-6,
+        "{case}: dt {dt:e} vs {want:e}"
+    );
     let got: u64 = console
         .lines()
         .find_map(|l| l.strip_prefix("Time for "))
