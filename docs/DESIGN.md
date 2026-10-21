@@ -673,6 +673,13 @@ openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
     direction, so edges and corners are correct.
   - On the `ρ_max` face of a cylindrical grid the same operator runs the
     cylindrical PML instead (§5.15.2).
+- **openEMS's PML** (openEMS files only, `Fdtd::openems_run`;
+  `engine::boundary::upml::OpenEmsPml`, §5.16.2): the `PML_n` faces of
+  a file run the layer openEMS runs, Gedney's uniaxial PML with
+  openEMS's fixed exponential grading, instead of the CPML, so that
+  results match openEMS (−58 dB at normal incidence with 8 cells, against
+  the CPML's −84 dB). The native API keeps the CPML; with conformal PEC
+  the CPML is used for files too (the conformal step couples to it).
 - **AbsorbingBC sheets** (csx `AbsorbingBC`, implemented,
   `engine::boundary::abc::AbsorbingSheet`): the same first-order Mur update
   on the tangential E of a rectangle on an interior mesh plane, against the
@@ -2377,7 +2384,8 @@ regeneration script and test file:
 - the XML feature-coverage sweep (§5.16.3, `sweep_*`): `gen-sweep.sh`,
   `tests/openems_sweep.rs`;
 - end-to-end models (`e2e_*`, §5.16.4): `gen-e2e.sh`,
-  `tests/openems_e2e.rs`.
+  `tests/openems_e2e.rs`;
+- `PML_n` layers (`pml_*`, §5.16.2): `gen-pml.sh`, `tests/openems_pml.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
 ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
@@ -2468,6 +2476,8 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   openEMS's 6153/6174/8715/10899). Files now use it
   (`EnergyMeasure::OpenEms`, evaluated on the state by all engine
   threads, `Engine::energy_in`): the same stop steps in all those cases.
+  PML layers count with their true fields (§5.16.2; the operator corrects
+  the look-ahead of the edges it completes itself, `SlabHooks::energy_openems_slab`).
   The 0.005 dB offset is in `W_max` (reached during the excitation; the
   ratios after the source has stopped agree to 1e-5 dB relative to each
   other): subtracting or adding the source's last contribution does not
@@ -2484,9 +2494,9 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   and the H component normal to an upper Mur face is never updated in the
   face plane (it feeds no E update; ems holds it at 0 for files, which
   matters for the energy and for dumps on the face). PMC: the wall is the outermost dual layer
-  (tangential H there held at 0), half a cell inside. PML: formulation-level
-  difference (ems CPML): ~0.2–0.4 % on near-field probes behind an 8-cell
-  layer (§5.16.2). openEMS ignores `PML_Grading`: its operator dump and
+  (tangential H there held at 0), half a cell inside. PML: ems runs
+  openEMS's own layer for files (§5.16.2, ~1e-6; the CPML differed by
+  0.2–0.4 % on near-field probes behind an 8-cell layer). openEMS ignores `PML_Grading`: its operator dump and
   probe files are bit-identical with any expression (also with unknown
   variables, on `<BoundaryCond>` or `<FDTD>`, under a dozen plausible
   attribute names; fixture `adv_pml_grading`); ems ignores it as well
@@ -2726,20 +2736,89 @@ and a substrate ending on the last interior line does not count, one
 ending between it and the face does. ems samples the same point for
 files (`MurMedia`, `compile::mur_point_media`): microstrip lines into a
 Mur face went from 3e-2 to 3e-7, the `e2e_msl_filter` ports agree to
-4e-7. openEMS's `PML_8` reflects −58 dB on a vacuum line at
-normal incidence (1 mm cells, 5 GHz pulse; opposite sign to ems's
-residual), ems's CPML −86 dB; ems keeps its CPML, so runs with PML differ
-by about 2e-3 (vacuum) to 4e-3 (ε_r = 4), 2e-4 on the patch antenna
-probes, and more in waveguides near cutoff: 2.4e-2 at the source-side
-port of a WR-90 iris (`PML_8` ends, 7–13 GHz pulse, 6.6 GHz cutoff). A
-reference with the guide extended by 0.8 m on both sides (no reflection
-in the window) puts ems closer on every port (1.5e-2, 2.4e-3, 3.7e-3,
-3e-4 against openEMS's 3e-2, 8e-3, 6e-3, 2.4e-3), and the end
-criterion stops there 10 % later than openEMS (its PML loses the
-near-cutoff energy faster). openEMS's grading cannot be
-changed from the file (`PML_Grading` has no effect, §5.16.1), so an
-openEMS-matching PML would mean copying its fixed −58 dB profile; not
-done.
+4e-7.
+
+**openEMS's PML** (`PML_n`; `engine::boundary::upml`, fixtures
+`pml_*`, `gen-pml.sh`, `tests/openems_pml.rs`). openEMS's `PML_8`
+reflects −58 dB on a vacuum line at normal incidence (1 mm cells, 5 GHz
+pulse; opposite sign to ems's residual), ems's CPML −86 dB, so runs with
+PML differed by about 2e-3 (vacuum) to 4e-3 (ε_r = 4), 6e-4 on the patch
+antenna probes, 3e-3 on the microstrip filter with PML line ends, 0.8–13 %
+in the sweep's PML models and 2.4e-2 at the source-side port of a WR-90
+iris (`PML_8` ends, 7–13 GHz pulse, 6.6 GHz cutoff; a reference with the
+guide extended by 0.8 m put ems's CPML closer to the truth on every port).
+Its grading cannot be changed from the file (`PML_Grading` has no
+effect, §5.16.1), so for files ems now runs openEMS's layer, measured as
+a black box:
+
+- *What it is.* With `-v 3` openEMS lists one "Uniaxial PML Extension"
+  per disjoint box of layer nodes (faces first, then the remaining parts
+  of the overlapping ones). Its `--debug-operator` dump shows, inside a
+  layer, `vi = dt·l/A` (no `ε`) and `vv = (1 − a)/(1 + a)` on the
+  components whose first (flux) stage is stretched: for an x layer
+  `E_z`, `H_z` (graded) and `E_x`, `E_y` (`vv = 1`); for a y layer `E_x`,
+  `H_x`: the cyclic assignment of Gedney's UPML (component `a`'s flux
+  is stretched along `a + 1`, the field from the flux along `a + 2` and
+  `a`). Per-edge least-squares fits of per-step E/H dumps (raw HDF5, a
+  Dirac source, every step) of small models (one face; xmin + graded
+  xmax + ymax with corners; ε_r = 4, μ_r = 2, κ, σ_m filling the layer;
+  both face sides) reproduce every edge of the layers with the two-stage
+  update of `engine::boundary::upml` to 2–4e-7 of each edge's peak (f32
+  round-off), with `a_w = σ_w·dt/(2ε0)` evaluated at the edge's midpoint
+  along its own direction and its nodes (E) or dual lines (H) across, and
+  the faces' `a` adding where layers overlap.
+- *Grading.* `σ(d) = ln(10⁶)·ln(2.5)/(2Δ·Z0·(2.5ⁿ − 1))·2.5^(d/Δ)` at
+  physical depth `d > 0` below the interface line, `Δ = W/n` the mean
+  cell of the layer (graded layers: physical depth over the mean cell,
+  not the local one), 0 at the interface: the dumped `vv` agree to 3e-8
+  (f32). The same `σ` (with `Z0`, `ε0`) in any medium.
+- *Media.* The layer keeps the edge's `ε` and `μ` (averaged as
+  elsewhere) but drops its electric and magnetic conductivity; the
+  interface-plane edges keep their ordinary lossy update.
+- *Sources in a layer.* A soft source on a layer edge adds to the field,
+  not to the flux: its contribution stays undamped in E (a Dirac source
+  on tangential layer edges keeps a static field there). ems keeps the
+  two-stage update with flux for the driven edges (`with_driven`) and
+  takes the field value back after the serial hooks (sources, axis and
+  periodic merges).
+- *Energy.* openEMS's end-criterion energy counts the layers with their
+  true fields (a patch with `PML_6` faces stops at the same step, 1956, at
+  −50.509 dB against openEMS's printed −50.518, its usual offset; with the
+  layer's normal H missing ems stopped at 1908).
+- *Cylindrical grids.* openEMS runs the same layer on `ρ_max` (the
+  profile along `ρ`) and on the z faces; ems too, for files (instead of
+  the stretched-radius PML of §5.15.2).
+
+ems collapses the two stages into one lossy update where the flux equals
+the field (the tangential components of a single layer: coefficients
+only); the others (normal components, overlaps, driven edges) get
+`ca = 0`, `cb = dt/(C·(1 + a_p))` so the kernel writes the flux
+increment, and a slab hook completes the update from two stored `f32`
+(flux, start value). Coefficient rows are kept once per distinct row.
+The kernel's look-ahead (end-criterion energy, the last H sample of
+probes and dumps) gets the true H through `SlabHooks::energy_openems_slab`
+and `Operator::lookahead_current`. Cost: 100³ with `PML_8` on all faces
+runs at the CPML's speed (8 threads 1.8–2.1 vs 1.8–2.0 GCells/s, 16
+threads 2.9–3.0 vs 2.4–2.7; a serial energy correction had cost 30 %).
+
+Agreement with openEMS (relative L2 of the probes): the vacuum line
+`adv_pml_vacuum` 6e-7 (the same −58 dB reflection), `pml_face` (one
+layer, oblique incidence, probes at depths 2 and 5) ≤ 3e-6,
+`pml_corner` (overlaps, graded layer, lossy block, metal plate and a
+source in layers) ≤ 5e-6 with raw line dumps through two corners at
+2e-6 (E) and 5e-5 (H, the round-off of the static field the source
+leaves in the layer), `pml_medium` ≤ 1.5e-6, `pml_end` 3e-6 with the
+same stop step, `pml_cyl` (ρ_max and z layers, closed azimuth, no axis)
+≤ 7e-6, the sweep's `pml_open` 4e-6 (8e-3) and a PEC guide below cutoff
+with `PML_8` ends 1e-6 (2.6–4.7e-2), the patch antenna 1.4e-7…2.7e-6
+(6e-5…6e-4), the WR-90 iris with `PML_8` ends (`pml_wg_iris`) 3e-7…7e-7
+with the same stop step (2.4e-2), the microstrip filter with `PML_8`
+line ends (`pml_msl_filter`) 2e-7…5e-7 on the ports, 1e-5 on the stub
+field (3e-3).
+
+Not reproduced: lumped elements reaching into a layer (openEMS's
+handling there was not measured); on cylindrical grids with the axis
+both codes differ near the axis also without PML (`pml_cyl` has none).
 
 **Current probes** (§5.16.1). On a graded microstrip mesh the voltages
 agree to 6e-7; the current probes (flat boxes on primary x planes around
@@ -2774,7 +2853,7 @@ probes and the feature under test in the middle, 600 steps of 1.5 ps;
 formulations agree. 53 of the models are fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
-Matrix (169 models; 149 agree to ≲ 1e-4, 17 differ, 3 are rejected by
+Matrix (169 models; 154 agree to ≲ 1e-4, 12 differ, 3 are rejected by
 openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
 on the set-up):
 
@@ -2788,7 +2867,7 @@ on the set-up):
 | excitations: soft/hard E and H, vector, weights (with parameters), delay, Enabled, Number, on metal, off-grid, on Sphere/Curve, 3-D box, transformed, two sources | 16 | 16 | |
 | probes: weights, solid/off-grid/point E and H boxes, diagonal and reversed voltage boxes, current NormDir variants, FD samples of all types, Start/StopTime, two primitives, transformed, Cylinder/Curve/Point/Polygon primitives, ten shapes for field probes and dumps | 17 | 15 | current-probe coordinates exactly half-way between lines (openEMS: 8.5 → 9 at the lower, 11.5 → 11 at the upper corner) 4.6 %; a zero-length Cylinder as current probe (openEMS: a point box) |
 | dumps: VTK/HDF5, SubSampling, OptResolution (modes 0–2), FD, without DumpMode, two primitives, transformed | 8 | 8 | |
-| boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 12 | PML 0.8 % (open box, probes ≥ 4 cells from the layer) to 4–13 % (PEC waveguide below cut-off, probes 4–8 cells from the layer): formulation difference (§5.16.2) |
+| boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 17 | (PML: 0.8 % in an open box to 4–13 % in a PEC guide below cut-off with the CPML; ems runs openEMS's layer for files since wave 13, §5.16.2: `pml_open` 4e-6, a re-built guide 1e-6) |
 | lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper and resistive sheets | 6 | 5 | resistive ConductingSheet (§5.16.2) |
 | FDTD: OverSampling, f_max, TimeStepFactor, TimeStepMethod 1 and 3 (graded), MaxTime, CellConstantMaterial, endCriteria, CoordSystem, 0 steps, odd values | 11 | 11 | |
 | other properties: unknown property element, properties without primitives | 2 | 2 | |
@@ -2865,21 +2944,23 @@ compared the same way during development):
 
 | model | features | agreement (relative L2 unless noted) |
 |---|---|---|
-| `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 6e-5…6e-4 (PML), Zin 9e-4, resonance identical (2.29 GHz, −15.7 dB), far field 1e-3, Dmax 2.4e-4 |
+| `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 1.4e-7…2.7e-6, Zin 7.6e-7, resonance identical (2.29 GHz, −15.7 dB), far field 1.5e-6, Dmax and Prad < 1e-5 (with the CPML: probes 6e-5…6e-4, Zin 9e-4, far field 1e-3) |
 | `e2e_msl_filter` | microstrip open-stub low-pass, soft feed, 3 V + 2 I probes per port, Mur on every open face, FD dump | ports 2e-7…5e-7, `U2/U1` 8e-6 dB, dump 1.3e-3 of max |
 | `e2e_waveguide_iris` | WR-90, inductive iris + dielectric post, weighted TE10 source, mode-matching V/I probes, Mur ends, energy end criterion | 4e-7, purity 1e-6, same stop step, `U2/U1` 7e-7 |
 | `e2e_coax_monopole` | coax-fed λ/4 monopole, cylindrical grid (closed azimuth, axis in metal), 1/ρ weighted source, Mur faces | V and fields 2e-4 (axis region), I after the `(N−1)/N` factor 1.8e-4 |
 | `e2e_drude_slab` | plane wave on a Drude slab + lossy Lorentz layer, E/H probes with FD samples, FD dump | 7e-4…1e-3 (openEMS's plane-wave injection), R/T 9e-4 |
 
-At full size (2–5× the cells, the same physics): patch 2e-4 with the far
-field 1e-3 and the same stop step; microstrip filter with `PML_8` line
-ends 3e-3 (PML); WR-90 with `PML_8` 2.4e-2 (see Mur and PML above); the
-Drude slab with `PML_8` 1e-3. They led to the energy measure (§5.16.1),
+At full size (2–5× the cells, the same physics; before wave 13, with the
+CPML): patch 2e-4 with the far field 1e-3 and the same stop step;
+microstrip filter with `PML_8` line ends 3e-3; WR-90 with `PML_8`
+2.4e-2; the Drude slab with `PML_8` 1e-3. The PML variants of the filter
+and the iris are now fixtures (`pml_msl_filter`, `pml_wg_iris`, 2e-7…7e-7,
+§5.16.2). They led to the energy measure (§5.16.1),
 the Mur corner and point-medium rules (§5.16.1, §5.16.2), the α header
 scaling, and the open items above (time step in layered doubly graded
 meshes, α current loops). The patch and filter fixtures fix openEMS's
-time step and the patch a step count (PML end-criterion energies
-differ).
+time step and the patch a step count (the PML end-criterion energies
+then differed; they agree since wave 13, `pml_end`).
 
 ## 6. Engine architecture
 
@@ -2931,7 +3012,7 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     end-to-end models of §10).
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
-- **Operators** (`Operator` trait): CPML, Mur, sources, lumped elements,
+- **Operators** (`Operator` trait): CPML, openEMS's PML (files), Mur, sources, lumped elements,
   probes, dumps, dispersive media (ADE), oblique thin wires (§5.14.1,
   serial `pre_e`/`post_e`), and later NF2FF.
   - Dispersive media (`engine::dispersive::Dispersive`): each Drude /
