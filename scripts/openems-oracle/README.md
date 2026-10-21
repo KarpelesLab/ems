@@ -76,7 +76,8 @@ command line in the case's `meta.txt`:
   files listed on the `keep:` line of the case's `meta.txt` (shell
   patterns) and listing the structure of kept HDF5 files
   (`structure.txt`).
-- `gen-dumps.sh` regenerates the `dump_*` cases (field dumps and SAR files
+- `gen-dumps.sh [CASE...]` regenerates the `dump_*` cases (field dumps and SAR files,
+  also on a closed cylindrical grid with the axis,
   in VTK and HDF5; `tests/openems_dumps.rs`): all HDF5 files, a subset of
   the VTK files, and `structure.txt`, the HDF5 structure listing of
   `h5ls.py`.

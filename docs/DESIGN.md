@@ -2156,6 +2156,22 @@ them.
 from the outer edge only). Dump coordinates are `(ρ, α, z)`, so VTK files
 show the parameter box, not the physical cylinder.
 
+**Field dumps of openEMS files on a closed azimuth** (black box,
+per-step HDF5 dumps of a 6-cell closed grid with the axis): openEMS
+writes the `N` distinct α lines (no `2π` line) and their `N` dual lines
+(no dual line past `2π`), in HDF5 and VTK, and interpolates node values
+(`DumpMode` 1) across the seam: `E_α` and the transverse H at `α_0`
+average the cells `N − 1` and 0. ems did both one-sided and wrote `N + 1`
+lines; it now follows openEMS for files (`sim::map::dump_indices`), and
+interpolates periodically natively too (the seam is no boundary). A cell
+centre of the first ring (`DumpMode` 2) averages `E_α` with the
+non-existing axis edge as 0 in openEMS (half the outer edge; ems natively
+takes the outer edge alone), mirrored for files. With openEMS's axis
+update (§5.16.2) every E and H dump of that model agrees to 1.7e-6 of
+its peak (fixture `dump_cyl_closed`, `tests/openems_dumps.rs`; before: a
+seventh α line, 1.5e-2…8e-2 near the axis and at the seam, 0.44 for the
+cell-centre `E_α`).
+
 **Debug dumps** (`ems --debug-material`, `--debug-operator`,
 `--debug-PEC`; `io::openems::debug`; fixtures `cli_debug_cyl` (closed
 azimuth with the axis, a lossy dielectric, a metal block on the seam, a
@@ -2870,21 +2886,29 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
 2e-13 s on a 0.5 mm / 15° mesh; it warns but runs):
 - without the axis (coax, annular cavity, closed azimuth): 1e-6, also
   static dielectrics;
-- with the axis: 4.4–5.1e-3, a 0.45 % amplitude and −2.7e-4 TM010
-  frequency difference, halving with the first radial cell: the axis
-  cell is discretised differently (`O(Δρ_0)`). openEMS's operator dump
-  gives exactly ems's coefficients for every edge next to the axis (ρ
-  and z edges of the first ring, H_α at `ρ_½`, H_z of the first cell);
-  only the axis z edge is updated outside the dumped operator, and its
-  update is not a uniform sum of the H_α ring (fits of `Δu_axis` against
-  `Σ_j H_α(ρ_½, α_j)` leave 10–20 %, unlike ems's Ampère disc). Both
-  TM010 frequencies converge at second order to the Bessel value
-  (11.47425 GHz): −6.5e-4 (openEMS) and −7.0e-4 (ems) at `Δρ` = 0.5 mm,
-  −1.6e-4 and −1.7e-4 at 0.25 mm. Not resolved; ems keeps its
-  energy-conserving axis cell;
-- `MultiGrid`: 1–3e-2; openEMS's multigrid changes its own solution by
-  0.6–1 % against 0.1 % for ems's embedding (§5.15.1), so ems keeps its
-  embedding (accuracy rule of §5.16; not investigated further);
+- with the axis (closed azimuth): 5.5e-7…4.4e-6 (`adv_cyl_axis`; the
+  coax-fed monopole `e2e_coax_monopole` 4.6e-7…1.8e-6) with openEMS's
+  axis update on the file path, 4.4–5.1e-3 (1.7–2.2e-4) before.
+  openEMS's operator dump gives exactly ems's coefficients for every
+  edge next to the axis; the axis z edge is updated outside it. Per-step
+  E and H dumps (`DumpMode` 0, every step, a 6 × 6 × 4 cavity with two
+  asymmetric sources) fit `ΔE_z(axis) = dt·Δα/(ε0·π·ρ_½)·(2·H_α(α_0) +
+  Σ_{j=1}^{N−1} H_α(α_j))` to a residual of 1.8e-6, regressed on the
+  axis value, every `H_α` of the ring and every `H_ρ` at the axis
+  (coefficients 30.12 for `α_0` and 15.06 ± 0.003 for the others, the
+  exact disc coefficient being 15.058; `E_z` and `H_ρ` 0): openEMS sums
+  the ring over all `N + 1` α lines, so the seam line counts twice (a
+  uniform sum leaves 17 %). ems adds the missing seam term for files
+  (`engine::cylindrical::OpenemsAxisSeam`); natively it keeps the exact,
+  energy-conserving Ampère disc. Both TM010 frequencies converge at
+  second order to the Bessel value (11.47425 GHz): −6.5e-4 (openEMS) and
+  −7.0e-4 (ems) at `Δρ` = 0.5 mm, −1.6e-4 and −1.7e-4 at 0.25 mm. Sectors
+  with the axis were not measured (openEMS keeps the E on PMC α faces at
+  0, which includes the axis edge);
+- `MultiGrid`: 3.0e-3…2.0e-2 (1–3e-2 before the axis update);
+  openEMS's multigrid changes its own solution by 0.6–1 % against 0.1 %
+  for ems's embedding (§5.15.1), so ems keeps its embedding (accuracy
+  rule of §5.16; not fitted);
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
   Drude-filled coax (static `ε` alone 1e-6);
@@ -3174,7 +3198,7 @@ compared the same way during development):
 | `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 1.4e-7…2.7e-6, Zin 7.6e-7, resonance identical (2.29 GHz, −15.7 dB), far field 1.5e-6, Dmax and Prad < 1e-5 (with the CPML: probes 6e-5…6e-4, Zin 9e-4, far field 1e-3) |
 | `e2e_msl_filter` | microstrip open-stub low-pass, soft feed, 3 V + 2 I probes per port, Mur on every open face, FD dump | ports 2e-7…5e-7, `U2/U1` 8e-6 dB, dump 1.3e-3 of max |
 | `e2e_waveguide_iris` | WR-90, inductive iris + dielectric post, weighted TE10 source, mode-matching V/I probes, Mur ends, energy end criterion | 4e-7, purity 1e-6, same stop step, `U2/U1` 7e-7 |
-| `e2e_coax_monopole` | coax-fed λ/4 monopole, cylindrical grid (closed azimuth, axis in metal), 1/ρ weighted source, Mur faces | V and fields 2e-4 (axis region), I after the `(N−1)/N` factor 1.8e-4 |
+| `e2e_coax_monopole` | coax-fed λ/4 monopole, cylindrical grid (closed azimuth, axis in metal), 1/ρ weighted source, Mur faces | V and fields 7.4e-7…1.8e-6 (2e-4 before openEMS's axis update, §5.16.2), I after the `(N−1)/N` factor 4.6e-7 |
 | `e2e_drude_slab` | plane wave on a Drude slab + lossy Lorentz layer, E/H probes with FD samples, FD dump | 7e-4…1e-3 (openEMS's plane-wave injection), R/T 9e-4 |
 
 At full size (2–5× the cells, the same physics; before wave 13, with the

@@ -3,8 +3,9 @@
 # from their model.xml (hand-written XML), with the black-box openEMS of
 # setup.sh. Run from the repository root:
 #
-#   scripts/openems-oracle/gen-dumps.sh
+#   scripts/openems-oracle/gen-dumps.sh [CASE...]
 #
+# (all cases without arguments).
 # OPENEMS and OEPY override the oracle and its python (numpy + h5py).
 # Per case it writes the dump files openEMS produced (all HDF5 files, a
 # subset of the VTK files), structure.txt (HDF5 structure listing, see
@@ -18,8 +19,13 @@ REVISION="$(dirname "$OPENEMS")/REVISION"
 FIX=tests/fixtures/openems
 H5LS="$(pwd)/scripts/openems-oracle/h5ls.py"
 
+CASES="$*"
+
 # run CASE SUBDIR VTK_KEEP_REGEX [openEMS options...]
 run() {
+    if [ -n "$CASES" ] && ! echo " $CASES " | grep -q " $1 "; then
+        return 0
+    fi
     case=$1
     sub=$2
     keep=$3
@@ -62,6 +68,7 @@ run dump_legacy "" "$ALL" --legacyHDF5Dumps
 run dump_sampling "" "$ALL"
 run dump_cyl "" '_00000000(06|12)\.vts$'
 run dump_cyl native '_00000000(06|12)\.vts$' --nativeFieldDumps
-rm -f "$FIX/dump_cyl/native/"*.h5 "$FIX/dump_cyl/native/structure.txt"
+rm -f "$FIX/dump_cyl/native/"*.h5 "$FIX/dump_cyl/native/structure.txt" 2> /dev/null || true
 run dump_sar "" "$ALL"
+run dump_cyl_closed "" '_00000000(31|62)\.vts$'
 echo "fixtures written to $FIX"

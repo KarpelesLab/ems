@@ -360,10 +360,16 @@ fn taps(grid: &Grid, q: DumpQuantity, comp: Axis, axis: Axis, pos: Pos, oe: bool
             _ => one(0, 1.0),
         };
     }
+    // A closed azimuth: the α axis is periodic, its first and last nodes
+    // the same half-plane between cells n − 2 and 0.
+    let periodic = axis == Axis::Y && grid.is_closed();
     // Linear interpolation from the midpoints of cells j−1, j to node j,
-    // clamped at the outer nodes.
+    // clamped at the outer nodes (periodic on a closed azimuth).
     let lin = |j: usize| -> [(usize, f64); 2] {
-        if j == 0 {
+        if periodic && (j == 0 || j == n - 1) {
+            let (dl, dh) = (d(n - 2), d(0));
+            [(n - 2, dh / (dl + dh)), (0, dl / (dl + dh))]
+        } else if j == 0 {
             one(0, 1.0)
         } else if j == n - 1 {
             one(n - 2, 1.0)
@@ -406,8 +412,11 @@ fn taps(grid: &Grid, q: DumpQuantity, comp: Axis, axis: Axis, pos: Pos, oe: bool
             (j + 1, 0.5 / grid.dual_delta(axis, j + 1)),
         ],
         (true, false, Pos::Node(j)) if oe => {
-            // openEMS writes 0 on the outer nodes.
-            if j == 0 || j == n - 1 {
+            // openEMS writes 0 on the outer nodes (on a closed azimuth it
+            // interpolates across the seam).
+            if periodic && (j == 0 || j == n - 1) {
+                [(n - 2, 0.5), (0, 0.5)]
+            } else if j == 0 || j == n - 1 {
                 zero
             } else {
                 [(j - 1, 0.5), (j, 0.5)]
@@ -419,7 +428,9 @@ fn taps(grid: &Grid, q: DumpQuantity, comp: Axis, axis: Axis, pos: Pos, oe: bool
     // Cylindrical grids: the α edges have length ρ·Δα (E on the ρ lines,
     // H on the dual lines ρ_{i+½}); the α rule above divides by Δα only, so
     // the ρ taps divide by ρ. On the axis α edges do not exist: their
-    // weight goes to the other tap (0 if there is none).
+    // weight goes to the other tap (0 if there is none); openEMS averages
+    // them as 0 (a cell centre in the first ring reads half the outer
+    // edge, black box `dump_cyl_closed`).
     if grid.is_cylindrical() && comp == Axis::Y && axis == Axis::X {
         let r = grid.lines(Axis::X);
         let rho = |i: usize| {
@@ -433,8 +444,9 @@ fn taps(grid: &Grid, q: DumpQuantity, comp: Axis, axis: Axis, pos: Pos, oe: bool
         let valid: f64 = t.iter().filter(|x| rho(x.0) > 0.0).map(|x| x.1).sum();
         for x in &mut t {
             let p = rho(x.0);
+            let spread = if oe { 1.0 } else { total / valid };
             x.1 = if p > 0.0 && valid != 0.0 {
-                x.1 * (total / valid) / p
+                x.1 * spread / p
             } else {
                 0.0
             };

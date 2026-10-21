@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Field dumps on a closed cylindrical grid with the axis (6 alpha cells):
+  openEMS writes the N distinct alpha lines (no 2 pi line) and interpolates
+  node values across the seam; its axis E_z update (a ring sum counting the
+  seam line twice) shapes every field near the axis. HDF5 raw, node and
+  cell dumps of E and H, a sub-box, and VTK.
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e12" OverSampling="4" CylinderCoords="1" TimeStep="1e-13">
+    <Excitation Type="10" f0="40e9" Function="exp(-((t-1e-11)/3e-12)^2)"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>0,0.5,1,1.5,2,2.5,3</XLines>
+      <YLines>0.0,1.0471975511965976,2.0943951023931953,3.141592653589793,4.1887902047863905,5.235987755982989,6.283185307179586</YLines>
+      <ZLines>0,1,2,3,4</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="e1" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="1" Y="1.0471975511965976" Z="1"/><P2 X="1" Y="1.0471975511965976" Z="3"/></Box></Primitives></Excitation>
+      <Excitation Name="e2" Type="0" Excite="1,0,0.5"><Primitives><Box Priority="0"><P1 X="0.5" Y="3.141592653589793" Z="2"/><P2 X="1" Y="3.141592653589793" Z="3"/></Box></Primitives></Excitation>
+      <DumpBox Name="E" DumpType="0" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="3" Y="6.283185307179586" Z="4"/></Box></Primitives></DumpBox>
+      <DumpBox Name="H" DumpType="1" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="3" Y="6.283185307179586" Z="4"/></Box></Primitives></DumpBox>
+          <DumpBox Name="Ev" DumpType="0" DumpMode="0" FileType="0"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="3" Y="6.283185307179586" Z="4"/></Box></Primitives></DumpBox>
+      <DumpBox Name="E1" DumpType="0" DumpMode="1" FileType="1"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="3" Y="6.283185307179586" Z="4"/></Box></Primitives></DumpBox>
+      <DumpBox Name="E2" DumpType="0" DumpMode="2" FileType="1"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="3" Y="6.283185307179586" Z="4"/></Box></Primitives></DumpBox>
+      <DumpBox Name="Hs" DumpType="1" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="0.5" Y="1" Z="0"/><P2 X="2" Y="3" Z="4"/></Box></Primitives></DumpBox>
+          <DumpBox Name="H1" DumpType="1" DumpMode="1" FileType="1"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="3" Y="6.283185307179586" Z="4"/></Box></Primitives></DumpBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

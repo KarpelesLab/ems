@@ -360,6 +360,12 @@ fn dump_indices(
         } else {
             l.to_vec()
         };
+        // Closed azimuth: openEMS dumps the N distinct α lines (no 2π
+        // line) and their N dual lines (black box, design §5.15).
+        let mut cand = cand;
+        if a == Axis::Y && grid.is_closed() && n >= 2 {
+            cand.truncate(n - 1);
+        }
         let stride = s.sub_sampling.map_or(1, |v| v[i].max(1) as usize);
         let unit = if grid.is_cylindrical() && a == Axis::Y {
             1.0

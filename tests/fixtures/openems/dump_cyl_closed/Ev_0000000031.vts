@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<VTKFile type="StructuredGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <StructuredGrid WholeExtent="0 6 0 5 0 4">
+  <Piece Extent="0 6 0 5 0 4">
+    <PointData>
+      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.02797214248641562">
+        AQAAAACAAADYCQAA/wUAAA==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
+        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
+          <Value index="0">
+            0
+          </Value>
+          <Value index="1">
+            0.027972142486
+          </Value>
+        </InformationKey>
+      </DataArray>
+    </PointData>
+    <CellData>
+    </CellData>
+    <Points>
+      <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.005000000167638064">
+        AQAAAACAAADYCQAAYAIAAA==eJxtlDFu3EAMRQ2s3RgIEPgCWcBdbiCq1SHc5wC5gAsBvEAKdykDpEjhKs1wkC53SFK58DHcZGdIjt4KuxWx+Hr84sfX1dX2+3x3kG3WMX//+hv/H+acb//cz5tmGTN/J870dvM6Jf/t5pOEXh6XH5K7Thpx5jf59fpuzr2Py8fkrmAWMA1MA9PANDDtMvNgz09fPuSzz0/vj6m/fnk4hqaeNMd49/qv/AzNUq9f/h7BXOGzwKfBp8GnwWeFz4pTJnMCU8AUMAVMAVN2zK7N3H3WMWfuoZlzztxds4z5nOm5J79lFPqee+5qGTnTc8+9LaNgrmAWMA1MA9PANDDtMtNzz2db7qlvuYem5x7v3nOPvT13MFf4LPBp8GnwafBZ4bPinsmcwBQwBUwBU8CUHbP3eMv9kHfp85Z718w5b7k3zTLmc2bm7nzPqOsjd9/lGTVm5u57PaPOXMEsYBqYBqaBaWDaZWbm7s967q733Lsmcu/vHrn3vZH7YK7wWeDT4NPg0+CzwmfFPZM5gSlgCpgCpoApO2b/TmfuPuuYM/fQzDln7q5ZxnzO9NyT3zIKfc89d7WMnOm5596WUTBXMAuYBqaBaWAamHaZ6bnnsy331LfcQ9Nzj3fvucfenjuYK3wW+DT4NPg0+KzwWXHPFfcsuKfhnoZ7Gu5ZcU8y27cOfVf0XdF3Rd8VfVf0XXfM8Z1H3xV9V/Rd0XdF3xXdVPRd0XdF3xV9V/Rd0fc9c3zn0XdF3xV9V/Rd0XdF34fPAp8GnwafBp8VPivumcwJTAFTwBQwBcz8zs//AVIRNSU=
+        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
+          <Value index="0">
+            0
+          </Value>
+          <Value index="1">
+            0.0050000001676
+          </Value>
+        </InformationKey>
+      </DataArray>
+    </Points>
+  </Piece>
+  </StructuredGrid>
+</VTKFile>
