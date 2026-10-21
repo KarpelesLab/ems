@@ -607,6 +607,11 @@ impl Fdtd {
     /// * a [`Boundary::Pmc`] face holds the tangential H of the outermost
     ///   dual layer at zero (the magnetic wall half a cell inside the
     ///   domain, see [`Compiled::openems_pmc`](crate::compile::Compiled::openems_pmc));
+    /// * a [`Boundary::Pml`] face runs openEMS's own `PML_n` layer
+    ///   ([`OpenEmsPml`](crate::engine::boundary::upml::OpenEmsPml):
+    ///   Gedney's uniaxial PML with openEMS's fixed grading, of
+    ///   [`Cpml::cells`] cells, the other CPML parameters unused) instead of
+    ///   the CPML, unless conformal PEC is on;
     /// * lumped elements follow openEMS (design §5.16.1): parallel elements
     ///   replace their edges' medium capacitance (`C`) and conductance
     ///   (`R`); a parallel R/C element without inductor is spread over its

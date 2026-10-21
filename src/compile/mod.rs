@@ -164,6 +164,7 @@ use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::{MurBoundary, MurMedia};
+use crate::engine::boundary::upml::OpenEmsPml;
 use crate::engine::dispersive::Scheme as DispersiveScheme;
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
@@ -424,6 +425,10 @@ pub struct Compiled {
     pub mur_media: Option<MurMedia>,
     /// PML faces and their parameters.
     pub pml: Vec<(Face, Cpml)>,
+    /// openEMS files ([`Fdtd::openems_run`], without conformal PEC): the
+    /// PML faces run openEMS's own layer ([`OpenEmsPml`], `Cpml::cells`
+    /// cells, the other parameters ignored) instead of the CPML.
+    pub openems_pml: bool,
     /// Time step choice.
     pub timestep: TimeStep,
     /// Engine threads (`0`: available parallelism).
@@ -477,6 +482,9 @@ pub struct BoundaryHandles {
     pub dispersive: Option<OperatorHandle<Dispersive>>,
     /// The CPML operator covering every PML face, if any.
     pub cpml: Option<OperatorHandle<CpmlBoundary>>,
+    /// openEMS's PML covering every PML face instead of the CPML
+    /// ([`Compiled::openems_pml`]).
+    pub openems_pml: Option<OperatorHandle<OpenEmsPml>>,
     /// The conducting-sheet operator, if the model has conducting sheets.
     pub sheets: Option<OperatorHandle<ConductingSheet>>,
     /// One operator per [`Compiled::abc`] sheet, in the same order.
@@ -491,7 +499,7 @@ pub struct BoundaryHandles {
 impl Compiled {
     /// Builds the engine (coefficients, threads), applies the conformal PEC
     /// geometry if any ([`ConformalPec::apply`]), and registers the boundary
-    /// operators, first the [`CpmlBoundary`], then the [`MurBoundary`],
+    /// operators, first the [`CpmlBoundary`] (or [`OpenEmsPml`]), then the [`MurBoundary`],
     /// then the [`Dispersive`] medium (after the CPML, so that a medium
     /// reaching into the PML is coupled implicitly with it), then the
     /// [`ConductingSheet`]s, then the [`ObliqueWires`], then the
@@ -533,7 +541,15 @@ impl Compiled {
         // read from the coefficients: before the conformal scaling, which
         // gives a cut edge the capacitance C/f_e (slivers would read as
         // ε_r ~ 1/f_e and switch the absorption off, design §5.13).
-        let cpml = if self.pml.is_empty() {
+        if self.openems_pml && !self.pml.is_empty() {
+            let op = OpenEmsPml::with_driven(
+                engine,
+                self.pml.iter().map(|&(f, p)| (f, p.cells)),
+                self.driven_edges(),
+            )?;
+            h.openems_pml = Some(engine.add_operator(op));
+        }
+        let cpml = if self.pml.is_empty() || h.openems_pml.is_some() {
             None
         } else {
             Some(CpmlBoundary::new(engine, self.pml.iter().copied())?)
@@ -590,6 +606,33 @@ impl Compiled {
             h.abc.push(engine.add_operator(op));
         }
         Ok(h)
+    }
+}
+
+impl Compiled {
+    /// The edges the field excitations drive (`true`: E edge, every copy
+    /// of a cylindrical axis edge; `false`: H dual edge), for
+    /// [`OpenEmsPml::with_driven`].
+    fn driven_edges(&self) -> Vec<(bool, Axis, [usize; 3])> {
+        let mut out = Vec::new();
+        for ex in &self.sources.excitations {
+            let e_side = match ex.excitation_type {
+                ExcitationType::EFieldSoft | ExcitationType::EFieldHard => true,
+                ExcitationType::HFieldSoft | ExcitationType::HFieldHard => false,
+                _ => continue,
+            };
+            for &(edge, _) in &ex.amplitudes {
+                let (axis, node) = self.node_map.edge(edge);
+                if e_side && self.grid.is_cylindrical() {
+                    for c in crate::engine::cylindrical::e_edge_copies(&self.grid, axis, node) {
+                        out.push((true, axis, c));
+                    }
+                } else {
+                    out.push((e_side, axis, node));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -1299,6 +1342,7 @@ pub fn compile(
         openems_pmc: fdtd.get_openems_run(),
         mur_media,
         mur,
+        openems_pml: fdtd.get_openems_run() && conformal.is_none(),
         pml,
         timestep,
         threads: fdtd.get_threads().unwrap_or(0),
