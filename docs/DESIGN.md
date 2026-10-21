@@ -1588,9 +1588,56 @@ keep their current, so the time step is unchanged.
   hosts' masses: `s` = 1.16 at Courant factor 0.99), and a weighted
   least-squares stencil over ~10 faces (it spread weight over unrelated
   faces and supported a spurious wall-guided mode).
+  On the α faces of a cylindrical grid the dual edge `ρ·Δα*` varies
+  across the face: the interpolated face's current and inductance are
+  those of the dual edge through its centroid (`ρ_c·Δα*`). At the face
+  centre the interpolation converged at first order there (coaxial shell
+  TM010 with the small side at 0.3 of a cell, §5.13.1: +0.21 / +0.081 /
+  +0.038 % at 1 / 0.5 / 0.25 mm, now −0.25 / −0.066 / −0.017 %).
 
-Small faces without a valid stencil are merged (tens on a sphere, none on
-the 2-D cavities); a small face that cannot merge either keeps its
+**Deviation currents (wave 13).** Removing a face's current enlarges the
+null space of `PᵀK`: an `E` field circulating on the small face's cut
+edges that no reduced current sees is static in the reduced scheme
+although its curl is not zero. In a cross section these are extra
+zero-frequency modes (invisible in 2-D resonances); along a wall they
+travel as a TEM-like wave at ~`c` guided by the cut cells. This was the
+"weak wall-guided wave" of wave 12, and it is strong when excited
+directly: a point source in a circular guide whose walls end one cell
+before the CPML left the energy at −3 dB after 20 000 steps, standing
+along z with `λ/2` = 12 mm at 12.5 GHz (staircase −92 dB), the TE11 port
+run settled at −26 dB after 30 000 steps (staircase −50 dB in 2901).
+Merging and interpolation alike; plain Dey–Mittra (`τ` = 0, Courant
+factor 0.1) decays to −86 dB. Next to a CPML (plates running into it,
+hard merge groups in the layer, interpolated faces outside) the same
+fields grew exponentially after ~7500 steps (~6 dB per 500 steps), on the
+Cartesian and the cylindrical grid alike (a wave-12 defect; a CFS shift
+of 0.5 S/m hid it).
+
+So every interpolated face and every small member of a merge group keeps
+a deviation current: `i_s = Σ w·g + d_s` (merge: `i_m = g + d_m`). `P` is
+square and invertible again, and the deviations get an extra inductance
+`a·L` (`ConformalOptions::deviation_area` = 0.5): `M = PᵀLP + diag(a·L)`,
+`M_dd = (f_A + a)·L`. The Schur complement of a deviation is at least
+`a·L` (the hosts' mass contains `f_A·L·w·wᵀ`), so its local resonance is
+that of a face with open fraction `a`, like the area floors that were
+stable, and the time step is unchanged (`s` up to 0.997 on the plates,
+0.97–0.99 elsewhere). For smooth fields the deviation is the
+interpolation error, so accuracy is not lost: every cavity below has
+equal or smaller errors, and the sphere's modes, pre-asymptotic before,
+converge at second order. (A first try with `M_dd = max(f_A, a)·L` left
+merged members with `f_A` near `a` a Schur mass near 0: `s` = 4.6 on the
+coarse sphere.) Merge groups with deviations are solved in blocks like the
+hosts. Measured (`tests/conformal_modes.rs`,
+`guide_walls_ending_before_pml_decay`, `plates_into_cpml_long_run_is_stable`;
+`tests/cylindrical_conformal_pml.rs`): walls ending one cell before the
+CPML reach −50 dB in 2651 steps (staircase 2901; point source −92 dB
+like staircase); the plates settle at −123 dB (staircase −125 dB) with no
+growth; 12-cell z wedge with z and `ρ_max` layers −74 dB after 15 000
+steps (staircase −77 dB, before: exponential growth).
+
+Small faces without a valid stencil are merged (with deviation currents;
+tens on a sphere, none on the 2-D cavities); a small face that cannot
+merge either keeps its
 current with `f_A` raised to `τ`. A power iteration on
 `S = √cb·(PK)ᵀ·dt·(PᵀLP)⁻¹·(PK)·√cb`, started on the cut cells, checks
 `s < 0.999` before the first step; if not, `τ` is raised ×1.25 (up to 4
@@ -1617,11 +1664,26 @@ CPML ends never decayed (87 % of the peak energy after 30 000 steps,
    correction (`Ψ ← bΨ + aT`, `+ (1/κ − 1)·T + Ψ` in the group's
    circulation) to their members themselves (`ConformalPec::set_cpml`);
    without it a conformal coax read a 30 % impedance error, from the
-   reflection of the unstretched faces at its conductors.
+   reflection of the unstretched faces at its conductors. With deviation
+   currents the correction of a member goes to every reduced current
+   driving it (group and deviation).
+4. The cylindrical PML of `ρ_max` (§5.15.2) filters each face's whole
+   circulation by `h⁻¹`; it skips merged faces (`db = 0`) as the CPML
+   does. Merge groups now apply it themselves (wave 13): the layer's two
+   stages and, in the corners, the z / α layers' stretch of each
+   derivative term inside them (`CylLayer::h_face`, the same arithmetic as
+   the layer), added to the group's (and deviation's) circulation as
+   `Y − T`. Measured (`tests/cylindrical_conformal_pml.rs`): a radial wedge
+   guide (walls on radial planes between α lines, PMC z plates, TEM
+   `E_α`) into PML(8) at 50 mm reflects −89.4 dB against a 560-cell longer
+   reference (staircase −90.3 dB); without the stretch the run diverged.
+   Rejected: area floors instead of merging in the layers (stable, but
+   the floored faces' wrong mass mismatches the layer: coax impedance
+   +0.51 / +0.25 % at 10 / 20 cells instead of +0.03 / +0.002 %).
 
 Measured (`tests/conformal_modes.rs`, guide `a` = 10 mm, 1 mm cells, 50
 cells along z, CPML(8), TE11 port, −50 dB criterion): staircase 6401
-steps, conformal 9101 steps (2.2 s; 0.25 ms per step against 0.075 for
+steps, conformal 6701 steps (9101 before the deviation currents) (2.2 s; 0.25 ms per step against 0.075 for
 staircase, the serial operator covering ~22 % of this small grid's faces).
 The operator's look-ahead energy omits the CPML correction (exact
 elsewhere).
@@ -1633,35 +1695,32 @@ the nodes; 2-D cross sections with 2 cells along z between PMC (TE) or PEC
 Degenerate modes are measured with source = probe on orthogonal directions
 whose signals are summed, so that by reciprocity every orientation of the
 mesh-split pair or triple has equal weight and the peak is their mean.
-"Before" is the merging scheme of the previous revision on the same
-models:
+"Merging" is the scheme before wave 12, "wave 12" the interpolation
+without deviation currents, on the same models:
 
-| mode | cells | staircase | before | conformal now | order |
-|---|---|---|---|---|---|
-| circle TE11 (`r` = 10 mm) | 10 / 20 / 40 per radius | −6.74 / −3.27 / −1.66 % | +0.567 / +0.260 / +0.124 % | +0.0757 / +0.0182 / +0.0054 % | 2.06, 1.75 |
-| circle TE21 | 10 / 20 / 40 | −8.72 / −4.20 / −2.11 % | −0.371 / +0.413 / +0.210 % | +0.0299 / +0.0052 / +0.0024 % | 2.5, 1.1 |
-| circle TM010 | 10 / 20 / 40 | −3.76 / −1.91 / −0.91 % | −0.081 / −0.020 / −0.0046 % | −0.0759 / −0.0163 / −0.0039 % | 2.2, 2.1 |
-| circle TM110 | 10 / 20 / 40 | −3.90 / −1.95 / −0.92 % | −0.236 / −0.059 / −0.0144 % | −0.210 / −0.059 / −0.0138 % | 1.8, 2.1 |
-| rectangle 20 × 13 mm rotated 17°, TE10 cutoff | 1 / 2 / 4 cells per mm | −8.28 / −4.60 / −2.28 % | +0.520 / +0.211 / +0.106 % | +0.189 / +0.041 / +0.018 % | 2.2, 1.2 |
-| same, TE01 cutoff | 1 / 2 / 4 | −9.86 / −5.18 / −2.52 % | +0.326 / +0.134 / +0.068 % | +0.145 / +0.025 / +0.012 % | 2.6, 1.1 |
-| same, TM11 | 1 / 2 / 4 | −4.89 / −2.46 / −1.27 % | −0.156 / −0.036 / −0.0083 % | −0.143 / −0.032 / −0.0078 % | 2.2, 2.0 |
-| sphere lowest TM (`r` = 10 mm) | 10 / 20 / 40 | −5.28 / −2.65 / −1.33 % | +0.341 / +0.145 / – % | +0.069 / +0.088 / +0.0031 % | (see below) |
-| sphere lowest TE | 10 / 20 / 40 | −3.73 / −1.84 / – % | −0.036 / −0.012 / – % | +0.011 / −0.0004 / +0.0030 % | (floor ~3e-5) |
-| coax `b/a` = 5/2 mm, `Z_TEM` (2–6 GHz) | 5 / 10 / 20 per inner radius | +4.13 / +1.93 / +1.03 % | +27.4 / +15.2 / +8.05 % | +0.527 / +0.069 / +0.017 % | 2.9, 2.0 |
+| mode | cells | staircase | merging | wave 12 | now (deviation currents) | order |
+|---|---|---|---|---|---|---|
+| circle TE11 (`r` = 10 mm) | 10 / 20 / 40 per radius | −6.74 / −3.27 / −1.66 % | +0.567 / +0.260 / +0.124 % | +0.0757 / +0.0182 / +0.0054 % | +0.0308 / +0.0086 / +0.0023 % | 1.8, 1.9 |
+| circle TE21 | 10 / 20 / 40 | −8.72 / −4.20 / −2.11 % | −0.371 / +0.413 / +0.210 % | +0.0299 / +0.0052 / +0.0024 % | −0.0635 / −0.0146 / −0.0036 % | 2.1, 2.0 |
+| circle TM010 | 10 / 20 / 40 | −3.76 / −1.91 / −0.91 % | −0.081 / −0.020 / −0.0046 % | −0.0759 / −0.0163 / −0.0039 % | −0.0618 / −0.0151 / −0.0038 % | 2.0, 2.0 |
+| circle TM110 | 10 / 20 / 40 | −3.90 / −1.95 / −0.92 % | −0.236 / −0.059 / −0.0144 % | −0.210 / −0.059 / −0.0138 % | −0.225 / −0.0545 / −0.0136 % | 2.0, 2.0 |
+| rectangle 20 × 13 mm rotated 17°, TE10 cutoff | 1 / 2 / 4 cells per mm | −8.28 / −4.60 / −2.28 % | +0.520 / +0.211 / +0.106 % | +0.189 / +0.041 / +0.018 % | +0.130 / +0.024 / +0.010 % | 2.5, 1.3 |
+| same, TE01 cutoff | 1 / 2 / 4 | −9.86 / −5.18 / −2.52 % | +0.326 / +0.134 / +0.068 % | +0.145 / +0.025 / +0.012 % | +0.050 / +0.0053 / +0.0054 % | 3.2, – |
+| same, TM11 | 1 / 2 / 4 | −4.89 / −2.46 / −1.27 % | −0.156 / −0.036 / −0.0083 % | −0.143 / −0.032 / −0.0078 % | −0.126 / −0.031 / −0.0078 % | 2.0, 2.0 |
+| sphere lowest TM (`r` = 10 mm) | 10 / 20 / 40 | −5.28 / −2.65 / −1.33 % | +0.341 / +0.145 / – % | +0.069 / +0.088 / +0.0031 % | +0.0584 / +0.0160 / +0.0041 % | 1.9, 2.0 |
+| sphere lowest TE | 10 / 20 / 40 | −3.73 / −1.84 / −0.91 % | −0.036 / −0.012 / – % | +0.011 / −0.0004 / +0.0030 % | −0.121 / −0.0254 / −0.0054 % | 2.3, 2.2 |
+| coax `b/a` = 5/2 mm, `Z_TEM` (2–6 GHz) | 5 / 10 / 20 per inner radius | +4.13 / +1.93 / +1.03 % | +27.4 / +15.2 / +8.05 % | +0.527 / +0.069 / +0.017 % | +0.174 / +0.033 / +0.0024 % | 2.4, 3.8 |
 
-Stability estimates 0.90–0.99 as before (the TE runs 0.987–0.988, set by
-the bulk at Courant factor 0.99), energy constant after the source (drift
-≤ 1e-6 over 20 000 steps on the coarse sphere), bit-identical for 1 and 3
-threads. The TE rows flatten at the last step: TE11/TE21 at a few 1e-5,
-the level of the bulk Yee dispersion difference between the split
-partners and of the spectral estimate; the rotated rectangle's TE rows at
-~1e-4, where the corners (merged faces, two walls in one cell) dominate.
-The sphere's TM mode (E normal to the wall) is pre-asymptotic up to 20
-cells (+0.069, +0.063, +0.088, +0.025, +0.003 % at 10, 14, 20, 30, 40):
-with τ = 0.05 and a Courant factor 0.2 (nearly plain Dey–Mittra) it gives
-−0.051 / −0.008 % at 10 / 20, so part of the hump is the interpolation,
-part the time step (+0.1 / +0.025 % of the Yee time error at 0.99). The
-coax "before" also had both CPML defects above.
+Stability estimates 0.90–0.99 (the TE runs 0.983–0.988, set by the bulk
+at Courant factor 0.99), energy constant after the source (drift ≤ 1e-6
+over 20 000 steps on the coarse sphere), bit-identical for 1 and 3
+threads. The rotated rectangle's TE rows flatten at ~1e-4 where its
+corners (two walls in one cell, merged faces) dominate; the TE11/TE21
+rows reach a few 1e-5, the level of the bulk Yee dispersion difference
+between the split partners. Wave 12's sphere TM row was pre-asymptotic
+(a hump at 20 cells) and its TE row changed sign: both now converge at
+second order, so the hump was the spurious static fields, not the time
+step. The merging column's coax also had both CPML defects above.
 
 **Cylindrical grids** (§5.15). Solid metal works with the same scheme on
 the `(ρ, α, z)` edges and faces; the metal test is made at their
@@ -1676,8 +1735,8 @@ surface), α cells of the radial cell size at 30 mm, 2 cells in z:
 
 | mode | cells per radius | staircase | conformal |
 |---|---|---|---|
-| TM010 | 10 / 20 | −3.69 / −1.91 % | −0.122 / −0.024 % (order 2.4; merging: −0.117 / −0.029 %) |
-| TE11 (PMC z walls) | 10 / 20 | −7.00 / −3.50 % | +0.096 / +0.019 % (order 2.3; merging: +0.586 / +0.279 %) |
+| TM010 | 10 / 20 | −3.69 / −1.91 % | −0.087 / −0.0215 % (order 2.0; wave 12: −0.122 / −0.024 %; merging: −0.117 / −0.029 %) |
+| TE11 (PMC z walls) | 10 / 20 | −7.00 / −3.50 % | +0.0113 / +0.0034 % (order 1.7; wave 12: +0.096 / +0.019 %; merging: +0.586 / +0.279 %) |
 
 stability estimates 0.84–0.94, energy constant to 3e-8 after the source,
 bit-identical for 1 and 3 threads. With merging TE11 converged at first
@@ -1688,20 +1747,15 @@ works in the `(ρ, α, z)` parameters (affine there; the centroid of a cut z
 face is that of its polygon in `(ρ, α)`, `O(h²/ρ)` from the area-weighted
 one).
 
-**Limitations.** Solid metal here, thin sheets in §5.13.1 (whose small
-regions are still merged: first order for TE fields at sheets); metal
+**Limitations.** Solid metal here, thin sheets in §5.13.1; metal
 intruding into a face without crossing its edges and features thinner than
 half a cell between the edge samples are not seen. Voltage probes on cut
 edges read `E·l_open`. The power-iteration check costs a few hundred
 matrix–vector products on the whole grid at setup (single thread); the
 operator is serial (0.25 vs 0.075 ms per step on the 25 × 25 × 50 guide
-above). The cylindrical `ρ_max` PML is not applied to merged faces. The
-Dey–Mittra cells along a wall (small `f_e` edges with `C/f_e`, small faces
-with `f_A ≈ f_e`) support a weak wall-guided wave along z, in the merging
-and the interpolated scheme alike: where a wall ends in open space before
-the PML (guide walls stopped one cell short of the CPML) it is reflected
-and the energy settled near −27 dB instead of reaching −50 dB, against
-2551 steps staircase; walls running into the PML are fine.
+above; the deviation currents add one unknown per small face to the
+blocks). The energy look-ahead of the merge groups omits the CPML and
+cylindrical-PML corrections (exact elsewhere).
 
 #### 5.13.1 Thin PEC sheets
 
@@ -1759,7 +1813,17 @@ nothing dangerous through the pieces (small `f_p` only lowers `cb_p`) but a
 region with little area and a long open contour resonates far above the
 Courant limit: without remedy `s` = 13–37 on spherical shells at 2.5–5
 cells per radius.
-As for solid metal (§5.13), regions with `f_r < 0.5` are merged with the
+As for solid metal (§5.13), regions with `f_r < 0.5` lose their own
+current. Since wave 13 they are **interpolated** like small faces: the
+region's `H` is the affine interpolation, at its centroid (computed by
+the compile step with the region areas: `SheetRegion::centroid`), of the
+host across its most open piece and one host neighbour per in-plane axis,
+all regions (or uncut faces, then taken over by the operator) **on the
+same side of the sheet**: candidates are reached across pieces and uncut
+edges only, which never cross the sheet. Hosts sharing regions form
+blocks with `PᵀLP`, and each interpolated region keeps a deviation
+current (§5.13). Regions without a valid stencil (or in absorbing layers)
+are merged, as before, with the
 region **on the same side** of the in-plane neighbour across their
 most-open piece (that neighbour can be an uncut face, which is then owned
 by the operator), until the group reaches the threshold: one current with
@@ -1778,11 +1842,21 @@ regions, energy drift ≤ 1e-6 over 10 000 steps.
 the staircase column is the equivalent solid metal without the option,
 since csx drops oblique sheets):
 
-| cavity | cells | staircase | conformal sheet |
-|---|---|---|---|
-| cylindrical shell TM010 (r = 10 mm) | 5 / 10 / 20 per radius | −6.84 / −3.76 / −1.91 % | −0.323 / −0.081 / −0.0197 % (order 2.02) |
-| right isosceles triangle (legs 20 mm) cut off a square by a 45° plate, TM21 | 20×21 / 40×41 | −2.54 / −1.26 % | −0.160 / −0.042 % (order 1.93) |
-| spherical shell lowest TM (r = 10 mm) | 5 per radius | −10.4 % | +0.31 % |
+| cavity | cells | staircase | merged regions (wave 12) | conformal sheet now |
+|---|---|---|---|---|
+| cylindrical shell TE11 (r = 10 mm, PMC z faces: `H_z` on the cut z faces) | 5 / 10 / 20 per radius | −13.9 / −6.74 / −3.27 % | +1.41 / +0.567 / +0.260 % (order 1.2) | +0.093 / +0.0308 / +0.0086 % (order 1.6, 1.85) |
+| right isosceles triangle (legs 20 mm) behind a 45° plate, lowest TE (`cos πx/a + cos πy/a`) | 20 / 40 / 80 | −4.95 / −2.51 / −1.26 % | +2.29 / +1.19 / – % (order 0.9) | −0.0532 / −0.0160 / −0.0042 % (order 1.7, 1.9) |
+| cylindrical shell TM010 | 5 / 10 / 20 per radius | −6.84 / −3.76 / −1.91 % | −0.323 / −0.081 / −0.0197 % | −0.279 / −0.0618 / −0.0151 % (order 2.2, 2.0) |
+| same triangle, TM21 | 20×21 / 40×41 | −2.54 / −1.26 % | −0.160 / −0.042 % | −0.169 / −0.0435 % (order 1.96) |
+| spherical shell lowest TM (r = 10 mm) | 5 per radius | −10.4 % | +0.31 % | +0.106 % |
+
+Wave 13 interpolation without the deviation currents gave TE11
++0.389 / +0.0763 / +0.0185 % (order 2.2) and the triangle TE
+−0.0315 / −0.0131 / −0.0038 % at 20 / 40 / 80 (first-order merging at
+the plate's two ends, where it meets the box, makes 20 pre-asymptotic;
+the order at 80 → 160 was 1.9). With them the TE errors drop further
+(TE11 now equals the solid-metal circle of §5.13 to the digits shown).
+`s` = 0.89–0.988, energy drift ≤ 5e-7 over 20 000 steps.
 
 The field behind the plate stays below 1e-5 of the driven side (f32
 rounding of the corrections). Energy drift over 20 000 steps after the
@@ -1791,7 +1865,8 @@ about two axes, with plate edges inside cut faces). Bit-identical results
 for 1 and 4 threads. Without sheets the solid-metal scheme is bit-identical
 to before (probe signals compared).
 
-**Limitations.** One sheet partitions each face: faces cut by two sheets
+**Limitations.** Merged sheet regions (no valid stencil: the plate's ends
+in the triangle, 14–26 regions) have no deviation currents yet. One sheet partitions each face: faces cut by two sheets
 (junctions, crossing plates) use the partition of the sheet with more cuts
 there, which leaves a gap of under a cell at the junction (warning); closed
 boxes of oblique plates therefore leak at their corners. Sheets touching
@@ -1821,11 +1896,18 @@ faces stay per copy as on the uncut grid. Sheets cutting edges inside
 multigrid zones are dropped with a warning. Validation
 (`tests/cylindrical_conformal_sheet.rs`, TM010 against `j01`): a coaxial
 shell `r` = 10.3 mm between ρ lines (16 α cells, axis; it cuts the seam
-copies) −0.110 / −0.037 % at 1 / 0.5 mm; an off-axis shell (radius
-6 mm, centre 12 mm off the axis, across the seam, annular grid with α
-cells of `h` at 12 mm) −0.327 / −0.087 % (order 1.9); stability factor
-0.88–0.98, energy constant to 1e-7 after the source, 1 vs 3 threads
-bit-identical. The Cartesian sheet results are unchanged (same digits).
+copies) −0.254 / −0.037 % at 1 / 0.5 mm (merged regions: −0.110 /
+−0.037 %; the small inner side at 1 mm, none at 0.5 mm); the same shell at
+`r = 10 + 0.3·h` (the inner side at 0.3 of a cell at every step)
+−0.254 / −0.066 / −0.017 % at 1 / 0.5 / 0.25 mm (order 1.95, 1.97; merged:
+−0.110 / −0.034 / −0.0095 %; interpolated with the face-centre α dual
+edge: +0.21 / +0.081 / +0.038 %, first order, see §5.13); an off-axis
+shell (radius 6 mm, centre 12 mm off the axis, across the seam, annular
+grid with α cells of `h` at 12 mm) −0.346 / −0.086 / −0.0206 % at
+1 / 0.5 / 0.25 mm (order 2.0, 2.1; merged: −0.327 / −0.087 %); stability
+factor 0.88–0.98, energy constant to 1e-7 after the source, 1 vs 3
+threads bit-identical. Three refinements: `cylindrical_sheet_table`
+(`--ignored`).
 
 ### 5.14 Thin wires
 
@@ -2545,6 +2627,9 @@ its derivative term, `g⁻¹` on the plain sum) is **unstable** (measured).
 
 **Restrictions.** The interface radius must be `> 0` (the layer must not
 reach the axis). A `ρ_min` PML (annulus) keeps the Cartesian stretch.
+Conformal merge groups in the layer (their kernel `db` is 0) apply the
+layer's filter to their members themselves (§5.13 "Absorbing layers").
+Conformal thin sheets in the layer are not stretched.
 
 **Validation** (`tests/cyl_pml.rs`). Measured as the time-gated
 difference to a reference domain 560 cells larger; 0.5 mm cells,
