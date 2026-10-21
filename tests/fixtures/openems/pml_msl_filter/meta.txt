@@ -1,0 +1,13 @@
+# openEMS reference outputs for tests/openems_pml.rs; regenerate with
+# scripts/openems-oracle/gen-pml.sh pml_msl_filter
+oracle revision:
+  openEMS-Project e89286f (2026-10-18)
+   openEMS c3a956b (v0.37.0-19)
+   CSXCAD f90b407 (v0.7.0-1)
+   fparser 4b9c845
+command: openEMS model.xml --numThreads=1 --engine=basic 
+dt: 7.4648e-13
+steps: 2500
+end: 
+keep: port_ut1A port_ut1B port_ut1C port_it1A port_it1B port_ut2A port_ut2B port_ut2C port_it2A port_it2B ez_stub ez_stub_FD
+args: 

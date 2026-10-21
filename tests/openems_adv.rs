@@ -221,11 +221,12 @@ fn mur_in_dielectric() {
 }
 
 /// `PML_8` on a vacuum line: openEMS's PML reflects about 1.3e-3 of the
-/// signal energy at the probes (−58 dB), ems's CPML 5e-5 (−86 dB); the
+/// signal at the probes (−58 dB; ems's own CPML 5e-5, −86 dB); the
 /// reference is ems on a line long enough for no reflection to return
-/// (`reference.xml`). ems keeps its CPML (design §5.6, §5.16).
+/// (`reference.xml`). For files ems runs openEMS's layer (design §5.6,
+/// §5.16.2): the same reflection, and the probes agree to 7e-7.
 #[test]
-fn pml_reflection_differs() {
+fn pml_reflection_like_openems() {
     let name = "adv_pml_vacuum";
     let res = run(name, &CompileOptions::default());
     let mut sim = Simulation::from_xml(fixture_dir(name).join("reference.xml")).unwrap();
@@ -241,8 +242,9 @@ fn pml_reflection_differs() {
         let (r_oe, r_ems) = (refl(&oe), refl(&ems));
         eprintln!("{f}: reflected part openEMS {r_oe:.2e}, ems {r_ems:.2e}");
         assert!(r_oe > 8e-4 && r_oe < 2e-3, "{f}: openEMS {r_oe}");
-        assert!(r_ems < 1.5e-4, "{f}: ems {r_ems}");
+        assert!((r_ems / r_oe - 1.0).abs() < 1e-3, "{f}: ems {r_ems}");
     }
+    check(name, 2e-6);
 }
 
 /// openEMS ignores `PML_Grading` on `<BoundaryCond>`: the same vacuum

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cylindrical grid (rho 1 ... 10 mm, closed azimuth of 24 sectors), PML_4
+  on rho_max and PML_3 on both z faces; a soft E_z source, voltage probes
+  near rho_min, in the open region and inside the layers. (No axis: on a
+  grid with the axis ems and openEMS differ there also without PML.)
+  Hand-written for the ems PML fixtures (scripts/openems-oracle/gen-pml.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="2000" endCriteria="1e-30" TimeStep="2e-13" CylinderCoords="1" OverSampling="40">
+    <Excitation Type="0" f0="10e9" fc="9e9"/>
+    <BoundaryCond xmin="PEC" xmax="PML_4" ymin="PEC" ymax="PEC" zmin="PML_3" zmax="PML_3"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10</XLines>
+      <YLines>0,0.261799387799149,0.523598775598299,0.785398163397448,1.0471975511966,1.30899693899575,1.5707963267949,1.83259571459405,2.0943951023932,2.35619449019234,2.61799387799149,2.87979326579064,3.14159265358979,3.40339204138894,3.66519142918809,3.92699081698724,4.18879020478639,4.45058959258554,4.71238898038469,4.97418836818384,5.23598775598299,5.49778714378214,5.75958653158129,6.02138591938044,6.28318530717959</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="4" Y="0.261799387799149" Z="6"/><P2 X="4" Y="0.261799387799149" Z="8"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="uz_inner" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="1.5" Y="0" Z="1"/><P2 X="1.5" Y="0" Z="14"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="uz_a" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="6" Y="1.30899693899575" Z="4"/><P2 X="6" Y="1.30899693899575" Z="11"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ur_a" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="2" Y="2.0943951023932" Z="9"/><P2 X="7" Y="2.0943951023932" Z="9"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="uz_pml" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="9" Y="3.66519142918809" Z="5"/><P2 X="9" Y="3.66519142918809" Z="10"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ua_pml" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="8.5" Y="0.523598775598299" Z="1"/><P2 X="8.5" Y="1.0471975511966" Z="1"/></Box></Primitives>
+      </ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

@@ -113,3 +113,12 @@ command line in the case's `meta.txt`:
   the `ems` binary on them): it runs openEMS (and the `nf2ff` tool when
   the case has an `nf2ff.xml`), copies back the files on the `keep:` line
   of `meta.txt` and records the time step and the number of steps run.
+- `gen-pml.sh [CASE...]` regenerates the `pml_*` cases (openEMS's
+  `PML_<n>` layers: one face, overlapping layers with a graded layer,
+  media, metal and a source inside them and raw line dumps through the
+  corners, a lossy magnetic medium, the energy end criterion, a
+  cylindrical grid, and PML variants of the waveguide-iris and
+  microstrip-filter models; `tests/openems_pml.rs`, which runs the `ems`
+  binary on them): it copies back the files on the `keep:` line of
+  `meta.txt` and records the time step, the number of steps run and the
+  end-criterion line of the console.

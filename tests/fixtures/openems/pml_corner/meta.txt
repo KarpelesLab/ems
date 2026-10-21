@@ -1,0 +1,13 @@
+# openEMS reference outputs for tests/openems_pml.rs; regenerate with
+# scripts/openems-oracle/gen-pml.sh pml_corner
+oracle revision:
+  openEMS-Project e89286f (2026-10-18)
+   openEMS c3a956b (v0.37.0-19)
+   CSXCAD f90b407 (v0.7.0-1)
+   fparser 4b9c845
+command: openEMS model.xml --numThreads=1 --engine=basic 
+dt: 1.92583e-12
+steps: 600
+end: 
+keep: ut et_xyz ht_xyz et_xy ht_xy et_xz ht_xz et_in E_line.h5 H_line.h5
+args: 

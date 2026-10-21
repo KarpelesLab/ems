@@ -23,7 +23,7 @@
 //! quantities (input impedance and resonance, transfer functions,
 //! reflection, far field). Tolerances are a few times the measured
 //! agreement, given in each test's doc comment; the documented formulation
-//! differences (design §5.16: PML, plane-wave injection, cylindrical α
+//! differences (design §5.16: plane-wave injection, cylindrical α
 //! current loops) set them where they apply. The patch and filter models
 //! fix openEMS's time step (ems's Rennings rule is 0.5–2 % off on these
 //! layered, doubly graded meshes, design §5.16.1).
@@ -229,21 +229,22 @@ fn compare_h5(case: &str, dir: &Path, name: &str, loose: &[&str], tol: f64) {
 
 // ---------------------------------------------------------------- patch
 
-/// Patch antenna. Measured: port and edge probes 6e-5…2e-4 (PML, design
-/// §5.16.2), the H probe 6e-4; input impedance 2.0–2.8 GHz within 9e-4
-/// and the same resonance (|S11| minimum against 50 Ω: 2.29 GHz,
-/// −15.7 dB, on a 2.5 MHz grid); far field from the box dumps 1e-3,
-/// `Dmax` 2.4e-4, `Prad` 6.4e-4.
+/// Patch antenna. Measured: port and edge probes 1.4e-7…3.9e-7, the H
+/// probe 2.7e-6 (6e-5…6e-4 with the CPML before ems ran openEMS's own
+/// PML for files, design §5.16.2); input impedance 2.0–2.8 GHz within
+/// 7.6e-7 (9e-4) and the same resonance (|S11| minimum against 50 Ω:
+/// 2.29 GHz, −15.7 dB, on a 2.5 MHz grid); far field from the box dumps
+/// 1.5e-6 (1e-3), `Dmax` and `Prad` within 1e-5.
 #[test]
 fn patch_antenna() {
     let case = "e2e_patch";
     let (dir, console) = run(case);
     check_steps(case, &console);
     for p in ["port_ut", "port_it", "ut_edge", "ut_edge_fd"] {
-        compare_probe(case, &dir, p, 2e-3);
+        compare_probe(case, &dir, p, 5e-6);
     }
-    compare_probe(case, &dir, "h_above", 5e-3);
-    compare_probe(case, &dir, "ut_edge_fd_FD", 2e-3);
+    compare_probe(case, &dir, "h_above", 2e-5);
+    compare_probe(case, &dir, "ut_edge_fd_FD", 5e-6);
     // Input impedance (the probe's current flows out of the patch) and
     // resonance of the coarse patch.
     let freqs = linspace(2.0e9, 2.8e9, 321);
@@ -277,7 +278,7 @@ fn patch_antenna() {
     assert_eq!(ia, ib, "{case}: resonance frequency");
     let w = worst_rel(&za, &zb);
     eprintln!("{case}: input impedance differs by {w:.2e}");
-    assert!(w < 5e-3, "{case}: Zin {w:e}");
+    assert!(w < 1e-5, "{case}: Zin {w:e}");
     #[cfg(feature = "hdf5")]
     far_field(case, &dir);
 }
@@ -294,18 +295,18 @@ fn far_field(case: &str, dir: &Path) {
     }
     job.outfile = dir.join(&job.outfile);
     let ff = run_job(&job).unwrap();
-    compare_h5(case, dir, "farfield.h5", &["Prad", "Dmax"], 5e-3);
+    compare_h5(case, dir, "farfield.h5", &["Prad", "Dmax"], 2e-5);
     let want = h5cmp::read_tree(&fixture(case).join("farfield.h5"));
     let attr = |k: &str| h5cmp::numbers(&want.objects["/nf2ff"].1[k].1);
     for (got, want) in ff.dmax.iter().zip(attr("Dmax")) {
         assert!(
-            (got / want - 1.0).abs() < 2e-3,
+            (got / want - 1.0).abs() < 1e-5,
             "{case}: Dmax {got} vs {want}"
         );
     }
     for (got, want) in ff.prad.iter().zip(attr("Prad")) {
         assert!(
-            (got / want - 1.0).abs() < 5e-3,
+            (got / want - 1.0).abs() < 1e-5,
             "{case}: Prad {got} vs {want}"
         );
     }

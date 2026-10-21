@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Overlapping PML layers: PML_4 on xmin, PML_5 on xmax over graded cells
+  (1.2 ... 2 mm), PML_5 on ymax, PML_3 on zmin (edges and corners where
+  two and three layers overlap); a lossy dielectric block and a metal
+  plate reach into the xmax and zmin layers. Field probes in the overlaps,
+  raw E and H dumps (HDF5, no interpolation) of a line through two
+  three-layer corners.
+  Hand-written for the ems PML fixtures (scripts/openems-oracle/gen-pml.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30" f_max="20e9" OverSampling="2">
+    <Excitation Type="0" f0="10e9" fc="9e9"/>
+    <BoundaryCond xmin="PML_4" xmax="PML_5" ymin="PEC" ymax="PML_5" zmin="PML_3" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21.2,22.6,24.2,26,28</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Material Name="block">
+        <Property Epsilon="3" Kappa="0.02"/>
+        <Primitives><Box Priority="0"><P1 X="8" Y="-1" Z="-1"/><P2 X="30" Y="9" Z="5"/></Box></Primitives>
+      </Material>
+      <Metal Name="plate">
+        <Primitives><Box Priority="10"><P1 X="10" Y="3" Z="5"/><P2 X="25" Y="7" Z="5"/></Box></Primitives>
+      </Metal>
+      <Excitation Name="exc" Type="0" Excite="0,0.4,1">
+        <Primitives><Box Priority="5"><P1 X="13" Y="9" Z="2"/><P2 X="13" Y="10" Z="6"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="ut" Type="0">
+        <Primitives><Box Priority="0"><P1 X="16" Y="5" Z="0"/><P2 X="16" Y="5" Z="5"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_xyz" Type="2">
+        <Primitives><Box Priority="0"><P1 X="2" Y="13" Z="1"/><P2 X="2" Y="13" Z="1"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_xyz" Type="3">
+        <Primitives><Box Priority="0"><P1 X="2" Y="13" Z="1"/><P2 X="2" Y="13" Z="1"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_xy" Type="2">
+        <Primitives><Box Priority="0"><P1 X="22.6" Y="14" Z="8"/><P2 X="22.6" Y="14" Z="8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_xy" Type="3">
+        <Primitives><Box Priority="0"><P1 X="22.6" Y="14" Z="8"/><P2 X="22.6" Y="14" Z="8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_xz" Type="2">
+        <Primitives><Box Priority="0"><P1 X="24.2" Y="5" Z="1"/><P2 X="24.2" Y="5" Z="1"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_xz" Type="3">
+        <Primitives><Box Priority="0"><P1 X="24.2" Y="5" Z="1"/><P2 X="24.2" Y="5" Z="1"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_in" Type="2">
+        <Primitives><Box Priority="0"><P1 X="15" Y="8" Z="8"/><P2 X="15" Y="8" Z="8"/></Box></Primitives>
+      </ProbeBox>
+      <DumpBox Name="E_line" DumpType="0" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="13" Z="1"/><P2 X="28" Y="13" Z="1"/></Box></Primitives>
+      </DumpBox>
+      <DumpBox Name="H_line" DumpType="1" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="0" Y="13" Z="1"/><P2 X="28" Y="13" Z="1"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

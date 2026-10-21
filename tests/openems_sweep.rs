@@ -22,8 +22,8 @@
 //! Most models are a 20³-cell PEC box of 1 mm cells with a soft Gaussian
 //! line source, 600 steps of 1.5 ps; the measured agreement is ~1e-5
 //! (`f32` round-off accumulating over the ring-down) and the tolerances
-//! are a few times that. The cases with a formulation-level difference
-//! (PML, magnetic conductivity) check the recorded difference instead.
+//! are a few times that. The case with a formulation-level difference
+//! (magnetic conductivity) checks the recorded difference instead.
 #![cfg(feature = "xml")]
 
 use std::collections::BTreeSet;
@@ -225,6 +225,9 @@ cases! {
     probe_polygon_i: 1e-4;
     // Boundaries, absorbing sheets, settings.
     bc_spellings: 1e-4;
+    // openEMS's PML_8 on every face of a 40³ box, probes 4–12 cells from
+    // the layers (8e-3 with the CPML; ems runs openEMS's layer for files).
+    pml_open: 2e-5;                 // (4.0e-6)
     abc_line_s0_t0: 1e-5;           // (1e-6)
     abc_line_s1_t1: 1e-5;
     lumped_on_cyl: 1e-4;
@@ -240,17 +243,15 @@ cases! {
     dump_transformed: 1e-5;
 }
 
-/// Formulation-level differences, recorded (design §5.16.3): the CPML
-/// against openEMS's PML (8 cells on every face of a 40³ box, probes 4–12
-/// cells from the layers) and the dual-edge average of a magnetic
-/// conductivity (openEMS's is asymmetric at the faces of the box).
+/// Formulation-level difference, recorded (design §5.16.3): the
+/// dual-edge average of a magnetic conductivity (openEMS's is asymmetric
+/// at the faces of the box).
 #[test]
 fn known_differences() {
-    for (case, lo, hi) in [("pml_open", 1e-3, 3e-2), ("mat_mue_sigma", 3e-4, 2e-2)] {
-        let w = worst(case);
-        assert!(
-            w > lo && w < hi,
-            "{case}: difference {w:.3e} outside the recorded [{lo:e}, {hi:e}]"
-        );
-    }
+    let (case, lo, hi) = ("mat_mue_sigma", 3e-4, 2e-2);
+    let w = worst(case);
+    assert!(
+        w > lo && w < hi,
+        "{case}: difference {w:.3e} outside the recorded [{lo:e}, {hi:e}]"
+    );
 }

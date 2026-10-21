@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PML_8 on one face (xmax) of a parallel-plate region (PMC y, PEC z faces,
+  PEC xmin), 1 mm cells; an off-centre oblique soft E source excites
+  higher-order modes, so the layer sees oblique incidence. E and H field
+  probes before the layer and at depths 2 and 5 cells inside it.
+  Hand-written for the ems PML fixtures (scripts/openems-oracle/gen-pml.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="1000" endCriteria="1e-30" f_max="20e9" OverSampling="2">
+    <Excitation Type="0" f0="10e9" fc="9e9"/>
+    <BoundaryCond xmin="PEC" xmax="PML_8" ymin="PMC" ymax="PMC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0.3,0.5,1">
+        <Primitives><Box Priority="0"><P1 X="6" Y="2" Z="3"/><P2 X="7" Y="3" Z="5"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="ut" Type="0">
+        <Primitives><Box Priority="0"><P1 X="14" Y="3" Z="0"/><P2 X="14" Y="3" Z="10"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_out" Type="2">
+        <Primitives><Box Priority="0"><P1 X="18" Y="7" Z="6"/><P2 X="18" Y="7" Z="6"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_out" Type="3">
+        <Primitives><Box Priority="0"><P1 X="18" Y="7" Z="6"/><P2 X="18" Y="7" Z="6"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_d2" Type="2">
+        <Primitives><Box Priority="0"><P1 X="24" Y="4" Z="3"/><P2 X="24" Y="4" Z="3"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_d2" Type="3">
+        <Primitives><Box Priority="0"><P1 X="24" Y="4" Z="3"/><P2 X="24" Y="4" Z="3"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_d5" Type="2">
+        <Primitives><Box Priority="0"><P1 X="27" Y="6" Z="7"/><P2 X="27" Y="6" Z="7"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_d5" Type="3">
+        <Primitives><Box Priority="0"><P1 X="27" Y="6" Z="7"/><P2 X="27" Y="6" Z="7"/></Box></Primitives>
+      </ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>
