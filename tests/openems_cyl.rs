@@ -250,6 +250,43 @@ fn cylindrical_radial_interfaces_match_openems() {
     assert!(worst > 3e-4, "{worst:e}");
 }
 
+/// A radial-line port's properties (`cyl_radial_port`: the feed ring,
+/// the split feed resistor, the voltage lines and the flat current rings
+/// that `RadialLinePort` writes, on a quarter sector with a short at
+/// 20 mm): openEMS runs them like any boxes in `(ρ, α, z)`, and ems reads
+/// the file the same way (openEMS's PMC walls half a cell inside, its
+/// lumped-element update).
+#[test]
+fn cylindrical_radial_line_port_runs_like_openems() {
+    for (n, e) in probe_l2("cyl_radial_port", "model.xml") {
+        assert!(e < 1e-4, "{n}: {e:e}");
+    }
+}
+
+/// The `ρ_min` boundary of a grid with the axis is no boundary: openEMS's
+/// probes are bit-identical with `xmin="PEC"` and `"PMC"` (black box, the
+/// `adv_cyl_axis` model), and so are ems's (openEMS's PMC emulation for
+/// files skips the axis; it had zeroed the `H_α` ring around it).
+#[test]
+fn axis_ignores_the_rho_min_boundary() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/openems/adv_cyl_axis");
+    let pec = std::fs::read_to_string(dir.join("model.xml")).unwrap();
+    assert!(pec.contains("xmin=\"PEC\""));
+    let pmc = pec.replace("xmin=\"PEC\"", "xmin=\"PMC\"");
+    let run = |xml: &str| {
+        let mut sim = Simulation::from_xml_str(xml).unwrap();
+        sim.run().unwrap()
+    };
+    let (a, b) = (run(&pec), run(&pmc));
+    for n in ["uz_a", "uz_axis", "ur_a"] {
+        assert_eq!(
+            a.probe(n).unwrap().values(),
+            b.probe(n).unwrap().values(),
+            "{n}"
+        );
+    }
+}
+
 /// Boxes at `α > π` on a closed `[0, 2π]` grid (`cyl_wrap_*`): csx selects
 /// the edges of sources and lumped elements within a bounding box whose
 /// α range is normalised to `[−π, π)` and missed them; ems re-selects them

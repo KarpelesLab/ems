@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A radial-line port (the properties ems::port::RadialLinePort writes) on a
+  quarter sector: parallel plates z = 0 (-) and 2 mm (+) as the PEC z faces,
+  PMC alpha walls, a PMC rho_min face at 1.5 mm behind the feed ring at
+  rho = 2 mm, a short (PEC rho_max face) at 20 mm. Thevenin feed: a 50 Ohm
+  total resistor split over the alpha columns (the wall columns, with half
+  dual cells, at half the conductance) and an E_z source of 1 V; voltage
+  lines and flat current rings at the probe radii 8, 8.5, 9 mm.
+  Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="1500" endCriteria="0" f_max="18e9" TimeStep="7e-13" CylinderCoords="1">
+    <Excitation Type="0" f0="10e9" fc="8e9"/>
+    <BoundaryCond xmin="PMC" xmax="PEC" ymin="PMC" ymax="PMC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,10.5,11,11.5,12,12.5,13,13.5,14,14.5,15,15.5,16,16.5,17,17.5,18,18.5,19,19.5,20</XLines>
+      <YLines>0,0.39269908169872414,0.7853981633974483,1.1780972450961724,1.5707963267948966</YLines>
+      <ZLines>0,1,2</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <LumpedElement Name="port_resist_1" Direction="2" Caps="1" R="66.66666666666667"><Primitives><Box Priority="0"><P1 X="2" Y="0.39269908169872414" Z="2"/><P2 X="2" Y="1.1780972450961724" Z="0"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="port_resist_1a" Direction="2" Caps="1" R="400"><Primitives><Box Priority="0"><P1 X="2" Y="0" Z="2"/><P2 X="2" Y="0" Z="0"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="port_resist_1b" Direction="2" Caps="1" R="400"><Primitives><Box Priority="0"><P1 X="2" Y="1.5707963267948966" Z="2"/><P2 X="2" Y="1.5707963267948966" Z="0"/></Box></Primitives></LumpedElement>
+      <Excitation Name="port_excite_1" Type="0" Excite="0,0,-500"><Primitives><Box Priority="0"><P1 X="2" Y="0" Z="2"/><P2 X="2" Y="1.5707963267948966" Z="0"/></Box></Primitives></Excitation>
+      <ProbeBox Name="port_ut1A" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="8" Y="0.7853981633974483" Z="2"/><P2 X="8" Y="0.7853981633974483" Z="0"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut1B" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="8.5" Y="0.7853981633974483" Z="2"/><P2 X="8.5" Y="0.7853981633974483" Z="0"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_ut1C" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="9" Y="0.7853981633974483" Z="2"/><P2 X="9" Y="0.7853981633974483" Z="0"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it1A" Type="1" Weight="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="1.5" Y="0" Z="0.25"/><P2 X="8" Y="1.5707963267948966" Z="0.25"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="port_it1B" Type="1" Weight="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="1.5" Y="0" Z="0.25"/><P2 X="8.5" Y="1.5707963267948966" Z="0.25"/></Box></Primitives></ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

@@ -411,7 +411,12 @@ pub struct Compiled {
     /// on the outermost dual plane, half a cell inside the domain (the
     /// tangential H there is held at zero), instead of on the face itself.
     /// Established by black-box comparison with openEMS v0.37 (agreement
-    /// ~1e-6, against ~3–30 % for the on-face wall). The same switch
+    /// ~1e-6, against ~3–30 % for the on-face wall). The tangential E
+    /// and normal H on the face, cut off from the interior by that layer,
+    /// are not updated either (openEMS's operator dump has `vv = vi = 0`
+    /// there; probes and dumps touching the face read 0 as in openEMS,
+    /// `cyl_radial_port`). Not on the axis or on the α faces of a closed
+    /// cylindrical grid, which are not boundaries. The same switch
     /// makes Mur faces count the energy of their edges in the end
     /// criterion, as openEMS does
     /// ([`MurBoundary::count_energy`](crate::engine::boundary::mur::MurBoundary::count_energy)).
@@ -689,12 +694,24 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
 }
 
 /// openEMS's PMC: zero the H dual edges tangential to every PMC face in
-/// the dual layer next to it (see [`Compiled::openems_pmc`]).
+/// the dual layer next to it (see [`Compiled::openems_pmc`]), and the E
+/// edges tangential to the face on the face itself: openEMS never updates
+/// them (its operator dump has `vv = vi = 0` there, black box,
+/// `cyl_radial_port`). They are cut off from the interior by the zeroed
+/// H layer, so this only removes the fields (and excitations, lumped
+/// elements, probe contributions) on the face outside openEMS's magnetic
+/// wall. Not on the faces of a cylindrical grid that are not boundaries
+/// (the axis, the α faces of a closed azimuth).
 fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
-    let n = engine.grid().nodes();
+    let grid = engine.grid();
+    let n = grid.nodes();
+    let (axis, closed) = (grid.has_axis(), grid.is_closed());
     let mut co = engine.coefficients_mut();
     for face in Face::ALL {
-        if faces[face] != FaceCondition::Pmc {
+        if faces[face] != FaceCondition::Pmc
+            || (axis && face == Face::XMin)
+            || (closed && matches!(face, Face::YMin | Face::YMax))
+        {
             continue;
         }
         let t = face.axis();
@@ -702,12 +719,24 @@ fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
         if n[ti] < 2 {
             continue;
         }
-        let layer = if face.is_max() { n[ti] - 2 } else { 0 };
+        let (h_layer, e_layer) = if face.is_max() {
+            (n[ti] - 2, n[ti] - 1)
+        } else {
+            (0, 0)
+        };
+        // (E or H, axis, layer along t): the tangential H of the dual
+        // layer, the tangential E and the normal H on the face.
+        let mut zero: Vec<(bool, Axis, usize)> = Vec::new();
         for a in Axis::ALL {
             if a == t {
-                continue;
+                zero.push((false, a, e_layer));
+            } else {
+                zero.push((false, a, h_layer));
+                zero.push((true, a, e_layer));
             }
-            let (da, db) = co.h_mut(a);
+        }
+        for (e_side, a, layer) in zero {
+            let (c0, c1) = if e_side { co.e_mut(a) } else { co.h_mut(a) };
             for i in 0..n[0] {
                 for j in 0..n[1] {
                     for k in 0..n[2] {
@@ -715,8 +744,8 @@ fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
                             continue;
                         }
                         let idx = (i * n[1] + j) * n[2] + k;
-                        da[idx] = 0.0;
-                        db[idx] = 0.0;
+                        c0[idx] = 0.0;
+                        c1[idx] = 0.0;
                     }
                 }
             }
