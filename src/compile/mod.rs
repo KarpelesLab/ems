@@ -123,7 +123,7 @@
 //! tolerance) or outside the mesh adds a warning. Box primitives keep their
 //! corner order (`start`, `stop`), which carries the probe direction; for
 //! other shapes the bounding box is used (with a warning) and point
-//! primitives give `start = stop`. Only the first primitive of a probe or
+//! primitives and zero-length (shell) cylinders give `start = stop`. Only the first primitive of a probe or
 //! dump property is used.
 //!
 //! # Waveguide probes
@@ -1064,7 +1064,8 @@ fn snap_primitive_corners(
 
 /// The corners of a probe / dump primitive in drawing units (after its
 /// transformation), before snapping: a box's corners in order, a point
-/// twice, the bounding box of other shapes (with a warning).
+/// twice (also the axis point of a zero-length cylinder), the bounding box
+/// of other shapes (with a warning).
 fn primitive_corners(
     grid: &csx::RectilinearGrid,
     prim: &csx::Primitive,
@@ -1087,6 +1088,17 @@ fn primitive_corners(
         csx::Shape::Box(bx) if cart => (tf(bx.start.value()), tf(bx.stop.value())),
         csx::Shape::Point(pt) if cart => {
             let v = tf(pt.point.value());
+            (v, v)
+        }
+        // A zero-length (shell) cylinder is the point of its axis, not its
+        // bounding box (openEMS, black box: a current probe on one reads
+        // like a point box there).
+        csx::Shape::Cylinder(c) if cart && c.start.value() == c.stop.value() => {
+            let v = tf(c.start.value());
+            (v, v)
+        }
+        csx::Shape::CylindricalShell(c) if cart && c.start.value() == c.stop.value() => {
+            let v = tf(c.start.value());
             (v, v)
         }
         other => {

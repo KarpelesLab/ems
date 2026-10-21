@@ -2628,7 +2628,11 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   (`sim::map::openems_signal`); the engine sources keep their own sample
   times.
 - **Probes.** Voltage: primary-line snapping, ties down; lines only.
-  Current: transverse extent of the snapped box, loop in the dual plane
+  Current: transverse extent of the snapped box (a corner exactly half-way
+  between two lines snaps inwards: the lower corner up, the upper one down,
+  whatever the corner order; a point-thin box whose corners then cross
+  reads 0; a zero-length Cylinder or CylindricalShell is the point box of
+  its axis; fixture `current_probe_ties`), loop in the dual plane
   nearest to a flat box's normal coordinate (ties down); a normal extent
   disables the probe. E/H field probes: native components at the start
   corner (E: edges leaving the node; H: dual edges of the dual node),
@@ -3173,7 +3177,7 @@ probes and the feature under test in the middle, 600 steps of 1.5 ps;
 formulations agree. 60 of the models are fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
-Matrix (174 models; 161 agree to ≲ 1e-4, 10 differ, 3 are rejected by
+Matrix (174 models; 163 agree to ≲ 1e-4, 8 differ, 3 are rejected by
 openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
 on the set-up; wave 13 added the σ_m, sheet and LinPoly-vertex models and
 closed their differences):
@@ -3186,7 +3190,7 @@ closed their differences):
 | materials: ε, κ, μ, σ, `Isotropy` with 1/2/3 values and weights, weights of x, y, z, ρ and per axis, Density, background, Lorentz/Drude/Debye (with weights, with κ), σ on a graded mesh with weights and anisotropy | 20 | 20 | |
 | parameters, mesh: ParameterSet (Const, Linear) in coordinates, values and weights, `term:`, unsorted/duplicate lines, DeltaUnit 1, graded | 9 | 7 | `term:` prefixes and expressions in mesh lines rejected by openEMS (ems reads them) |
 | excitations: soft/hard E and H, vector, weights (with parameters), delay, Enabled, Number, on metal, off-grid, on Sphere/Curve, 3-D box, transformed, two sources | 16 | 16 | |
-| probes: weights, solid/off-grid/point E and H boxes, diagonal and reversed voltage boxes, current NormDir variants, FD samples of all types, Start/StopTime, two primitives, transformed, Cylinder/Curve/Point/Polygon primitives, ten shapes for field probes and dumps | 17 | 15 | current-probe coordinates exactly half-way between lines (openEMS: 8.5 → 9 at the lower, 11.5 → 11 at the upper corner) 4.6 %; a zero-length Cylinder as current probe (openEMS: a point box) |
+| probes: weights, solid/off-grid/point E and H boxes, diagonal and reversed voltage boxes, current NormDir variants, FD samples of all types, Start/StopTime, two primitives, transformed, Cylinder/Curve/Point/Polygon primitives, ten shapes for field probes and dumps | 17 | 17 | (wave 13: current-probe corners half-way between lines snap inwards, zero-length Cylinder/CylindricalShell = point box; fixture `current_probe_ties`, 2e-8…2e-6, was 4.6 % resp. skipped) |
 | dumps: VTK/HDF5, SubSampling, OptResolution (modes 0–2), FD, without DumpMode, two primitives, transformed | 8 | 8 | |
 | boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 17 | (PML: 0.8 % in an open box to 4–13 % in a PEC guide below cut-off with the CPML; ems runs openEMS's layer for files since wave 13, §5.16.2: `pml_open` 4e-6, a re-built guide 1e-6) |
 | lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper, resistive, whole-box, graded and polygon sheets | 9 | 8 | ConductingSheet polygon with oblique sides 2.5e-3 (§5.16.2) |

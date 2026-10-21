@@ -137,7 +137,10 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///      to `NormDir` (or to the box's only flat axis), counted positive
 ///      from `start` towards `stop` along the normal (along `+normal` for a
 ///      flat box), measured as `∮H·dl` around the E edges whose transverse
-///      node coordinates are inside the box. A flat box integrates in the
+///      node coordinates are inside the box (a transverse corner exactly
+///      half-way between two lines snaps inwards, the lower corner up and
+///      the upper one down; a point-thin box whose corners then cross
+///      reads 0). A flat box integrates in the
 ///      dual plane nearest to its (unsnapped) normal coordinate, ties to
 ///      the lower one (openEMS: a box on the node plane `k` uses the plane
 ///      between `k − 1` and `k`). A box with an extent along the normal

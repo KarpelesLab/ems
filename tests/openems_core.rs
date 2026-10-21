@@ -260,6 +260,14 @@ fn current_probes() {
 }
 
 #[test]
+fn current_probe_ties() {
+    // Transverse corners exactly half-way between lines snap inwards (the
+    // headers and loops of i_half, i_rev, i_half2; i_pt_cross reads 0),
+    // zero-length Cylinder / CylindricalShell probes are point boxes.
+    Check::new("current_probe_ties").check();
+}
+
+#[test]
 fn probe_skip() {
     // Voltage boxes that are not lines and current boxes extending along
     // their normal are skipped, as openEMS does.

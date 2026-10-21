@@ -963,6 +963,22 @@ pub(crate) fn map_sources(
                 let flat_layer = normal
                     .filter(|n| start[n.index()] == stop[n.index()])
                     .map(|n| dual(p.corners[0])[n.index()]);
+                // Transverse corners exactly half-way between two lines snap
+                // inwards (openEMS: 8.5 → 9 at the lower, 11.5 → 11 at the
+                // upper corner); a point-thin box whose corners then cross
+                // integrates nothing.
+                let mut crossed = [false; 3];
+                let (mut start, mut stop) = (start, stop);
+                if let Some(n) = normal {
+                    for a in Axis::ALL.into_iter().filter(|&a| a != n) {
+                        let d = a.index();
+                        let (r0, r1) = (p.corners[0][d], p.corners[1][d]);
+                        let lo = snap_upper(grid.lines(a), r0.min(r1));
+                        let hi = snap_lower(grid.lines(a), r0.max(r1));
+                        crossed[d] = lo > hi;
+                        (start[d], stop[d]) = if r0 <= r1 { (lo, hi) } else { (hi, lo) };
+                    }
+                }
                 let Some((entries, layer)) =
                     current_loop(start, stop, s.norm_dir, nodes, flat_layer)
                 else {
@@ -982,6 +998,7 @@ pub(crate) fn map_sources(
                         (lo[d], hi[d]) = (layer, layer);
                     } else {
                         let (a, b) = (start[d].min(stop[d]), start[d].max(stop[d]));
+                        let (a, b) = if crossed[d] { (b, a) } else { (a, b) };
                         (lo[d], hi[d]) = (a.saturating_sub(1), b.min(nodes[d].saturating_sub(2)));
                     }
                 }
@@ -992,7 +1009,8 @@ pub(crate) fn map_sources(
                     stop_coords: at(hi),
                 };
                 let mut pr = Probe::new(ProbeQuantity::Current);
-                for (axis, node, w) in entries {
+                let empty = crossed.contains(&true);
+                for (axis, node, w) in entries.into_iter().filter(|_| !empty) {
                     pr = pr.entry(axis, node, w * weight);
                 }
                 ProbeOp::Scalar(engine.add_operator(pr))
@@ -1391,6 +1409,19 @@ pub(crate) fn snap_lower(lines: &[f64], x: f64) -> usize {
     for (i, &l) in lines.iter().enumerate().skip(1) {
         let tol = 1e-9 * (l - lines[i - 1]).abs();
         if (l - x).abs() < (lines[best] - x).abs() - tol {
+            best = i;
+        }
+    }
+    best
+}
+
+/// Index of the line of `lines` nearest to `x`, ties to the upper one
+/// (see [`snap_lower`]).
+pub(crate) fn snap_upper(lines: &[f64], x: f64) -> usize {
+    let mut best = 0;
+    for (i, &l) in lines.iter().enumerate().skip(1) {
+        let tol = 1e-9 * (l - lines[i - 1]).abs();
+        if (l - x).abs() <= (lines[best] - x).abs() + tol {
             best = i;
         }
     }
