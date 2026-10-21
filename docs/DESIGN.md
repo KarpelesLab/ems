@@ -2704,6 +2704,9 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     1.4 % and less; the PEC-edge tie, §5.16.3), and cylindrical grids,
     where openEMS's rule differs (ems applies the Cartesian formula to the
     coordinate lines; the cylindrical fixtures fix `TimeStep`).
+- **Dumps of a Dirac or step excitation** record every step (openEMS's
+  Nyquist rate is then 1 step whatever `f_max` says; ems used `f_max`
+  and wrote every 12th step of `dump_dirac`, wave 13; agreement 5e-7).
 - **Run control.** `endCriteria` absent or 0 → 1e-6; checked every Nyquist
   interval on the state after the interval (stops at a multiple of it);
   `MaxTime` → `⌊MaxTime/dt⌋` steps; no `NumberOfTimesteps` → 0 steps.

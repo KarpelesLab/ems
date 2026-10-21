@@ -49,7 +49,8 @@
 //!
 //! openEMS "step `n`" holds E at `n·dt` and H at `(n + ½)·dt`
 //! ([`DumpTiming::OpenEms`](crate::engine::DumpTiming::OpenEms)). With `N = ⌊1/(2·f_max·dt)⌋` the Nyquist
-//! step count of the excitation ([`nyquist_steps`]):
+//! step count of the excitation ([`nyquist_steps`]; `N = 1` for a Dirac
+//! or step excitation, whatever `f_max` says, fixture `dump_dirac`):
 //!
 //! * time-domain dumps record the steps `n ≡ 0 (mod ⌊N/OverSampling⌋)`
 //!   ([`time_domain_interval`], `OverSampling` default 4);

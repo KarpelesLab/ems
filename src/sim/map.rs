@@ -314,6 +314,14 @@ pub(crate) fn dump_interval(fdtd: &Fdtd, dt: f64) -> u64 {
 /// signals; openEMS ignores the `<FDTD f_max>` attribute here), else the
 /// explicit maximum frequency; 1 without either.
 fn openems_nyquist(fdtd: &Fdtd, dt: f64) -> u64 {
+    // Dirac and step: openEMS's Nyquist rate is 1 step (it prints the
+    // frequency `1/(2·dt)`), whatever `f_max` says; dumps record every step.
+    if matches!(
+        fdtd.get_waveform(),
+        Some(crate::Waveform::Dirac | crate::Waveform::Step)
+    ) {
+        return 1;
+    }
     let f = fdtd
         .get_waveform()
         .and_then(|w| match w {

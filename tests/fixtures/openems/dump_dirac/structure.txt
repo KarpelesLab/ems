@@ -1,0 +1,52 @@
+# e_td.h5
+//
+  @dual_mesh: uint8 () = 0
+  @dump_type: int32 () = 0
+  @openEMS_HDF5_version: float64 () = 0.3
+  FieldData/
+    TD/
+      00000000: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [0]
+      00000001: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.92583e-12]
+      00000002: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [3.85167e-12]
+      00000003: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [5.7775e-12]
+      00000004: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [7.70333e-12]
+      00000005: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [9.62917e-12]
+      00000006: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.1555e-11]
+      00000007: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.34808e-11]
+      00000008: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.54067e-11]
+      00000009: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.73325e-11]
+      00000010: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [1.92583e-11]
+      00000011: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [2.11842e-11]
+      00000012: dataset (3, 5, 5, 5) float32
+        @d_order: vlen-str () = np.str_('NXYZ')
+        @time: float32 (1,) = [2.311e-11]
+  Mesh/
+    @mesh_scaling: float64 () = 0.001
+    @mesh_type: int32 () = 0
+    x: dataset (5,) float64
+    y: dataset (5,) float64
+    z: dataset (5,) float64

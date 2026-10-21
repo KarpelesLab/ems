@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dirac excitation with an f_max attribute: openEMS's Nyquist rate is 1 step, so time-domain dumps record every step.
+  Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="12" endCriteria="0" f_max="5e9">
+    <Excitation Type="2" f0="3e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation ID="1" Name="src" Number="0" Enabled="1" Type="0" Excite="0,0,1">
+        <Primitives>
+          <Box Priority="0"><P1 X="5" Y="5" Z="3"/><P2 X="5" Y="5" Z="7"/></Box>
+        </Primitives>
+      </Excitation>
+      <DumpBox ID="10" Name="e_td" DumpType="0" DumpMode="0" FileType="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="3" Z="3"/><P2 X="7" Y="7" Z="7"/></Box></Primitives>
+      </DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

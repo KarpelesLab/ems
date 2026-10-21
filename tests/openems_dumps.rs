@@ -287,6 +287,15 @@ fn sampling_rules() {
     assert_close("dump_sampling", &e, 1e-5);
 }
 
+/// A Dirac excitation: openEMS's Nyquist rate is one step whatever
+/// `f_max` says, so the time-domain dump records every step (ems wrote
+/// every 12th before).
+#[test]
+fn dirac_dumps() {
+    let e = check("dump_dirac", "", DumpFileOptions::new(), &[]);
+    assert_close("dump_dirac", &e, 1e-5);
+}
+
 #[test]
 fn cylindrical_dumps() {
     let e = check("dump_cyl", "", DumpFileOptions::new(), &[]);
