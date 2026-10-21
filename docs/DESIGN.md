@@ -1791,6 +1791,37 @@ areas are the polygons of corners and crossings with chords for the traces
 (exact for planes, second order for curves). Pieces (edge parts between
 cuts) belong to the region of the arc containing their midpoint.
 
+*Exact hits* (wave 13). A sheet through mesh nodes or edge midpoints
+must not depend on how the transformation rounds: the 45° plate of the
+triangle tests below (`rotate_axis(2, π/4)`) misses the far corner node
+and the midpoints of the y edges on `x = a/2` by an ulp with this
+platform's libm (`sin(π/4)`, `cos(π/4)` one ulp apart) and hits them
+exactly on Windows (and with the exact matrix of entries `1/√2`). The
+TE10 error was −0.0532 % / −0.358 % at n = 20 (−0.0160 / −0.0942 % at
+40, −0.0042 / −0.0241 % at 80), the CI failure. The geometry of the
+split was the same; the cause was csx's point query, which puts an
+edge on the PEC mask when its midpoint lies on a sheet (within its
+rounding): the three y edges through `(a/2, a/2)` became PEC, so the
+cut edge lost both pieces and the two half faces their contour across
+the plate. Fixes in `compile::conformal::sheets`: (1) cut edges are
+taken off csx's PEC mask unless another primitive may have put them
+there (solid metal containing the midpoint, or any other metal or
+conducting-sheet primitive near the edge, conservatively); (2) edges
+lying in a sheet (both ends and the midpoint on the surface, the
+midpoint on its extent) are put on it, so a sheet along an edge is PEC
+there whether csx saw it or not; (3) the side function is zero within
+`1e-12` of the coordinate scale (`(s + r)²·1e-12` for the quadratic
+ones), so a node on the sheet is on the positive side for either
+rounding, and crossings come from the side changes between the roots
+(roots within `1e-9` of an edge end move onto it), so an edge leaving
+such a node to the negative side is cut at its start in both cases.
+Now both give −0.0532 / −0.0160 / −0.0042 % (TM21 −0.169 / −0.0435 %,
+unchanged: `E_y` carries no TM field). The only remaining difference is
+the merge threshold: the half faces on `x = a/2` have `f_r = 0.5 ± ulp`
+and are interpolated (182 regions) or keep their current (180), which
+leaves the result the same to the digits shown. `tests/conformal_sheet.rs`
+runs both rotations, so the tie is tested on every platform.
+
 **Scheme.** Each piece `p` of a cut edge has its own voltage
 `u_p = E·l_p` (`cb_p = f_p·cb`, `f_p = l_p/l`); each region `r` has its own
 current with inductance `f_r·L` and the contour of its pieces and uncut

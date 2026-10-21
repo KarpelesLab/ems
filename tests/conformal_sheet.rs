@@ -5,10 +5,10 @@
 
 mod common;
 
-use std::f64::consts::{FRAC_PI_4, PI};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_4, PI};
 
 use csx::primitives::{BoxShape, Cylinder, CylindricalShell, LinPoly, SphericalShell};
-use csx::{ContinuousStructure, Material, Primitive, Property, Transform};
+use csx::{ContinuousStructure, Mat4, Material, Primitive, Property, Transform};
 use ems::compile::{CompileOptions, compile};
 use ems::constants::C0;
 use ems::engine::{ConformalReport, EdgeSource, Engine, Probe};
@@ -303,24 +303,53 @@ fn cylindrical_shell_te11_converges() {
     assert!(order > 1.7, "order {order} ({conf:?})");
 }
 
+/// The wall of the triangle cavities.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wall {
+    /// Staircased solid prism below the diagonal.
+    Staircase,
+    /// Conformal plate rotated by `rotate_axis(2, π/4)`: with this libm's
+    /// `sin(π/4)`, `cos(π/4)` an ulp apart it misses the far corner node
+    /// and the midpoints of the y edges on `x = a/2` by rounding.
+    Rotated,
+    /// Conformal plate rotated by the exact matrix (entries `1/√2`): it
+    /// passes through the corner nodes and those midpoints exactly (what
+    /// other libms give for `Rotated`).
+    Exact,
+}
+
+/// The diagonal plate `y = x` (a zero-thickness box rotated by 45° about
+/// z) over the square `[0, a]²` and the height `[0, zh]`, overhanging both.
+fn diagonal_plate(a: f64, zh: f64, wall: Wall) -> Primitive {
+    let mut t = Transform::new();
+    if wall == Wall::Exact {
+        let r = FRAC_1_SQRT_2;
+        t.push_matrix(&Mat4::from_row_major(&[
+            r, -r, 0.0, 0.0, r, r, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]));
+    } else {
+        t.rotate_axis(2, FRAC_PI_4);
+    }
+    Primitive::new(BoxShape::new(
+        [-1.0, 0.0, -1.0],
+        [a * 2f64.sqrt() + 1.0, 0.0, zh + 1.0],
+    ))
+    .with_transform(t)
+}
+
 /// Lowest TE mode (`H_z ∝ cos(πx/a) + cos(πy/a)`, `f = c/(2a)`) of the
 /// triangle of [`triangle_error`] between PMC z faces, `n` cells along x
 /// (a planar sheet; `H_z` on the cut z faces). One generic in-plane
 /// dipole drives and probes it.
-fn triangle_te_error(n: usize, sheet: bool) -> (f64, Option<ConformalReport>) {
+fn triangle_te_error(n: usize, wall: Wall) -> (f64, Option<ConformalReport>) {
     let a = 20.0;
     let lx = lines(0.0, a, n);
     let ly = lines(0.0, a, n + 1);
     let hz = a / n as f64;
     let lz = lines(0.0, 2.0 * hz, 2);
+    let sheet = wall != Wall::Staircase;
     let prim = if sheet {
-        let mut t = Transform::new();
-        t.rotate_axis(2, FRAC_PI_4);
-        Primitive::new(BoxShape::new(
-            [-1.0, 0.0, -1.0],
-            [a * 2f64.sqrt() + 1.0, 0.0, 2.0 * hz + 1.0],
-        ))
-        .with_transform(t)
+        diagonal_plate(a, 2.0 * hz, wall)
     } else {
         Primitive::new(LinPoly::new(
             2,
@@ -364,21 +393,28 @@ fn triangle_te_error(n: usize, sheet: bool) -> (f64, Option<ConformalReport>) {
 fn diagonal_plate_triangle_te() {
     let mut conf = Vec::new();
     for n in [20, 40, 80] {
-        let (es, _) = triangle_te_error(n, false);
-        let (ec, rep) = triangle_te_error(n, true);
-        let rep = rep.unwrap();
-        eprintln!(
-            "triangle TE10, n = {n}: staircase {:+.4}%, conformal plate {:+.4}% \
-             ({} interpolated, {} merged, s = {:.4})",
-            es * 100.0,
-            ec * 100.0,
-            rep.sheet_interpolated,
-            rep.sheet_merged,
-            rep.stability
-        );
-        assert!(rep.verified, "{rep:?}");
-        assert!(ec.abs() < 0.05 * es.abs(), "conformal not better at {n}");
-        conf.push(ec.abs());
+        let (es, _) = triangle_te_error(n, Wall::Staircase);
+        let mut errs = Vec::new();
+        for wall in [Wall::Rotated, Wall::Exact] {
+            let (ec, rep) = triangle_te_error(n, wall);
+            let rep = rep.unwrap();
+            eprintln!(
+                "triangle TE10, n = {n}: staircase {:+.4}%, conformal plate ({wall:?}) {:+.4}% \
+                 ({} interpolated, {} merged, s = {:.4})",
+                es * 100.0,
+                ec * 100.0,
+                rep.sheet_interpolated,
+                rep.sheet_merged,
+                rep.stability
+            );
+            assert!(rep.verified, "{rep:?}");
+            assert!(ec.abs() < 0.05 * es.abs(), "conformal not better at {n}");
+            errs.push(ec);
+        }
+        // Exact and rounded geometry agree (an ulp decides only which side
+        // of the threshold the half faces through x = a/2 fall on).
+        assert!((errs[0] - errs[1]).abs() < 0.05 * errs[0].abs(), "{errs:?}");
+        conf.push(errs[0].abs().max(errs[1].abs()));
     }
     // Merging the small regions instead (wave 12): +2.29 / +1.19 % at
     // n = 20 / 40 (first order). The corners (merged regions where the
@@ -394,20 +430,15 @@ fn diagonal_plate_triangle_te() {
 /// 45° about z. The mesh has `n` cells in x and `n + 1` in y, so the plate
 /// is oblique to the cells and passes through no node except the corners.
 /// `sheet = false`: the other half is a staircased solid prism instead.
-fn triangle_error(n: usize, sheet: bool) -> (f64, Option<ConformalReport>) {
+fn triangle_error(n: usize, wall: Wall) -> (f64, Option<ConformalReport>) {
     let a = 20.0;
     let lx = lines(0.0, a, n);
     let ly = lines(0.0, a, n + 1);
     let hz = a / n as f64;
     let lz = lines(0.0, 2.0 * hz, 2);
+    let sheet = wall != Wall::Staircase;
     let prim = if sheet {
-        let mut t = Transform::new();
-        t.rotate_axis(2, FRAC_PI_4);
-        Primitive::new(BoxShape::new(
-            [-1.0, 0.0, -1.0],
-            [a * 2f64.sqrt() + 1.0, 0.0, 2.0 * hz + 1.0],
-        ))
-        .with_transform(t)
+        diagonal_plate(a, 2.0 * hz, wall)
     } else {
         // Solid half below the diagonal (y < x).
         Primitive::new(LinPoly::new(
@@ -445,24 +476,29 @@ fn triangle_error(n: usize, sheet: bool) -> (f64, Option<ConformalReport>) {
 fn diagonal_plate_triangle() {
     let mut conf = Vec::new();
     for n in [20, 40] {
-        let (es, _) = triangle_error(n, false);
-        let (ec, rep) = triangle_error(n, true);
-        let rep = rep.unwrap();
-        eprintln!(
-            "triangle TM21, n = {n}: staircase {:+.4}%, conformal plate {:+.4}% \
-             ({} cut edges, {} cut faces, {} currents, {} merged, {} floored, s = {:.4})",
-            es * 100.0,
-            ec * 100.0,
-            rep.sheet_edges,
-            rep.sheet_faces,
-            rep.sheet_currents,
-            rep.sheet_merged,
-            rep.sheet_floored,
-            rep.stability
-        );
-        assert!(rep.verified, "{rep:?}");
-        assert!(ec.abs() < 0.2 * es.abs(), "{es} {ec}");
-        conf.push(ec.abs());
+        let (es, _) = triangle_error(n, Wall::Staircase);
+        let mut errs = Vec::new();
+        for wall in [Wall::Rotated, Wall::Exact] {
+            let (ec, rep) = triangle_error(n, wall);
+            let rep = rep.unwrap();
+            eprintln!(
+                "triangle TM21, n = {n}: staircase {:+.4}%, conformal plate ({wall:?}) {:+.4}% \
+                 ({} cut edges, {} cut faces, {} currents, {} merged, {} floored, s = {:.4})",
+                es * 100.0,
+                ec * 100.0,
+                rep.sheet_edges,
+                rep.sheet_faces,
+                rep.sheet_currents,
+                rep.sheet_merged,
+                rep.sheet_floored,
+                rep.stability
+            );
+            assert!(rep.verified, "{rep:?}");
+            assert!(ec.abs() < 0.2 * es.abs(), "{es} {ec}");
+            errs.push(ec);
+        }
+        assert!((errs[0] - errs[1]).abs() < 0.05 * errs[0].abs(), "{errs:?}");
+        conf.push(errs[0].abs().max(errs[1].abs()));
     }
     let order = (conf[0] / conf[1]).log2();
     eprintln!("observed order {order:.2}");
