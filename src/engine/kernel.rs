@@ -65,6 +65,7 @@ fn weight(a: f32, p: f64, b: f32) -> f64 {
 /// the accumulators map onto one vector.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
+#[allow(clippy::too_many_arguments)]
 fn h_row_energy<const COMMIT: bool, const OE: bool>(
     h: &mut [f32],
     da: &[f32],
@@ -73,6 +74,7 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
     b: &[f32],
     c: &[f32],
     d: &[f32],
+    ends: f64,
 ) -> f64 {
     let n = h.len();
     let (da, db, a, b, c, d) = (&da[..n], &db[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
@@ -81,7 +83,8 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
         let old = h[k];
         let new = flush(da[k] * old - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
         *acc += if OE {
-            new as f64 * new as f64
+            let w = if k == 0 || k + 1 == n { ends } else { 1.0 };
+            w * (new as f64 * new as f64)
         } else {
             weight(da[k], old as f64 * new as f64, db[k])
         };
@@ -104,6 +107,7 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
 /// One H row, plain ([`h_row`], returns 0) or with energy
 /// ([`h_row_energy`]).
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn hrow<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     h: &mut [f32],
     da: &[f32],
@@ -112,9 +116,10 @@ fn hrow<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     b: &[f32],
     c: &[f32],
     d: &[f32],
+    ends: f64,
 ) -> f64 {
     if ENERGY {
-        h_row_energy::<COMMIT, OE>(h, da, db, a, b, c, d)
+        h_row_energy::<COMMIT, OE>(h, da, db, a, b, c, d, ends)
     } else {
         h_row(h, da, db, a, b, c, d);
         0.0
@@ -173,7 +178,7 @@ fn plane(v: &[f32], local: usize, p: usize) -> &[f32] {
 /// Faraday update of all H dual edges in the x-planes of slab `s`:
 /// `i ← da·i − db·∮u` around the primary face each dual edge pierces.
 pub(crate) fn update_h_slab(store: &FieldStore, co: &CoeffRows<'_>, s: usize) {
-    h_slab::<false, true, false>(store, co, s, &mut |_, _| {});
+    h_slab::<false, true, false>(store, co, s, false, &mut |_, _| {});
 }
 
 /// [`update_h_slab`] that also evaluates, for every x-plane `gi` of the
@@ -190,17 +195,18 @@ pub(crate) fn update_h_slab(store: &FieldStore, co: &CoeffRows<'_>, s: usize) {
 ///
 /// With [`EnergyMeasure::OpenEms`] the plane value is instead openEMS's
 /// measure `ε0·Σ (u^n)² + μ0·Σ (i^{n+½})²` over every edge \[J/m\] (see
-/// [`EnergyMeasure`]).
+/// [`EnergyMeasure`]; with `cartesian` its boundary rules).
 pub(crate) fn energy_h_slab<const COMMIT: bool>(
     store: &FieldStore,
     co: &CoeffRows<'_>,
     s: usize,
     measure: EnergyMeasure,
+    cartesian: bool,
     sink: &mut dyn FnMut(usize, f64),
 ) {
     match measure {
-        EnergyMeasure::Invariant => h_slab::<true, COMMIT, false>(store, co, s, sink),
-        EnergyMeasure::OpenEms => h_slab::<true, COMMIT, true>(store, co, s, sink),
+        EnergyMeasure::Invariant => h_slab::<true, COMMIT, false>(store, co, s, false, sink),
+        EnergyMeasure::OpenEms => h_slab::<true, COMMIT, true>(store, co, s, cartesian, sink),
     }
 }
 
@@ -208,8 +214,13 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     store: &FieldStore,
     co: &CoeffRows<'_>,
     s: usize,
+    full_ends: bool,
     sink: &mut dyn FnMut(usize, f64),
 ) {
+    // openEMS's measure on Cartesian grids: the dual edges on the outer
+    // planes normal to their own axis have full-cell lengths (`i` twice
+    // ems's, energy ×4), and the tangential E of the x faces is left out.
+    let end_w = if OE && full_ends { 4.0 } else { 1.0 };
     let lay = &store.layout;
     let [nx, ny, nz] = lay.n;
     let p = lay.plane;
@@ -229,19 +240,23 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
         let iy = &mut iy[l * p..(l + 1) * p];
         let iz = &mut iz[l * p..(l + 1) * p];
         let mut wh = 0.0f64;
+        let x_end = gi == 0 || gi + 1 == nx;
+        let wx = if x_end { end_w } else { 1.0 };
         // x: curl_x = (uz[j+1] − uz[j]) − (uy[k+1] − uy[k]).
         let m = nz - 1;
         for j in 0..ny - 1 {
             let r = j * nz;
-            wh += hrow::<ENERGY, COMMIT, OE>(
-                &mut ix[r..r + m],
-                co.row(6, gi, j),
-                co.row(9, gi, j),
-                &uz[r + nz..],
-                &uz[r..],
-                &uy[r + 1..],
-                &uy[r..],
-            );
+            wh += wx
+                * hrow::<ENERGY, COMMIT, OE>(
+                    &mut ix[r..r + m],
+                    co.row(6, gi, j),
+                    co.row(9, gi, j),
+                    &uz[r + nz..],
+                    &uz[r..],
+                    &uy[r + 1..],
+                    &uy[r..],
+                    1.0,
+                );
         }
         // y and z dual edges at the last plane are padding.
         if gi + 1 < nx {
@@ -255,15 +270,18 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
             // y: curl_y = (ux[k+1] − ux[k]) − (uz[i+1] − uz[i]).
             for j in 0..ny {
                 let r = j * nz;
-                wh += hrow::<ENERGY, COMMIT, OE>(
-                    &mut iy[r..r + m],
-                    co.row(7, gi, j),
-                    co.row(10, gi, j),
-                    &ux[r + 1..],
-                    &ux[r..],
-                    &uzn[r..],
-                    &uz[r..],
-                );
+                let wy = if j == 0 || j + 1 == ny { end_w } else { 1.0 };
+                wh += wy
+                    * hrow::<ENERGY, COMMIT, OE>(
+                        &mut iy[r..r + m],
+                        co.row(7, gi, j),
+                        co.row(10, gi, j),
+                        &ux[r + 1..],
+                        &ux[r..],
+                        &uzn[r..],
+                        &uz[r..],
+                        1.0,
+                    );
             }
             // z: curl_z = (uy[i+1] − uy[i]) − (ux[j+1] − ux[j]).
             for j in 0..ny - 1 {
@@ -276,12 +294,16 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
                     &uy[r..],
                     &ux[r + nz..],
                     &ux[r..],
+                    end_w,
                 );
             }
         }
         if ENERGY {
             let mut we = 0.0f64;
             for (a, uc) in [ux, uy, uz].into_iter().enumerate() {
+                if OE && full_ends && x_end && a > 0 {
+                    continue;
+                }
                 let mut acc = [0.0f64; 4];
                 for j in 0..ny {
                     let r = j * nz;

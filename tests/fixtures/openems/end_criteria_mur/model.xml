@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "end_criteria_mur": endCriteria="1e-5" in a Mur box with an off-centre y source: the energy openEMS compares (full-cell outer dual edges, no tangential E on the x faces) at -60.75 dB
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="5000" endCriteria="1e-5">
+    <Excitation Type="0" f0="3e9" fc="1.5e9"/>
+    <BoundaryCond xmin="MUR" xmax="MUR" ymin="MUR" ymax="MUR" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,1,0"><Primitives><Box Priority="0"><P1 X="7" Y="9" Z="12"/><P2 X="7" Y="11" Z="12"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><Primitives><Box Priority="0"><P1 X="12" Y="9" Z="10"/><P2 X="12" Y="11" Z="10"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

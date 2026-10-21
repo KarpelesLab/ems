@@ -589,7 +589,9 @@ impl Simulation {
     ///
     /// With [`Fdtd::openems_run`] (openEMS files), the criteria are
     /// instead checked every [Nyquist interval](Fdtd::openems_nyquist_interval)
-    /// from the first step on, without an excitation end.
+    /// from the first step on, without an excitation end, and once more
+    /// after half a Gaussian excitation's length
+    /// ([`RunLimits::extra_check`]).
     pub fn run_limits(&self) -> RunLimits {
         let end = self.fdtd.get_waveform().map(|w| {
             let d = w.duration().unwrap_or(f64::INFINITY);
@@ -606,7 +608,19 @@ impl Simulation {
         let dt = self.engine.dt();
         if self.fdtd.get_openems_run() {
             let k = self.fdtd.openems_nyquist_interval(dt);
-            return RunLimits::new(self.fdtd.timestep_limit(dt))
+            let max = self.fdtd.timestep_limit(dt);
+            // openEMS also checks after half its Gaussian's length.
+            let half = self.fdtd.get_waveform().and_then(|w| match w {
+                crate::Waveform::Gaussian { .. } | crate::Waveform::OpenEmsGaussian { .. } => Some(
+                    crate::io::openems::ExcitationSignal::new(w, dt, max)
+                        .span
+                        .steps()
+                        / 2,
+                ),
+                _ => None,
+            });
+            return RunLimits::new(max)
+                .extra_check(half)
                 .end_criteria(self.fdtd.get_end_criteria().map(|c| c.check_interval(k)))
                 .check_after_interval(true)
                 .energy_measure(EnergyMeasure::OpenEms);

@@ -357,10 +357,16 @@ fn end_criteria() {
     let res = Check::new("end_criteria").check();
     // A multiple of the 57-step Nyquist interval.
     assert_eq!(res.outcome().unwrap().steps % 57, 0);
-    // The energy decay at the stop step: openEMS prints −32.2833 dB; ems
-    // counts the Mur face edges like openEMS (−32.2843 dB; −32.2868 dB
-    // without them).
-    let text = std::fs::read_to_string(fixture("end_criteria").join("console.txt")).unwrap();
+    // The energy decay at the stop step: openEMS prints −32.2833 dB
+    // (ems −32.2830 dB; −32.2837 dB before the full-cell outer dual edges
+    // and the x-face rule of `EnergyMeasure::OpenEms`).
+    check_stop_ratio("end_criteria", &res, 1e-3);
+}
+
+/// The energy ratio of the deciding check agrees with the one openEMS
+/// prints (6 digits) to `tol` dB.
+fn check_stop_ratio(case: &str, res: &Results, tol: f64) {
+    let text = std::fs::read_to_string(fixture(case).join("console.txt")).unwrap();
     let oe: f64 = text
         .split("reached after")
         .nth(1)
@@ -370,10 +376,29 @@ fn end_criteria() {
         .parse()
         .unwrap();
     let ems::engine::StopReason::EnergyDecay { ratio_db } = res.outcome().unwrap().reason else {
-        panic!("not stopped by the energy criterion");
+        panic!("{case}: not stopped by the energy criterion");
     };
-    eprintln!("end_criteria: openEMS {oe} dB, ems {ratio_db:.4} dB");
-    assert!((ratio_db - oe).abs() < 2e-3, "{ratio_db} vs {oe}");
+    eprintln!("{case}: openEMS {oe} dB, ems {ratio_db:.4} dB");
+    assert!((ratio_db - oe).abs() < tol, "{case}: {ratio_db} vs {oe}");
+}
+
+#[test]
+fn end_criteria_half() {
+    // openEMS checks once more after half the Gaussian's length: the run
+    // stops at step 496, between the regular checks 456 and 513 (ems ran
+    // to 684 before).
+    let res = Check::new("end_criteria_half").check();
+    assert_eq!(res.outcome().unwrap().steps, 496);
+    check_stop_ratio("end_criteria_half", &res, 1e-3);
+}
+
+#[test]
+fn end_criteria_mur() {
+    // Deep in the decay of an asymmetric Mur box: openEMS −60.7506 dB
+    // (ems −60.753 dB; the symmetric box of `end_criteria` with this
+    // threshold was 1 dB off before the energy-measure rules).
+    let res = Check::new("end_criteria_mur").check();
+    check_stop_ratio("end_criteria_mur", &res, 5e-3);
 }
 
 #[test]

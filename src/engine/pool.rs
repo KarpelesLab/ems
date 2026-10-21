@@ -63,6 +63,9 @@ pub(crate) struct Shared {
     sched: RwLock<Vec<u8>>,
     /// Measure of a [`CMD_ENERGY`] phase (`true`: openEMS).
     energy_oe: AtomicBool,
+    /// Cartesian grid: the openEMS measure counts the outer dual edges
+    /// with full cells (see [`EnergyMeasure::OpenEms`]).
+    cartesian: bool,
 }
 
 /// Where the caller stops the workers to run serial hooks, per step of a
@@ -102,7 +105,12 @@ const CMD_RUN: u8 = 1;
 const CMD_ENERGY: u8 = 2;
 
 impl Shared {
-    pub(crate) fn new(store: FieldStore, coeffs: Coefficients, threads: usize) -> Self {
+    pub(crate) fn new(
+        store: FieldStore,
+        coeffs: Coefficients,
+        threads: usize,
+        cartesian: bool,
+    ) -> Self {
         let zero = vec![0.0; store.layout.plane];
         let plane_energy = (0..store.layout.n[0]).map(|_| AtomicU64::new(0)).collect();
         let kernel = KernelCoeffs::new(&coeffs, threads);
@@ -124,6 +132,7 @@ impl Shared {
             energy_first: AtomicBool::new(false),
             sched: RwLock::new(Vec::new()),
             energy_oe: AtomicBool::new(false),
+            cartesian,
         }
     }
 
@@ -181,6 +190,7 @@ impl Shared {
                 &rows,
                 s,
                 EnergyMeasure::Invariant,
+                self.cartesian,
                 &mut |gi, w| {
                     self.plane_energy[gi].store(w.to_bits(), Ordering::Relaxed);
                 },
@@ -271,7 +281,14 @@ impl Shared {
         let rows = kc.view(&co);
         let mut planes = vec![0.0f64; self.store.layout.n[0]];
         for s in 0..self.store.layout.slabs() {
-            energy_h_slab::<false>(&self.store, &rows, s, measure, &mut |gi, w| planes[gi] = w);
+            energy_h_slab::<false>(
+                &self.store,
+                &rows,
+                s,
+                measure,
+                self.cartesian,
+                &mut |gi, w| planes[gi] = w,
+            );
             if measure == EnergyMeasure::OpenEms {
                 self.openems_correction(s, &co, &mut |gi, w| planes[gi] += w);
             }
@@ -309,9 +326,16 @@ impl Shared {
         let rows = kc.view(&co);
         let (p0, p1) = self.store.layout.planes(s);
         let mut planes = vec![0.0f64; p1 - p0];
-        energy_h_slab::<false>(&self.store, &rows, s, measure, &mut |gi, w| {
-            planes[gi - p0] = w;
-        });
+        energy_h_slab::<false>(
+            &self.store,
+            &rows,
+            s,
+            measure,
+            self.cartesian,
+            &mut |gi, w| {
+                planes[gi - p0] = w;
+            },
+        );
         if measure == EnergyMeasure::OpenEms {
             self.openems_correction(s, &co, &mut |gi, w| planes[gi - p0] += w);
         }

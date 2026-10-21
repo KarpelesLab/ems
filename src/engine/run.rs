@@ -40,6 +40,12 @@ pub struct RunLimits {
     /// `false`). This is openEMS's schedule: with `K` its Nyquist interval
     /// the run stops after a multiple of `K` steps.
     pub check_after_interval: bool,
+    /// With [`check_after_interval`](Self::check_after_interval): one more
+    /// evaluation after this many steps of the call, between the regular
+    /// ones (default `None`). openEMS checks once more after half its
+    /// Gaussian excitation's length, `⌊L/2⌋` steps (black box: runs whose
+    /// threshold falls between the checks stop there).
+    pub extra_check: Option<u64>,
     /// The energy the criterion compares (default
     /// [`EnergyMeasure::Invariant`]).
     pub energy_measure: EnergyMeasure,
@@ -55,7 +61,11 @@ pub enum EnergyMeasure {
     Invariant,
     /// openEMS's measure [`Engine::energy_openems`]:
     /// `ε0·Σ u² + μ0·Σ i²` over every edge, unweighted, with `u` at `n·dt`
-    /// and `i` at `(n + ½)·dt`. It is evaluated on the state (an extra
+    /// and `i` at `(n + ½)·dt`. On Cartesian grids the dual edges of the
+    /// outer planes normal to their own axis count with openEMS's
+    /// full-cell length (`4·i²`, ems's being half cells), and the
+    /// tangential E of the two x faces is left out (black box, design
+    /// §5.16.1). It is evaluated on the state (an extra
     /// read-only H pass) also without
     /// [`check_after_interval`](RunLimits::check_after_interval).
     OpenEms,
@@ -69,6 +79,7 @@ impl RunLimits {
             end_criteria: None,
             excitation_end: None,
             check_after_interval: false,
+            extra_check: None,
             energy_measure: EnergyMeasure::Invariant,
         }
     }
@@ -82,6 +93,12 @@ impl RunLimits {
     /// Builder: sets [`check_after_interval`](Self::check_after_interval).
     pub fn check_after_interval(mut self, on: bool) -> Self {
         self.check_after_interval = on;
+        self
+    }
+
+    /// Builder: sets [`extra_check`](Self::extra_check).
+    pub fn extra_check(mut self, steps: impl Into<Option<u64>>) -> Self {
+        self.extra_check = steps.into();
         self
     }
 
@@ -305,10 +322,15 @@ where
         }
         let n;
         if after {
-            let chunk = interval.min(max - steps);
-            s.run(chunk);
-            steps += chunk;
-            if chunk < interval {
+            let regular = (steps / interval + 1) * interval;
+            let next = limits
+                .extra_check
+                .filter(|&x| x > steps && x < regular)
+                .unwrap_or(regular)
+                .min(max);
+            s.run(next - steps);
+            steps = next;
+            if !steps.is_multiple_of(interval) && limits.extra_check != Some(steps) {
                 continue;
             }
             n = s.timestep();

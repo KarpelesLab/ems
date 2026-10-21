@@ -303,7 +303,12 @@ impl EngineBuilder {
         };
         let layout = Layout::new(grid.nodes(), threads);
         let threads = layout.slabs();
-        let shared = Arc::new(Shared::new(FieldStore::new(layout), coeffs, threads));
+        let shared = Arc::new(Shared::new(
+            FieldStore::new(layout),
+            coeffs,
+            threads,
+            !grid.is_cylindrical(),
+        ));
         let pool = if threads > 1 {
             Some(Pool::spawn(&shared).map_err(|e| Error::Io(format!("spawning workers: {e}")))?)
         } else {
@@ -617,7 +622,8 @@ impl Engine {
     /// The energy measure openEMS uses for its end criteria \[J/m\],
     /// [`EnergyMeasure::OpenEms`]: `ε0·Σ (u^n)² + μ0·Σ (i^{n+½})²` over
     /// every edge, with no material or cell-size weighting and no operator
-    /// state; `i^{n+½}` is evaluated as in [`energy`](Self::energy), plus
+    /// state, and openEMS's boundary rules of [`EnergyMeasure::OpenEms`];
+    /// `i^{n+½}` is evaluated as in [`energy`](Self::energy), plus
     /// the corrections of slab hooks that complete the H update of some
     /// edges themselves ([`SlabHooks::energy_openems_slab`], openEMS's
     /// PML [`OpenEmsPml`](boundary::upml::OpenEmsPml)). Not

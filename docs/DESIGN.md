@@ -2722,11 +2722,28 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   threads, `Engine::energy_in`): the same stop steps in all those cases.
   PML layers count with their true fields (§5.16.2; the operator corrects
   the look-ahead of the edges it completes itself, `SlabHooks::energy_openems_slab`).
-  The 0.005 dB offset is in `W_max` (reached during the excitation; the
-  ratios after the source has stopped agree to 1e-5 dB relative to each
-  other): subtracting or adding the source's last contribution does not
-  explain it; not resolved, it decides a stop step only when a check
-  falls within 0.005 dB of the threshold.
+  The former 0.005 dB offset (wave 13) came from three openEMS details,
+  fitted from per-step native E/H dumps of a uniform Mur box (symmetric
+  and off-centre sources) against the ratio openEMS prints at its stop
+  step, scanning `endCriteria` to stop it at every check: (1) the dual
+  edges on the outer planes normal to their own axis (H_x at x = 0 and
+  x = max, …) count with openEMS's full-cell dual length, i.e. `4·i²` in
+  terms of ems's half-cell currents (the same full boundary cells as in
+  its time step); (2) the tangential E of the two x faces is not counted
+  (y and z faces are; on PEC faces it is 0 anyway); (3) besides every
+  Nyquist interval openEMS checks once more after half the Gaussian
+  excitation's length, `⌊L/2⌋` steps (496 of 992, 298 of 596, 323 of 647,
+  354 of 709: a threshold between the regular checks stops the run
+  there; `RunLimits::extra_check`). ems does all three for files
+  (Cartesian grids for (1), (2)). Printed ratios at the stop step, before
+  → after: −1.2620 dB (openEMS) vs −1.2675 → −1.2621; −8.5441 vs −8.5569
+  → −8.5438; −27.8626 vs −27.8825 → −27.8626; −61.6809 vs −62.6582 →
+  −61.6801; `e2e_waveguide_iris` −40.0719 vs −40.0999 → −40.0721; a
+  −10 dB criterion stopped at 684 instead of 496 → 496 (fixtures
+  `end_criteria_half`, `end_criteria_mur`; ≤ 3e-4 dB down to −32 dB,
+  2.5e-3 dB at −61 dB). `e2e_drude_slab` (Drude/Lorentz poles, plane
+  wave) went from 0.41 to 0.027 dB at −50 dB; the remaining part is not
+  resolved (pole state, plane-wave source).
 - **Materials.** Edge averaging agrees with csx's (anisotropic, weighted,
   lossy, μ, σ: ~1e-6); `CellConstantMaterial` samples cell centres.
 - **Boundaries.** PEC and Mur (with phase velocity) agree to ~1e-6; Mur
@@ -3307,7 +3324,7 @@ compared the same way during development):
 
 | model | features | agreement (relative L2 unless noted) |
 |---|---|---|
-| `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 1.4e-7…2.7e-6, Zin 7.6e-7, resonance identical (2.29 GHz, −15.7 dB), far field 1.5e-6, Dmax and Prad < 1e-5 (with the CPML: probes 6e-5…6e-4, Zin 9e-4, far field 1e-3) |
+| `e2e_patch` | 2.4 GHz probe-fed patch on lossy FR4, lumped 50 Ω port with excitation, PML_8, FD probe, NF2FF box (nf2ff job) | probes 3e-7…2.7e-6 (own time step; 1.4e-7… with the rounded one), Zin 7.6e-7, resonance identical (2.29 GHz, −15.7 dB), far field 1.5e-6, Dmax and Prad < 1e-5 (with the CPML: probes 6e-5…6e-4, Zin 9e-4, far field 1e-3) |
 | `e2e_msl_filter` | microstrip open-stub low-pass, soft feed, 3 V + 2 I probes per port, Mur on every open face, FD dump | ports 6e-7…1.1e-6 (own time step, 7e-8 apart), `U2/U1` 9e-6 dB, dump 1.3e-3 of max |
 | `e2e_waveguide_iris` | WR-90, inductive iris + dielectric post, weighted TE10 source, mode-matching V/I probes, Mur ends, energy end criterion | 4e-7, purity 1e-6, same stop step, `U2/U1` 7e-7 |
 | `e2e_coax_monopole` | coax-fed λ/4 monopole, cylindrical grid (closed azimuth, axis in metal), 1/ρ weighted source, Mur faces | V and fields 7.4e-7…1.8e-6 (2e-4 before openEMS's axis update, §5.16.2), I after the `(N−1)/N` factor 4.6e-7 |

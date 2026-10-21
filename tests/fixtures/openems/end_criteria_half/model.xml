@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "end_criteria_half": endCriteria="0.1" (-10 dB) in a Mur box: openEMS checks once more after half the Gaussian's length (step 496 of 992) and stops there
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="5000" endCriteria="0.1">
+    <Excitation Type="0" f0="3e9" fc="1.5e9"/>
+    <BoundaryCond xmin="MUR" xmax="MUR" ymin="MUR" ymax="MUR" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="10" Y="10" Z="9"/><P2 X="10" Y="10" Z="11"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><Primitives><Box Priority="0"><P1 X="12" Y="10" Z="9"/><P2 X="12" Y="10" Z="11"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
