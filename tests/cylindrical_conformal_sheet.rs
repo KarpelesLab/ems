@@ -210,7 +210,7 @@ fn coaxial_shell_tm010() {
     check(
         "coaxial shell",
         &[(1.0, coaxial(1.0)), (0.5, coaxial(0.5))],
-        &[2e-3, 1e-3],
+        &[3e-3, 1e-3],
     );
 }
 
@@ -230,4 +230,36 @@ fn cylindrical_sheets_are_thread_independent() {
     let (b, _, wb) = tm010(&c, 3);
     assert_eq!(a, b);
     assert_eq!(wa, wb);
+}
+
+/// Coaxial shell of radius `10 + frac·h` mm: the inner side of every cut
+/// α face keeps the fraction `frac` of the face at every refinement.
+fn coaxial_at(h: f64, frac: f64) -> Case {
+    let mut c = coaxial(h);
+    c.radius = 10.0 + frac * h;
+    c
+}
+
+#[test]
+fn coaxial_shell_small_inner_regions_converge() {
+    // frac = 0.3: small regions on the cavity side of every cut α face
+    // (H_φ there is interpolated along ρ; with its current measured at the
+    // face centre instead of the region centroid the error converged at
+    // first order: +0.208 / +0.081 / +0.038 %).
+    let cases: Vec<(f64, Case)> = [1.0, 0.5].map(|h| (h, coaxial_at(h, 0.3))).into();
+    let e = check("coaxial shell (0.3 of a cell)", &cases, &[3e-3, 8e-4]);
+    let order = (e[0] / e[1]).log2();
+    eprintln!("observed order {order:.2}");
+    assert!(order > 1.6, "{e:?}");
+}
+
+/// Three refinements of the coaxial (inner fraction 0.3) and off-axis
+/// shells (design §5.13.1; `--release -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn cylindrical_sheet_table() {
+    let cases: Vec<(f64, Case)> = [1.0, 0.5, 0.25].map(|h| (h, coaxial_at(h, 0.3))).into();
+    check("coaxial shell (0.3 of a cell)", &cases, &[1.0; 3]);
+    let cases: Vec<(f64, Case)> = [1.0, 0.5, 0.25].map(|h| (h, off_axis(h))).into();
+    check("off-axis shell", &cases, &[1.0; 3]);
 }

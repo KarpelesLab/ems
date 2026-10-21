@@ -63,7 +63,12 @@
 //!   tangential to the wall (TE modes). The hosts sharing small faces are
 //!   coupled through `PᵀLP`: they form blocks solved each step with an
 //!   envelope Cholesky factor (reverse Cuthill–McKee order), cheap because
-//!   a block is a band along the wall.
+//!   a block is a band along the wall. On the α faces of a cylindrical
+//!   grid, whose dual edge `ρ·Δα*` varies across the face, the small
+//!   face's current and inductance are those of the dual edge through its
+//!   centroid (`ρ_c·Δα*`, not the face centre's): measured at the centre
+//!   the interpolated `H` converged at first order there (TM010 of a
+//!   coaxial shell, +0.21 / +0.081 / +0.038 % at 1 / 0.5 / 0.25 mm).
 //! * **Merging** (fallback, and the scheme of faces given without a
 //!   centroid, [`ConformalPec::push_face`]): `P` is 0/1, the small face
 //!   shares the current of the neighbour across its most-open edge (a group
@@ -117,8 +122,10 @@
 //! and the cut faces into regions on either side of the sheet, each with
 //! its own voltage or current, and the region contours running along the
 //! sheet; the split system is again `C·du/dt = K'ᵀi`, `L·di/dt = −K'u`, so
-//! the energy invariant stays exact. Small regions are merged like small
-//! cut faces, and the stability check above runs on the combined system
+//! the energy invariant stays exact. Small regions are interpolated (or,
+//! as the fallback, merged) like small cut faces, from regions on their
+//! own side of the sheet, and the stability check above runs on the
+//! combined system
 //! (the pieces as extra unknowns). The [`ConformalSheets`] operator holds
 //! the split unknowns; see its module docs (`conformal/sheets.rs`) for
 //! the coupling with the kernel. Faces owned by the sheet system are never
@@ -221,9 +228,15 @@ pub struct ConformalReport {
     pub sheet_edges: usize,
     /// Faces cut by thin PEC sheets.
     pub sheet_faces: usize,
-    /// Region currents of the sheet system after merging (one per group
-    /// or unmerged region).
+    /// Region currents of the sheet system after merging and
+    /// interpolation (one per group, host or other unmerged region).
     pub sheet_currents: usize,
+    /// Small sheet regions whose current is interpolated from regions on
+    /// the same side of the sheet.
+    pub sheet_interpolated: usize,
+    /// Sheet regions (or absorbed uncut faces) read by the interpolated
+    /// ones.
+    pub sheet_hosts: usize,
     /// Sheet regions merged into groups (including absorbed uncut faces).
     pub sheet_merged: usize,
     /// Small sheet regions without an open neighbour (area raised to the
@@ -458,26 +471,30 @@ impl ConformalPec {
             .collect();
         let mut tau = self.options.merge_below.clamp(0.0, 1.0);
         let rounds = self.options.max_rounds.max(1);
+        let absorbing = |a: Axis, p: [usize; 3]| self.in_absorbing(a, p, n);
         for round in 0..rounds {
             let built = sheet
                 .as_ref()
-                .map(|p| p.construct(&co, n, dt, tau, &volume_faces, &copies));
+                .map(|p| p.construct(&co, &grid, dt, tau, &volume_faces, &absorbing, &copies));
             let empty = HashSet::new();
             let owned = built.as_ref().map_or(&empty, |b| &b.owned);
             let (mut coeffs, merged, mut report) = self.construct(&co, &grid, dt, tau, owned);
             let mut gterms = group_terms(&merged.groups[..merged.scalar], n);
-            let bterms = merged.block_terms(n);
+            let mut bterms = merged.block_terms(n);
             let mut extra = Vec::new();
             if let Some(b) = &built {
                 b.apply_coefficients(&mut coeffs, n);
-                let (g, sq) = b.stability_terms(n);
+                let (g, bt, sq) = b.stability_terms(n);
                 gterms.extend(g);
+                bterms.extend(bt);
                 extra = sq;
                 report.sheet_edges = b.report.edges;
                 report.sheet_faces = b.report.faces;
                 report.sheet_currents = b.report.groups;
                 report.sheet_merged = b.report.merged;
                 report.sheet_floored = b.report.floored;
+                report.sheet_interpolated = b.report.interpolated;
+                report.sheet_hosts = b.report.hosts;
             }
             let last = round + 1 == rounds || tau >= 1.0;
             if self.options.iterations > 0 {
@@ -561,6 +578,8 @@ impl ConformalPec {
             sheet_currents: 0,
             sheet_merged: 0,
             sheet_floored: 0,
+            sheet_interpolated: 0,
+            sheet_hosts: 0,
         };
         let face_info: HashMap<Key, (f64, Option<[f64; 2]>)> = self
             .faces
@@ -692,7 +711,7 @@ impl ConformalPec {
             }
             let d: Vec<[f64; 2]> = pts.iter().map(|p| p.1).collect();
             let w = interpolation_weights(&d)?;
-            let ls = grid.dual_edge_length(a, f.node);
+            let ls = centroid_dual_length(grid, a, f.node, face_info.get(&k0)?.1?);
             Some(
                 pts.iter()
                     .zip(w)
@@ -895,7 +914,11 @@ impl ConformalPec {
         }
         for (k, a, p, st) in &stencils {
             let (lf, rf) = lr_full(*a, k.1);
-            let fa = fa_of(*a, *p);
+            // (Inductance with the current measured at the centroid, see
+            // `centroid_dual_length`.)
+            let c = face_info.get(k).and_then(|x| x.1).unwrap_or([0.5; 2]);
+            let fa = fa_of(*a, *p) * grid.dual_edge_length(*a, *p)
+                / centroid_dual_length(grid, *a, *p, c);
             for &(kj, _, wj) in st {
                 let j = local[&kj];
                 for &(kk, _, wk) in st {
@@ -927,47 +950,10 @@ impl ConformalPec {
             });
             comps[c].push(q);
         }
-        let mut blocks = Vec::with_capacity(comps.len());
-        for comp in comps {
-            let adj = |q: usize| -> Vec<usize> {
-                let mut v: Vec<usize> = ml[q].keys().copied().filter(|&k| k != q).collect();
-                v.sort_unstable();
-                v
-            };
-            let order = rcm_order(&comp, adj);
-            let pos_of: HashMap<usize, usize> =
-                order.iter().enumerate().map(|(i, &q)| (q, i)).collect();
-            let rows = |f: &dyn Fn(f64, f64) -> f64| -> Vec<Vec<(usize, f64)>> {
-                order
-                    .iter()
-                    .map(|&q| {
-                        let mut row: Vec<(usize, f64)> = ml[q]
-                            .iter()
-                            .map(|(&k, &(l, r))| (pos_of[&k], f(l, r)))
-                            .collect();
-                        row.sort_by_key(|e| e.0);
-                        row
-                    })
-                    .collect()
-            };
-            let m = rows(&|l, _| l);
-            let a = rows(&|l, r| l + 0.5 * dt * r);
-            let b = rows(&|l, r| l - 0.5 * dt * r);
-            let factor = Envelope::factor(&a).expect("PᵀLP is positive definite");
-            let mfactor = if a == m {
-                None
-            } else {
-                Some(Envelope::factor(&m).expect("PᵀLP is positive definite"))
-            };
-            blocks.push(Block {
-                members: order.iter().map(|&q| first_host + q).collect(),
-                factor,
-                mfactor,
-                m,
-                b,
-                dt,
-            });
-        }
+        let blocks: Vec<Block> = comps
+            .iter()
+            .map(|comp| Block::build(comp, &ml, first_host, dt))
+            .collect();
         report.hosts = host_keys.len();
         report.interpolated = stencils.len();
         for (k, a, p, st) in stencils {
@@ -1050,6 +1036,26 @@ fn interpolation_weights(d: &[[f64; 2]]) -> Option<Vec<f64>> {
     w.iter().all(|w| w.abs() <= MAX_WEIGHT).then_some(w)
 }
 
+/// Dual edge length at the open-area centroid `c` (face-side units) of
+/// the face `(a, p)`: the length over which an interpolated small face's
+/// current `i = H·l` is measured. It differs from
+/// [`Grid::dual_edge_length`] (at the face centre) only on the α faces of
+/// a cylindrical grid (`ρ_c·Δα*`, the dual edge running along α).
+fn centroid_dual_length(grid: &Grid, a: Axis, p: [usize; 3], c: [f64; 2]) -> f64 {
+    let l = grid.dual_edge_length(a, p);
+    if !grid.is_cylindrical() || a != Axis::Y {
+        return l;
+    }
+    // (b, c) = (z, ρ).
+    let r = grid.lines(Axis::X);
+    let i = p[0];
+    let mid = 0.5 * (r[i] + r[i + 1]);
+    if mid <= 0.0 {
+        return l;
+    }
+    l * (r[i] + c[1] * (r[i + 1] - r[i])) / mid
+}
+
 /// Adds `w` times the curl of face `(a, p)` to a circulation.
 fn add_terms(
     terms: &mut HashMap<Key, (Axis, [usize; 3], f64)>,
@@ -1095,15 +1101,62 @@ struct Block {
     dt: f64,
 }
 
+/// Mass and loss entries `(PᵀLP, PᵀRP)` of coupled reduced currents, by
+/// local current index: row `q` maps column `k` to `(L, R)`.
+type MassRows = [HashMap<usize, (f64, f64)>];
+
 impl Block {
+    /// The block of the connected local currents `comp` of `ml` (group
+    /// index = `first` + local index), in reverse Cuthill–McKee order.
+    fn build(comp: &[usize], ml: &MassRows, first: usize, dt: f64) -> Self {
+        let adj = |q: usize| -> Vec<usize> {
+            let mut v: Vec<usize> = ml[q].keys().copied().filter(|&k| k != q).collect();
+            v.sort_unstable();
+            v
+        };
+        let order = rcm_order(comp, adj);
+        let pos_of: HashMap<usize, usize> =
+            order.iter().enumerate().map(|(i, &q)| (q, i)).collect();
+        let rows = |f: &dyn Fn(f64, f64) -> f64| -> Vec<Vec<(usize, f64)>> {
+            order
+                .iter()
+                .map(|&q| {
+                    let mut row: Vec<(usize, f64)> = ml[q]
+                        .iter()
+                        .map(|(&k, &(l, r))| (pos_of[&k], f(l, r)))
+                        .collect();
+                    row.sort_by_key(|e| e.0);
+                    row
+                })
+                .collect()
+        };
+        let m = rows(&|l, _| l);
+        let a = rows(&|l, r| l + 0.5 * dt * r);
+        let b = rows(&|l, r| l - 0.5 * dt * r);
+        let factor = Envelope::factor(&a).expect("PᵀLP is positive definite");
+        let mfactor = if a == m {
+            None
+        } else {
+            Some(Envelope::factor(&m).expect("PᵀLP is positive definite"))
+        };
+        Block {
+            members: order.iter().map(|&q| first + q).collect(),
+            factor,
+            mfactor,
+            m,
+            b,
+            dt,
+        }
+    }
+
     /// Writes `g^{n+½}` of the members into `out` (group-indexed), from
-    /// the currents `g^{n−½}` of `groups` and the circulations `c`
-    /// (group-indexed); `x` is scratch.
-    fn advance(&self, groups: &[Group], c: &[f64], x: &mut Vec<f64>, out: &mut [f64]) {
+    /// the currents `g^{n−½}` (`cur`, by group index) and the circulations
+    /// `c` (group-indexed); `x` is scratch.
+    fn advance(&self, cur: &dyn Fn(usize) -> f64, c: &[f64], x: &mut Vec<f64>, out: &mut [f64]) {
         x.clear();
         x.extend(self.b.iter().zip(&self.members).map(|(row, &q)| {
             row.iter()
-                .map(|&(k, v)| v * groups[self.members[k]].i)
+                .map(|&(k, v)| v * cur(self.members[k]))
                 .sum::<f64>()
                 - self.dt * c[q]
         }));
@@ -1470,7 +1523,7 @@ impl MergedFaces {
             out[q] = flush((g.da * g.i - g.db * c[q]) as f32) as f64;
         }
         for b in &self.blocks {
-            b.advance(&self.groups, c, x, out);
+            b.advance(&|q| self.groups[q].i, c, x, out);
         }
     }
 

@@ -12,7 +12,7 @@ use csx::{ContinuousStructure, Material, Primitive, Property, Transform};
 use ems::compile::{CompileOptions, compile};
 use ems::constants::C0;
 use ems::engine::{ConformalReport, EdgeSource, Engine, Probe};
-use ems::{Axis, Fdtd};
+use ems::{Axis, Boundary, Face, Fdtd};
 
 /// First zero of J0 (TM010 of a circular cylinder).
 const J01: f64 = 2.404_825_557_695_773;
@@ -205,7 +205,185 @@ fn cylindrical_shell_tm010_converges() {
         assert!(ec.abs() < 0.2 * es.abs(), "conformal not better at {n}");
         conf.push(ec.abs());
     }
+    // (The coarsest level is pre-asymptotic: +0.17 %, then −0.076 %.)
+    let order = (conf[1] / conf[2]).log2();
+    eprintln!("observed order {order:.2}");
+    assert!(order > 1.8, "order {order} ({conf:?})");
+}
+
+/// First zero of J1' (TE11 of a circular cylinder).
+const J11P: f64 = 1.841_183_781_340_659;
+
+/// TE11 of the circular cavity of [`cylinder_error`] (shell radius 10 mm,
+/// centre off the nodes, 2 cells in z between PMC faces: an `H_z` mode,
+/// carried by the cut z faces at the sheet) with `per_radius` cells per
+/// radius. The mode pair is split by the mesh; x and y dipoles at the
+/// centre (source = probe, signals summed) weigh both partners alike.
+/// `sheet = false`: the staircased solid wall.
+fn cylinder_te11_error(per_radius: usize, sheet: bool) -> (f64, Option<ConformalReport>) {
+    let a = 10.0;
+    let h = a / per_radius as f64;
+    let (cx, cy) = (0.31 * h, 0.17 * h);
+    let ext = a + 2.0 * h;
+    let nx = 2 * (per_radius + 2);
+    let lx = lines(-ext, ext, nx);
+    let lz = lines(0.0, 2.0 * h, 2);
+    let axis = ([cx, cy, -1.0], [cx, cy, 2.0 * h + 1.0]);
+    let m = if sheet {
+        let shell = Primitive::new(CylindricalShell::new(axis.0, axis.1, a, 0.0));
+        model([lx.clone(), lx.clone(), lz], vec![shell])
+    } else {
+        let mut m = model(
+            [lx.clone(), lx.clone(), lz],
+            vec![Primitive::new(BoxShape::new(
+                [-ext - 1.0, -ext - 1.0, -1.0],
+                [ext + 1.0, ext + 1.0, 2.0 * h + 1.0],
+            ))],
+        );
+        let air = m.add_property(Property::material("cavity", Material::new(1.0, 0.0)));
+        m.add_primitive(
+            air,
+            Primitive::new(Cylinder::new(axis.0, axis.1, a)).with_priority(10),
+        )
+        .unwrap();
+        m
+    };
+    let f = J11P * C0 / (2.0 * PI * a * 1e-3);
+    let fdtd = Fdtd::new()
+        .threads(2)
+        .boundary(Face::ZMin, Boundary::Pmc)
+        .boundary(Face::ZMax, Boundary::Pmc);
+    let c = compile(&m, &fdtd, &CompileOptions::default().with_conformal(sheet)).unwrap();
+    let node = [nearest(&lx, cx), nearest(&lx, cy), 1];
+    let bw = 0.4 * f;
+    let mut sum: Vec<f64> = Vec::new();
+    let (mut dt, mut report) = (0.0, None);
+    for axis in [Axis::X, Axis::Y] {
+        let (mut e, hd) = c.build().unwrap();
+        e.add_operator(EdgeSource::new(common::sine_pulse(f, bw)).edge(axis, node, 1.0));
+        let p = e.add_operator(Probe::voltage(axis, node));
+        e.run((60.0 / f / e.dt()) as u64);
+        dt = e.dt();
+        let v = e.operator(&p).values();
+        sum.resize(v.len(), 0.0);
+        for (s, x) in sum.iter_mut().zip(v) {
+            *s += x;
+        }
+        report = hd.conformal;
+    }
+    let first = (common::sine_pulse_duration(bw) / dt).ceil() as usize;
+    let fm = peak(dt, &sum, first, 0.85 * f, 1.15 * f);
+    ((fm - f) / f, report)
+}
+
+#[test]
+fn cylindrical_shell_te11_converges() {
+    let mut conf = Vec::new();
+    for n in [5, 10, 20] {
+        let (es, _) = cylinder_te11_error(n, false);
+        let (ec, rep) = cylinder_te11_error(n, true);
+        let rep = rep.unwrap();
+        eprintln!(
+            "shell TE11, {n} cells/radius: staircase {:+.4}%, conformal sheet {:+.4}% ({rep:?})",
+            es * 100.0,
+            ec * 100.0,
+        );
+        assert!(rep.verified, "{rep:?}");
+        assert!(
+            rep.sheet_interpolated > 0 && rep.sheet_merged == 0,
+            "{rep:?}"
+        );
+        assert!(ec.abs() < 0.05 * es.abs(), "conformal not better at {n}");
+        conf.push(ec.abs());
+    }
+    // Merging the small regions instead (wave 12): +1.41 / +0.567 /
+    // +0.260 %, order 1.2.
     let order = (conf[0] / conf[2]).log2() / 2.0;
+    eprintln!("observed order {order:.2}");
+    assert!(order > 1.9, "order {order} ({conf:?})");
+}
+
+/// Lowest TE mode (`H_z ∝ cos(πx/a) + cos(πy/a)`, `f = c/(2a)`) of the
+/// triangle of [`triangle_error`] between PMC z faces, `n` cells along x
+/// (a planar sheet; `H_z` on the cut z faces). One generic in-plane
+/// dipole drives and probes it.
+fn triangle_te_error(n: usize, sheet: bool) -> (f64, Option<ConformalReport>) {
+    let a = 20.0;
+    let lx = lines(0.0, a, n);
+    let ly = lines(0.0, a, n + 1);
+    let hz = a / n as f64;
+    let lz = lines(0.0, 2.0 * hz, 2);
+    let prim = if sheet {
+        let mut t = Transform::new();
+        t.rotate_axis(2, FRAC_PI_4);
+        Primitive::new(BoxShape::new(
+            [-1.0, 0.0, -1.0],
+            [a * 2f64.sqrt() + 1.0, 0.0, 2.0 * hz + 1.0],
+        ))
+        .with_transform(t)
+    } else {
+        Primitive::new(LinPoly::new(
+            2,
+            -1.0,
+            2.0 * hz + 2.0,
+            vec![(-3.0, -3.0), (a + 3.0, -3.0), (a + 3.0, a + 3.0)],
+        ))
+    };
+    let m = model([lx.clone(), ly.clone(), lz], vec![prim]);
+    let f = C0 / (2.0 * a * 1e-3);
+    let fdtd = Fdtd::new()
+        .threads(2)
+        .boundary(Face::ZMin, Boundary::Pmc)
+        .boundary(Face::ZMax, Boundary::Pmc);
+    let c = compile(&m, &fdtd, &CompileOptions::default().with_conformal(sheet)).unwrap();
+    let node = [nearest(&lx, 0.3 * a), nearest(&ly, 0.62 * a), 1];
+    let bw = 0.4 * f;
+    let (mut e, hd) = c.build().unwrap();
+    let mut src = EdgeSource::new(common::sine_pulse(f, bw));
+    for (axis, w) in [(Axis::X, 0.6), (Axis::Y, 0.8)] {
+        src = src.edge(axis, node, w);
+    }
+    e.add_operator(src);
+    let px = e.add_operator(Probe::voltage(Axis::X, node));
+    let py = e.add_operator(Probe::voltage(Axis::Y, node));
+    e.run((80.0 / f / e.dt()) as u64);
+    let dt = e.dt();
+    let v: Vec<f64> = e
+        .operator(&px)
+        .values()
+        .iter()
+        .zip(e.operator(&py).values())
+        .map(|(x, y)| 0.6 * x + 0.8 * y)
+        .collect();
+    let first = (common::sine_pulse_duration(bw) / dt).ceil() as usize;
+    let fm = peak(dt, &v, first, 0.85 * f, 1.15 * f);
+    ((fm - f) / f, hd.conformal)
+}
+
+#[test]
+fn diagonal_plate_triangle_te() {
+    let mut conf = Vec::new();
+    for n in [20, 40, 80] {
+        let (es, _) = triangle_te_error(n, false);
+        let (ec, rep) = triangle_te_error(n, true);
+        let rep = rep.unwrap();
+        eprintln!(
+            "triangle TE10, n = {n}: staircase {:+.4}%, conformal plate {:+.4}% \
+             ({} interpolated, {} merged, s = {:.4})",
+            es * 100.0,
+            ec * 100.0,
+            rep.sheet_interpolated,
+            rep.sheet_merged,
+            rep.stability
+        );
+        assert!(rep.verified, "{rep:?}");
+        assert!(ec.abs() < 0.05 * es.abs(), "conformal not better at {n}");
+        conf.push(ec.abs());
+    }
+    // Merging the small regions instead (wave 12): +2.29 / +1.19 % at
+    // n = 20 / 40 (first order). The corners (merged regions where the
+    // plate meets the box) make n = 20 pre-asymptotic.
+    let order = (conf[1] / conf[2]).log2();
     eprintln!("observed order {order:.2}");
     assert!(order > 1.6, "order {order} ({conf:?})");
 }

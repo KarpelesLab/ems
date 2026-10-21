@@ -592,6 +592,7 @@ fn face_regions_with(
         return vec![SheetRegion {
             fraction: 1.0,
             pieces,
+            centroid: Some([0.5, 0.5]),
         }];
     }
     // Arc sides: arc m − 1 holds the start corner; sides alternate.
@@ -599,6 +600,9 @@ fn face_regions_with(
     // Region of each arc: 0 = the negative (convex) side, else own.
     let mut region = vec![0usize; m];
     let mut fractions = vec![0.0];
+    // Unweighted polygon area and first moments in face-side units, for
+    // the centroids (the negative region's is the complement's).
+    let mut moments = vec![[0.0; 3]];
     for j in 0..m {
         let (p0, p1) = (ev[j].0, ev[(j + 1) % m].0);
         let p1w = if j + 1 == m { p1 + 4.0 } else { p1 };
@@ -615,12 +619,21 @@ fn face_regions_with(
             if sep {
                 region[j] = fractions.len();
                 fractions.push(a);
+                let unit: Vec<(f64, f64)> = poly.iter().map(|&(u, v)| (u / lb, v / lc)).collect();
+                moments.push(polygon_moments(&unit));
             }
         }
     }
     // The negative region: everything not in a separate positive region.
     let sep_total: f64 = fractions[1..].iter().sum();
     fractions[0] = (1.0 - sep_total).max(0.0);
+    let mut rest = [1.0, 0.5, 0.5];
+    for m in &moments[1..] {
+        for (r, m) in rest.iter_mut().zip(m) {
+            *r -= m;
+        }
+    }
+    moments[0] = rest;
     let mut pieces: Vec<Vec<(u8, u8)>> = vec![Vec::new(); fractions.len()];
     for q in 0..4 {
         for (k, p) in pieces_of(q) {
@@ -630,12 +643,30 @@ fn face_regions_with(
     fractions
         .into_iter()
         .zip(pieces)
-        .filter(|(_, p)| !p.is_empty())
-        .map(|(fraction, pieces)| SheetRegion {
+        .zip(moments)
+        .filter(|((_, p), _)| !p.is_empty())
+        .map(|((fraction, pieces), m)| SheetRegion {
             fraction: fraction.clamp(0.0, 1.0),
             pieces,
+            centroid: (m[0] > 1e-12)
+                .then(|| [(m[1] / m[0]).clamp(0.0, 1.0), (m[2] / m[0]).clamp(0.0, 1.0)]),
         })
         .collect()
+}
+
+/// `[area, ∫x, ∫y]` of a simple polygon (either orientation).
+fn polygon_moments(poly: &[(f64, f64)]) -> [f64; 3] {
+    let (mut a2, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for q in 0..poly.len() {
+        let (x0, y0) = poly[q];
+        let (x1, y1) = poly[(q + 1) % poly.len()];
+        let cr = x0 * y1 - x1 * y0;
+        a2 += cr;
+        cx += (x0 + x1) * cr;
+        cy += (y0 + y1) * cr;
+    }
+    let sign = if a2 < 0.0 { -1.0 } else { 1.0 };
+    [0.5 * a2 * sign, cx / 6.0 * sign, cy / 6.0 * sign]
 }
 
 #[cfg(test)]
@@ -664,6 +695,18 @@ mod tests {
         assert!((pos.fraction - tri).abs() < 1e-12, "{r:?}");
         assert!((neg.fraction - (1.0 - tri)).abs() < 1e-12);
         assert_eq!(pos.pieces, vec![(0, 0), (3, 0)]);
+        // Centroids: the triangle's, and the complement's.
+        let c = pos.centroid.unwrap();
+        assert!(
+            (c[0] - 0.25 / 3.0).abs() < 1e-12 && (c[1] - 0.25).abs() < 1e-12,
+            "{c:?}"
+        );
+        let c = neg.centroid.unwrap();
+        let want = [
+            (0.5 - tri * 0.25 / 3.0) / (1.0 - tri),
+            (0.5 - tri * 0.25) / (1.0 - tri),
+        ];
+        assert!((c[0] - want[0]).abs() < 1e-12 && (c[1] - want[1]).abs() < 1e-12);
         assert_eq!(neg.pieces, vec![(0, 1), (1, 0), (2, 0), (3, 1)]);
     }
 
