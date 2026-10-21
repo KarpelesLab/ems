@@ -42,148 +42,287 @@
 //!
 //! openEMS's console announces `PEC_dump.vtk`, `material_dump.vtk` and
 //! `operator_dump.vtk` but writes the extensions above.
+//!
+//! # Cylindrical grids
+//!
+//! The same arrays and components, in `(ρ, α, z)` (black box, fixtures
+//! `cli_debug_cyl`, `cli_debug_cyl_sector`):
+//!
+//! * the material and operator dumps are VTK XML `StructuredGrid`s
+//!   (`material_dump.vts`, `operator_dump.vts`) whose points are the
+//!   Cartesian positions `(ρ·cos α, ρ·sin α, z)` of the mesh nodes (`f32`
+//!   of the `f64` products); on a closed grid (α span 2π) the last α
+//!   line is placed at exactly `α_0 + 2π`, and openEMS adds one α line,
+//!   `α_1 + 2π`, past it. ems shows the physical
+//!   edge on every point: on a closed grid the `2π` line and the extra
+//!   line repeat the `α = 0` and `α_1` lines, and an edge stored in
+//!   several copies (the seam of a closed grid, the axis z edge) shows
+//!   the merged edge (ε, κ weighted by the copies' dual-face parts; `vv`,
+//!   `vi` from `1/cb = Σ 1/cb_j`, `ca/cb = Σ ca_j/cb_j`). openEMS instead
+//!   evaluates materials at the literal angles (the extra line and the
+//!   halves past `2π` or below 0 are background), updates the seam's ρ
+//!   and z edges on the `2π` line only (`vv` = `vi` = 0 on `α = 0` and on
+//!   the extra line) and leaves the axis z edge out of the dump (0);
+//! * `PEC_dump.vtp` has Cartesian points as well, and visits the edges
+//!   with z outermost, then ρ, α innermost; a seam edge of a closed grid
+//!   is drawn once, on the `2π` line; axis z edges are not drawn (openEMS
+//!   draws none for a metal rod on the axis).
+//!
+//! An empty PEC dump has openEMS's range `1e+299` / `-1e+299`.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::dump::{f32_bytes, norm_range, printf_g11, vtk_binary, vtk_rectilinear};
+use super::dump::{
+    f32_bytes, norm_range, printf_g11, vtk_binary, vtk_rectilinear, vtk_structured_cyl,
+};
+use crate::engine::cylindrical::e_edge_copies;
 use crate::engine::{Coefficients, EdgeMaterials, Grid};
 use crate::{Axis, Error, Result};
 
-/// File name of [`material_dump`].
+/// File name of [`material_dump`] on Cartesian grids
+/// ([`material_dump_file`]).
 pub const MATERIAL_DUMP_FILE: &str = "material_dump.vtr";
-/// File name of [`operator_dump`].
+/// File name of [`operator_dump`] on Cartesian grids
+/// ([`operator_dump_file`]).
 pub const OPERATOR_DUMP_FILE: &str = "operator_dump.vtr";
 /// File name of [`pec_dump`].
 pub const PEC_DUMP_FILE: &str = "PEC_dump.vtp";
+
+/// File name of [`material_dump`] for `grid`: [`MATERIAL_DUMP_FILE`], or
+/// `material_dump.vts` on cylindrical grids.
+pub fn material_dump_file(grid: &Grid) -> &'static str {
+    if grid.is_cylindrical() {
+        "material_dump.vts"
+    } else {
+        MATERIAL_DUMP_FILE
+    }
+}
+
+/// File name of [`operator_dump`] for `grid`: [`OPERATOR_DUMP_FILE`], or
+/// `operator_dump.vts` on cylindrical grids.
+pub fn operator_dump_file(grid: &Grid) -> &'static str {
+    if grid.is_cylindrical() {
+        "operator_dump.vts"
+    } else {
+        OPERATOR_DUMP_FILE
+    }
+}
 
 fn write(path: &Path, text: &str) -> Result<PathBuf> {
     std::fs::write(path, text).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
     Ok(path.to_path_buf())
 }
 
-fn cartesian(grid: &Grid, what: &str) -> Result<()> {
-    if grid.is_cylindrical() {
-        return Err(Error::Invalid(format!(
-            "the {what} debug dump is only written for Cartesian grids"
-        )));
-    }
-    Ok(())
+/// The point lattice of the material and operator dumps: the mesh lines,
+/// plus, on a closed cylindrical grid, the image `α_1 + 2π` of the
+/// second α line (see the [module docs](self)).
+struct Layout<'g> {
+    grid: &'g Grid,
+    /// Closed cylindrical grids: the number of distinct α lines (the
+    /// `2π` line is the `α = 0` line).
+    period: Option<usize>,
+    coords: [Vec<f64>; 3],
 }
 
-/// Per-node 3-vectors in VTK point order (x fastest) of three per-axis
-/// arrays in engine order.
-fn vtk_vectors(grid: &Grid, f: impl Fn(Axis, usize) -> f64) -> Vec<[f32; 3]> {
-    let n = grid.nodes();
-    let mut out = Vec::with_capacity(grid.num_nodes());
-    for k in 0..n[2] {
-        for j in 0..n[1] {
-            for i in 0..n[0] {
-                let idx = grid.index([i, j, k]);
-                out.push(Axis::ALL.map(|a| f(a, idx) as f32));
-            }
+/// The mesh lines as openEMS places the dump points: on a closed grid
+/// the last α line is exactly `α_0 + 2π`.
+fn point_lines(grid: &Grid) -> [Vec<f64>; 3] {
+    let mut coords = Axis::ALL.map(|a| grid.lines(a).to_vec());
+    if grid.is_closed() {
+        let a = &mut coords[1];
+        let n = a.len();
+        a[n - 1] = a[0] + core::f64::consts::TAU;
+    }
+    coords
+}
+
+impl<'g> Layout<'g> {
+    fn new(grid: &'g Grid) -> Self {
+        let mut coords = point_lines(grid);
+        let period = grid.is_closed().then(|| {
+            let a = &mut coords[1];
+            let n = a.len();
+            a.push(a[1] + core::f64::consts::TAU);
+            n - 1
+        });
+        Self {
+            grid,
+            period,
+            coords,
         }
     }
-    out
-}
 
-/// Like [`vtk_vectors`], with the node indices.
-fn node_vectors(grid: &Grid, f: impl Fn(Axis, [usize; 3]) -> f64) -> Vec<[f32; 3]> {
-    let n = grid.nodes();
-    let mut out = Vec::with_capacity(grid.num_nodes());
-    for k in 0..n[2] {
-        for j in 0..n[1] {
-            for i in 0..n[0] {
-                out.push(Axis::ALL.map(|a| f(a, [i, j, k]) as f32));
+    fn dims(&self) -> [usize; 3] {
+        self.coords.each_ref().map(Vec::len)
+    }
+
+    /// The engine node shown at dump point `p`: itself, but on closed
+    /// grids the α index modulo the period (the `2π` line and the extra
+    /// line show the `α = 0` and `α_1` lines).
+    fn node(&self, mut p: [usize; 3]) -> [usize; 3] {
+        if let Some(n) = self.period {
+            p[1] %= n;
+        }
+        p
+    }
+
+    /// Per-point 3-vectors in VTK point order (x fastest) of a function
+    /// of the axis and the engine node.
+    fn vectors(&self, f: impl Fn(Axis, [usize; 3]) -> f64) -> Vec<[f32; 3]> {
+        let n = self.dims();
+        let mut out = Vec::with_capacity(n.iter().product());
+        for k in 0..n[2] {
+            for j in 0..n[1] {
+                for i in 0..n[0] {
+                    let q = self.node([i, j, k]);
+                    out.push(Axis::ALL.map(|a| f(a, q) as f32));
+                }
             }
         }
+        out
     }
-    out
+
+    fn file(&self, arrays: &[(&str, &[[f32; 3]])]) -> String {
+        let c = [
+            &self.coords[0][..],
+            &self.coords[1][..],
+            &self.coords[2][..],
+        ];
+        if self.grid.is_cylindrical() {
+            vtk_structured_cyl(c, arrays)
+        } else {
+            vtk_rectilinear(c, arrays)
+        }
+    }
+
+    /// The stored copies of the physical E edge along `axis` at engine
+    /// node `p`: the α copies of an axis z edge and both copies of an
+    /// edge on the seam of a closed grid, else the edge itself.
+    fn copies(&self, axis: Axis, p: [usize; 3]) -> Vec<[usize; 3]> {
+        if self.grid.is_cylindrical() {
+            e_edge_copies(self.grid, axis, p)
+        } else {
+            vec![p]
+        }
+    }
 }
 
-fn lines(grid: &Grid) -> [&[f64]; 3] {
-    Axis::ALL.map(|a| grid.lines(a))
-}
-
-/// The text of `material_dump.vtr` (see the [module docs](self)).
+/// The text of `material_dump.vtr` (`.vts` on cylindrical grids; see the
+/// [module docs](self)).
 ///
 /// # Errors
-/// [`Error::Invalid`] on a cylindrical grid or if `mats` does not match
-/// `grid`.
+/// [`Error::Invalid`] if `mats` does not match `grid`.
 pub fn material_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
-    cartesian(grid, "material")?;
     if mats.nodes() != grid.nodes() {
         return Err(Error::Invalid(
             "edge materials do not match the grid".into(),
         ));
     }
+    let lay = Layout::new(grid);
     // Edges outside the mesh report the edge one line inside (openEMS).
     let n = grid.nodes();
-    let clamp = |p: [usize; 3], axes: &[usize]| -> usize {
+    let clamp = |p: [usize; 3], axes: &[usize]| -> [usize; 3] {
         let mut q = p;
         for &d in axes {
             if n[d] > 1 && q[d] + 1 >= n[d] {
                 q[d] = n[d] - 2;
             }
         }
-        grid.index(q)
+        q
     };
     let primary = |a: Axis, p: [usize; 3]| clamp(p, &[a.index()]);
     let dual = |a: Axis, p: [usize; 3]| {
         let (b, c) = a.others();
-        clamp(p, &[b.index(), c.index()])
+        grid.index(clamp(p, &[b.index(), c.index()]))
     };
-    let eps = node_vectors(grid, |a, p| mats.eps_r(a)[primary(a, p)]);
-    let mu = node_vectors(grid, |a, p| mats.mu_r(a)[dual(a, p)]);
-    let kappa = node_vectors(grid, |a, p| mats.kappa(a)[primary(a, p)]);
-    let sigma = node_vectors(grid, |a, p| mats.sigma_m(a)[dual(a, p)]);
-    Ok(vtk_rectilinear(
-        lines(grid),
-        &[
-            ("epsilon", &eps),
-            ("mue", &mu),
-            ("kappa", &kappa),
-            ("sigma", &sigma),
-        ],
-    ))
+    // A primary edge stored in several copies (cylindrical axis and seam)
+    // shows the physical edge: the copies' values weighted by their parts
+    // of the dual face.
+    let edge = |vals: &[f64], a: Axis, p: [usize; 3]| -> f64 {
+        let p = primary(a, p);
+        let copies = lay.copies(a, p);
+        if copies.len() == 1 {
+            return vals[grid.index(p)];
+        }
+        let (mut num, mut den) = (0.0, 0.0);
+        for c in copies {
+            let w = grid.dual_face_area(a, c);
+            num += w * vals[grid.index(c)];
+            den += w;
+        }
+        if den > 0.0 {
+            num / den
+        } else {
+            vals[grid.index(p)]
+        }
+    };
+    let eps = lay.vectors(|a, p| edge(mats.eps_r(a), a, p));
+    let mu = lay.vectors(|a, p| mats.mu_r(a)[dual(a, p)]);
+    let kappa = lay.vectors(|a, p| edge(mats.kappa(a), a, p));
+    let sigma = lay.vectors(|a, p| mats.sigma_m(a)[dual(a, p)]);
+    Ok(lay.file(&[
+        ("epsilon", &eps),
+        ("mue", &mu),
+        ("kappa", &kappa),
+        ("sigma", &sigma),
+    ]))
 }
 
-/// The text of `operator_dump.vtr` (see the [module docs](self)):
-/// `coeffs` the engine's update coefficients, `exc_volt` the E source
-/// voltage amplitudes per edge `(axis, engine node, volts)` (summed where
-/// several sources share an edge).
+/// The text of `operator_dump.vtr` (`.vts` on cylindrical grids; see the
+/// [module docs](self)): `coeffs` the engine's update coefficients,
+/// `exc_volt` the E source voltage amplitudes per edge `(axis, engine
+/// node, volts)` (summed where several sources share an edge).
 ///
 /// # Errors
-/// [`Error::Invalid`] on a cylindrical grid or if `coeffs` does not match
-/// `grid`.
+/// [`Error::Invalid`] if `coeffs` does not match `grid`.
 pub fn operator_dump(
     grid: &Grid,
     coeffs: &Coefficients,
     exc_volt: &[(Axis, [usize; 3], f64)],
 ) -> Result<String> {
-    cartesian(grid, "operator")?;
     if coeffs.nodes() != grid.nodes() {
         return Err(Error::Invalid("coefficients do not match the grid".into()));
     }
+    let lay = Layout::new(grid);
     let mut exc = [0, 1, 2].map(|_| vec![0.0f64; grid.num_nodes()]);
     for &(a, node, v) in exc_volt {
         exc[a.index()][grid.index(node)] += v;
     }
-    let exc = vtk_vectors(grid, |a, i| exc[a.index()][i]);
-    let vv = vtk_vectors(grid, |a, i| f64::from(coeffs.ca(a)[i]));
-    let vi = vtk_vectors(grid, |a, i| f64::from(coeffs.cb(a)[i]));
-    let iv = vtk_vectors(grid, |a, i| f64::from(coeffs.db(a)[i]));
-    let ii = vtk_vectors(grid, |a, i| f64::from(coeffs.da(a)[i]));
-    Ok(vtk_rectilinear(
-        lines(grid),
-        &[
-            ("exc_volt", &exc),
-            ("vv", &vv),
-            ("vi", &vi),
-            ("iv", &iv),
-            ("ii", &ii),
-        ],
-    ))
+    // The update of the physical edge of stored copies: `1/cb = Σ 1/cb_j`,
+    // `ca/cb = Σ ca_j/cb_j` (the merge of design §5.6.1); 0 if a copy is
+    // not updated (PEC).
+    let merged = |a: Axis, p: [usize; 3]| -> (f64, f64) {
+        let (ca, cb) = (coeffs.ca(a), coeffs.cb(a));
+        let copies = lay.copies(a, p);
+        if copies.len() == 1 {
+            let i = grid.index(p);
+            return (f64::from(ca[i]), f64::from(cb[i]));
+        }
+        let (mut w, mut wa) = (0.0, 0.0);
+        for c in copies {
+            let i = grid.index(c);
+            let b = f64::from(cb[i]);
+            if b == 0.0 {
+                return (0.0, 0.0);
+            }
+            w += 1.0 / b;
+            wa += f64::from(ca[i]) / b;
+        }
+        (wa / w, 1.0 / w)
+    };
+    let exc = lay.vectors(|a, p| exc[a.index()][grid.index(p)]);
+    let vv = lay.vectors(|a, p| merged(a, p).0);
+    let vi = lay.vectors(|a, p| merged(a, p).1);
+    let iv = lay.vectors(|a, p| f64::from(coeffs.db(a)[grid.index(p)]));
+    let ii = lay.vectors(|a, p| f64::from(coeffs.da(a)[grid.index(p)]));
+    Ok(lay.file(&[
+        ("exc_volt", &exc),
+        ("vv", &vv),
+        ("vi", &vi),
+        ("iv", &iv),
+        ("ii", &ii),
+    ]))
 }
 
 /// `name="value"` padded like VTK's appended-format headers (value and
@@ -198,38 +337,74 @@ fn attr(name: &str, value: &str) -> String {
 /// The text of `PEC_dump.vtp` (see the [module docs](self)).
 ///
 /// # Errors
-/// [`Error::Invalid`] on a cylindrical grid or if `mats` does not match
-/// `grid`.
+/// [`Error::Invalid`] if `mats` does not match `grid`.
 pub fn pec_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
-    cartesian(grid, "PEC")?;
     if mats.nodes() != grid.nodes() {
         return Err(Error::Invalid(
             "edge materials do not match the grid".into(),
         ));
     }
     let n = grid.nodes();
+    let cyl = grid.is_cylindrical();
     let mut ids = std::collections::HashMap::new();
     let mut points: Vec<[f32; 3]> = Vec::new();
+    let point_lines = point_lines(grid);
     let mut id = |p: [usize; 3]| -> i64 {
         *ids.entry(p).or_insert_with(|| {
-            points.push(Axis::ALL.map(|a| grid.lines(a)[p[a.index()]] as f32));
+            let [x, y, z] = Axis::ALL.map(|a| point_lines[a.index()][p[a.index()]]);
+            points.push(if cyl {
+                let (s, c) = y.sin_cos();
+                [(x * c) as f32, (x * s) as f32, z as f32]
+            } else {
+                [x as f32, y as f32, z as f32]
+            });
             (points.len() - 1) as i64
         })
     };
+    // Cylindrical: a seam edge of a closed grid is drawn once, on the
+    // `2π` line, PEC if any copy is; axis z edges are not drawn.
+    let is_pec = |a: Axis, p: [usize; 3]| -> bool {
+        if !cyl {
+            return mats.pec_mask(a)[grid.index(p)];
+        }
+        if a == Axis::Z && p[0] == 0 && grid.has_axis() {
+            return false;
+        }
+        if grid.is_closed() && a != Axis::Y && p[1] == 0 {
+            return false;
+        }
+        e_edge_copies(grid, a, p)
+            .iter()
+            .any(|&c| mats.pec_mask(a)[grid.index(c)])
+    };
     let mut conn: Vec<i64> = Vec::new();
-    for i in 0..n[0] {
-        for j in 0..n[1] {
-            for k in 0..n[2] {
-                let p = [i, j, k];
-                for a in Axis::ALL {
-                    let d = a.index();
-                    if p[d] + 1 >= n[d] || !mats.pec_mask(a)[grid.index(p)] {
-                        continue;
-                    }
-                    let mut q = p;
-                    q[d] += 1;
-                    conn.push(id(p));
-                    conn.push(id(q));
+    let mut visit = |p: [usize; 3]| {
+        for a in Axis::ALL {
+            let d = a.index();
+            if p[d] + 1 >= n[d] || !is_pec(a, p) {
+                continue;
+            }
+            let mut q = p;
+            q[d] += 1;
+            conn.push(id(p));
+            conn.push(id(q));
+        }
+    };
+    // openEMS's order: x outermost, z innermost; on cylindrical grids z
+    // outermost, then ρ, α innermost.
+    if cyl {
+        for k in 0..n[2] {
+            for i in 0..n[0] {
+                for j in 0..n[1] {
+                    visit([i, j, k]);
+                }
+            }
+        }
+    } else {
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                for k in 0..n[2] {
+                    visit([i, j, k]);
                 }
             }
         }
@@ -265,7 +440,8 @@ pub fn pec_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
     s.push_str("      <PointData>\n      </PointData>\n      <CellData>\n      </CellData>\n");
     s.push_str("      <Points>\n");
     let (lo, hi) = if points.is_empty() {
-        (String::new(), String::new())
+        // openEMS: VTK's initial range of an empty array.
+        ("1e+299".to_string(), "-1e+299".to_string())
     } else {
         (printf_g11(range.0), printf_g11(range.1))
     };
@@ -330,7 +506,8 @@ pub fn box_dump(start: [f64; 3], stop: [f64; 3]) -> String {
     s
 }
 
-/// Writes [`material_dump`] as `dir/material_dump.vtr`.
+/// Writes [`material_dump`] as `dir/material_dump.vtr` (`.vts` on
+/// cylindrical grids).
 ///
 /// # Errors
 /// See [`material_dump`]; I/O errors.
@@ -340,12 +517,13 @@ pub fn write_material_dump(
     mats: &EdgeMaterials,
 ) -> Result<PathBuf> {
     write(
-        &dir.as_ref().join(MATERIAL_DUMP_FILE),
+        &dir.as_ref().join(material_dump_file(grid)),
         &material_dump(grid, mats)?,
     )
 }
 
-/// Writes [`operator_dump`] as `dir/operator_dump.vtr`.
+/// Writes [`operator_dump`] as `dir/operator_dump.vtr` (`.vts` on
+/// cylindrical grids).
 ///
 /// # Errors
 /// See [`operator_dump`]; I/O errors.
@@ -356,7 +534,7 @@ pub fn write_operator_dump(
     exc_volt: &[(Axis, [usize; 3], f64)],
 ) -> Result<PathBuf> {
     write(
-        &dir.as_ref().join(OPERATOR_DUMP_FILE),
+        &dir.as_ref().join(operator_dump_file(grid)),
         &operator_dump(grid, coeffs, exc_volt)?,
     )
 }

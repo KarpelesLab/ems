@@ -68,7 +68,8 @@ command line in the case's `meta.txt`:
   line of the case's `meta.txt`.
 - `gen-cyl.sh [CASE...]` regenerates the `cyl_*` cases (cylindrical-grid
   features: conducting sheets on ρ, α and z surfaces, SAR dumps incl.
-  1 g averaging, plane waves, `CellConstantMaterial`, sources and lumped
+  1 g averaging, plane waves, `CellConstantMaterial`, radial material
+  interfaces (`cyl_radial`), sources and lumped
   elements at α > π and a lumped ring ending at α = 2π;
   `tests/openems_cyl.rs`, `tests/openems_dumps.rs`), copying back the
   files listed on the `keep:` line of the case's `meta.txt` (shell
@@ -84,7 +85,8 @@ command line in the case's `meta.txt`:
   copies back the files on its `keep:` line, and records the exit status
   and the names of all files written (`exit:`, `files:`), the console
   output without wall-clock lines (`console.txt`) and the HDF5 structure
-  (`structure.txt`); `cli_exit` holds openEMS's exit status for
+  (`structure.txt`); `cli_debug_cyl` and `cli_debug_cyl_sector` hold the
+  debug dumps of cylindrical grids; `cli_exit` holds openEMS's exit status for
   command-line errors and special invocations (`codes.txt`) and the
   options its `--help` lists (`options.txt`).
 - `gen-nf2ff.sh` regenerates the `nf2ff_*` cases of the `nf2ff` tool

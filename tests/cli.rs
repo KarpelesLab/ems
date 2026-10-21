@@ -558,6 +558,113 @@ fn debug_files() {
     assert!(!r.dir.join("ut1").exists());
 }
 
+/// The debug files on cylindrical grids (`cli_debug_cyl`: closed azimuth
+/// with the axis, a dielectric, a metal block on the seam, a lumped
+/// resistor; `cli_debug_cyl_sector`: a sector on a graded radial mesh):
+/// the same files (`.vts` structured grids with Cartesian points, the
+/// extra `α_1 + 2π` line of a closed grid), the same PEC edges and points,
+/// and the same values wherever both codes describe the same edge: every
+/// material average (openEMS's radial weights on the file path,
+/// `compile::cylavg`) and every update coefficient (both runs use
+/// `TimeStep` 4e-13 s). Masked, as documented in `io::openems::debug`:
+/// on a closed grid the `2π` line and the extra line (openEMS: literal
+/// angles; ems: the periodic images) and the `α = 0` copies of ρ and z
+/// edges (openEMS updates the `2π` copy only); the axis z edge (outside
+/// openEMS's dumped operator); H dual edges crossing an outer face
+/// (openEMS's `iv` uses the whole dual length) and faces past the last
+/// line.
+#[test]
+fn debug_files_cylindrical() {
+    for (case, closed, axis) in [
+        ("cli_debug_cyl", true, true),
+        ("cli_debug_cyl_sector", false, false),
+    ] {
+        let r = run_case(case);
+        assert_eq!(r.code.to_string(), meta(case, "exit"), "{case}: exit");
+        assert_eq!(written(&r.dir), oracle_files(case), "{case}: files");
+        let read = |d: &Path, f: &str| std::fs::read_to_string(d.join(f)).unwrap();
+        for f in ["PEC_dump.vtp", "material_dump.vts", "operator_dump.vts"] {
+            assert_eq!(
+                vtk_skeleton(&read(&fixture(case), f)),
+                vtk_skeleton(&read(&r.dir, f)),
+                "{case}/{f}: structure"
+            );
+        }
+        let piece = |t: &str| t.lines().find(|l| l.contains("<Piece")).map(str::to_string);
+        assert_eq!(
+            piece(&read(&fixture(case), "PEC_dump.vtp")),
+            piece(&read(&r.dir, "PEC_dump.vtp")),
+            "{case}: PEC piece"
+        );
+        #[cfg(feature = "hdf5-deflate")]
+        {
+            let a = payload::appended(&read(&fixture(case), "PEC_dump.vtp"));
+            let b = payload::appended(&read(&r.dir, "PEC_dump.vtp"));
+            assert_eq!(a, b, "{case}: PEC points and lines");
+            let ext = read(&fixture(case), "material_dump.vts");
+            let ext: Vec<usize> = ext
+                .split("WholeExtent=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let (nx, ny, nz) = (ext[1] + 1, ext[3] + 1, ext[5] + 1);
+            // (array, component, i, j, k) -> compared?
+            let keep = |name: &str, c: usize, i: usize, j: usize, k: usize| -> bool {
+                let e_side = !matches!(name, "iv" | "ii" | "mue" | "sigma");
+                if closed && (j + 2 >= ny || (j == 0 && c != 1 && matches!(name, "vv" | "vi"))) {
+                    return false;
+                }
+                if axis && c == 2 && i == 0 && matches!(name, "vv" | "vi") {
+                    return false;
+                }
+                if !e_side && matches!(name, "iv" | "ii") {
+                    let p = [i, j, k];
+                    let last = [nx - 1, ny - 1, nz - 1];
+                    if p[c] == 0 || p[c] == last[c] {
+                        return false;
+                    }
+                    if (0..3).any(|o| o != c && p[o] == last[o]) {
+                        return false;
+                    }
+                }
+                true
+            };
+            for f in ["material_dump.vts", "operator_dump.vts"] {
+                let a = payload::inline(&read(&fixture(case), f));
+                let b = payload::inline(&read(&r.dir, f));
+                assert_eq!(a.len(), b.len(), "{case}/{f}");
+                for ((na, va), (nb, vb)) in a.iter().zip(&b) {
+                    assert_eq!(na, nb, "{case}/{f}");
+                    assert_eq!(va.len(), vb.len(), "{case}/{f} {na}");
+                    let scale = va.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+                    let (mut worst, mut compared) = (0.0f64, 0usize);
+                    for (idx, (x, y)) in va.iter().zip(vb).enumerate() {
+                        let (p, c) = (idx / 3, idx % 3);
+                        let (i, j, k) = (p % nx, (p / nx) % ny, p / (nx * ny));
+                        if na != "Points" && !keep(na, c, i, j, k) {
+                            continue;
+                        }
+                        compared += 1;
+                        worst = worst.max((x - y).abs());
+                    }
+                    eprintln!(
+                        "{case}/{f} {na}: {compared} of {} values compared, max |diff| {worst:.1e} \
+                         (scale {scale:.1e})",
+                        va.len()
+                    );
+                    assert!(compared * 3 > va.len(), "{case}/{f} {na}: too few compared");
+                    assert!(worst <= 1e-6 * scale.max(1e-30), "{case}/{f} {na}");
+                }
+            }
+        }
+    }
+}
+
 /// `--disable-dumps`: no dump files, but the boxes of the disabled dumps
 /// are still written. (openEMS v0.37 exits with status 1 after such a run,
 /// reporting an internal error; ems exits normally.)

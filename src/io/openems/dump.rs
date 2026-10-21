@@ -642,6 +642,17 @@ pub(crate) fn vtk_rectilinear(coords: [&[f64]; 3], arrays: &[(&str, &[[f32; 3]])
     .file_with(arrays)
 }
 
+/// Like [`vtk_rectilinear`], for a cylindrical grid: a `StructuredGrid`
+/// whose points are the Cartesian positions of the `(ρ, α, z)` lines
+/// `coords` (the array values are written as given).
+pub(crate) fn vtk_structured_cyl(coords: [&[f64]; 3], arrays: &[(&str, &[[f32; 3]])]) -> String {
+    VtkGrid {
+        coords,
+        cylindrical: true,
+    }
+    .file_with(arrays)
+}
+
 fn vtk_grid<'a>(s: &'a FieldSampler, cylindrical: bool) -> VtkGrid<'a> {
     VtkGrid {
         coords: [s.coords(Axis::X), s.coords(Axis::Y), s.coords(Axis::Z)],

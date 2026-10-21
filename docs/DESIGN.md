@@ -2079,6 +2079,38 @@ them.
 from the outer edge only). Dump coordinates are `(ρ, α, z)`, so VTK files
 show the parameter box, not the physical cylinder.
 
+**Debug dumps** (`ems --debug-material`, `--debug-operator`,
+`--debug-PEC`; `io::openems::debug`; fixtures `cli_debug_cyl` (closed
+azimuth with the axis, a lossy dielectric, a metal block on the seam, a
+lumped resistor) and `cli_debug_cyl_sector` (a sector on a graded radial
+mesh), `tests/cli.rs`). openEMS (black box) writes the material and
+operator dumps as VTK `StructuredGrid`s, `material_dump.vts` and
+`operator_dump.vts`, with the arrays and component layout of the
+Cartesian files and Cartesian `f32` points `(ρ·cos α, ρ·sin α, z)`; on a
+closed grid the last α line is placed at exactly `α_0 + 2π` and one more
+line, `α_1 + 2π`, follows it (26 points for 25 lines). `PEC_dump.vtp`
+keeps its PolyData layout with Cartesian points, visiting the edges
+with z outermost, then ρ, α innermost (Cartesian: x outermost, z
+innermost); seam edges are drawn on the `2π` line, axis z edges not at
+all (a metal rod on the axis gives an empty dump). ems writes the same
+files with its own values: every point shows the physical edge (on a
+closed grid the `2π` and the extra line repeat the `α = 0` and `α_1`
+lines; edges stored in several copies, the seam and the axis z edge,
+show the merged edge: ε, κ weighted by the copies' dual-face parts,
+`1/vi = Σ 1/cb_j`, `vv/vi = Σ ca_j/cb_j`). Agreement (both runs with
+`TimeStep` 4e-13 s): points and PEC lines identical; every material
+value (with openEMS's radial weights on the file path, below) and every
+update coefficient equal to float precision (`vi` 1.5e-5 of 230), except
+where the codes describe different things: openEMS evaluates materials
+at the literal angles (its `2π` line sees background past `2π`, its
+extra line is all background), updates the seam's ρ and z edges on the
+`2π` line only (`vv` = `vi` = 0 at `α = 0` and on the extra line),
+leaves the axis z edge out of its dumped operator (0), and its `iv` of H
+dual edges crossing an outer face uses the whole dual length (twice
+ems's half inside the domain; these H components are fixed by the face
+condition). An empty PEC dump carries openEMS's range `1e+299` /
+`-1e+299`.
+
 **Boundaries.** CPML and Mur work on the z faces as on Cartesian grids
 (coax TEM reflection −86 dB with CPML(8)). A PML on the `ρ_max` face is the
 cylindrical PML of §5.15.2 (−94 dB at 58 mm with 8 cells). Mur there uses
@@ -2122,12 +2154,33 @@ averages (openEMS's material dump against ems's) agree on every ρ and α
 edge; on z edges at a radial interface openEMS weighs the two radial
 halves of the dual face by `Δρ_h` times the radius of the dual line
 bounding each half instead of their annular areas `Δρ_h·ρ̄_h` (first
-order in `Δρ/ρ`; ems keeps the exact areas), which shows as
-1.2e-4…1.7e-3 in the probes. Without `CellConstantMaterial` csx's
-averaging differs from openEMS's on α edges too (csx weighs the radial
-halves of an α edge's dual face by ρ, openEMS equally; the exact
-parallel capacitance of the two halves weighs them by `Δρ_h/ρ_h`):
-4e-4…3.9e-3 on the same box snapped to the cells.
+order in `Δρ/ρ`; ems keeps the exact areas natively). Models read from
+openEMS files use openEMS's weight (`EdgeMaterials::from_cells_openems`):
+the `cyl_cellconst` probes agree to 5e-7…8e-6 (before: 1.2e-4…1.7e-3).
+
+**Radial averaging of openEMS files** (`compile::cylavg`, file path
+only, `CompileOptions::subsampling` 1). Without `CellConstantMaterial`
+both codes sample one point per quarter cell around an edge, its
+centre (measured: a box face swept through a cell flips each average
+exactly when it crosses a quarter's centre), but weigh the radial
+halves differently (`--debug-material`, `cli_debug_cyl_sector`):
+
+| average | csx (ems native) | openEMS |
+|---|---|---|
+| ε, κ of a z edge on `ρ_i` | annular area `Δρ_h·(ρ_i + ρ_b)/2` (exact) | `Δρ_h·ρ_b`, `ρ_b` the dual line bounding the half |
+| ε, κ of an α edge | `Δρ_h·ρ_h` (`ρ_h` the half's centre) | `Δρ_h` |
+| μ of a ρ dual edge (H_ρ face), harmonic | `Δρ_h·ρ_h` | `Δρ_h` |
+
+(times the half widths along the other axis, which carry no `ρ`; all
+other averages have no radial weight in either code.) The exact
+parallel capacitance of an α edge's halves would weigh them by
+`Δρ_h/ρ_h`, so neither code is exact there. `cylavg::apply` recomputes
+these three averages with openEMS's weights for models read from files
+(metal samples left out and identical samples kept exact, as in csx;
+`σ_m` left to csx). The material dumps then agree on every edge (both
+fixtures), and the probes of `cyl_radial` (a dielectric, magnetic,
+lossy box with its radial faces on mesh lines, its α and z faces
+inside cells) agree to 1.4e-7…3.2e-6 (csx's weights: 3.2e-4…4.4e-3).
 
 **Azimuth conventions of boxes** (`compile::cylindrical`). csx selects
 the edges of a primitive within its bounding box, whose α range it
@@ -2751,10 +2804,15 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   ems drops it with a warning;
 - SAR dumps run there in openEMS, including averaged ones (its warped
   cubes, reproduced to ~1 %); see §5.12 (`cyl_sar`);
-- `CellConstantMaterial` samples the cell midpoints in both codes
-  (`cyl_cellconst`, 1.2e-4…1.7e-3: openEMS's z-edge averaging at radial
-  interfaces); boxes past α = π and the α = 2π collapse of lumped
-  elements: §5.15 (`cyl_wrap_*`);
+- `CellConstantMaterial` samples the cell midpoints in both codes;
+  openEMS's radial weights at radial interfaces (z edges `Δρ_h·ρ_b`, α
+  edges and H_ρ faces `Δρ_h`) are reproduced on the file path
+  (`cyl_cellconst` 5e-7…8e-6, `cyl_radial` 1.4e-7…3.2e-6; before
+  1.2e-4…1.7e-3 and 3.2e-4…4.4e-3, §5.15); boxes past α = π and the
+  α = 2π collapse of lumped elements: §5.15 (`cyl_wrap_*`);
+- the debug dumps (`--debug-material`, `--debug-operator`,
+  `--debug-PEC`): `.vts` structured grids with Cartesian points, the
+  same values wherever both codes describe the same edge (§5.15);
 - conducting sheets (`cyl_sheet_*`, half-wave coaxial cavity of §5.9,
   `Q` from the ring-down, same fit for both codes): openEMS's sheet model
   behaves as on Cartesian grids. A thick lossy inner tube (`σ = 1e5 S/m`,
@@ -3232,9 +3290,9 @@ current directory. Everything below was observed on the black-box oracle
 |---|---|---|
 | (none) | probe files, dumps, `et`/`ht` | same (`io::openems::{probes, dump, signal}`) |
 | `--disable-dumps` | no field dumps (SAR too); their boxes still reported; v0.37 then fails at the end with an internal error (status 1) | dumps not compiled, boxes still reported, status 0 |
-| `--debug-material` | `material_dump.vtr`: `epsilon`, `mue`, `kappa`, `sigma` per edge | same layout, ems's averaged edge materials (`io::openems::debug`; `σ_m` differs at interfaces) |
-| `--debug-operator` | `operator_dump.vtr`: `exc_volt`, `vv`, `vi`, `iv`, `ii` | same arrays, ems's coefficients (lumped elements and boundaries other than PEC are separate operators in ems) |
-| `--debug-PEC` | `PEC_dump.vtp`: one line per PEC edge | identical points and lines |
+| `--debug-material` | `material_dump.vtr`: `epsilon`, `mue`, `kappa`, `sigma` per edge; cylindrical grids `material_dump.vts` | same layout, ems's averaged edge materials (`io::openems::debug`; `σ_m` differs at interfaces) |
+| `--debug-operator` | `operator_dump.vtr`: `exc_volt`, `vv`, `vi`, `iv`, `ii`; cylindrical grids `operator_dump.vts` | same arrays, ems's coefficients (lumped elements and boundaries other than PEC are separate operators in ems) |
+| `--debug-PEC` | `PEC_dump.vtp`: one line per PEC edge | identical points and lines (also cylindrical) |
 | `--debug-boxes` | `box_dump_<dump>.vtk`; current and waveguide probes all as `box_dump_.vtk` | identical files |
 | `--debug-CSX` | `debugCSX.xml` (`<ContinuousStructure>`) | csx's XML writer |
 | `--engine=…` | `fastest`, `basic`, `sse`, `sse-compressed`, `multithreaded`, `gpu`, `gpu-reference`; unknown names ignored | accepted; one engine: `basic`/`sse`/`sse-compressed` on one thread |

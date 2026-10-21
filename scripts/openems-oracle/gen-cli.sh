@@ -33,7 +33,7 @@ H5LS="$(pwd)/scripts/openems-oracle/h5ls.py"
 
 cases=("$@")
 if [ ${#cases[@]} -eq 0 ]; then
-  cases=(cli_run cli_debug cli_nodumps cli_exit)
+  cases=(cli_run cli_debug cli_debug_cyl cli_debug_cyl_sector cli_nodumps cli_exit)
 fi
 
 revision() {

@@ -21,8 +21,8 @@
 //!     included);
 //!   * `--debug-material`, `--debug-PEC`, `--debug-operator`,
 //!     `--debug-boxes`: `material_dump.vtr`, `PEC_dump.vtp`,
-//!     `operator_dump.vtr`, `box_dump_<name>.vtk`
-//!     (`ems::io::openems::debug`); `--debug-CSX`: `debugCSX.xml`, the
+//!     `operator_dump.vtr` (`.vts` structured grids on cylindrical
+//!     grids), `box_dump_<name>.vtk` (`ems::io::openems::debug`); `--debug-CSX`: `debugCSX.xml`, the
 //!     model's `<ContinuousStructure>` as written by csx;
 //!   * `--engine=<fastest|basic|sse|sse-compressed|multithreaded|gpu|gpu-reference>`:
 //!     ems has a single engine; `basic`, `sse` and `sse-compressed` (the
@@ -174,13 +174,13 @@ fn announce(opts: &Options) {
     }
     if opts.debug_material {
         say(&format!(
-            "dumping the materials to '{}'",
+            "dumping the materials to '{}' (.vts on cylindrical grids)",
             debug::MATERIAL_DUMP_FILE
         ));
     }
     if opts.debug_operator {
         say(&format!(
-            "dumping the operator to '{}'",
+            "dumping the operator to '{}' (.vts on cylindrical grids)",
             debug::OPERATOR_DUMP_FILE
         ));
     }
@@ -290,14 +290,7 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
     for w in sim.warnings() {
         eprintln!("Warning: {w}");
     }
-    let cylindrical = sim.grid().is_cylindrical();
-    if cylindrical && (opts.debug_material || opts.debug_pec || opts.debug_operator) {
-        eprintln!(
-            "Warning: the material, PEC and operator debug dumps are only written for \
-             Cartesian grids"
-        );
-    }
-    if !cylindrical && (opts.debug_material || opts.debug_pec) {
+    if opts.debug_material || opts.debug_pec {
         // The edge materials of the compile step (the engine keeps only
         // its coefficients).
         let c = ems::compile::compile(&doc.structure, sim.fdtd(), &copts)?;
@@ -308,7 +301,7 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
             debug::write_pec_dump(cwd, &c.grid, &c.materials)?;
         }
     }
-    if !cylindrical && opts.debug_operator {
+    if opts.debug_operator {
         let grid = sim.grid();
         let map = sim.node_map();
         let mut exc = Vec::new();

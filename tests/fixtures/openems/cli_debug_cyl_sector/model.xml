@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems command-line fixture "cli_debug_cyl_sector": the material and operator debug files of a
+     cylindrical sector without the axis on a graded radial mesh: a dielectric block whose radial
+     faces lie on mesh lines (rho = 2.5 and 6 mm), for openEMS's z-edge averaging at radial
+     interfaces, and a soft E source, without simulation. Hand-written for the black-box openEMS
+     oracle (scripts/openems-oracle/gen-cli.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="400" endCriteria="1e-3" TimeStep="4e-13" CylinderCoords="1">
+    <Excitation Type="0" f0="5e9" fc="5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>1,1.5,2.5,3,4,6,7,9,10</XLines>
+      <YLines>0,0.5,1.0,1.5,2.0,2.5</YLines>
+      <ZLines>0,1,2,3,4,5</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Material Name="diel"><Property Epsilon="4" Kappa="0.5" Mue="2"/><Primitives><Box Priority="1"><P1 X="2.5" Y="0.5" Z="1"/><P2 X="6" Y="1.5" Z="4"/></Box></Primitives></Material>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="4" Y="1" Z="2"/><P2 X="4" Y="1" Z="3"/></Box></Primitives></Excitation>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

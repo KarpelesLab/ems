@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems command-line fixture "cli_debug_cyl": the debug files (material, operator, PEC) of a
+     closed cylindrical grid with the axis: a lossy dielectric sector reaching rho_max and z_max,
+     a metal block ending on the alpha = 2 pi seam, a lumped resistor and a soft E source, without
+     simulation. Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-cli.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="400" endCriteria="1e-3" TimeStep="4e-13" CylinderCoords="1">
+    <Excitation Type="0" f0="5e9" fc="5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>0,0.5,1,1.5,2.5,3,4</XLines>
+      <YLines>0,0.785398163397448,1.5707963267949,2.35619449019234,3.14159265358979,3.92699081698724,4.71238898038469,5.49778714378214,6.28318530717959</YLines>
+      <ZLines>0,1,2,3,4</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Material Name="diel"><Property Epsilon="4" Kappa="0.5" Mue="2"/><Primitives><Box Priority="1"><P1 X="1" Y="0.3" Z="1"/><P2 X="4" Y="2.35619449019234" Z="4"/></Box></Primitives></Material>
+      <Metal Name="block"><Primitives><Box Priority="2"><P1 X="1.5" Y="5.49778714378214" Z="1"/><P2 X="2.5" Y="6.28318530717959" Z="3"/></Box></Primitives></Metal>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="1" Y="3.14159265358979" Z="1"/><P2 X="1" Y="3.14159265358979" Z="3"/></Box></Primitives></Excitation>
+      <LumpedElement Name="R1" Direction="2" Caps="1" R="50"><Primitives><Box Priority="0"><P1 X="3" Y="3.92699081698724" Z="1"/><P2 X="3" Y="3.92699081698724" Z="2"/></Box></Primitives></LumpedElement>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>
