@@ -3869,7 +3869,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-21, after wave 12)
+### Status (2026-10-21, after wave 13)
 
 | Step | State |
 |---|---|
@@ -3952,30 +3952,53 @@ crossings snap to the node, merged faces in the layer apply the
 stretching (a conformal circular guide now decays to −50 dB; coax Z
 +0.53/+0.069/+0.017 %, was +27/+15/+8 %).
 
+Wave 13 (openEMS parity on the file path, §5.16): openEMS's own PML
+(Gedney's uniaxial layer with its fixed grading, `engine::boundary::upml`;
+PML runs went from 1e-3…2.4e-2 to ~1e-6, the WR-90 iris and filter ports
+to 3e-7…1e-6); the Rennings time step on doubly graded and layered meshes
+(exact on ~1 600 random meshes; the e2e fixtures no longer fix
+`TimeStep`); the end-criterion energy offset (outer dual edges, x faces,
+the half-length check: ≤ 3e-4 dB to −32 dB); current probes half-way
+between lines; Dirac/step dumps every step; openEMS's σ_m dual-edge rule,
+its ConductingSheet model (per-square table measured from its outputs,
+first row/column of cells left out) and polygon vertex ties; on
+cylindrical grids the debug material/operator/PEC dumps (`.vts`), the
+radial material weights, the axis E_z update and closed-grid dump layout;
+SAR averaging edge cases (cell weights, solver safeguards, IEEE validity:
+≤ 1.3e-7 on the new fixtures, cylindrical ≤ 1e-7); the capacitance limit
+of parallel R‖L without C. The sweep stands at 163 of 174 models agreeing
+to ≲ 1e-4 (8 differ, 3 rejected by openEMS).
+
+Wave 13 (native): a radial-line port and microstrip ports along z or α on
+cylindrical grids (§5.5, §5.15); sector CPML α faces graded by arc length
+(was tuned as if at ρ = 1 m); conformal thin sheets interpolate small
+regions from their own side (TE at sheets now second order), deviation
+currents on interpolated and merged faces (remove the wall-guided wave
+and a late-time growth of cut cells in a CPML that predated the wave),
+cylindrical ρ_max PML on merged faces (§5.13).
+
 Remaining:
-- openEMS's Rennings time step in layered media on meshes graded along
-  two axes (up to 2 %); the 0.005 dB offset of its end-criterion energy
-  maximum; α current loops of sector boxes touching the α = 0 seam on
-  closed cylindrical grids (§5.16.2).
-- From the sweep: openEMS's polyhedron and polygon-vertex surface ties,
-  tie round-off (csx tolerance), σ_m averaging, current probes exactly
-  between lines.
-- SAR averaging: cubes smaller than about 0.85 cell, the IEEE validity
-  of some cubes of about two cells on graded meshes, and openEMS choices
-  decided by its rounding (§5.12); parallel
-  R‖L with an excitation on graded meshes (0.6–3 %); the cylindrical axis
-  E_z update and multigrid (ems keeps its own, more accurate, schemes).
-- On cylindrical grids: MSL/CPW/stripline/rectangular-waveguide ports
-  (planar Cartesian line models; a radial-line port would be the natural
-  cylindrical addition); openEMS's z-edge material averaging at radial
-  interfaces (ems keeps exact areas); the debug material/operator dumps
-  (`--debug-material`, `--debug-operator`; openEMS writes `.vts`).
-- Junctions of several oblique sheets in one cell (sub-cell gap); a csx
-  way to express a feed on an oblique wire; layered/dispersive backgrounds
-  for plane waves and NF2FF; conformal: thin sheets still merge small faces
-(first order for TE fields at sheets), the cylindrical ρ_max PML on merged
-faces, a weak wall-guided wave reflected where a wall ends one cell short
-of the CPML (§5.13).
+- openEMS's time step on cylindrical grids (different rule; those
+  fixtures fix `TimeStep`), ~1e-7 single-precision differences of its
+  printed step, metal boxes sharing a face with higher-priority material
+  (up to 1.4 %); the end-criterion residual of dispersive runs (0.027 dB
+  on `e2e_drude_slab`); α current loops of sector boxes touching the
+  α = 0 seam on closed cylindrical grids (§5.16.2); azimuthal multigrid
+  as openEMS runs it (3e-3…2e-2).
+- From the sweep: polyhedron/STL surface ties (position dependent in
+  openEMS, no consistent rule), tie round-off (csx tolerance, §8.1 item
+  17), ConductingSheet polygons with oblique sides (2.5e-3), the
+  ConductingSheet model on cylindrical grids; static fields of sources
+  inside openEMS's PML (round-off), lumped elements reaching into it.
+- SAR averaging: ties between equal face cubes decided by openEMS's
+  rounding, whole-cell cubes in uniform tissue, ~1 % of small C95.3 face
+  cubes (§5.12).
+- Ports on cylindrical grids: CPW, stripline, rectangular waveguide.
+- Conformal: merged sheet regions without deviation currents, sheets in
+  PML layers, PML corrections in the merge groups' energy look-ahead;
+  junctions of several oblique sheets in one cell; a csx way to express a
+  feed on an oblique wire; layered/dispersive backgrounds for plane waves
+  and NF2FF.
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:
