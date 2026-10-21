@@ -14,10 +14,10 @@
 //!   averaged edge materials of [`EdgeMaterials`]. Edges outside the
 //!   mesh (a primary edge from the last line along `a`, a dual edge past
 //!   the last line of a transverse axis) report the edge one line inside,
-//!   as openEMS does. openEMS's values agree for `ε`, `κ` and `μ`; ems's
-//!   `σ_m` average differs at interfaces (openEMS reports 0 for a dual
-//!   edge half in a magnetically lossy medium; see [`EdgeMaterials`] for
-//!   ems's rule).
+//!   as openEMS does. openEMS's values agree for `ε`, `κ` and `μ`, and for
+//!   `σ_m` on models read from files (openEMS's dual-edge rule, design
+//!   §5.16.3); ems's native `σ_m` average (see [`EdgeMaterials`]) differs
+//!   at interfaces.
 //! * `operator_dump.vtr` ([`operator_dump`]): the same grid with the
 //!   arrays `exc_volt` (the voltage amplitude `Excite·w·Δ` \[V\] of the E
 //!   sources on each edge), `vv`, `vi` (E update: `u ← vv·u + vi·Σ i`),

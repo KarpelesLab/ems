@@ -1,5 +1,8 @@
-//! openEMS's metal surface rule for curved primitives (files only,
+//! openEMS's metal surface rule for curved primitives and its magnetic
+//! conductivity average (files only,
 //! [`Fdtd::openems_run`](crate::Fdtd::openems_run)).
+//!
+//! # Metal surfaces
 //!
 //! csx marks an edge as PEC when its midpoint lies in a metal primitive,
 //! with closed bounds (a small tolerance). openEMS v0.37 agrees for boxes,
@@ -16,9 +19,29 @@
 //! are handled: an exact tie needs exact coordinates, which transformed
 //! primitives do not have (openEMS's and csx's rounding differ there
 //! anyway).
+//!
+//! # Magnetic conductivity
+//!
+//! The `σ_m` of an H face (normal `d`, lowest corner at node `n`, csx
+//! layout) comes from the same two samples in both codes: the material
+//! at the face centre in the transverse axes and at the middle of each
+//! half of the dual edge along `d` (`x_n ∓ Δ/4`), the two half lengths
+//! `l_−`, `l_+` as weights. csx (and ems's native path) takes the
+//! arithmetic mean; openEMS v0.37 (black box, `--debug-material` dumps on
+//! hand-written slabs, uniform and graded meshes, all three axes, weights
+//! and anisotropic values, design §5.16.3) takes the length-weighted
+//! *harmonic* mean `(l_− + l_+)/(l_−/σ_− + l_+/σ_+)`, like `μ`, except that
+//! a zero half is not a short circuit on both sides: a zero upper half
+//! (`σ_+ = 0`) gives 0, a zero lower half is left out of the denominator
+//! (`(l_− + l_+)·σ_+/l_+`, i.e. `2σ` on a uniform mesh). A face on the
+//! first or last line has one half only and takes its value. Metal does
+//! not enter: the samples see the highest-priority material under it
+//! (or the background). [`openems_sigma_m`] rewrites csx's averages
+//! with that rule.
 
+use csx::discretize::MaterialGrid;
 use csx::primitives::{Primitive, Shape};
-use csx::properties::{PropertyKind, TypeMask};
+use csx::properties::{MaterialQuantity, PropertyKind, TypeMask};
 use csx::{ContinuousStructure, CoordSystem, Vec3};
 
 /// Relative tolerance of a surface tie.
@@ -181,6 +204,85 @@ pub(crate) fn strict_surfaces(
     cleared
 }
 
+/// openEMS's dual-edge average of two half-edge magnetic conductivities
+/// (see the [module docs](self#magnetic-conductivity)): `lo`/`hi` are the
+/// lower and upper halves `(length, σ_m)` when they exist.
+fn sigma_m_average(lo: Option<(f64, f64)>, hi: Option<(f64, f64)>) -> f64 {
+    if hi.is_some_and(|(_, s)| s == 0.0) {
+        return 0.0;
+    }
+    let len: f64 = lo.iter().chain(&hi).map(|h| h.0).sum();
+    let inv: f64 = lo
+        .iter()
+        .chain(&hi)
+        .filter(|h| h.1 != 0.0)
+        .map(|h| h.0 / h.1)
+        .sum();
+    if inv == 0.0 { 0.0 } else { len / inv }
+}
+
+/// Replaces csx's arithmetic `σ_m` face averages by openEMS's rule (see
+/// the [module docs](self#magnetic-conductivity)). Cartesian grids only;
+/// a model without any magnetic conductivity is left untouched. Returns
+/// the number of faces whose value changed.
+pub(crate) fn openems_sigma_m(model: &ContinuousStructure, mg: &mut MaterialGrid) -> usize {
+    if model.grid.coord_system != CoordSystem::Cartesian {
+        return 0;
+    }
+    let lossy = |m: &csx::properties::Material| {
+        (0..3).any(|d| m.base_value(MaterialQuantity::Sigma, d) != 0.0)
+    };
+    let any = model.background.sigma.value() != 0.0
+        || model.properties().iter().any(|p| {
+            p.kind
+                .material()
+                .is_some_and(|m| lossy(m) && !p.primitives.is_empty())
+        });
+    if !any {
+        return 0;
+    }
+    let index = model.spatial_index(CoordSystem::Cartesian, TypeMask::MATERIALS);
+    let bg = model.background.sigma.value();
+    let sample = |p: Vec3, d: usize| -> f64 {
+        match index.query(p).and_then(|h| h.property.kind.material()) {
+            Some(m) => m.value_at(MaterialQuantity::Sigma, d, p),
+            None => bg,
+        }
+    };
+    let dims = mg.dims;
+    let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
+    let mut changed = 0;
+    for d in 0..3 {
+        let (t1, t2) = ((d + 1) % 3, (d + 2) % 3);
+        for idx in 0..mg.sigma[d].len() {
+            let n = mg.node(idx);
+            if n[t1] + 1 >= dims[t1] || n[t2] + 1 >= dims[t2] {
+                continue;
+            }
+            let mut p = Vec3::ZERO;
+            for t in [t1, t2] {
+                p.0[t] = 0.5 * (lines[t][n[t]] + lines[t][n[t] + 1]);
+            }
+            let x = lines[d][n[d]];
+            let mut half = |other: Option<f64>| {
+                other.map(|y| {
+                    let h = 0.5 * (y - x);
+                    p.0[d] = x + 0.5 * h;
+                    (h.abs(), sample(p, d))
+                })
+            };
+            let lo = half((n[d] >= 1).then(|| lines[d][n[d] - 1]));
+            let hi = half((n[d] + 1 < dims[d]).then(|| lines[d][n[d] + 1]));
+            let v = sigma_m_average(lo, hi);
+            if v != mg.sigma[d][idx] {
+                mg.sigma[d][idx] = v;
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +302,23 @@ mod tests {
 
     fn count(pec: &[Vec<bool>; 3]) -> usize {
         pec.iter().map(|p| p.iter().filter(|&&b| b).count()).sum()
+    }
+
+    #[test]
+    fn sigma_m_rule() {
+        // Measured with openEMS's --debug-material (design §5.16.3).
+        let h = |s: f64| Some((0.5, s));
+        assert_eq!(sigma_m_average(h(3000.0), h(1000.0)), 1500.0);
+        assert!((sigma_m_average(h(500.0), h(3000.0)) - 857.142_857).abs() < 1e-3);
+        assert_eq!(sigma_m_average(h(0.0), h(2000.0)), 4000.0);
+        assert_eq!(sigma_m_average(h(2000.0), h(0.0)), 0.0);
+        assert_eq!(
+            sigma_m_average(Some((0.5, 0.0)), Some((0.25, 2000.0))),
+            6000.0
+        );
+        assert_eq!(sigma_m_average(None, h(1000.0)), 1000.0);
+        assert_eq!(sigma_m_average(h(3000.0), None), 3000.0);
+        assert_eq!(sigma_m_average(h(0.0), None), 0.0);
     }
 
     #[test]

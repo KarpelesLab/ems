@@ -22,8 +22,7 @@
 //! Most models are a 20³-cell PEC box of 1 mm cells with a soft Gaussian
 //! line source, 600 steps of 1.5 ps; the measured agreement is ~1e-5
 //! (`f32` round-off accumulating over the ring-down) and the tolerances
-//! are a few times that. The case with a formulation-level difference
-//! (magnetic conductivity) checks the recorded difference instead.
+//! are a few times that.
 #![cfg(feature = "xml")]
 
 use std::collections::BTreeSet;
@@ -204,6 +203,8 @@ cases! {
     mat_aniso_two: 1e-4;            // (did not run: ε_z = 0)
     mat_weight_aniso: 1e-4;
     mat_weight_coords: 1e-4;
+    mat_mue_sigma: 1e-4;            // (2.3e-5; 6e-3 with csx's arithmetic σ_m average)
+    mat_sigma_graded: 3e-4;         // (8.8e-5; 9e-2 with csx's average; identical material dumps)
     bg_material: 1e-4;
     lorentz_weight: 1e-4;
     debye_weight: 1e-4;
@@ -243,15 +244,3 @@ cases! {
     dump_transformed: 1e-5;
 }
 
-/// Formulation-level difference, recorded (design §5.16.3): the
-/// dual-edge average of a magnetic conductivity (openEMS's is asymmetric
-/// at the faces of the box).
-#[test]
-fn known_differences() {
-    let (case, lo, hi) = ("mat_mue_sigma", 3e-4, 2e-2);
-    let w = worst(case);
-    assert!(
-        w > lo && w < hi,
-        "{case}: difference {w:.3e} outside the recorded [{lo:e}, {hi:e}]"
-    );
-}

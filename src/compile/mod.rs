@@ -25,7 +25,10 @@
 //!    The only difference to the per-cell path ([`CellMaterials`](crate::engine::CellMaterials))
 //!    is the magnetic loss: csx averages `sigma` arithmetically, the
 //!    per-cell path combines the half cells as series `R`–`L` branches
-//!    (`R = L²·Σ R_c/L_c²`). Both agree on homogeneous dual edges.
+//!    (`R = L²·Σ R_c/L_c²`). Both agree on homogeneous dual edges. Models
+//!    read from openEMS files ([`Fdtd::openems_run`]) take openEMS's
+//!    dual-edge `σ` rule instead (a harmonic mean with a one-sided zero,
+//!    design §5.16.3).
 //! 4. **Metal.** The csx PEC mask becomes the engine PEC mask (with
 //!    [`CompileOptions::conformal`], solid metal is instead resolved below
 //!    the cell size, see [Conformal PEC](#conformal-pec)).
@@ -1206,6 +1209,7 @@ pub fn compile(
     oblique.renumber_warnings(&mut mg.warnings);
     if fdtd.get_openems_run() {
         openems::strict_surfaces(model, mg.dims, &mut mg.pec);
+        openems::openems_sigma_m(model, &mut mg);
     }
     let node_map = NodeMap::new(grid.nodes());
     if mg.dims != grid.nodes() {
