@@ -252,7 +252,8 @@ these into `engine::EdgeMaterials` (z-fastest layout) and the engine builds
 `C`, `G`, `L`, `R` from them. The per-cell `CellMaterials` path is converted
 to `EdgeMaterials` too, so both share one coefficient builder; they differ
 only in how σ_m is combined across an interface. Conducting sheets get the
-thin-conductor model of §5.9.
+thin-conductor model of §5.9. Models read from openEMS files take
+openEMS's σ_m rule and sheet model instead (§5.16.2, §5.16.3).
 
 **Volume materials** (Material, later dispersive): sampled at **primary cell
 centres**, using the csx priority rules.
@@ -2828,19 +2829,61 @@ ems's is (§5.11), so that case is not matched. The lag's travel time uses
 the background speed, which only matters there.
 
 **Conducting sheets** (§5.9). openEMS's `ConductingSheet` (a
-"behavioural" model fitted to the loss of good conductors, per its
-documentation) is a different model, not reproduced:
-- copper (35 µm, 1–9 GHz, TEM line): its reflection loss `1 − |Γ|` is
-  0.48–0.52 of the exact slab value `≈ 2R_s/η0` that ems reproduces to
-  1 %, i.e. it behaves like a shunt impedance `≈ Z_s/2` (the two faces in
-  parallel: 0.80–0.94·Z_s/2, phase −5…−19°), with no shielding (it lets
-  −80…−90 dB through where the slab passes −230 dB);
-- `σ = 1e6 S/m`, `t = 20 µm` (`t/δ = 1.8…4.4`): loss 0.47–0.84 of the slab,
-  transmission +1…+20 dB above it;
-- a resistive sheet (`σ·t = 0.01 S`, `t ≪ δ`): openEMS transmits
-  −14…−34 dB below `2/(2 + η0σt)`, its effective impedance being nearly
-  capacitive; ems is within 0.02 dB.
-ems keeps the slab model; `tests/openems_adv.rs` records the copper ratio.
+"behavioural" model, per its documentation) is a different model from
+ems's slab. Before, the sweep sheets differed by 90–190 % (resistive sheet,
+sheet across the whole box) and 3e-4…1e-3 (copper; both nearly PEC); a
+copper sheet across a two-cell TEM line lost 0.48–0.52 of the exact
+slab's `≈ 2R_s/η0` with no shielding (−80…−90 dB through it), a resistive
+sheet (`σt = 0.01 S`) transmitted −14…−34 dB below `2/(2 + η0σt)`. The
+model was measured on the black box (operator dumps for the static
+coefficients, per-step E/H dumps of a TEM line for the update, a least
+squares fit of the sheet-edge recursion, residual at the `f32` level) and
+ems now reproduces it for files (`compile/openems_sheet.rs`; native ems
+keeps the slab):
+
+- **Update.** A sheet edge is a capacitor `C` and conductance `G` in
+  parallel with two series R–L branches, `C·du/dt + G·u + Σ i_b = ∮i`,
+  `L·di_b/dt + R·i_b = u`, the branches integrated like openEMS's Drude
+  poles (branch current at half steps driven by `u^n`, `k_a =
+  (L/dt − R/2)/(L/dt + R/2)`, `k_b = 1/(L/dt + R/2)`; ems puts them on the
+  edge as Drude poles of `engine::dispersive`'s leapfrog scheme). The
+  cell's own capacitance and the medium around the sheet do not enter.
+- **Scaling.** Per square, `G = g·σt`, `R_b = r_b/(σt)`, `L_b = l_b·μ0·t`
+  and `C = dt²/(c·μ0·t)`: the capacitance scales with `dt²` (measured at
+  1.0, 1.2 and 1.8 ps; it is a stability device, not a sheet
+  capacitance). An edge of length `l` with sheet width `w` gets `w/l`
+  squares, `w` the half widths of its two neighbouring sheet cells
+  (measured on graded meshes and on the borders of partial sheets).
+- **Table.** `(g, c, l_1, r_1, l_2, r_2)` depend only on the bin
+  `k(ν)` of `ν = (t/δ)²/80` at the excitation's highest frequency (`f0 +
+  fc` of a Gaussian, `f0` of a sine, the `<FDTD f_max>` attribute for
+  custom, Dirac and step signals; a Gaussian ignores `f_max`): `k = 0`
+  for `ν ≤ 1` (the bin edge measured at `t/δ = √80` within 1e-5 for
+  three `σ`, `t`), `k = ⌈log_1.5 ν⌉` above, constant from `k = 29` on.
+  All 30 bins were measured (σ = 1e6 S/m) and reproduce with other `σ`,
+  `t`, `dt` and positions in the bin to 7 digits. Bin 0 conducts
+  `0.9988·σt` at DC; from bin 26 on `r_2` is clamped at 1000.
+- **Cells.** A sheet cell counts if its centre is in the sheet and the
+  sheet wins the priority there; cells whose lower corner lies on the
+  first mesh line of either in-plane axis never count (so a sheet across
+  a two-cell line carries half its current: the "half loss" above), and
+  a sheet edge without counted cells is PEC. A material or metal of
+  higher priority at the edge midpoint removes the sheet edge (ties go to
+  the sheet). openEMS's time step ignores the sheet; ems resolves it
+  before the sheet capacitances are set and pins it.
+
+Agreement now (probe files): copper across the TEM line 3e-7 (reflected)
+and 1.4e-6 (transmitted), a partial-width sheet on a six-cell line
+4e-7…3e-6, the sweep boxes (`sweep_sheet_*`: copper, resistive, a sheet
+across the whole box, a graded mesh with a dielectric and a metal block)
+3e-6…7e-5, the ring-down level of a lossy closed box; the operator dumps
+are identical. Not reproduced: polygon sheets with oblique sides
+(2.5e-3 on a triangle in the sweep box): openEMS's width of the edges
+along an oblique side follows no rule found (tested: cell centres,
+corners, quarter points of the cells and of the dual face, neighbouring
+edges); ems uses the cell centres, exact for axis-aligned and 45° sides.
+`tests/openems_adv.rs` checks the copper line and the `≈ 0.5` loss ratio
+of both codes.
 
 **Waveguide mode probes** (§5.5, `compile/mode.rs`; resolves the open
 convention of §10). Measured on a 20 × 10 mm guide (TE10, uniform 1 mm
@@ -2936,8 +2979,10 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   no detuning, `Q = 57.7`, analytic 57.65): nearly reactive, as on
   Cartesian grids. The same fin on the α = 0 seam has no effect in openEMS
   (the frequency and `Q` of the empty cavity). ems keeps the slab model
-  (§5.9), so the codes do not agree on sheets on any grid;
-  `tests/openems_cyl.rs` records the ratios.
+  on cylindrical grids (the Cartesian emulation of the conducting-sheet
+  paragraph above is not applied there; the α = 0 seam result looks like
+  its first-row rule, not investigated); `tests/openems_cyl.rs` records
+  the ratios.
 
 **Current probes on a closed azimuth.** A current box over the full
 azimuth (α from 0 to 2π, the usual coax port current) reads `(N − 1)/N`
@@ -3101,25 +3146,26 @@ PEC box of 1 mm cells, a soft Gaussian line source, five E/H/voltage
 probes and the feature under test in the middle, 600 steps of 1.5 ps;
 "agreement" is the relative L2 difference over all probe columns, ~1e-5
 (`f32` round-off over the ring-down of a closed box) where the
-formulations agree. 53 of the models are fixtures (`sweep_*`,
+formulations agree. 60 of the models are fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
-Matrix (169 models; 154 agree to ≲ 1e-4, 12 differ, 3 are rejected by
+Matrix (174 models; 161 agree to ≲ 1e-4, 10 differ, 3 are rejected by
 openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
-on the set-up):
+on the set-up; wave 13 added the σ_m, sheet and LinPoly-vertex models and
+closed their differences):
 
 | area | models | agree | differ (magnitude) |
 |---|---|---|---|
-| primitives: Box (on/off grid, reversed, metal volume/sheet/line), MultiBox, Sphere, SphericalShell, Cylinder (axis, oblique, thin), CylindricalShell, Polygon (z, x), LinPoly (z, y), RotPoly (full, half), Polyhedron, PolyhedronReader (STL, PLY), Curve, Wire, Point, UserDefined, Box in cylindrical coordinates; surfaces through edge midpoints and sample points (`tie_*`) | 46 | 38 | Polyhedron surfaces on sample points 0.5 % (material) – 2 % (metal; 34 % for a metal cube whose faces lie on mesh lines); LinPoly vertices on mesh nodes 2 %; UserDefined rejected by openEMS |
+| primitives: Box (on/off grid, reversed, metal volume/sheet/line), MultiBox, Sphere, SphericalShell, Cylinder (axis, oblique, thin), CylindricalShell, Polygon (z, x), LinPoly (z, y), RotPoly (full, half), Polyhedron, PolyhedronReader (STL, PLY), Curve, Wire, Point, UserDefined, Box in cylindrical coordinates; surfaces through edge midpoints and sample points (`tie_*`) | 47 | 40 | Polyhedron surfaces on sample points 0.5 % (material) – 2 % (metal; 34 % for a metal cube whose faces lie on mesh lines); UserDefined rejected by openEMS |
 | transformations: Translate, Rotate_X/Y/Z, Rotate_Origin, Scale, Scale3, Matrix, order, on spheres, cylinders and sheets | 12 | 11 | a rotated cylinder with sample points within 1e-13 of its radius: 4.6 % |
 | priorities: overlaps, reversed, metal in material and under it, two metals | 6 | 6 | |
-| materials: ε, κ, μ, σ, `Isotropy` with 1/2/3 values and weights, weights of x, y, z, ρ and per axis, Density, background, Lorentz/Drude/Debye (with weights, with κ) | 19 | 18 | magnetic conductivity σ_m 0.6 % (openEMS's dual-edge average is asymmetric at the faces: `2σ` on the entry, 0 on the exit face, `--debug-material`) |
+| materials: ε, κ, μ, σ, `Isotropy` with 1/2/3 values and weights, weights of x, y, z, ρ and per axis, Density, background, Lorentz/Drude/Debye (with weights, with κ), σ on a graded mesh with weights and anisotropy | 20 | 20 | |
 | parameters, mesh: ParameterSet (Const, Linear) in coordinates, values and weights, `term:`, unsorted/duplicate lines, DeltaUnit 1, graded | 9 | 7 | `term:` prefixes and expressions in mesh lines rejected by openEMS (ems reads them) |
 | excitations: soft/hard E and H, vector, weights (with parameters), delay, Enabled, Number, on metal, off-grid, on Sphere/Curve, 3-D box, transformed, two sources | 16 | 16 | |
 | probes: weights, solid/off-grid/point E and H boxes, diagonal and reversed voltage boxes, current NormDir variants, FD samples of all types, Start/StopTime, two primitives, transformed, Cylinder/Curve/Point/Polygon primitives, ten shapes for field probes and dumps | 17 | 15 | current-probe coordinates exactly half-way between lines (openEMS: 8.5 → 9 at the lower, 11.5 → 11 at the upper corner) 4.6 %; a zero-length Cylinder as current probe (openEMS: a point box) |
 | dumps: VTK/HDF5, SubSampling, OptResolution (modes 0–2), FD, without DumpMode, two primitives, transformed | 8 | 8 | |
 | boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 17 | (PML: 0.8 % in an open box to 4–13 % in a PEC guide below cut-off with the CPML; ems runs openEMS's layer for files since wave 13, §5.16.2: `pml_open` 4e-6, a re-built guide 1e-6) |
-| lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper and resistive sheets | 6 | 5 | resistive ConductingSheet (§5.16.2) |
+| lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper, resistive, whole-box, graded and polygon sheets | 9 | 8 | ConductingSheet polygon with oblique sides 2.5e-3 (§5.16.2) |
 | FDTD: OverSampling, f_max, TimeStepFactor, TimeStepMethod 1 and 3 (graded), MaxTime, CellConstantMaterial, endCriteria, CoordSystem, 0 steps, odd values | 11 | 11 | |
 | other properties: unknown property element, properties without primitives | 2 | 2 | |
 
@@ -3161,6 +3207,34 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
   along `−a` (the normal points into the terminated region); ems had the
   opposite sign. Now 1e-6 on a terminated TEM line; MUR_1ST_SA gives
   openEMS's MUR_1ST output bit for bit there.
+- **Magnetic conductivity** (`compile::openems`, files only): openEMS
+  takes the length-weighted harmonic mean of the two half-edge samples
+  (the same samples as csx's: the face centre transversally, the middle
+  of each half of the dual edge), like `μ`, but a zero upper half gives
+  0 and a zero lower half is left out of the denominator:
+  `(l_− + l_+)·σ_+/l_+`, the "`2σ` on the entry face, 0 on the exit
+  face". Measured with `--debug-material` on slabs on uniform and graded
+  meshes (`2σ`; 6000 for 2000 S/m on a 0.5/0.25 mm split), all three
+  axes, pairs of lossy media (1000|3000 → 1500, 500|3000 → 857.14),
+  weight functions and anisotropic values; `μ` follows the harmonic rule
+  on the same samples (as in csx), and metal does not enter (the samples
+  see the material under it). Identical material dumps;
+  `sweep_mat_mue_sigma` 6e-3 → 2.3e-5, `sweep_mat_sigma_graded`
+  9e-2 → 8.8e-5.
+- **Conducting sheets** (files, Cartesian grids): openEMS's model
+  (§5.16.2); the sweep sheets 0.9–1.9 → 3e-6…7e-5.
+- **Polygon vertices** (`compile::openems`, metal, files only): the
+  sides of a Polygon or LinPoly are closed, a point on a vertex gets a
+  winding-number test with half-open rules (upward edge `a → b`: `+1`
+  for `a_v < q_v ≤ b_v` with `q` on or left of it; downward: `−1` for
+  `b_v < q_v ≤ a_v` with `q` strictly right of it; outside if the sum is
+  0; in the polygon's `(X1, X2)`). It reproduces all 33 vertices of 10
+  measured polygons (convex and concave, both orientations, `NormDir` 1
+  and 2): a counter-clockwise polygon is open at its vertices of
+  minimal `X2`, a clockwise rectangle at all four corners. ems clears the
+  edges through such vertices (identical `--debug-PEC` dumps;
+  `sweep_tie_linpoly_metal` 8–11 % → 5–8e-5). Material samples on
+  vertices (vertices on quarter-cell positions) keep csx's closed test.
 - **Dump sampling**: `OptResolution` compared metre distances without
   tolerance (a line exactly one resolution away was taken: 2, 4, 6, 8,
   11, … instead of every second line); raw H/B dumps snap their box to
@@ -3168,19 +3242,29 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
 
 Not reproduced (documented differences):
 
-- **Polyhedron surfaces.** A point on a face of a Polyhedron or STL mesh
-  is inside or outside depending on the face (the faces of a cube on
-  mesh lines: inside on its +x/+y/+z faces, outside on −x/−y/−z, mixed
-  along the cube's edges), as a ray-casting test would give; csx's test
-  is closed. Not emulated (the edge cases are not consistent enough to
-  copy safely).
-- **Polygon vertices.** A LinPoly whose vertex lies on a mesh node: openEMS
-  drops the edges through the first-edge vertices (two corners of a
-  square) or the lowest vertex.
-- **Round-off at ties.** openEMS compares without tolerance; csx's inside
-  tests accept points within ~1e-9 of the size outside (a rotated
-  cylinder through sample points: 4.6 %); §8.1 item 17.
-- **PML, conducting sheets, σ_m averaging**: see §5.16.1–2.
+- **Polyhedron surfaces.** A point exactly on a face of a Polyhedron or
+  STL mesh is inside or outside depending on the face *and on where the
+  polyhedron is*, like a ray-casting test whose ray depends on the
+  primitive: a cube's faces on mesh lines are inside on +x/+y/+z and
+  outside on −x/−y/−z for the cubes `[3, 9]³` and `[−3, 3]³`, all inside
+  for `[−9, −3]³`, and only −y/−z inside for `[−7, −5]³`; the same prism
+  face (outward normal `(2, −1, 0)`) is outside at `x = 2…6` and inside
+  at `x = 12…16`; on the STL tetrahedron of `sweep_prim_stl` one face is
+  inside and three outside. No fixed direction (fitted from 20 prism
+  faces it would have to lie within `g_y/g_x ∈ (2.5, 3)`,
+  `g_z/g_y ∈ (10, 15)`, which the tetrahedron contradicts) and no fixed
+  target point explains it; the points along a cube's edges are mixed
+  even within one row. Not emulated (csx's test is closed:
+  `sweep_prim_stl` 5e-3).
+- **Round-off at ties.** openEMS compares without tolerance; csx's
+  inside tests accept points within ~1e-9 of the size outside, and its
+  transformations round differently from openEMS's (a rotated cylinder
+  through sample points: 4.6 %; the points lie within 1e-13 of the
+  radius, on either side). Exact comparisons on the ems side would need
+  csx's inside tests without tolerance and openEMS's transformation
+  arithmetic bit for bit: not feasible in ems (the tests run inside
+  `csx::discretize`), §8.1 item 17.
+- **PML**: see §5.16.2.
 - openEMS rejects `term:` prefixes, expressions in mesh lines and the
   `UserDefined` primitive as written by csx (ems reads them); ems
   rejects `endCriteria` > 1, a Gaussian with `fc = 0` and a sinusoid with
@@ -3404,7 +3488,7 @@ current directory. Everything below was observed on the black-box oracle
 |---|---|---|
 | (none) | probe files, dumps, `et`/`ht` | same (`io::openems::{probes, dump, signal}`) |
 | `--disable-dumps` | no field dumps (SAR too); their boxes still reported; v0.37 then fails at the end with an internal error (status 1) | dumps not compiled, boxes still reported, status 0 |
-| `--debug-material` | `material_dump.vtr`: `epsilon`, `mue`, `kappa`, `sigma` per edge; cylindrical grids `material_dump.vts` | same layout, ems's averaged edge materials (`io::openems::debug`; `σ_m` differs at interfaces) |
+| `--debug-material` | `material_dump.vtr`: `epsilon`, `mue`, `kappa`, `sigma` per edge; cylindrical grids `material_dump.vts` | same layout, ems's averaged edge materials (`io::openems::debug`; for files openEMS's `σ_m` rule and the medium under conducting sheets, as openEMS) |
 | `--debug-operator` | `operator_dump.vtr`: `exc_volt`, `vv`, `vi`, `iv`, `ii`; cylindrical grids `operator_dump.vts` | same arrays, ems's coefficients (lumped elements and boundaries other than PEC are separate operators in ems) |
 | `--debug-PEC` | `PEC_dump.vtp`: one line per PEC edge | identical points and lines (also cylindrical) |
 | `--debug-boxes` | `box_dump_<dump>.vtk`; current and waveguide probes all as `box_dump_.vtk` | identical files |
@@ -3498,7 +3582,10 @@ These are reported here, not fixed in csx from this repo.
    values (V/m), not edge voltages.
 10. **Averaging σ_m.** csx combines magnetic σ arithmetically across the two half
     cells, while μ is combined harmonically (in series). ems's per-cell path
-    combines σ_m in series. Worth deciding on one convention.
+    combines σ_m in series. Worth deciding on one convention. openEMS
+    uses the harmonic mean of the same two samples with a one-sided zero
+    rule (§5.16.3), which ems re-samples for files; csx could offer it
+    (or expose the half-cell samples).
 11. **Thirds rule at coinciding edges.** `MeshOptions::with_thirds` still adds
     lines at edge−2d/3 and edge+d/3 when a metal edge coincides with a material
     edge whose line it keeps; in `examples/microstrip.rs` this put a line
@@ -3551,12 +3638,13 @@ These are reported here, not fixed in csx from this repo.
     points up to ~1e-9 (relative) outside a primitive; openEMS compares
     exactly. On exact ties openEMS is closed for Box, Cylinder and
     CylindricalShell but open for Sphere, SphericalShell and Wire (an
-    edge midpoint on the surface is not metal), and its Polyhedron and
-    polygon tests depend on the face (ray-casting-like: a cube's +x/+y/+z
-    faces inside, −x/−y/−z outside; a polygon's first-edge or lowest
-    vertex outside). ems emulates the open spheres and wires for metal
-    (`compile::openems`), not the material sampling or the polyhedra
-    (§5.16.3). csx could offer an openEMS-compatible tie mode.
+    edge midpoint on the surface is not metal), polygons are closed on
+    their sides with a half-open winding test at the vertices, and its
+    Polyhedron test depends on the face and on the primitive's position
+    (§5.16.3). ems emulates the open spheres and wires and the polygon
+    vertices for metal (`compile::openems`), not the material sampling or
+    the polyhedra. csx could offer an openEMS-compatible tie mode
+    (exact comparisons, the vertex rule) for the material samples too.
 18. **Short anisotropic lists.** With `Isotropy="0"`, openEMS keeps the
     default for the components a short list leaves out (`Epsilon="3"` is
     `3,1,1`, weights default to 1); csx copies a single value to all

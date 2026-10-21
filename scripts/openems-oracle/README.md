@@ -99,7 +99,8 @@ command line in the case's `meta.txt`:
 - `gen-sweep.sh [CASE...]` regenerates the `sweep_*` cases of the XML
   feature-coverage sweep (primitives, transformations, priorities,
   materials, parameters, excitations, probe and dump boxes, boundary
-  spellings, absorbing sheets, FDTD settings; `tests/openems_sweep.rs`,
+  spellings, absorbing sheets, conducting sheets, surface ties, FDTD
+  settings; `tests/openems_sweep.rs`,
   design §5.16.3): it copies back the files on the `keep:` line of the
   case's `meta.txt` and records the exit status, the time step, the names
   of all probe and dump files openEMS wrote (`files:`) and its warnings
