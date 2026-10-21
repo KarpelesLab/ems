@@ -23,7 +23,11 @@
 //! dielectric box with faces inside cells gives probes bit-identical to
 //! the box snapped to the faces of the cells whose midpoints it contains,
 //! with a radial face placed between a cell's midpoint and its centroid
-//! (`cyl_cellconst`, `tests/openems_cyl.rs`).
+//! (`cyl_cellconst`, `tests/openems_cyl.rs`). Its z edges at a radial
+//! interface weigh the two radial halves by `Δρ_h` times the radius of the
+//! dual line bounding each half, not by their annular areas; models read
+//! from openEMS files use that weight
+//! ([`EdgeMaterials::from_cells_openems`]), ems's own the exact areas.
 
 use csx::properties::{MaterialQuantity, TypeMask};
 use csx::{CoordSystem, Vec3};
@@ -37,6 +41,7 @@ pub(crate) fn apply(
     model: &csx::ContinuousStructure,
     grid: &Grid,
     materials: &mut EdgeMaterials,
+    openems: bool,
 ) -> Result<()> {
     let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
     let cells = grid.cells();
@@ -79,7 +84,11 @@ pub(crate) fn apply(
             }
         }
     }
-    let em = EdgeMaterials::from_cells(grid, &cm)?;
+    let em = if openems {
+        EdgeMaterials::from_cells_openems(grid, &cm)?
+    } else {
+        EdgeMaterials::from_cells(grid, &cm)?
+    };
     for axis in crate::Axis::ALL {
         materials.eps_r_mut(axis).copy_from_slice(em.eps_r(axis));
         materials.kappa_mut(axis).copy_from_slice(em.kappa(axis));

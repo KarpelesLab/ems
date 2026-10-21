@@ -148,6 +148,7 @@
 
 mod cellconst;
 mod conformal;
+mod cylavg;
 pub(crate) mod cylindrical;
 pub mod dispersive;
 mod mode;
@@ -1266,7 +1267,10 @@ pub fn compile(
             .copy_from_slice(&node_map.reorder(&pec));
     }
     if fdtd.get_cell_constant_material() {
-        cellconst::apply(model, &grid, &mut materials)?;
+        cellconst::apply(model, &grid, &mut materials, fdtd.get_openems_run())?;
+    } else if cyl && fdtd.get_openems_run() && opts.subsampling == 1 {
+        // openEMS's radial weights (design §5.15).
+        cylavg::apply(model, &grid, &mut materials);
     }
     // (Cylindrical grids: solid metal only, see compile::conformal.)
     let conformal = if opts.conformal {

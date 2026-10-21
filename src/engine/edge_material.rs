@@ -93,7 +93,7 @@ impl EdgeMaterials {
             )));
         }
         if grid.is_cylindrical() {
-            return Ok(Self::from_cells_cylindrical(grid, cells));
+            return Ok(Self::from_cells_cylindrical(grid, cells, false));
         }
         let mut out = Self::vacuum(grid);
         let n = grid.nodes();
@@ -127,12 +127,29 @@ impl EdgeMaterials {
         Ok(out)
     }
 
+    /// [`from_cells`](Self::from_cells) with openEMS's weights on a
+    /// cylindrical grid (models read from openEMS files): the quarter
+    /// cells around a z edge on line `ρ_i` weigh `(Δα/2)·|ρ_i − ρ_b|·ρ_b`,
+    /// `ρ_b` the dual line bounding the quarter, instead of their annular
+    /// areas (black box, design §5.15). The same as
+    /// [`from_cells`](Self::from_cells) on Cartesian grids.
+    ///
+    /// # Errors
+    /// As [`from_cells`](Self::from_cells).
+    pub fn from_cells_openems(grid: &Grid, cells: &CellMaterials) -> Result<Self> {
+        if grid.is_cylindrical() && cells.cells() == grid.cells() {
+            return Ok(Self::from_cells_cylindrical(grid, cells, true));
+        }
+        Self::from_cells(grid, cells)
+    }
+
     /// [`from_cells`](Self::from_cells) on a cylindrical grid: the same
     /// combination rules with the cylindrical weights, i.e. the
     /// quarter-cell areas `(Δα/2)·(ρ_out² − ρ_in²)/2` around a z edge (the
     /// other quarter areas and the half-cell lengths along a dual edge only
-    /// enter as ratios, in which the Jacobian `ρ` cancels).
-    fn from_cells_cylindrical(grid: &Grid, cells: &CellMaterials) -> Self {
+    /// enter as ratios, in which the Jacobian `ρ` cancels); `openems`:
+    /// see [`from_cells_openems`](Self::from_cells_openems).
+    fn from_cells_cylindrical(grid: &Grid, cells: &CellMaterials, openems: bool) -> Self {
         let mut out = Self::vacuum(grid);
         let n = grid.nodes();
         let r = grid.lines(Axis::X);
@@ -157,14 +174,18 @@ impl EdgeMaterials {
                                     }
                                     let area = if axis == Axis::Z {
                                         // b = ρ, c = α.
+                                        let r_b = 0.5 * (r[cb] + r[cb + 1]);
                                         let (r_in, r_out) = if cb < p[0] {
-                                            (0.5 * (r[cb] + r[cb + 1]), r[p[0]])
+                                            (r_b, r[p[0]])
                                         } else {
-                                            (r[p[0]], 0.5 * (r[cb] + r[cb + 1]))
+                                            (r[p[0]], r_b)
                                         };
-                                        0.5 * grid.delta(ac, cc)
-                                            * 0.5
-                                            * (r_out * r_out - r_in * r_in)
+                                        let radial = if openems {
+                                            (r_out - r_in) * r_b
+                                        } else {
+                                            0.5 * (r_out * r_out - r_in * r_in)
+                                        };
+                                        0.5 * grid.delta(ac, cc) * radial
                                     } else {
                                         0.25 * grid.delta(ab, cb) * grid.delta(ac, cc)
                                     };

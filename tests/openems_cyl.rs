@@ -170,7 +170,11 @@ fn probe_l2(case: &str, model: &str) -> Vec<(String, f64)> {
 
 /// [`probe_l2`] for ems run on the model text `xml` (labelled `model`).
 fn probe_l2_xml(case: &str, model: &str, xml: &str) -> Vec<(String, f64)> {
-    let mut sim = Simulation::from_xml_str(xml).unwrap();
+    probe_l2_sim(case, model, Simulation::from_xml_str(xml).unwrap())
+}
+
+/// [`probe_l2`] for the simulation `sim` (labelled `model`).
+fn probe_l2_sim(case: &str, model: &str, mut sim: Simulation) -> Vec<(String, f64)> {
     let res = sim.run().unwrap();
     kept(case)
         .into_iter()
@@ -200,16 +204,15 @@ fn probe_l2_xml(case: &str, model: &str, xml: &str) -> Vec<(String, f64)> {
 /// samples each cell at its `(ρ, α, z)` midpoint (its probes are
 /// bit-identical to the box snapped to the cells whose midpoints it holds;
 /// the box's ρ_max face lies between the midpoint and the centroid of a
-/// cell), and so does ems. The edge averages of the cells then agree on
-/// every ρ and α edge (openEMS's material dump); z edges on a radial
-/// interface differ: openEMS weighs the two radial halves of their dual
-/// face by `Δρ_h·ρ` of the dual line bounding each half, ems by their
-/// exact annular areas (first order in `Δρ/ρ`, design §5.15), which shows
-/// as 1.2e-4…1.7e-3 in the probes.
+/// cell), and so does ems. On z edges at a radial interface openEMS
+/// weighs the two radial halves of the dual face by `Δρ_h·ρ` of the dual
+/// line bounding each half, ems natively by their exact annular areas
+/// (first order in `Δρ/ρ`, design §5.15); models read from openEMS files
+/// use openEMS's weight: 5e-7…8e-6 (1.2e-4…1.7e-3 with the exact areas).
 #[test]
 fn cylindrical_cell_constant_material_matches_openems() {
     for (n, e) in probe_l2("cyl_cellconst", "model.xml") {
-        assert!(e < 4e-3, "{n}: {e:e}");
+        assert!(e < 3e-5, "{n}: {e:e}");
     }
     // The cell 6.5..7 mm (midpoint 6.75 inside the box face 6.752, its
     // centroid 6.7531 outside) is dielectric: a ρ edge in it reads ε = 4.
@@ -221,6 +224,30 @@ fn cylindrical_cell_constant_material_matches_openems() {
     assert_eq!(c.materials.eps_r(ems::Axis::X)[idx], 4.0);
     let idx = c.grid.index([12, 4, 5]);
     assert_eq!(c.materials.eps_r(ems::Axis::X)[idx], 1.0);
+}
+
+/// Radial material interfaces without `CellConstantMaterial`
+/// (`cyl_radial`: a dielectric, magnetic, lossy box with its ρ faces on
+/// mesh lines, its α and z faces inside cells): openEMS samples the same
+/// quarter-cell centres as csx but weighs the radial halves differently
+/// (z edges `Δρ_h·ρ_b`, α edges and H_ρ faces `Δρ_h`; `compile::cylavg`,
+/// design §5.15). Models read from files use openEMS's weights and agree
+/// closely; with csx's weights (ems's own averages, `openems_run` off)
+/// the probes differ by about 1e-3.
+#[test]
+fn cylindrical_radial_interfaces_match_openems() {
+    let case = "cyl_radial";
+    for (n, e) in probe_l2(case, "model.xml") {
+        assert!(e < 3e-5, "{n}: {e:e}");
+    }
+    let xml = std::fs::read_to_string(fixture(case).join("model.xml")).unwrap();
+    let doc = csx::OpenEmsDocument::from_xml_str(&xml).unwrap();
+    let copts = ems::CompileOptions::default();
+    let sim = Simulation::from_document_with(&doc, &copts, |f| f.openems_run(false)).unwrap();
+    let worst = probe_l2_sim(case, "native averages", sim)
+        .into_iter()
+        .fold(0.0f64, |m, (_, e)| m.max(e));
+    assert!(worst > 3e-4, "{worst:e}");
 }
 
 /// Boxes at `α > π` on a closed `[0, 2π]` grid (`cyl_wrap_*`): csx selects
