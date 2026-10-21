@@ -189,6 +189,7 @@ cases! {
     prim_cs_cyl_box: 1e-4;
     tie_sphere_metal: 1e-4;
     tie_wire_z: 1e-3;               // (3.4e-4)
+    tie_linpoly_metal: 1e-4;
     // Transformations.
     tr_rotate_origin: 1e-4;
     tr_matrix: 1e-4;

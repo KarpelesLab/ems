@@ -1,5 +1,5 @@
-//! openEMS's metal surface rule for curved primitives and its magnetic
-//! conductivity average (files only,
+//! openEMS's metal surface rule for curved primitives and polygons and its
+//! magnetic conductivity average (files only,
 //! [`Fdtd::openems_run`](crate::Fdtd::openems_run)).
 //!
 //! # Metal surfaces
@@ -12,8 +12,17 @@
 //! `tests/fixtures/openems/sweep_tie_*`: a sphere of radius 4.5 mm on a
 //! 1 mm mesh loses the 102 edges with `|m − c| = 4.5`, a wire of radius
 //! 3 mm the 40 edges at distance 3; every other edge is identical, design
-//! §5.16.3). [`strict_surfaces`] removes those edges from the PEC mask
-//! unless another metal primitive of the stack claims them.
+//! §5.16.3). Polygons and extruded polygons (`Polygon`, `LinPoly`) are
+//! closed on their sides, but a point on a vertex gets a winding-number
+//! test with half-open rules ([`vertex_outside`]; in the polygon's
+//! `(X1, X2)` coordinates of [`csx::primitives::plane_axes`]): with
+//! vertices on mesh nodes, the edges along the extrusion through the
+//! vertices of minimal `X2` of a counter-clockwise polygon are not metal,
+//! through all four corners of a clockwise rectangle (measured on 10
+//! polygons, convex and concave, both orientations, `NormDir` 1 and 2;
+//! 33 vertices). [`strict_surfaces`]
+//! removes those edges from the PEC mask unless another metal primitive
+//! of the stack claims them.
 //!
 //! Only primitives without a transformation and in Cartesian coordinates
 //! are handled: an exact tie needs exact coordinates, which transformed
@@ -71,7 +80,8 @@ fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f64 {
 }
 
 /// True if `p` lies on the surface of a sphere, spherical shell or wire
-/// (within [`TIE_TOL`] of the size), `None` for other shapes.
+/// (within [`TIE_TOL`] of the size) or on an open vertex of a polygon or
+/// extruded polygon ([`open_vertex`]), `None` for other shapes.
 fn on_surface(shape: &Shape, p: Vec3) -> Option<bool> {
     let tie = |d: f64, scale: f64| d.abs() <= TIE_TOL * scale.abs().max(f64::MIN_POSITIVE);
     match shape {
@@ -94,8 +104,70 @@ fn on_surface(shape: &Shape, p: Vec3) -> Option<bool> {
             let d = if pts.len() == 1 { dist(p, pts[0]) } else { d };
             Some(r > 0.0 && d.is_finite() && tie(d - r, r))
         }
+        Shape::Polygon(g) => Some(open_vertex(
+            g.norm_dir,
+            g.vertices.values(),
+            p,
+            (g.elevation.value(), g.elevation.value()),
+        )),
+        Shape::LinPoly(g) => {
+            let (e, l) = (g.elevation.value(), g.length.value());
+            Some(open_vertex(
+                g.norm_dir,
+                g.vertices.values(),
+                p,
+                (e.min(e + l), e.max(e + l)),
+            ))
+        }
         _ => None,
     }
+}
+
+/// True if `p` coincides (in the polygon plane, within [`TIE_TOL`] of the
+/// polygon's size) with a vertex of the polygon with normal `n` that
+/// openEMS counts as outside ([`vertex_outside`]), and lies in the range
+/// `along` of the normal coordinate.
+fn open_vertex(n: usize, verts: &[(f64, f64)], p: Vec3, along: (f64, f64)) -> bool {
+    if n > 2 || verts.len() < 3 {
+        return false;
+    }
+    let (ua, va) = csx::primitives::plane_axes(n);
+    let size = verts
+        .iter()
+        .map(|&(u, v)| u.abs().max(v.abs()))
+        .fold(0.0f64, f64::max)
+        .max(f64::MIN_POSITIVE);
+    let tol = TIE_TOL * size;
+    let pn = p.0[n];
+    if pn < along.0 - tol * along.0.abs().max(1.0) || pn > along.1 + tol * along.1.abs().max(1.0) {
+        return false;
+    }
+    verts.iter().any(|&q| {
+        (p.0[ua] - q.0).abs() <= tol && (p.0[va] - q.1).abs() <= tol && vertex_outside(verts, q)
+    })
+}
+
+/// openEMS's inside decision at a polygon vertex `q` (black box, design
+/// §5.16.3): the winding number of `q` with an upward edge `a → b`
+/// counting `+1` for `a_v < q_v ≤ b_v` and `q` on or left of it, a
+/// downward edge `−1` for `b_v < q_v ≤ a_v` and `q` strictly right of
+/// it; the vertex is outside when the sum is 0. (Points strictly inside a
+/// side are inside, as in csx.) For a counter-clockwise polygon this
+/// opens the vertices of minimal `v`; a clockwise rectangle is open at
+/// all four corners.
+fn vertex_outside(verts: &[(f64, f64)], q: (f64, f64)) -> bool {
+    let n = verts.len();
+    let mut wn = 0i32;
+    for i in 0..n {
+        let (a, b) = (verts[i], verts[(i + 1) % n]);
+        let left = (b.0 - a.0) * (q.1 - a.1) - (q.0 - a.0) * (b.1 - a.1);
+        if a.1 < q.1 && q.1 <= b.1 && left >= 0.0 {
+            wn += 1;
+        } else if b.1 < q.1 && q.1 <= a.1 && left < 0.0 {
+            wn -= 1;
+        }
+    }
+    wn == 0
 }
 
 fn applies(p: &Primitive, default_cs: CoordSystem) -> bool {
@@ -103,7 +175,11 @@ fn applies(p: &Primitive, default_cs: CoordSystem) -> bool {
         && p.effective_cs(default_cs) == CoordSystem::Cartesian
         && matches!(
             p.shape,
-            Shape::Sphere(_) | Shape::SphericalShell(_) | Shape::Wire(_)
+            Shape::Sphere(_)
+                | Shape::SphericalShell(_)
+                | Shape::Wire(_)
+                | Shape::Polygon(_)
+                | Shape::LinPoly(_)
         )
 }
 
@@ -333,6 +409,67 @@ mod tests {
         assert_eq!(strict_surfaces(&s, [11; 3], &mut pec), 1);
         assert!(!pec[0][idx(2, 5, 5)] && pec[0][idx(3, 5, 5)]);
         assert_eq!(count(&pec), 1);
+    }
+
+    #[test]
+    fn linpoly_lowest_vertices() {
+        use csx::primitives::LinPoly;
+        // A pentagon in the xy plane (v = y): the two vertices at y = 2
+        // are open, the one at y = 3 (a vertex, not the lowest) is closed.
+        let s = model(LinPoly::new(
+            2,
+            3.0,
+            4.0,
+            vec![(2.0, 3.0), (5.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)],
+        ));
+        let n = 11 * 11 * 11;
+        let idx = |i: usize, j: usize, k: usize| i + 11 * (j + 11 * k);
+        let mut pec: [Vec<bool>; 3] = core::array::from_fn(|_| vec![false; n]);
+        for (i, j) in [(5, 2), (8, 2), (2, 3), (6, 2), (8, 8)] {
+            pec[2][idx(i, j, 4)] = true;
+        }
+        assert_eq!(strict_surfaces(&s, [11; 3], &mut pec), 2);
+        assert!(!pec[2][idx(5, 2, 4)] && !pec[2][idx(8, 2, 4)]);
+        assert!(pec[2][idx(2, 3, 4)] && pec[2][idx(6, 2, 4)] && pec[2][idx(8, 8, 4)]);
+    }
+
+    #[test]
+    fn polygon_vertex_rule() {
+        // (vertices, openEMS's PEC status of each vertex), measured.
+        type Case<'a> = (&'a [(f64, f64)], &'a [bool]);
+        let cases: [Case; 8] = [
+            (
+                &[(3., 3.), (9., 3.), (9., 8.), (3., 8.)],
+                &[false, false, true, true],
+            ),
+            (&[(3., 3.), (3., 8.), (9., 8.), (9., 3.)], &[false; 4]),
+            (
+                &[(6., 2.), (10., 6.), (6., 10.), (2., 6.)],
+                &[false, true, true, true],
+            ),
+            (
+                &[(6., 2.), (2., 6.), (6., 10.), (10., 6.)],
+                &[false, false, true, false],
+            ),
+            (&[(3., 3.), (9., 8.), (3., 8.)], &[false, true, true]),
+            (
+                &[(3., 3.), (6., 3.), (9., 3.), (9., 8.), (3., 8.)],
+                &[false, false, false, true, true],
+            ),
+            (
+                &[(3., 3.), (9., 2.), (9., 8.), (2., 8.)],
+                &[true, false, true, true],
+            ),
+            (
+                &[(2., 4.), (6., 2.), (10., 5.), (8., 10.), (5., 7.), (3., 9.)],
+                &[true, false, true, true, true, true],
+            ),
+        ];
+        for (verts, want) in cases {
+            for (&q, &w) in verts.iter().zip(want) {
+                assert_eq!(!vertex_outside(verts, q), w, "{verts:?} at {q:?}");
+            }
+        }
     }
 
     #[test]
