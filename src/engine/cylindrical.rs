@@ -166,6 +166,57 @@ impl AxisMerge {
     }
 }
 
+/// openEMS's axis update on a closed azimuth (models read from files,
+/// design §5.15): openEMS sums the `H_α` ring at `ρ_½` over all `N + 1`
+/// α lines, so the seam line counts twice. Black box: per-step E and H
+/// dumps fit `Δu_axis = (dt·Δα/(ε0·π·ρ_½)) · (2·H_α(α_0) + Σ_{j=1}^{N−1}
+/// H_α(α_j))` to a residual of 1.8e-6 (`ΔE_z` against the axis value and
+/// every ring and `H_ρ` value; the uniform sum leaves 17 %). Added after
+/// the axis merge as the missing term `cb·(i_α(α_0) + i_α(α_N))` (the two
+/// seam copies, each holding half of the seam edge), the same on every
+/// copy. Not energy conserving (an extra `1/N` of the seam's H_α in the
+/// m = 0 balance), as openEMS's update is not.
+#[derive(Debug, Clone)]
+pub(crate) struct OpenemsAxisSeam;
+
+impl super::operator::Operator for OpenemsAxisSeam {
+    fn hooks(&self) -> super::operator::Hooks {
+        super::operator::Hooks::POST_E
+    }
+
+    fn post_e(&mut self, f: &mut Fields<'_>, ctx: &super::operator::StepContext<'_>) {
+        let n = ctx.grid.nodes();
+        let (na, nz) = (n[1], n[2]);
+        let cb = &ctx.coefficients.cb(Axis::Z)[..na * nz];
+        let extra: Vec<f64> = (0..nz)
+            .map(|k| {
+                let ring = f.i.plane(Axis::Y, 0);
+                f64::from(ring[k]) + f64::from(ring[(na - 1) * nz + k])
+            })
+            .collect();
+        let plane = f.u.plane_mut(Axis::Z, 0);
+        for k in 0..nz - 1 {
+            let mut w = 0.0f64;
+            let mut pec = false;
+            for j in 0..na {
+                let b = cb[j * nz + k];
+                if b == 0.0 {
+                    pec = true;
+                    break;
+                }
+                w += 1.0 / f64::from(b);
+            }
+            if pec || w == 0.0 {
+                continue;
+            }
+            let du = (extra[k] / w) as f32;
+            for j in 0..na {
+                plane[j * nz + k] += du;
+            }
+        }
+    }
+}
+
 /// Stability limit `dt_max` \[s\] of a cylindrical grid, from the largest
 /// eigenvalue of its vacuum Yee operator (see the
 /// [module docs](self#time-step)).

@@ -405,28 +405,28 @@ fn waveguide_iris() {
 
 // -------------------------------------------------------- coax monopole
 
-/// Coax-fed monopole, cylindrical grid. Measured: coax voltage 1.7e-4,
-/// far E field 2.2e-4, near H field 2.1e-4 (the axis region above the
-/// monopole, design §5.15); the coax current reads 3/4 of ems's in
-/// openEMS, whose loop over a full-azimuth box covers 3 of the 4 α cells
-/// (design §5.16.2), 1.8e-4 after that factor; input impedance within
-/// 7e-4 with it.
+/// Coax-fed monopole, cylindrical grid. Measured: coax voltage 8.3e-7,
+/// far E field 1.8e-6, near H field 7.4e-7 (1.7–2.2e-4 before openEMS's
+/// axis update for files, design §5.15); the coax current reads 3/4 of
+/// ems's in openEMS, whose loop over a full-azimuth box covers 3 of the 4
+/// α cells (design §5.16.2), 4.6e-7 after that factor; input impedance
+/// within 5.6e-7 with it.
 #[test]
 fn coax_monopole() {
     let case = "e2e_coax_monopole";
     let (dir, console) = run(case);
     check_steps(case, &console);
-    compare_probe(case, &dir, "port_ut", 2e-3);
-    compare_probe(case, &dir, "ez_far", 2e-3);
-    compare_probe(case, &dir, "ez_far_FD", 2e-3);
-    compare_probe(case, &dir, "h_near", 2e-3);
+    compare_probe(case, &dir, "port_ut", 2e-5);
+    compare_probe(case, &dir, "ez_far", 2e-5);
+    compare_probe(case, &dir, "ez_far_FD", 2e-5);
+    compare_probe(case, &dir, "h_near", 2e-5);
     // openEMS's (N − 1)/N current over a closed azimuth of N = 4 cells.
     let (a, b) = columns(case, &dir, "port_it");
     let b: Vec<f64> = b[0].iter().map(|x| 0.75 * x).collect();
     let d: Vec<f64> = a[0].iter().zip(&b).map(|(x, y)| x - y).collect();
     let e = norm(&d) / norm(&a[0]);
     eprintln!("{case}/port_it: relative L2 {e:.2e} after the 3/4 factor");
-    assert!(e < 2e-3, "{case}/port_it: {e:e}");
+    assert!(e < 2e-5, "{case}/port_it: {e:e}");
     let freqs = linspace(1.5e9, 3.5e9, 41);
     let n = rows(case, &dir, &["port_ut", "port_it"]);
     let za = ratio(
@@ -442,7 +442,7 @@ fn coax_monopole() {
     .collect();
     let w = worst_rel(&za, &zb);
     eprintln!("{case}: input impedance differs by {w:.2e}");
-    assert!(w < 5e-3, "{case}: Zin {w:e}");
+    assert!(w < 2e-5, "{case}: Zin {w:e}");
 }
 
 // ----------------------------------------------------------- drude slab

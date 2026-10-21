@@ -534,6 +534,10 @@ impl Compiled {
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
         if self.openems_pmc {
+            // openEMS's axis update of a closed azimuth (design §5.15).
+            if self.grid.has_axis() && self.grid.is_closed() {
+                engine.add_operator(crate::engine::cylindrical::OpenemsAxisSeam);
+            }
             pmc_half_cell(engine, &self.faces);
             let upper: Vec<Face> = self
                 .mur

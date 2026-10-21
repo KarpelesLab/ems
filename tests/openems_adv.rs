@@ -302,18 +302,18 @@ fn cylindrical_cavity_without_axis() {
     check("adv_cyl_noaxis", 2e-4);
 }
 
-/// The full cavity `ρ = 0…10 mm` with the axis: 4.4–5.1e-3, a 0.45 %
-/// amplitude and −2.7e-4 TM010 frequency difference that halves with the
-/// first radial cell (openEMS's axis cell is treated differently,
-/// `O(Δρ_0)`; without the axis the codes agree to 1e-6).
+/// The full cavity `ρ = 0…10 mm` with the axis: 5.5e-7…4.4e-6 with
+/// openEMS's axis update for files (its ring sum counts the seam line
+/// twice, design §5.15); 4.4–5.1e-3 with ems's own (energy-conserving)
+/// axis cell.
 #[test]
 fn cylindrical_cavity_with_axis() {
-    check("adv_cyl_axis", 1.5e-2);
+    check("adv_cyl_axis", 2e-5);
 }
 
-/// The same cavity with `MultiGrid="4"`: 1.0–2.9e-2. openEMS's multigrid
-/// moves its own solution by 0.6–1 % (ems's by 0.1 %), on top of the
-/// axis difference.
+/// The same cavity with `MultiGrid="4"`: 3.0e-3…2.0e-2 (1.0–2.9e-2
+/// before openEMS's axis update). openEMS's multigrid moves its own
+/// solution by 0.6–1 % (ems's by 0.1 %).
 #[test]
 fn cylindrical_multigrid() {
     check("adv_cyl_multigrid", 6e-2);
