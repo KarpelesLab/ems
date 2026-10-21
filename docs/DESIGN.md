@@ -1322,12 +1322,22 @@ validity rules):
   should lie exactly on a tissue boundary a little larger, which decides
   that face's validity: `dump_sar`'s 18 such cubes are invalid). Outside
   the domain counts as nothing, air (`ρ = 0`) as no mass and no power
-  (lossy air does not count). Quirk: a voxel the cube cuts on *both*
-  sides along an axis gets the square of that fraction (seen in the
-  reported volumes of cubes thinner than a 3 mm cell: `V = s²·3·(s/3)²`).
+  (lossy air does not count). Quirk: a cell holding *both* ends of the
+  cube along an axis (touching a cell line counts) weighs
+  `|(2u − 1)(2v − 1)|` along it, `u` the fraction of the cell above the
+  lower end, `v` the fraction below the upper end: `(s/d)²` for a cube
+  centred in the cell (the earlier "squared fraction", seen in the
+  reported volumes of cubes thinner than a 3 mm cell), `|2s/d − 1|` for a
+  face cube shorter than its voxel along its normal (zero at half a cell,
+  rising again below). Found by perturbing the power of single cells:
+  the change of a voxel's average is the cell's weight over the cube mass,
+  which gives every cell's weight in the chosen cube (fixed cube, since
+  the power changes neither the cube nor, in C95.3, its choice).
 - *Cube solver.* `s₀ = (m/ρ_v)^{1/3}`, `a = s₀/2`; `ρ̄ = M(a)/a³` (the
   full geometric volume, also when clipped); `b = max((m/ρ̄)^{1/3},
-  2·min(Δx, Δy, Δz))`; then secant steps through the last two points
+  2·min(Δx, Δy, Δz))` for a centred cube, `(m/ρ̄)^{1/3}` for a face cube
+  (the minimum made 10 % of the face cubes of graded meshes end
+  elsewhere); then secant steps through the last two points
   from `(a, M(a))`, `(b, M(b))` until `|M − m| ≤ tol·m`, `tol` = 5 %
   (`SIMPLE`, `IEEE_C95_3`, inclusive, e.g. a first point at −4.55 % is
   kept and the switch is at exactly −5 %) or 1e-6 (`IEEE_62704`). How it
@@ -1338,15 +1348,35 @@ validity rules):
   mean density of the half-size cube); thin lines of tissue (mass linear
   in `s`) make every secant exact and expose the start points; the
   anisotropic and sub-2-cell cases fixed the minimum (`2·min Δ`, the
-  squared fractions in the half-size cube).
+  squared fractions in the half-size cube). Two safeguards (wave 13): a
+  step leaving the bracket (largest side seen below the mass, smallest
+  above it) bisects the bracket, and a step to a side `≤ 0` doubles the
+  last side (equal masses give an infinite step that these catch). The
+  plain secant stalls below a cell, where `M ∝ s⁶`: a sweep of cubes of
+  0.2…1.25 cells in uniform tissue gave openEMS's sides for all 22 sizes
+  with the bisection and for only those ≥ 0.85 cell without it (where the
+  path stays in the bracket); the doubling came from face-cube paths
+  through the non-monotonic `|2s/d − 1|` region (a scan of the third
+  point reproduced openEMS's side at `2b`).
 - *SIMPLE*: each tissue voxel gets the average (tissue power over tissue
   mass) of its centred cube; no cube → 0 (counted unused).
 - *IEEE_C95_3 / IEEE_62704 validity* of a centred cube: inside the
   domain, and no face entirely in air (the voxel layer containing the
   face must hold a tissue voxel over the face's extent; 2 % of a face in
-  tissue suffices, an air pocket inside or a corner in air is fine);
+  tissue suffices, an air pocket inside or a corner in air is fine), also
+  on every iterate of the solver lighter than the mass: a lighter iterate
+  with a face in air makes the cube invalid even when the final cube's
+  faces all touch tissue (heavier iterates and iterates leaving the
+  domain do not count). This was the "openEMS rejects ~10 % more cubes
+  of about two cells on graded meshes": on 11 random graded cases (blobs
+  in air, salt-and-pepper tissue, 0.0004…0.01 g, 2600 cubes) the rule
+  separates openEMS's verdicts without an exception, where face-area
+  thresholds, face point samples, cell-centre layers or air fractions do
+  not; checking the half-size start alone fits the heavy masses only.
   `IEEE_62704` also rejects more than 10 % air (by volume, `1 −
-  V_tissue/s³`; random-density blobs separate cleanly at 0.0991 / 0.1006).
+  V_tissue/V` with the weighted volume `V`, which is `s³` unless a cell
+  holds both ends; random-density blobs separate cleanly at 0.0991 /
+  0.1006; with `s³` every cube below a cell failed).
   Invalid voxels take the maximum average of the valid cubes that
   *overlap* them with positive volume (C95.3) or *contain* them entirely
   (62704; touching counts). The rest (62704's "unused", also C95.3 where
@@ -1356,7 +1386,10 @@ validity rules):
   the method's tolerance; 62704 takes, among those whose volume within the
   domain is at most 1.05 × the smallest, the largest average (4064 voxels
   of random blocks: 0 mismatches; air fraction, side or air volume do not
-  separate); C95.3 the smallest volume.
+  separate); C95.3 the smallest volume. A face cube shorter than its
+  voxel along its normal weighs the same with either face (`|2s/d − 1|`
+  is symmetric), so the `+` and `−` cubes along that axis coincide and
+  openEMS's choice between them (its `-e` type) is decided by rounding.
 - *Counts* (`@valid/used/unused/air_cubes`): own valid cube / maximum of
   others / face cube or none / not tissue. `maxSAR_idx`: the f32 maximum,
   first centred cube among equal values.
@@ -1374,15 +1407,31 @@ validity rules):
   precision (data ≤ 1e-6 of the peak, 2e-6 for 62704 whose cube masses
   agree to its 1e-6 tolerance) on `dump_sar` (2 mm cells, 1 g, all cubes
   clipped, touching faces; before: SIMPLE 2.9 %, IEEE up to 78 % of the
-  peak), the uniform block (before: 1 %) and `sar_calc_synth` (graded
+  peak), the uniform block (before: 1 %), `sar_calc_synth` (graded
   mesh, random density and irregular tissue with each method, light and
-  heavy masses, `-a`; a thin slab of face cubes; 1×1×3 mm cells). Known
-  differences: C95.3 face cubes of equal volume (openEMS orders them by
-  its rounding; 16 of 294 voxels on `dump_sar`); cubes below ~0.85 cell
-  (not identified, the squared fractions make the mass non-monotonic);
-  on graded meshes the C95.3/62704 validity of some cubes of about two
-  cells (openEMS rejects ~10 % more although their faces touch tissue;
-  not identified).
+  heavy masses, `-a`; a thin slab of face cubes; 1×1×3 mm cells) and
+  `sar_calc_edge` (wave 13: 1 mm cells with cubes of 0.3…1 cell, a
+  graded mesh of 0.4…1.6 mm cells with a random-density ball in air and
+  the same mesh filled with tissue, 0.0003…0.003 g, each method, cube
+  statistics where no two cubes tie). Before wave 13 the edge files
+  differed by up to 100 % of the peak (SIMPLE cubes of 0.3 cell: 94 of
+  210 tissue voxels, mostly without a cube), 32 % (C95.3 validity on the graded ball,
+  45 voxels), 23 % (62704 face cubes of the filled mesh, 299 voxels);
+  now ≤ 1.3e-7 of the peak. A random sweep (216 runs: blobs, filled and
+  salt-and-pepper tissue, uniform and graded meshes, uniform and random
+  density, anisotropic cells, 0.0001…0.008 g, each method) left
+  differences only in ties and in 1 % of the C95.3 face cubes below
+  about 0.6 cell. Known differences, all decided by openEMS's rounding:
+  face cubes that tie (equal volumes for C95.3, equal averages for
+  62704, common in uniform tissue: 16 of 294 voxels of `dump_sar`; for
+  62704 only the `-e` type differs, the cubes being the same); cubes of
+  a whole number of cells in uniform tissue (a face on a cell line at
+  the 1e-8 level of the single-precision volumes decides the validity,
+  e.g. 1 mg in 1 mm cells of 1000 kg/m³); a face cube whose half-size
+  start is exactly half a cell (its mass is zero, openEMS's start then
+  hinges on rounding; ems starts from the whole domain). Not reproduced:
+  about 1 % of the C95.3 face cubes below about 0.6 cell, whose long,
+  non-monotonic iterations end on another side within the 5 %.
 
 `io::openems::sar_calc` and the binary `ems-sar-calc` (feature `hdf5`) take
 `sar_calc`'s command line (`-i -o -m --method -a -n -v -e

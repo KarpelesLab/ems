@@ -126,6 +126,15 @@ fn synthetic_cases_match_openems() {
     replay("sar_calc_synth", &[]);
 }
 
+/// Edge cases of `sar-synth.py` (cubes smaller than a cell, the IEEE
+/// validity of cubes of about two cells on a graded mesh, face cubes
+/// shorter than their voxel), each method; exact, cube statistics
+/// included.
+#[test]
+fn edge_cases_match_openems() {
+    replay("sar_calc_edge", &[]);
+}
+
 /// The library entry point writes what the binary writes.
 #[test]
 fn library_matches_binary() {

@@ -18,6 +18,17 @@ CASE (default block):
   no valid IEEE cube, every voxel takes a face cube (sar_calc_synth).
 * aniso: uniform tissue of 1 x 1 x 3 mm cells next to an air layer, for
   cubes smaller than two of the widest cell widths (sar_calc_synth).
+* tiny: 1 mm cells, pseudo-random density everywhere but one air layer,
+  for cubes smaller than a cell (sar_calc_edge).
+* graded: a graded 10 x 9 x 8 mesh (cell widths 0.4 to 1.6 mm) with an
+  ellipsoid of tissue of pseudo-random density in air: IEEE validity of
+  cubes of about two cells, face cubes (sar_calc_edge).
+* full: the graded mesh of `graded` filled with tissue of pseudo-random
+  density: face cubes of the domain boundary shorter than their voxel
+  (sar_calc_edge).
+
+Every density is pseudo-random, so no two cubes tie: openEMS breaks ties
+by its rounding.
 """
 import sys
 
@@ -86,9 +97,46 @@ def aniso():
     return widths, centres, rho, sigma, (1e9,), field(rng, n, centres, 1)
 
 
+def tiny():
+    rng = np.random.default_rng(857)
+    n = (7, 6, 6)
+    widths = [np.full(k, 1e-3) for k in n]
+    centres = [np.cumsum(w) - w / 2 for w in widths]
+    rho = 1000 * (1 + 0.3 * rng.uniform(-1, 1, n))
+    rho[:, :, -1] = 0.0
+    sigma = np.where(rho > 0, rng.uniform(0.3, 1.5, n), 0.0)
+    return widths, centres, rho, sigma, (1e9,), field(rng, n, centres, 1)
+
+
+def graded_mesh(rng):
+    n = (10, 9, 8)
+    widths = [1e-3 * (1 + 0.6 * rng.uniform(-1, 1, k)) for k in n]
+    return n, widths, [np.cumsum(w) - w / 2 for w in widths]
+
+
+def graded():
+    rng = np.random.default_rng(2)
+    n, widths, centres = graded_mesh(rng)
+    X, Y, Z = np.meshgrid(*[np.arange(k) for k in n], indexing='ij')
+    c = [k / 2 + rng.uniform(-1, 1) for k in n]
+    r = ((X - c[0]) / (n[0] * 0.4)) ** 2 + ((Y - c[1]) / (n[1] * 0.42)) ** 2 + ((Z - c[2]) / (n[2] * 0.45)) ** 2
+    rho = np.where(r < 1, 1000 * (1 + 0.4 * rng.uniform(-1, 1, n)), 0.0)
+    sigma = np.where(rho > 0, rng.uniform(0.3, 1.5, n), 0.0)
+    return widths, centres, rho, sigma, (1e9,), field(rng, n, centres, 1)
+
+
+def full():
+    rng = np.random.default_rng(3)
+    n, widths, centres = graded_mesh(rng)
+    rho = 1000 * (1 + 0.4 * rng.uniform(-1, 1, n))
+    sigma = rng.uniform(0.3, 1.5, n)
+    return widths, centres, rho, sigma, (1e9,), field(rng, n, centres, 1)
+
+
 def main():
     case, out = (sys.argv[1], sys.argv[2]) if len(sys.argv) > 2 else ('block', sys.argv[1])
-    widths, centres, rho, sigma, freqs, fields = {'block': block, 'blob': blob, 'slab': slab, 'aniso': aniso}[case]()
+    cases = {'block': block, 'blob': blob, 'slab': slab, 'aniso': aniso, 'tiny': tiny, 'graded': graded, 'full': full}
+    widths, centres, rho, sigma, freqs, fields = cases[case]()
     vol = np.einsum('i,j,k->ijk', *widths)
     with h5py.File(out, 'w') as f:
         f.attrs['dual_mesh'] = np.uint8(1)

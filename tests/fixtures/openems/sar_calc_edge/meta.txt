@@ -1,0 +1,19 @@
+openEMS oracle:
+  openEMS-Project e89286f (2026-10-18)
+   openEMS c3a956b (v0.37.0-19)
+   CSXCAD f90b407 (v0.7.0-1)
+   fparser 4b9c845
+input: sar-synth.py tiny tiny.h5
+input: sar-synth.py graded graded.h5
+input: sar-synth.py full full.h5
+command: sar_calc -n 1 -i tiny.h5 -o tiny_simple.h5 -m 0.00003 -e
+command: sar_calc -n 1 -i tiny.h5 -o tiny_62704.h5 -m 0.0003 --method IEEE_62704 -e
+command: sar_calc -n 1 -i tiny.h5 -o tiny_c95_face.h5 -m 0.001 --method IEEE_C95_3 -e
+command: sar_calc -n 1 -i tiny.h5 -o tiny_62704_face.h5 -m 0.001 --method IEEE_62704 -e
+command: sar_calc -n 1 -i graded.h5 -o graded_c95.h5 -m 0.001 --method IEEE_C95_3 -e
+command: sar_calc -n 1 -i graded.h5 -o graded_62704.h5 -m 0.001 --method IEEE_62704 -e
+command: sar_calc -n 1 -i graded.h5 -o graded_c95_small.h5 -m 0.0006 --method IEEE_C95_3 -e
+command: sar_calc -n 1 -i graded.h5 -o graded_62704_small.h5 -m 0.0003 --method IEEE_62704
+command: sar_calc -n 1 -i full.h5 -o full_c95.h5 -m 0.003 --method IEEE_C95_3 -e
+command: sar_calc -n 1 -i full.h5 -o full_c95_small.h5 -m 0.0003 --method IEEE_C95_3
+command: sar_calc -n 1 -i full.h5 -o full_62704.h5 -m 0.001 --method IEEE_62704

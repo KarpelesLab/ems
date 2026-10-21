@@ -100,10 +100,12 @@ command line in the case's `meta.txt`:
   case's `meta.txt` and records the exit status, the time step, the names
   of all probe and dump files openEMS wrote (`files:`) and its warnings
   (`console:`).
-- `gen-sar.sh` regenerates the `sar_calc_*` cases of the `sar_calc` tool
-  (`tests/openems_sar_calc.rs`), from the raw SAR dump of `dump_sar` and
+- `gen-sar.sh [CASE...]` regenerates the `sar_calc_*` cases of the
+  `sar_calc` tool (`tests/openems_sar_calc.rs`; cases `dump`, `block`,
+  `synth`, `edge`), from the raw SAR dump of `dump_sar` and
   from the synthetic raw files of `sar-synth.py` (a tissue block; a
-  graded-mesh blob, a thin slab and anisotropic cells), with each
+  graded-mesh blob, a thin slab and anisotropic cells; cubes smaller
+  than a cell, a graded ball in air and a filled graded mesh), with each
   averaging method, cube statistics (`-e`) and the auto range (`-a`); the
   test replays every `command:` line of the cases' `meta.txt`.
 - `gen-e2e.sh [CASE...]` regenerates the `e2e_*` cases (realistic models

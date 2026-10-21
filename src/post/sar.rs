@@ -183,23 +183,26 @@ impl Default for AveragingOptions {
 /// * the cube side is solved by a secant iteration on the mass, to 5 %
 ///   (`SIMPLE`, `IEEE_C95_3`) or 1e-6 (`IEEE_62704`), started from the
 ///   voxel's analytic size `s₀ = (m/ρ)^{1/3}`: the first points are
-///   `s₀/2` and the size of the mean density of that half-size cube, at
-///   least twice the voxel's smallest width;
+///   `s₀/2` and the size of the mean density of that half-size cube (for
+///   a centred cube at least twice the voxel's smallest width), then
+///   secant steps kept inside the bracket of the sides seen;
 /// * `SIMPLE`: every tissue voxel gets the average of the cube centred on
 ///   it, clipped by the domain, whatever the air inside; no cube found →
 ///   0;
 /// * `IEEE_C95_3`, `IEEE_62704`: a centred cube is valid when it lies in
-///   the domain, none of its faces lies entirely in air and (62704 only)
-///   at most 10 % of it is air; an invalid voxel takes the maximum of the
+///   the domain, none of its faces lies entirely in air (neither on the
+///   final cube nor on any lighter iterate of the solver) and (62704
+///   only) at most 10 % of it is air; an invalid voxel takes the maximum of the
 ///   valid cubes that overlap it (C95.3) or contain it (62704), and one
 ///   that none reaches a cube with the voxel at the centre of a face: of
 ///   the six, the smallest (C95.3), or the largest average among those
 ///   within 5 % of the smallest volume (62704).
 ///
-/// Details in the docs of the implementation (`post::sar::openems`) and in
-/// `docs/DESIGN.md` §5.12, with the known differences (cubes smaller
-/// than a voxel, IEEE validity of cubes of about two cells on graded
-/// meshes, and choices that openEMS's rounding decides).
+/// Details in the docs of the implementation (`post::sar::openems`, also
+/// openEMS's weights of cells holding both ends of a cube) and in
+/// `docs/DESIGN.md` §5.12, with the known differences (choices that
+/// openEMS's rounding decides: ties between face cubes, cubes of a whole
+/// number of cells in uniform tissue).
 /// [`options`](Self::options) maps a method to ems's own cube procedure
 /// instead (exact masses, 10 % air rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
