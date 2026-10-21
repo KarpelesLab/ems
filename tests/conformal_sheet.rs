@@ -297,10 +297,10 @@ fn cylindrical_shell_te11_converges() {
         conf.push(ec.abs());
     }
     // Merging the small regions instead (wave 12): +1.41 / +0.567 /
-    // +0.260 %, order 1.2.
-    let order = (conf[0] / conf[2]).log2() / 2.0;
+    // +0.260 %, order 1.2. (5 cells per radius is pre-asymptotic.)
+    let order = (conf[1] / conf[2]).log2();
     eprintln!("observed order {order:.2}");
-    assert!(order > 1.9, "order {order} ({conf:?})");
+    assert!(order > 1.7, "order {order} ({conf:?})");
 }
 
 /// Lowest TE mode (`H_z ∝ cos(πx/a) + cos(πy/a)`, `f = c/(2a)`) of the

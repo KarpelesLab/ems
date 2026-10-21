@@ -33,7 +33,11 @@
 //! consistent inductance `PᵀLP`. That is second order for `H` tangential
 //! to the sheet (TE fields), where merging (constant extrapolation, the
 //! fallback for regions without a valid stencil and inside absorbing
-//! layers) is first order. The stability check covers the whole system.
+//! layers) is first order. Each interpolated region also keeps a
+//! deviation current (inductance `(f_r + a)·L`, see the
+//! [module docs](super#deviation-currents-no-spurious-static-fields)), so
+//! no spurious static field is left on its cut pieces; merged regions do
+//! not have one yet. The stability check covers the whole system.
 //!
 //! # Coupling with the kernel
 //!
@@ -395,6 +399,7 @@ impl Prepared {
         exclude: &HashSet<Key>,
         absorbing: &dyn Fn(Axis, [usize; 3]) -> bool,
         copies: &Copies<'_>,
+        deviation: f64,
     ) -> Build {
         let n = grid.nodes();
         let idx = |p: [usize; 3]| index(n, p);
@@ -602,6 +607,33 @@ impl Prepared {
                 }
                 let (a, b) = (find(&mut link, j), find(&mut link, gid[st[0].0] - scalar));
                 link[a.max(b)] = a.min(b);
+            }
+            if deviation > 0.0 {
+                // The region's deviation current (module docs of
+                // `conformal`): `i_s = Σ w·g + d_s`, mass `f_r·L + dev·L`.
+                let qd = ml.len();
+                let mut row = HashMap::from([(qd, (lf + deviation * f.l, rf))]);
+                for &(hj, wj) in st {
+                    let j = gid[hj] - scalar;
+                    let cross = (wj * lf, wj * rf);
+                    let e = row.entry(j).or_insert((0.0, 0.0));
+                    e.0 += cross.0;
+                    e.1 += cross.1;
+                    let e = ml[j].entry(qd).or_insert((0.0, 0.0));
+                    e.0 += cross.0;
+                    e.1 += cross.1;
+                }
+                ml.push(row);
+                link.push(qd);
+                let (a, b) = (find(&mut link, qd), find(&mut link, gid[st[0].0] - scalar));
+                link[a.max(b)] = a.min(b);
+                let mut terms: BTreeMap<Ref, f64> = BTreeMap::new();
+                for &(v, sg, _, _) in &reg.terms {
+                    *terms.entry(v).or_insert(0.0) += sg;
+                }
+                let (l, r) = ml[qd][&qd];
+                groups.push(SGroup::new(terms, l, r, dt));
+                combo[*s].push((scalar + qd, 1.0));
             }
         }
         for (q, ex) in extra.into_iter().enumerate() {

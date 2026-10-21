@@ -89,6 +89,36 @@
 //! neighbour keeps its own current with `f_A` raised to the threshold
 //! ([`ConformalReport::floored`]).
 //!
+//! # Deviation currents: no spurious static fields
+//!
+//! Removing a small face's own current enlarges the null space of the
+//! reduced curl `PᵀK`: an `E` field circulating around the small face
+//! (on its cut edges) that the weighted host circulations do not see is
+//! static in the reduced scheme although its curl is not zero. In a
+//! cross-section these are extra zero-frequency modes; along a wall
+//! (z-invariant cut cells) they travel as a TEM-like wave at about `c`,
+//! guided by the cut cells: reflected where a wall ends in open space
+//! (guide walls ending one cell before a CPML: energy stuck at −26 dB),
+//! trapped between PEC plates, and next to a CPML (hard merge groups in
+//! the layer, interpolated faces outside) growing exponentially. Plain
+//! Dey–Mittra (no reduction, small time step) has none of this.
+//!
+//! So every interpolated face, and every small member of a merge group,
+//! also keeps a **deviation current** `d`: `i_s = Σ w·g + d_s` (merge:
+//! `i_m = g + d_m`). `P` is then square and invertible (no extra null
+//! space) and the Ritz system gets an extra inductance on the deviations
+//! only, `M = PᵀLP + diag(a·L)` with `a =`
+//! [`ConformalOptions::deviation_area`]: `M_dd = (f_A + a)·L`. The Schur
+//! complement of each deviation is at least `a·L` (the hosts' mass
+//! contains `f_A·L·w·wᵀ`), so its local resonance is that of a face of
+//! open fraction `a`, below the Courant limit like the area floors, and
+//! the time step is unchanged. For smooth fields the deviation is the
+//! interpolation error, `O(h²)`, so the extra inductance costs nothing in
+//! accuracy (measured: equal or smaller errors on every cavity of design
+//! §5.13; second order on the sphere's modes, which were pre-asymptotic
+//! before). The symmetric form and the energy invariant are unchanged;
+//! merge groups with deviations are solved as blocks like the hosts.
+//!
 //! # Absorbing layers
 //!
 //! Inside CPML layers ([`ConformalPec::set_cpml`]) small faces are merged,
@@ -98,7 +128,15 @@
 //! correction to their members themselves (`Ψ ← b·Ψ + a·T`, circulation
 //! `+ (1/κ − 1)·T + Ψ`, with the CPML's grading); without it the field at
 //! the conductors was not absorbed (a conformal coaxial line in CPML read
-//! a 30 % impedance error from the reflection).
+//! a 30 % impedance error from the reflection). The correction of a
+//! member goes to every reduced current driving it (the group and the
+//! member's deviation). The cylindrical PML of a `ρ_max` face is applied
+//! the same way: its filter `h⁻¹` of the member's circulation (with the
+//! z / α layers' stretch inside it in the corners), see
+//! [`set_cpml`](ConformalPec::set_cpml); unstretched, the merged faces in
+//! that layer made a run diverge. Interpolating in the layers instead and
+//! area floors there were measured worse (floors: +0.51 % instead of
+//! +0.07 % on the coaxial impedance, from the mismatch at the layer).
 
 //! # Stability check
 //!
@@ -141,6 +179,7 @@ use super::{Engine, Grid};
 use crate::Face;
 use crate::axis::Axis;
 use crate::engine::boundary::cpml::{CpmlBoundary, CpmlCoefficients};
+use crate::engine::boundary::cyl_pml::{CylLayer, FaceStretch};
 use crate::{Error, Result};
 
 mod sheets;
@@ -184,6 +223,13 @@ pub struct ConformalOptions {
     pub iterations: usize,
     /// Rounds of threshold raising (default 4).
     pub max_rounds: usize,
+    /// Area floor of the deviation currents of interpolated faces (default
+    /// 0.5; 0: no deviation currents, the plain restriction): an
+    /// interpolated face's current is the interpolation plus its own
+    /// deviation, whose inductance is that of a face with at least this
+    /// open fraction (see the
+    /// [module docs](self#deviation-currents-no-spurious-static-fields)).
+    pub deviation_area: f64,
 }
 
 impl Default for ConformalOptions {
@@ -193,6 +239,7 @@ impl Default for ConformalOptions {
             max_stability: 0.999,
             iterations: 300,
             max_rounds: 4,
+            deviation_area: 0.5,
         }
     }
 }
@@ -274,6 +321,9 @@ pub struct ConformalPec {
     /// ([`set_cpml`](Self::set_cpml)), per cell of the layer in increasing
     /// index order.
     cpml_h: Vec<(Face, usize, Vec<CpmlCoefficients>)>,
+    /// The cylindrical `ρ_max` layer ([`set_cpml`](Self::set_cpml)), whose
+    /// H-side stretch merge groups apply to their members in it.
+    cyl_h: Option<CylLayer>,
     sheet_edges: Vec<SheetCutEdge>,
     sheet_faces: Vec<SheetCutFace>,
     options: ConformalOptions,
@@ -349,8 +399,11 @@ impl ConformalPec {
     /// (the [`CpmlBoundary`] skips them, their kernel `db` being 0; see the
     /// [module docs](self#absorbing-layers)). Call before
     /// [`apply`](Self::apply). The cylindrical PML of a `ρ_max` face
-    /// counts as absorbing but is not applied to merged faces.
+    /// ([`CpmlBoundary::is_cylindrical_rho_max`]) is applied likewise: its
+    /// stretch of the radius (and of the z or α faces' layers in the
+    /// corners) filters each merged member's circulation.
     pub fn set_cpml(&mut self, cpml: &CpmlBoundary) {
+        self.cyl_h = cpml.cyl_layer();
         for (face, params) in cpml.layers() {
             self.set_absorbing_layers([(face, params.cells)]);
             if cpml.is_cylindrical_rho_max() && face == Face::XMax {
@@ -473,9 +526,18 @@ impl ConformalPec {
         let rounds = self.options.max_rounds.max(1);
         let absorbing = |a: Axis, p: [usize; 3]| self.in_absorbing(a, p, n);
         for round in 0..rounds {
-            let built = sheet
-                .as_ref()
-                .map(|p| p.construct(&co, &grid, dt, tau, &volume_faces, &absorbing, &copies));
+            let built = sheet.as_ref().map(|p| {
+                p.construct(
+                    &co,
+                    &grid,
+                    dt,
+                    tau,
+                    &volume_faces,
+                    &absorbing,
+                    &copies,
+                    self.options.deviation_area.clamp(0.0, 1.0),
+                )
+            });
             let empty = HashSet::new();
             let owned = built.as_ref().map_or(&empty, |b| &b.owned);
             let (mut coeffs, merged, mut report) = self.construct(&co, &grid, dt, tau, owned);
@@ -648,6 +710,7 @@ impl ConformalPec {
             let a = f.axis;
             let k0 = (a.index(), idx(f.node));
             face_info.get(&k0)?.1?;
+
             if self.in_absorbing(a, f.node, n) {
                 return None;
             }
@@ -803,6 +866,11 @@ impl ConformalPec {
             db_m[k.1] = 0.0;
             grouped.insert(k);
         };
+        // With deviation currents a merge group's small members keep a
+        // deviation each (soft merging, see the module docs): such groups
+        // join the blocks, after the hosts.
+        let deviation = self.options.deviation_area.clamp(0.0, 1.0);
+        let mut soft: Vec<SoftGroup> = Vec::new();
         for (_, members) in uf.groups() {
             let (mut l, mut r) = (0.0, 0.0);
             let mut terms: HashMap<Key, (Axis, [usize; 3], f64)> = HashMap::new();
@@ -815,63 +883,27 @@ impl ConformalPec {
                 l += fa * lf;
                 r += fa * rf;
                 add_terms(&mut terms, a, p, 1.0, n);
-                faces.push((a, p));
+                faces.push((a, p, fa, lf, rf));
                 freeze(&mut out, k);
             }
             report.merged += members.len();
             if l <= 0.0 {
                 continue;
             }
+            if deviation > 0.0 {
+                soft.push(SoftGroup {
+                    terms: sorted_terms(terms, n),
+                    l,
+                    r,
+                    faces,
+                });
+                continue;
+            }
             let g = groups.len();
             groups.push(Group::new(sorted_terms(terms, n), l, r, dt));
-            driven.extend(faces.into_iter().map(|(a, p)| (a, p, vec![(g, 1.0)])));
+            driven.extend(faces.into_iter().map(|(a, p, ..)| (a, p, vec![(g, 1.0)])));
         }
-        report.groups = groups.len();
-        // CPML stretching of the merged faces inside the layers.
-        let mut pml = Vec::new();
-        for (g, (a, p, _)) in driven
-            .iter()
-            .enumerate()
-            .map(|(q, d)| (d.2[0].0, (d.0, d.1, q)))
-        {
-            for (face, cells, h) in &self.cpml_h {
-                let d = face.axis();
-                if d == a {
-                    continue;
-                }
-                let (np, k) = (n[d.index()], p[d.index()]);
-                let pos = if face.is_max() {
-                    let inner = np - 1 - cells;
-                    (k >= inner).then(|| k - inner)
-                } else {
-                    (k < *cells).then_some(k)
-                };
-                let Some(c) = pos.and_then(|q| h.get(q)) else {
-                    continue;
-                };
-                // T_d = sign·(u_o(p + e_d) − u_o(p)), the part of the curl
-                // of face a differentiating along d (CPML module docs).
-                let (sign, other) = if d == a.next() {
-                    (1.0, a.prev())
-                } else {
-                    (-1.0, a.next())
-                };
-                let mut hi = p;
-                hi[d.index()] += 1;
-                pml.push(PmlTerm {
-                    group: g,
-                    other,
-                    nodes: [hi, p],
-                    at: None,
-                    sign,
-                    b: c.b,
-                    a: c.a,
-                    k: 1.0 / c.kappa - 1.0,
-                    psi: 0.0,
-                });
-            }
-        }
-
+        report.groups = groups.len() + soft.len();
         // Interpolation: every stencil face becomes a reduced current
         // ("host") with its own circulation plus the weighted circulations
         // of the small faces reading it (`PᵀK`), and the hosts sharing small
@@ -912,7 +944,11 @@ impl ConformalPec {
         for (q, _) in host_keys.iter().enumerate() {
             link.add((0, q), [0; 3], 0.0);
         }
-        for (k, a, p, st) in &stencils {
+        // Deviation currents (local numbers after the hosts, in stencil
+        // order): `i_s = Σ w·g + d_s`, mass `max(f_A, deviation_area)·L`
+        // on `d_s`, the consistent `f_A·L·w` couplings to the hosts.
+        let nh = host_keys.len();
+        for (ns, (k, a, p, st)) in stencils.iter().enumerate() {
             let (lf, rf) = lr_full(*a, k.1);
             // (Inductance with the current measured at the centroid, see
             // `centroid_dual_length`.)
@@ -929,6 +965,23 @@ impl ConformalPec {
                 }
                 link.union((0, local[&st[0].0]), (0, j));
             }
+            if deviation > 0.0 {
+                let qd = nh + ns;
+                let mut row = HashMap::from([(qd, ((fa + deviation) * lf, fa * rf))]);
+                for &(kj, _, wj) in st {
+                    let j = local[&kj];
+                    let cross = (wj * fa * lf, wj * fa * rf);
+                    let e = row.entry(j).or_insert((0.0, 0.0));
+                    e.0 += cross.0;
+                    e.1 += cross.1;
+                    let e = ml[j].entry(qd).or_insert((0.0, 0.0));
+                    e.0 += cross.0;
+                    e.1 += cross.1;
+                }
+                ml.push(row);
+                link.add((0, qd), [0; 3], 0.0);
+                link.union((0, local[&st[0].0]), (0, qd));
+            }
         }
         let first_host = groups.len();
         for (kh, h) in hosts {
@@ -939,10 +992,50 @@ impl ConformalPec {
             driven.push((h.axis, h.node, vec![(g, 1.0)]));
             freeze(&mut out, kh);
         }
-        // Blocks: connected hosts, components in order of their first host.
+        // The deviations: the small faces' own circulations.
+        let with_deviation = ml.len() > nh;
+        if with_deviation {
+            for (ns, (_, a, p, _)) in stencils.iter().enumerate() {
+                let mut terms = HashMap::new();
+                add_terms(&mut terms, *a, *p, 1.0, n);
+                let (l, r) = ml[nh + ns][&(nh + ns)];
+                groups.push(Group::new(sorted_terms(terms, n), l, r, dt));
+            }
+        }
+        // Soft merge groups: the group current `g` (mass `Σ f_A·L`) and a
+        // deviation per small member (`i_m = g + d_m`), after the hosts.
+        for sg in soft {
+            let qg = ml.len();
+            let g = first_host + qg;
+            ml.push(HashMap::from([(qg, (sg.l, sg.r))]));
+            link.add((0, qg), [0; 3], 0.0);
+            groups.push(Group::new(sg.terms, sg.l, sg.r, dt));
+            for (a, p, fa, lf, rf) in sg.faces {
+                let mut w = vec![(g, 1.0)];
+                if fa < tau {
+                    let qd = ml.len();
+                    let cross = (fa * lf, fa * rf);
+                    ml.push(HashMap::from([
+                        (qd, ((fa + deviation) * lf, fa * rf)),
+                        (qg, cross),
+                    ]));
+                    ml[qg].insert(qd, cross);
+                    link.add((0, qd), [0; 3], 0.0);
+                    link.union((0, qg), (0, qd));
+                    let mut terms = HashMap::new();
+                    add_terms(&mut terms, a, p, 1.0, n);
+                    let (l, r) = ml[qd][&qd];
+                    groups.push(Group::new(sorted_terms(terms, n), l, r, dt));
+                    w.push((first_host + qd, 1.0));
+                }
+                driven.push((a, p, w));
+            }
+        }
+        // Blocks: connected hosts (and deviations), components in order of
+        // their first host.
         let mut comps: Vec<Vec<usize>> = Vec::new();
         let mut seen_root: HashMap<Key, usize> = HashMap::new();
-        for q in 0..host_keys.len() {
+        for q in 0..ml.len() {
             let r = link.find((0, q));
             let c = *seen_root.entry(r).or_insert_with(|| {
                 comps.push(Vec::new());
@@ -956,13 +1049,67 @@ impl ConformalPec {
             .collect();
         report.hosts = host_keys.len();
         report.interpolated = stencils.len();
-        for (k, a, p, st) in stencils {
-            driven.push((
-                a,
-                p,
-                st.iter().map(|s| (first_host + local[&s.0], s.2)).collect(),
-            ));
+        for (ns, (k, a, p, st)) in stencils.into_iter().enumerate() {
+            let mut w: Vec<(usize, f64)> =
+                st.iter().map(|s| (first_host + local[&s.0], s.2)).collect();
+            if with_deviation {
+                w.push((first_host + nh + ns, 1.0));
+            }
+            driven.push((a, p, w));
             freeze(&mut out, k);
+        }
+
+        // CPML stretching of the merged faces inside the layers, on every
+        // reduced current driving the face (the cylindrical ρ_max layer
+        // handles its corners with the z / α layers itself).
+        let mut pml = Vec::new();
+        let mut cyl_terms = Vec::new();
+        for (a, p, targets) in &driven {
+            let (a, p) = (*a, *p);
+            if !self.in_absorbing(a, p, n) {
+                continue;
+            }
+            let g = targets.clone();
+            if let Some(st) = self.cyl_h.as_ref().and_then(|c| c.h_face(a, p)) {
+                cyl_terms.push(CylTerm::new(g, a, p, st));
+                continue;
+            }
+            for (face, cells, h) in &self.cpml_h {
+                let d = face.axis();
+                if d == a {
+                    continue;
+                }
+                let (np, k) = (n[d.index()], p[d.index()]);
+                let pos = if face.is_max() {
+                    let inner = np - 1 - cells;
+                    (k >= inner).then(|| k - inner)
+                } else {
+                    (k < *cells).then_some(k)
+                };
+                let Some(c) = pos.and_then(|q| h.get(q)) else {
+                    continue;
+                };
+                // T_d = sign·(u_o(p + e_d) − u_o(p)), the part of the curl
+                // of face a differentiating along d (CPML module docs).
+                let (sign, other) = if d == a.next() {
+                    (1.0, a.prev())
+                } else {
+                    (-1.0, a.next())
+                };
+                let mut hi = p;
+                hi[d.index()] += 1;
+                pml.push(PmlTerm {
+                    targets: g.clone(),
+                    other,
+                    nodes: [hi, p],
+                    at: None,
+                    sign,
+                    b: c.b,
+                    a: c.a,
+                    k: 1.0 / c.kappa - 1.0,
+                    psi: 0.0,
+                });
+            }
         }
 
         // Remaining cut faces keep their own current with db/f_A (raised
@@ -986,10 +1133,20 @@ impl ConformalPec {
         }
         (
             out,
-            MergedFaces::new(groups, first_host, blocks, driven, pml),
+            MergedFaces::new(groups, first_host, blocks, driven, pml, cyl_terms),
             report,
         )
     }
+}
+
+/// A merge group with deviation currents, before it joins the blocks:
+/// merged circulation, `Σ f_A·L`, `Σ f_A·R`, and its members `(axis, node,
+/// f_A, L, R)`.
+struct SoftGroup {
+    terms: Vec<(Axis, [usize; 3], f64)>,
+    l: f64,
+    r: f64,
+    faces: Vec<(Axis, [usize; 3], f64, f64, f64)>,
 }
 
 /// Largest accepted interpolation weight magnitude.
@@ -1444,6 +1601,41 @@ pub struct MergedFaces {
     flat_faces: Vec<(Axis, (usize, usize))>,
     /// CPML corrections of merged faces in absorbing layers.
     pml: Vec<PmlTerm>,
+    /// Cylindrical `ρ_max` PML corrections of merged faces.
+    cyl: Vec<CylTerm>,
+}
+
+/// The cylindrical `ρ_max` PML correction of one merged face (design
+/// §5.15.2): circulation `+= Y − T` with `Y = h⁻¹ ∗ T` the layer's filter
+/// of the face's circulation `T = x1 − x2` (`x1 = u_c(p + e_b) − u_c(p)`,
+/// `x2 = u_b(p + e_c) − u_b(p)`, `(b, c) = axis.others()`), exactly as
+/// the layer itself corrects faces with a kernel `db`.
+#[derive(Debug, Clone, PartialEq)]
+struct CylTerm {
+    /// Reduced currents driving the face, with their weights.
+    targets: Vec<(usize, f64)>,
+    /// Edges `[(c, p + e_b), (c, p), (b, p + e_c), (b, p)]`.
+    edges: [(Axis, [usize; 3]); 4],
+    /// Located `edges` (filled on first use).
+    at: Option<[(usize, usize); 4]>,
+    stretch: FaceStretch,
+    psi: [f32; 6],
+}
+
+impl CylTerm {
+    fn new(targets: Vec<(usize, f64)>, a: Axis, p: [usize; 3], stretch: FaceStretch) -> Self {
+        let (b, c) = a.others();
+        let (mut pb, mut pc) = (p, p);
+        pb[b.index()] += 1;
+        pc[c.index()] += 1;
+        Self {
+            targets,
+            edges: [(c, pb), (c, p), (b, pc), (b, p)],
+            at: None,
+            stretch,
+            psi: [0.0; 6],
+        }
+    }
 }
 
 /// The CPML correction of one merged face in a layer (H side, one
@@ -1452,7 +1644,8 @@ pub struct MergedFaces {
 /// [`crate::engine::boundary::cpml`].
 #[derive(Debug, Clone, PartialEq)]
 struct PmlTerm {
-    group: usize,
+    /// Reduced currents driving the face, with their weights.
+    targets: Vec<(usize, f64)>,
     other: Axis,
     nodes: [[usize; 3]; 2],
     /// Located `nodes` (filled on first use).
@@ -1472,10 +1665,12 @@ impl MergedFaces {
         blocks: Vec<Block>,
         faces: Vec<Driven>,
         pml: Vec<PmlTerm>,
+        cyl: Vec<CylTerm>,
     ) -> Self {
         let n = groups.len();
         Self {
             pml,
+            cyl,
             groups,
             scalar,
             blocks,
@@ -1555,7 +1750,20 @@ impl Operator for MergedFaces {
             let o = t.other;
             let d = t.sign * (f.u.at(o, at[0]) as f64 - f.u.at(o, at[1]) as f64);
             t.psi = t.b * t.psi + t.a * d;
-            self.circ[t.group] += t.k * d + t.psi;
+            for &(g, w) in &t.targets {
+                self.circ[g] += w * (t.k * d + t.psi);
+            }
+        }
+        for t in &mut self.cyl {
+            let at = *t
+                .at
+                .get_or_insert_with(|| t.edges.map(|(_, p)| f.u.layout().locate(p)));
+            let v = |q: usize| f.u.at(t.edges[q].0, at[q]);
+            let (x1, x2) = (v(0) - v(1), v(2) - v(3));
+            let c = t.stretch.correction(&mut t.psi, x1, x2) as f64;
+            for &(g, w) in &t.targets {
+                self.circ[g] += w * c;
+            }
         }
         let (mut next, mut x) = (
             core::mem::take(&mut self.next),

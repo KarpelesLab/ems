@@ -706,6 +706,133 @@ fn circular_guide_with_pml_decays() {
         );
         steps[q] = out.steps;
     }
-    // (Measured: 6401 staircase, 5801 conformal.)
+    // (Measured: 6401 staircase, 6701 conformal.)
     assert!(steps[1] < 2 * steps[0], "{steps:?}");
+}
+
+/// The guide of [`circular_guide_with_pml_decays`] with its walls (the
+/// PEC block) ending one cell before each CPML (z = 9 … 41 mm, the layers
+/// z < 8 and z > 42), open space beyond, the TE11 port at z = 20 mm.
+/// Removing the small faces' own currents (merging, or interpolation
+/// without deviation currents) left spurious static fields on the cut
+/// cells, which along the wall travel as a TEM-like wave at ~c; it was
+/// reflected where the wall ends and the energy settled near −26 dB
+/// (30 000 steps). With the deviation currents it decays like the
+/// staircase run (design §5.13, "Deviation currents").
+#[test]
+fn guide_walls_ending_before_pml_decay() {
+    let (a, len, d): (f64, f64, f64) = (10.0, 50.0, 1.0);
+    let mut m = ContinuousStructure::new();
+    m.grid.delta_unit = 1e-3;
+    let n = ((a + 1.5) / d).ceil() as i64;
+    for ax in 0..2 {
+        m.grid
+            .set_lines(ax, (-n..=n).map(|i| i as f64 * d))
+            .unwrap();
+    }
+    m.grid.set_lines(2, lines(0.0, len, 1.0)).unwrap();
+    let e = n as f64 * d;
+    let metal = m.add_property(Property::metal("wall"));
+    m.add_primitive(
+        metal,
+        Primitive::new(BoxShape::new([-e, -e, 9.0], [e, e, len - 9.0])),
+    )
+    .unwrap();
+    let air = m.add_property(Property::material("air", Material::new(1.0, 0.0)));
+    m.add_primitive(
+        air,
+        Primitive::new(Cylinder::new([0.0, 0.0, 0.0], [0.0, 0.0, len], a)).with_priority(10),
+    )
+    .unwrap();
+    CircWaveguidePort::new(1, [0., 0., 20.0], [0., 0., 24.0], a, CircMode::Te(1, 1))
+        .excite(1.0)
+        .add_to(&mut m)
+        .unwrap();
+    let fdtd = Fdtd::new()
+        .waveform(Waveform::gaussian(11.5e9, 3e9))
+        .boundaries(
+            Boundaries::all(Boundary::Pec)
+                .with(Face::ZMin, Boundary::pml(8))
+                .with(Face::ZMax, Boundary::pml(8)),
+        )
+        .end_criteria(EndCriteria::energy_decay_db(-50.0))
+        .max_timesteps(12_000)
+        .threads(4);
+    let mut steps = [0u64; 2];
+    for (q, conformal) in [false, true].into_iter().enumerate() {
+        let opts = CompileOptions::default().with_conformal(conformal);
+        let mut sim = Simulation::with_options(&m, &fdtd, &opts).unwrap();
+        let out = *sim.run().unwrap().outcome().unwrap();
+        eprintln!("walls ending before the PML, conformal {conformal}: {out:?}");
+        assert!(
+            matches!(out.reason, StopReason::EnergyDecay { .. }),
+            "conformal {conformal}: {out:?}"
+        );
+        steps[q] = out.steps;
+    }
+    // (Measured: 2901 staircase, 2651 conformal.)
+    assert!(steps[1] < 2 * steps[0], "{steps:?}");
+}
+
+/// Parallel plates (walls `y = const` between mesh lines, solid metal
+/// beyond) running along x into a CPML, 12 z cells between PEC plates:
+/// long-run stability of cut cells inside and next to an absorbing layer.
+/// Interpolated faces next to hard merge groups in the layer made the
+/// energy grow exponentially (from −103 dB after 7500 steps, ~6 dB per 500
+/// steps); with the deviation currents (soft merging) it settles like the
+/// staircase run (−124 dB).
+#[test]
+fn plates_into_cpml_long_run_is_stable() {
+    let mut m = ContinuousStructure::new();
+    m.grid.delta_unit = 1e-3;
+    m.grid.set_lines(0, lines(0.0, 34.0, 0.5)).unwrap();
+    m.grid.set_lines(1, lines(-4.0, 4.0, 0.25)).unwrap();
+    m.grid.set_lines(2, lines(0.0, 12.0, 1.0)).unwrap();
+    let ly = lines(-4.0, 4.0, 0.25);
+    let metal = m.add_property(Property::metal("plates"));
+    let (lo, hi) = (-2.5 - 0.23 * 0.25, 2.5 + 0.37 * 0.25);
+    for (y0, y1) in [(hi, 5.0), (-5.0, lo)] {
+        m.add_primitive(
+            metal,
+            Primitive::new(BoxShape::new([-1.0, y0, -1.0], [40.0, y1, 13.0])),
+        )
+        .unwrap();
+    }
+    let fdtd = Fdtd::new()
+        .threads(4)
+        .boundary(Face::XMax, Boundary::pml(8));
+    let mut w = Vec::new();
+    for conformal in [false, true] {
+        let c = compile(
+            &m,
+            &fdtd,
+            &CompileOptions::default().with_conformal(conformal),
+        )
+        .unwrap();
+        let (mut e, h) = c.build().unwrap();
+        if let Some(r) = &h.conformal {
+            assert!(r.verified, "{r:?}");
+        }
+        let mut src = EdgeSource::new(common::sine_pulse(12e9, 8e9));
+        for j in 0..ly.len() - 1 {
+            if ly[j] > lo && ly[j + 1] < hi {
+                src = src.edge(Axis::Y, [8, j, 6], 1.0);
+            }
+        }
+        e.add_operator(src);
+        let mut v = Vec::new();
+        for _ in 0..30 {
+            e.run(500);
+            v.push(e.energy());
+        }
+        let peak = v.iter().fold(0f64, |m, &x| m.max(x));
+        let db: Vec<f64> = v.iter().map(|x| 10.0 * (x / peak).log10()).collect();
+        eprintln!(
+            "plates into CPML, conformal {conformal}: end {:.1} dB",
+            db[29]
+        );
+        w.push(db);
+    }
+    let c = &w[1];
+    assert!(c[29] < -110.0 && c[29] <= c[20] + 0.5, "{c:?}");
 }

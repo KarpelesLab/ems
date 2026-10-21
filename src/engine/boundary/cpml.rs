@@ -736,6 +736,19 @@ impl CpmlBoundary {
         any.then_some(out)
     }
 
+    /// The cylindrical `ρ_max` layer as the operator builds it (whole
+    /// grid, no state), if this boundary uses one; for operators that
+    /// update faces of the layer themselves
+    /// ([`ConformalPec::set_cpml`](crate::engine::ConformalPec::set_cpml)).
+    pub(crate) fn cyl_layer(&self) -> Option<CylLayer> {
+        self.cyl.as_ref().map(|(grid, _)| {
+            let l = self.layer(Face::XMax).expect("ρ_max layer");
+            CylLayer::new(grid, self.dt, &l.params, l.n, |e, c, d| {
+                self.transverse(e, c, d)
+            })
+        })
+    }
+
     fn layer(&self, face: Face) -> Option<&Layer> {
         self.layers.iter().find(|l| l.face == face)
     }

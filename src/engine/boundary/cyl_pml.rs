@@ -350,7 +350,7 @@ pub(crate) fn alpha(grid: &Grid, p: &Cpml, n_r: f64) -> f64 {
 pub(crate) type Transverse = [Vec<f32>; 3];
 
 /// One field component of the layer (or of its part in one x-slab).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Comp {
     comp: Axis,
     e_side: bool,
@@ -369,7 +369,7 @@ struct Comp {
 }
 
 /// The cylindrical PML of the `ρ_max` face (see the [module docs](self)).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CylLayer {
     e: Vec<Comp>,
     h: Vec<Comp>,
@@ -428,6 +428,31 @@ impl CylLayer {
         Self { e, h }
     }
 
+    /// The H-side stretch of the face normal to `a` at node `p`, if it is
+    /// in the layer: what the layer applies to that face's circulation,
+    /// for operators that update a face themselves (conformal merge
+    /// groups, whose kernel `db` is 0 so the layer's correction vanishes).
+    pub(crate) fn h_face(&self, a: Axis, p: [usize; 3]) -> Option<FaceStretch> {
+        let c = self.h.iter().find(|c| c.comp == a)?;
+        let inside = |r: (usize, usize), x: usize| (r.0..r.1).contains(&x);
+        if !(inside(c.x, p[0]) && inside(c.j, p[1]) && inside(c.k, p[2])) {
+            return None;
+        }
+        let tco = |which: usize, d: Axis| -> [f32; 3] {
+            match &c.tr[which] {
+                None => [0.0; 3],
+                Some(v) => {
+                    let ix = p[d.index()];
+                    [v[0][ix], v[1][ix], v[2][ix]]
+                }
+            }
+        };
+        Some(FaceStretch {
+            st: c.st[p[0] - c.x.0],
+            tr: [tco(0, a.next()), tco(1, a.prev())],
+        })
+    }
+
     /// The part in the x-planes `x0..x1` (with zeroed state).
     pub(crate) fn clip(&self, x0: usize, x1: usize) -> Self {
         let clip = |c: &Comp| {
@@ -472,6 +497,40 @@ impl CylLayer {
         for c in &mut self.h {
             c.apply(i, u, coef(c.comp), zero);
         }
+    }
+}
+
+/// The layer's H-side stretch of one face ([`CylLayer::h_face`]): the two
+/// stages of `h⁻¹` and the transverse CPML recursions `[β, w, 1/κ − 1]` of
+/// its two derivative terms (zero without a transverse layer).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FaceStretch {
+    st: [Stage; 2],
+    tr: [[f32; 3]; 2],
+}
+
+impl FaceStretch {
+    /// `Y − T` for the derivative terms `x1` (`D_next` of the `prev`
+    /// component) and `x2` (`D_prev` of `next`), `T = x1 − x2`, with the
+    /// per-face state `psi`; the same arithmetic as the layer's own
+    /// update, so `i ← da·i − db·(T + (Y − T))` is the stretched update.
+    pub(crate) fn correction(&self, psi: &mut [f32; 6], x1: f32, x2: f32) -> f32 {
+        let [s0, s1] = self.st;
+        let s = x1 - x2;
+        let [b1, w1, k1] = self.tr[0];
+        psi[4] = flush(b1 * psi[4] + w1 * x1);
+        let y1 = x1 + k1 * x1 + psi[4];
+        let [b2, w2, k2] = self.tr[1];
+        psi[5] = flush(b2 * psi[5] + w2 * x2);
+        let y2 = x2 + k2 * x2 + psi[5];
+        let sp = y1 - y2;
+        psi[0] = flush(s0.beta * psi[0] + s0.w * (sp + psi[1]));
+        psi[1] = sp;
+        let y = s0.k * sp + psi[0];
+        psi[2] = flush(s1.beta * psi[2] + s1.w * (y + psi[3]));
+        psi[3] = y;
+        let y = s1.k * y + psi[2];
+        y - s
     }
 }
 
