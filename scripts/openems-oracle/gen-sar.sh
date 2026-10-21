@@ -23,7 +23,7 @@
 #   IEEE validity of cubes of about two cells) and full.h5 (the graded mesh
 #   filled with tissue: face cubes shorter than their voxel); cube
 #   statistics only where no two candidate cubes tie (openEMS breaks ties
-#   by its rounding).
+#   by its rounding); and the cylindrical raw dump of cyl_sar at 0.1 g.
 #
 # sar_calc runs single-threaded (-n 1); its output is deterministic but for
 # the @proc_time attribute.
@@ -128,5 +128,7 @@ sarcalc "$d" graded.h5 graded_62704_small.h5 -m 0.0003 --method IEEE_62704
 sarcalc "$d" full.h5 full_c95.h5 -m 0.003 --method IEEE_C95_3 -e
 sarcalc "$d" full.h5 full_c95_small.h5 -m 0.0003 --method IEEE_C95_3
 sarcalc "$d" full.h5 full_62704.h5 -m 0.001 --method IEEE_62704
+sarcalc "$d" ../cyl_sar/sar_raw.h5 cyl_simple.h5 -m 0.1
+sarcalc "$d" ../cyl_sar/sar_raw.h5 cyl_c95.h5 -m 0.1 --method IEEE_C95_3
 fi
 echo "fixtures written to $FIX/sar_calc_*"

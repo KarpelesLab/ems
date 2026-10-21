@@ -17,3 +17,5 @@ command: sar_calc -n 1 -i graded.h5 -o graded_62704_small.h5 -m 0.0003 --method 
 command: sar_calc -n 1 -i full.h5 -o full_c95.h5 -m 0.003 --method IEEE_C95_3 -e
 command: sar_calc -n 1 -i full.h5 -o full_c95_small.h5 -m 0.0003 --method IEEE_C95_3
 command: sar_calc -n 1 -i full.h5 -o full_62704.h5 -m 0.001 --method IEEE_62704
+command: sar_calc -n 1 -i ../cyl_sar/sar_raw.h5 -o cyl_simple.h5 -m 0.1
+command: sar_calc -n 1 -i ../cyl_sar/sar_raw.h5 -o cyl_c95.h5 -m 0.1 --method IEEE_C95_3

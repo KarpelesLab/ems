@@ -13,7 +13,8 @@
 //! 2. the mean density of the cube of side `a`, `ρ̄ = M(a)/a³` (the full
 //!    geometric volume, also where the cube is clipped by the domain);
 //! 3. the start `b = max((m/ρ̄)^{1/3}, 2·min(Δx, Δy, Δz))` (the voxel's
-//!    widths) for a centred cube, `(m/ρ̄)^{1/3}` for a face cube;
+//!    widths) for a centred cube, `(m/ρ̄)^{1/3}` for a face cube (a start
+//!    `a` already within the tolerance is kept);
 //! 4. secant steps through the last two points, starting from `(a, M(a))`
 //!    and `(b, M(b))`, until `|M − m| ≤ tol·m`: `tol` = 5 % for `SIMPLE`
 //!    and `IEEE_C95_3`, 1e-6 for `IEEE_62704`. A step to a side `≤ 0`
@@ -308,7 +309,8 @@ impl Averager<'_> {
         };
         let s0 = (m / rv).cbrt();
         let mut a = 0.5 * s0;
-        let ma = eval(a)[0];
+        let qa = eval(a);
+        let ma = qa[0];
         let rbar = ma / (a * a * a);
         if !(rbar >= 0.0 && rbar.is_finite()) {
             return None;
@@ -343,9 +345,16 @@ impl Averager<'_> {
             }
         };
         let mut air = light_air(a, fa);
-        let mut q = eval(b);
+        // A half-size start already within the tolerance is kept (seen on
+        // cylindrical raw files, whose volumes exceed the widths' product).
+        if fa.abs() <= self.tol * m {
+            b = a;
+        }
+        let mut q = if b == a { qa } else { eval(b) };
         let mut fb = q[0] - m;
-        air |= light_air(b, fb);
+        if b != a {
+            air |= light_air(b, fb);
+        }
         // The bracket: the largest side seen below the mass, the smallest
         // above it.
         let (mut lo, mut hi) = (None::<f64>, None::<f64>);
