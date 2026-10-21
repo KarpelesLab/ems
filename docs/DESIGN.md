@@ -642,6 +642,83 @@ wall held a local resonance. Both are fixed (§5.13, *Absorbing layers*);
 a coarse version is the regression test `circular_guide_with_pml_decays`
 (`tests/conformal_modes.rs`).
 
+**Radial-line port** (`ems::port::RadialLinePort`, cylindrical grids):
+a parallel-plate radial waveguide between two `z` planes `h` apart, the
+TM₀₀ mode (`E_z` uniform across the gap and in α, `H_α`) as a
+non-uniform line, `dV/dρ = −jωμ·h/(Δα·ρ)·I`, `dI/dρ = −jωε·Δα·ρ/h·V`,
+solved by `V = A·H₀⁽²⁾(kρ) + B·H₀⁽¹⁾(kρ)`, `I = −j(Δα·ρ/(ηh))·(A·H₁⁽²⁾ +
+B·H₁⁽¹⁾)` (Marcuvitz §2.6; `Δα` the grid's azimuth span). Design:
+- Feed ring at `r_feed` (soft `E_z` excitation and/or a `z` resistor
+  over every α column), three voltage lines at equally spaced ρ lines
+  past the feed, two current rings on the dual radii between them:
+  flat current boxes normal to z from the first ρ line over the whole α
+  range (the total current through the disc, which by Ampère is the
+  radial current in the `+` plate), a quarter cell into the cell nearest
+  the middle of the gap, which ems (layer of the nearest node) and
+  openEMS (nearest dual plane) read alike. Outward ports
+  (`r_end > r_feed`, incident `H⁽²⁾`) and inward ones (incident `H⁽¹⁾`).
+- Extraction: `A`, `B` fitted to the five probe values (least squares,
+  currents scaled by `η·h/(Δα·ρ)`) with the discrete wavenumber along
+  the probe spacing `d`, `k = (2/d)·asin(Ω·√(με)·d/2)`, `Ω` the
+  time-discrete frequency; the fit residual is reported (TM₀₀ purity).
+  Reported at the reference radius: `V`, `I`, `V_inc`, `V_ref`, the
+  travelling-wave `Γ = V_ref/V_inc`, the incident wave impedance
+  `Z₊ = j·η·h/(Δα·ρ)·H₀⁽²⁾/H₁⁽²⁾` (complex: Kurokawa power waves with it
+  would not vanish for a matched line), and the pseudo-waves
+  `a, b = V_inc, V_ref·√Re(1/Z₊)` with `½(|a|² − |b|²) = ½·Re(V·I*)`
+  exactly (the two cylindrical waves carry no cross power), so
+  `b/a = Γ`. A real reference impedance gives an ordinary `PortResult`.
+- `Y₀`, `Y₁` (new in `port/bessel.rs`): A&S 9.1.22 integral, composite
+  16-point Gauss–Legendre; A&S table 9.1 to 1e-12, Wronskian to 1e-11
+  over 0.01…120.
+- Sector grids: PMC α walls (TM₀₀'s `E_z` lives on them). The wall
+  columns have half-width dual cells, so a feed resistor spread equally
+  over the columns drives the wall columns twice as hard: the feed is
+  then not uniform in α, and its azimuthal near field (`∝ (r_f/ρ)^ν`)
+  reached the probes at −45 dB (fit residual 1e-3). The port therefore
+  splits the resistor: wall columns `2N·R` each, the inner ones
+  `N/(N−1)·R` (uniform α cells required). (`CoaxPort`'s radial feed
+  resistor on sectors has the same column weighting; not changed.)
+
+`tests/validation_radial.rs` (plates = PEC z faces 2 mm apart, two
+cells; `Δρ` = 0.5 mm; 4–16 GHz; analytic Hankel functions from the
+ascending series, independent of the port's quadrature):
+
+| case | result |
+|---|---|
+| matched: outward from 2 mm (PMC `ρ_min` = open end at the feed), reference 20 mm, cylindrical PML on `ρ_max` | `|Γ|` ≤ −59.4 dB (−71…−77 dB above 4 GHz), `V/I` within 2.1e-3 of the analytic `Z₊`, fit residual ≤ 3.9e-5 |
+| short at 30 mm (PEC `ρ_max`): `Γ = −H₀⁽²⁾(kb)H₀⁽¹⁾(kr)/(H₀⁽¹⁾(kb)H₀⁽²⁾(kr))` | `||Γ| − 1|` ≤ 4.6e-3, phase within 2.8e-3 rad |
+| quarter sector, PMC α walls, split feed resistor | `|Γ|` ≤ −59.4 dB (−45 dB with one resistor over all columns) |
+| inward from a ring at 30 mm to 12 mm, grid with the axis: `Γ = H₀⁽²⁾(kr)/H₀⁽¹⁾(kr)` | `||Γ| − 1|` ≤ 3.2e-4, phase within 1.7e-3 rad |
+
+openEMS runs the port's properties (black box, `cyl_radial_port`: the
+quarter-sector short with the split resistor, read from the file):
+probes within 7.8e-7…1.4e-6 of ems. It needed one more piece of
+openEMS's PMC (§5.15): openEMS also never updates the tangential E on a
+PMC face (its operator dump has `vv = vi = 0` there), so its current
+rings, which include the wall lines, read 3/4 of ems's (0.33 relative)
+until the file path did the same.
+
+**Microstrip on cylindrical grids** (`MslPort`). openEMS's engine has no
+port concept: its scripts' MSL, CPW and stripline ports are boxes
+(excitation, lumped element, probes) that on a cylindrical grid become
+`(ρ, α, z)` boxes and run as such (as the radial port's do). The line
+analysis needs a line uniform along its propagation axis, so `MslPort`
+accepts on cylindrical grids the strip along `z` above a ρ ground (on a
+cylindrical substrate, width an α range), along α above a ρ ground
+(width a z range) or along α above a z ground (width a ρ range), and
+refuses lines along ρ (not uniform) and grounds normal to α. Along α,
+positions are angles and `γ` is per metre of arc at the middle of the
+strip's cross-section (`Z_L` and the waves do not depend on it).
+`tests/validation_msl_cyl.rs`: along z with the strip around the whole
+azimuth (a coax: ground = PEC `ρ_min` face, strip on the `ρ_max` face,
+ε_r = 2) `Z_L` within 1.0e-5 of the discrete coax value, `β` within
+1.0e-5 of the Yee wavenumber, `|S11|` ≤ −85.5 dB; along α at
+`R` = 200 mm (full-width strip, h = 1 mm, w = 2 mm between PMC ρ walls,
+CPML α faces) `Z_L` within 1.4e-4 of `η0·h/w`, `β` within 4.8e-5,
+`|S11|` ≤ −85.7 dB. CPW and stripline ports stay Cartesian (their feeds,
+probes and references assume a planar, symmetric cross section).
+
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
 openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
@@ -2112,7 +2189,17 @@ condition). An empty PEC dump carries openEMS's range `1e+299` /
 `-1e+299`.
 
 **Boundaries.** CPML and Mur work on the z faces as on Cartesian grids
-(coax TEM reflection −86 dB with CPML(8)). A PML on the `ρ_max` face is the
+(coax TEM reflection −86 dB with CPML(8)). On the α faces of a sector the
+CPML grades `σ` with the physical arc `ρ_m·Δα` at the middle `ρ_m` of the
+grid's ρ range (its attenuation scales with ρ, so it is optimal there);
+it used `Δα` in radians as a length, i.e. the arc at ρ = 1 m, and a
+microstrip along α at `R` = 200 mm saw `|S11|` = −23.6 dB from it
+(−85.7 dB now, §5.5). openEMS PMC faces of files (the magnetic wall half
+a cell inside, §5.16.1) also keep the tangential E and the normal H on
+the face itself at 0, as openEMS does (`cyl_radial_port`; no other
+fixture changes), and skip the axis and the α faces of a closed grid,
+which are not boundaries (before, a file's `xmin="PMC"` on a grid with
+the axis zeroed the `H_α` ring at `ρ_½`). A PML on the `ρ_max` face is the
 cylindrical PML of §5.15.2 (−94 dB at 58 mm with 8 cells). Mur there uses
 the plane-wave one-way equation, which does not match an outgoing
 cylindrical wave: the reflection is of order `1/(kρ)`, measured −31 dB at
@@ -2134,13 +2221,16 @@ coaxial and circular-waveguide port helpers (`CoaxPort`,
 `CircWaveguidePort`, along `z` on the axis, also on sectors with
 symmetry walls, §5.5) and `LumpedPort` / `CurvePort`.
 
+Also the radial-line port (`RadialLinePort`, §5.5) and `MslPort` on
+the uniform lines along z or α (§5.5).
+
 **Not available** (dropped with a warning or refused): plane waves
 (openEMS ignores them there too: no field at all, no message; §5.16.2),
-and the MSL, CPW, stripline and rectangular-waveguide port helpers
-(`Error::Unsupported`): their geometry and analysis assume planar
-Cartesian lines (a strip on a curved substrate needs its own line
-model). The material model of axis-aligned thin wires (§5.14) is
-Cartesian; on cylindrical grids thin wires use the oblique model.
+`MslPort` along ρ or above an α ground, and the CPW, stripline and
+rectangular-waveguide port helpers (`Error::Unsupported`): their
+geometry and analysis assume planar Cartesian cross sections. The
+material model of axis-aligned thin wires (§5.14) is Cartesian; on
+cylindrical grids thin wires use the oblique model.
 
 **CellConstantMaterial** (`compile/cellconst.rs`): each cell takes the
 material at its parameter midpoint `(ρ_{i+½}, α_{j+½}, z_{k+½})`

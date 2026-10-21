@@ -831,14 +831,25 @@ impl Layer {
         } else {
             (0..inner).collect()
         };
+        // The grading needs the physical cell size: on the α faces of a
+        // cylindrical sector the arc `ρ·Δα` at the middle of the grid's ρ
+        // range (the layer's attenuation scales with ρ, so it is optimal
+        // there; `Δα` alone, in radians, made it the arc at ρ = 1 m).
+        let scale = if grid.is_cylindrical() && p == Axis::Y {
+            let r = grid.lines(Axis::X);
+            0.5 * (r[0] + r[r.len() - 1])
+        } else {
+            1.0
+        };
         let node_delta = |k: usize| {
             let lo = (k > 0).then(|| grid.delta(p, k - 1));
             let hi = (k + 1 < np).then(|| grid.delta(p, k));
-            match (lo, hi) {
-                (Some(a), Some(b)) => 0.5 * (a + b),
-                (Some(a), None) | (None, Some(a)) => a,
-                (None, None) => unreachable!("grids have two lines per axis"),
-            }
+            scale
+                * match (lo, hi) {
+                    (Some(a), Some(b)) => 0.5 * (a + b),
+                    (Some(a), None) | (None, Some(a)) => a,
+                    (None, None) => unreachable!("grids have two lines per axis"),
+                }
         };
         let e_coeffs: Vec<_> = e_idx
             .iter()
@@ -849,7 +860,7 @@ impl Layer {
         let h_coeffs: Vec<_> = h_idx
             .iter()
             .map(|&k| {
-                let d = grid.delta(p, k);
+                let d = scale * grid.delta(p, k);
                 CpmlCoefficients::in_medium(&params, rho(k as f64 + 0.5), d, dt, n_face)
             })
             .collect();

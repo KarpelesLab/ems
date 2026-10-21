@@ -114,6 +114,20 @@ pub struct MslPortProperties {
 ///   not written: it is part of the model (a metal plane or a PEC
 ///   boundary).
 /// * The remaining axis spans the strip width.
+/// * **Cylindrical grids** (`(ρ, α, z)` axes `X`, `Y`, `Z`): the same
+///   boxes in `(ρ, α, z)`, for the lines that are uniform along their
+///   propagation axis, so that the mode is exactly exponential there and
+///   the extraction applies unchanged: along `z` with the strip above
+///   the ground along ρ (a strip on a cylindrical substrate, width an α
+///   range), along α with the strip above the ground along ρ (width a z
+///   range) or along `z` (a strip on a flat substrate curving around the
+///   axis, width a ρ range). Lines along ρ (not uniform) and grounds
+///   normal to α are refused. Along α the feed, `stop` and
+///   [`reference_shift`](Self::reference_shift) are angles (radians), the
+///   probe positions too, and `γ` (hence `β`, `ε_eff`) is per metre of
+///   arc at the middle of the strip's cross-section (height along ρ: the
+///   mean of the ground and strip radii; along z: the centre of the
+///   strip's ρ range); `Z_L` and the waves do not depend on that radius.
 ///
 /// # Written properties
 ///
@@ -294,15 +308,35 @@ impl MslPort {
     /// length or height, a negative width, non-finite values, a
     /// non-positive feed resistance, a port already added, a property name
     /// already present in the model, an unknown metal property, or a mesh
-    /// that does not meet the [requirements](#mesh-requirements).
+    /// that does not meet the [requirements](#mesh-requirements);
+    /// [`Error::Unsupported`] on a cylindrical grid for a line along ρ or
+    /// a ground normal to α (see [Geometry](#geometry)).
     pub fn add_to(mut self, model: &mut ContinuousStructure) -> Result<Self> {
         let n = self.number;
         if self.props.is_some() {
             return Err(Error::Invalid(format!("MSL port {n} was already added")));
         }
-        if model.grid.coord_system != csx::CoordSystem::Cartesian {
+        let cyl = match model.grid.coord_system {
+            csx::CoordSystem::Cartesian => false,
+            csx::CoordSystem::Cylindrical => true,
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(Error::Unsupported(format!(
+                    "MSL port {n}: unsupported coordinate system"
+                )));
+            }
+        };
+        if cyl
+            && !matches!(
+                (self.dir, self.height),
+                (Axis::Z, Axis::X) | (Axis::Y, Axis::X) | (Axis::Y, Axis::Z)
+            )
+        {
             return Err(Error::Unsupported(format!(
-                "MSL port {n}: MSL ports need a Cartesian grid"
+                "MSL port {n}: on a cylindrical grid the line must be uniform: along z or α \
+                 with the strip above the ground along ρ, or along α above a z ground \
+                 (got propagation {} and height {})",
+                self.dir, self.height
             )));
         }
         let w_axis = self.width_axis()?;
@@ -356,8 +390,25 @@ impl MslPort {
                 )));
             }
         }
-        let layout =
-            choose_probes(model.grid.lines(p), feed, end, self.shift, du).ok_or_else(|| {
+        // Along α the positions are angles: the line coordinate is the arc
+        // at the middle of the strip's cross-section.
+        let du_line = if cyl && self.dir == Axis::Y {
+            let r_ref = if self.height == Axis::X {
+                0.5 * (h_gnd + h_strip)
+            } else {
+                0.5 * (w_lo + w_hi)
+            };
+            if r_ref.is_nan() || r_ref <= 0.0 {
+                return Err(Error::Invalid(format!(
+                    "MSL port {n}: the strip's mean radius {r_ref} must be > 0"
+                )));
+            }
+            du * r_ref
+        } else {
+            du
+        };
+        let layout = choose_probes(model.grid.lines(p), feed, end, self.shift, du_line)
+            .ok_or_else(|| {
                 Error::Invalid(format!(
                     "MSL port {n}: needs three equally spaced mesh lines along {} \
                      past the feed at {feed} and not beyond {end}",
