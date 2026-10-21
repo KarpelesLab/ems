@@ -295,7 +295,14 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
         // its coefficients).
         let c = ems::compile::compile(&doc.structure, sim.fdtd(), &copts)?;
         if opts.debug_material {
-            debug::write_material_dump(cwd, &c.grid, &c.materials)?;
+            // openEMS's dump shows the medium under its sheets.
+            let mut m = c.materials.clone();
+            for &(axis, node, [eps, kappa]) in &c.openems_sheets {
+                let i = c.grid.index(node);
+                m.eps_r_mut(axis)[i] = eps;
+                m.kappa_mut(axis)[i] = kappa;
+            }
+            debug::write_material_dump(cwd, &c.grid, &m)?;
         }
         if opts.debug_pec {
             debug::write_pec_dump(cwd, &c.grid, &c.materials)?;

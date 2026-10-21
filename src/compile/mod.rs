@@ -156,6 +156,7 @@ pub(crate) mod cylindrical;
 pub mod dispersive;
 mod mode;
 mod openems;
+mod openems_sheet;
 pub mod planewave;
 pub mod sar;
 pub mod sheet;
@@ -471,6 +472,13 @@ pub struct Compiled {
     /// Highest frequency of interest \[Hz\] ([`Fdtd::get_max_frequency`]),
     /// used to grade the conducting-sheet layers.
     pub max_frequency: Option<f64>,
+    /// Conducting-sheet edges that carry openEMS's sheet model instead
+    /// (models read from openEMS files, Cartesian grids;
+    /// `compile/openems_sheet.rs`), with the `[ε_r, κ]` of the medium
+    /// they replace: their `ε`/`κ` in [`materials`](Self::materials) and
+    /// their branch poles in [`dispersive`](Self::dispersive) are the
+    /// sheet's, not a medium's.
+    pub openems_sheets: Vec<(Axis, [usize; 3], [f64; 2])>,
     /// Conformal PEC geometry ([`CompileOptions::conformal`]); applied to
     /// the coefficients by [`build`](Self::build) before any operator.
     pub conformal: Option<ConformalPec>,
@@ -1331,7 +1339,7 @@ pub fn compile(
         None
     };
 
-    let dispersive = dispersive::dispersive_poles(model, &node_map, &materials, &mut warnings);
+    let mut dispersive = dispersive::dispersive_poles(model, &node_map, &materials, &mut warnings);
     let thin_wires = wire::thin_wires(
         full_model,
         &grid,
@@ -1355,7 +1363,7 @@ pub fn compile(
         &faces,
         &mut warnings,
     );
-    let timestep = fdtd.engine_timestep();
+    let mut timestep = fdtd.engine_timestep();
     let MaterialGrid {
         mut excitations,
         lumped,
@@ -1375,6 +1383,30 @@ pub fn compile(
     let sar = sar::sar_specs(model, &dumps, opts.subsampling, &mut warnings);
     let abc = abc_specs(model, &mut warnings);
     let mur_media = (fdtd.get_openems_run() && !cyl).then(|| mur_point_media(model, &grid, &mur));
+    // openEMS's sheet model replaces the slab on files (last: it pins the
+    // time step resolved with the final materials).
+    let (sheet_edges, openems_sheets) = if fdtd.get_openems_run() && !cyl {
+        let emu = openems_sheet::emulate(
+            model,
+            &grid,
+            fdtd,
+            sheet_map.edges,
+            sheet_map.names,
+            &mut materials,
+            &mut timestep,
+        )?;
+        if emu.pec > 0 {
+            warnings.push(format!(
+                "{} conducting-sheet edge(s) without a counted sheet cell made PEC (openEMS's \
+                 rule, e.g. along the lower mesh boundary)",
+                emu.pec
+            ));
+        }
+        dispersive.extend(emu.poles);
+        (emu.rest, emu.edges)
+    } else {
+        (sheet_map.edges, Vec::new())
+    };
     Ok(Compiled {
         grid,
         delta_unit: model.grid.delta_unit,
@@ -1393,8 +1425,9 @@ pub fn compile(
         dispersive_scheme: opts.dispersive_scheme,
         thin_wires,
         oblique_wires,
-        sheets: sheet_map.edges,
+        sheets: sheet_edges,
         max_frequency: fdtd.get_max_frequency(),
+        openems_sheets,
         conformal,
         sources: ModelSources {
             excitations,

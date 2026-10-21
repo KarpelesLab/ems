@@ -440,15 +440,22 @@ fn at_oe_times(name: &str, f: &str, res: &Results) -> (Vec<f64>, Vec<f64>, Vec<f
     (oe_t, oe.column(0), ems)
 }
 
-/// openEMS's `ConductingSheet` is a different (fitted) model: a 35 µm
-/// copper sheet across a TEM line reflects with `1 − |Γ|` equal to
-/// 0.48–0.52 of the exact slab's `≈ 2R_s/η0` (it acts like a shunt `Z_s/2`),
-/// which ems reproduces (design §5.9, §5.16). The incident wave is the
-/// same in both codes (sheet removed: ems's reference run).
+/// openEMS's `ConductingSheet` is a different (fitted) model, which ems
+/// emulates for files (`compile/openems_sheet.rs`, design §5.16.2): a
+/// 35 µm copper sheet across a TEM line of two cells reflects with
+/// `1 − |Γ|` equal to 0.48–0.52 of the exact slab's `≈ 2R_s/η0` (ems's
+/// native slab: 1, design §5.9), because openEMS leaves the sheet's
+/// first cell row next to the lower mesh boundary out, so only half the
+/// sheet width carries current. The probes agree to 3e-7 (reflected) and
+/// 1.4e-6 (transmitted, −80 dB). The incident wave is the same in both
+/// codes (sheet removed: ems's reference run).
 #[test]
 fn conducting_sheet_copper_loss_is_half_in_openems() {
     let name = "adv_sheet_copper";
     let res = run(name, &CompileOptions::default());
+    for (f, e) in compare(name, &res) {
+        assert!(e < 1e-5, "{name}/{f}: relative L2 {e:.3e}");
+    }
     let xml = std::fs::read_to_string(fixture_dir(name).join("model.xml")).unwrap();
     let (a, b) = (
         xml.find("<ConductingSheet").unwrap(),
@@ -482,7 +489,8 @@ fn conducting_sheet_copper_loss_is_half_in_openems() {
             "{:.0} GHz: 1-|Γ| openEMS/slab {q_oe:.3}, ems/slab {q_ems:.3}",
             f / 1e9
         );
-        assert!((q_ems - 1.0).abs() < 0.05, "{f}: ems {q_ems}");
+        // 1 − |Γ| ≈ 1e-4: a 3e-7 signal difference moves it by 1 %.
+        assert!((q_ems - q_oe).abs() < 0.02, "{f}: ems {q_ems}");
         assert!((q_oe - 0.5).abs() < 0.05, "{f}: openEMS {q_oe}");
     }
 }

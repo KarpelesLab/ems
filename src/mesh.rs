@@ -495,12 +495,16 @@ pub fn check_compiled(
     ctx.pml = compiled.pml.iter().map(|&(f, p)| (f, p.cells)).collect();
     // The thin-wire correction scales materials next to the wires; it is
     // not a medium (the wave speed is unchanged), so look past it.
-    let index = if compiled.thin_wires.is_empty() {
+    // Nor are openEMS's sheet capacitances (compile/openems_sheet.rs).
+    let index = if compiled.thin_wires.is_empty() && compiled.openems_sheets.is_empty() {
         slab_index_from_materials(&compiled.grid, &compiled.materials)
     } else {
         let mut m = compiled.materials.clone();
         for w in &compiled.thin_wires {
             w.remove(&compiled.grid, &mut m)?;
+        }
+        for &(axis, node, [eps, _]) in &compiled.openems_sheets {
+            m.eps_r_mut(axis)[compiled.grid.index(node)] = eps;
         }
         slab_index_from_materials(&compiled.grid, &m)
     };

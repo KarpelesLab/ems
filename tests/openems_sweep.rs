@@ -232,6 +232,11 @@ cases! {
     abc_line_s0_t0: 1e-5;           // (1e-6)
     abc_line_s1_t1: 1e-5;
     lumped_on_cyl: 1e-4;
+    // Conducting sheets: openEMS's sheet model (compile/openems_sheet.rs).
+    sheet_copper: 2e-4;
+    sheet_resistive: 2e-4;
+    sheet_full: 2e-4;
+    sheet_graded: 2e-4;
     fdtd_odd: 1e-4;
     fdtd_ts_and_steps0: 1e-30;      // (the t = 0 row of E-type files)
 }

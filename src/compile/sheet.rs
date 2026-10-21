@@ -36,6 +36,8 @@ use crate::fdtd::{Cpml, Face};
 pub(super) struct SheetMap {
     /// Edges for the engine operator (engine nodes).
     pub edges: Vec<SheetEdge>,
+    /// Property name of each of [`edges`](Self::edges).
+    pub names: Vec<String>,
     /// `(dir, csx index)` of sheet edges without a normal (PEC).
     pub pec: Vec<(usize, usize)>,
 }
@@ -248,6 +250,7 @@ pub(super) fn sheet_edges(
                 thickness: t,
                 upper_share: shares(model, d, node, nrm),
             });
+            out.names.push(info.name.clone());
         }
     }
     for (s, info) in sheets.iter().enumerate() {
