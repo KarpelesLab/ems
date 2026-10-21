@@ -25,6 +25,8 @@
 //!   polyline (a one-cell feed edge plus a csx `Curve` or `Wire`).
 //! * [`CoaxPort`]: a coaxial-line port (Cartesian or cylindrical grids),
 //!   analysed like the microstrip port.
+//! * [`RadialLinePort`]: a parallel-plate radial waveguide on a
+//!   cylindrical grid, analysed with cylindrical (Hankel) waves.
 
 mod coax;
 pub mod cpw;
@@ -56,6 +58,9 @@ pub use waveguide::{RectWaveguidePort, WaveguidePortProperties};
 mod bessel;
 mod circ_waveguide;
 pub use circ_waveguide::{CircMode, CircWaveguidePort, CircWaveguidePortProperties};
+
+pub mod radial;
+pub use radial::{RadialLinePort, RadialLinePortProperties, RadialLinePortResult};
 
 /// The csx property names and ids of an added [`LumpedPort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
