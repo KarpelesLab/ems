@@ -326,6 +326,14 @@ fn lumped_graded() {
 }
 
 #[test]
+fn lumped_graded_rl() {
+    // Parallel elements with an inductor and no capacitor: openEMS limits
+    // the edge capacitance (by R on `rl`, by L on `rn`); with a capacitor
+    // (`rlc`) it does not.
+    Check::new("lumped_graded_rl").tol(1e-4).check();
+}
+
+#[test]
 fn pmc_mur() {
     Check::new("pmc_mur").check();
 }

@@ -638,6 +638,25 @@ pub(crate) fn map_sources(
         }
         if g.topology == Topology::Parallel && fdtd.get_openems_run() {
             replace_medium(engine, g.axis, &g.edges);
+            // openEMS limits the edge capacitance of a parallel element
+            // with an inductor and no capacitor (design §5.16.1).
+            let no_c = g.edges.iter().all(|e| e.c.is_none());
+            if no_c
+                && g.edges.iter().any(|e| e.l.is_some())
+                && let Some(f) = waveform.and_then(|w| w.nyquist_frequency())
+            {
+                let omega = 2.0 * core::f64::consts::PI * f;
+                let kept = limit_medium_capacitance(engine, g.axis, &g.edges, omega);
+                if kept < 0.2 {
+                    warnings.push(format!(
+                        "lumped element {:?}: openEMS's limit on the edge capacitance of a \
+                         parallel R/L element keeps {:.0} % of an edge's capacitance; the \
+                         explicit update may become unstable (as it does in openEMS)",
+                        g.name,
+                        100.0 * kept
+                    ));
+                }
+            }
         }
         let ne = g.edges.len();
         let has_l = g.edges.first().is_some_and(|e| e.l.is_some());
@@ -1179,6 +1198,56 @@ fn replace_medium(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
             cb[i] = f32::INFINITY;
         }
     }
+}
+
+/// openEMS's limit on the medium capacitance of the edges of a parallel
+/// lumped element with an inductor and without a capacitor (black box,
+/// design §5.16.1, fitted from `--debug-operator` dumps): at the
+/// excitation's frequency `ω = 2π·f` (`f0 + fc` for a Gaussian, `f0`
+/// otherwise, the frequency of its Nyquist rate) the edge's capacitive
+/// admittance stays below a twentieth of the element's resistive and
+/// inductive ones, `C_e ≤ min(1/(20·ω·R_e), 1/(20·ω²·L_e))` with the
+/// per-edge `R_e`, `L_e`. Edges above the limit get exactly the limit
+/// (the medium conductance is kept). It does not depend on the time step;
+/// it can leave an edge far below its medium capacitance, so a large `R`
+/// or `L` makes openEMS's update unstable (it diverges for a 1 mm vacuum
+/// edge with `L` ≳ 3e-8 H, or on the `lumped_graded_rl` element with
+/// `R` ≳ 150 Ω). Returns the smallest kept fraction of an edge's
+/// capacitance (1 when nothing was limited).
+fn limit_medium_capacitance(
+    engine: &mut Engine,
+    axis: Axis,
+    edges: &[EdgeValues],
+    omega: f64,
+) -> f64 {
+    let mut kept = 1.0f64;
+    if !(omega.is_finite() && omega > 0.0) {
+        return kept;
+    }
+    let nodes = engine.grid().nodes();
+    let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
+    let dt = engine.dt();
+    let mut co = engine.coefficients_mut();
+    let (ca, cb) = co.e_mut(axis);
+    for e in edges {
+        let limit =
+            e.r.map(|r| 1.0 / (20.0 * omega * r))
+                .into_iter()
+                .chain(e.l.map(|l| 1.0 / (20.0 * omega * omega * l)))
+                .fold(f64::INFINITY, f64::min);
+        let i = idx(e.node);
+        let (a, b) = (f64::from(ca[i]), f64::from(cb[i]));
+        let cap = dt * (1.0 + a) / (2.0 * b);
+        if !(b.is_finite() && cap > limit) {
+            continue;
+        }
+        kept = kept.min(limit / cap);
+        let cond = (1.0 - a) / b;
+        let den = limit + 0.5 * cond * dt;
+        ca[i] = ((limit - 0.5 * cond * dt) / den) as f32;
+        cb[i] = (dt / den) as f32;
+    }
+    kept
 }
 
 /// PEC end caps of a lumped element: the transverse E edges of its two end

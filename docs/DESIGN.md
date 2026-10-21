@@ -309,9 +309,11 @@ be `Sync` (§8).
 - Branch energy (L/C states) is not yet included in `Engine::energy()`.
 - openEMS files (§5.16.1): parallel inductors use an explicit (leapfrog)
   update instead (`LumpedElement::explicit_inductor`), parallel R/C
-  elements are spread like a material over edges of different sizes, and
-  an excitation over an element is openEMS's plain soft source with the
-  branch driven without it (`LumpedElement::branch_drive_source`).
+  elements are spread like a material over edges of different sizes, an
+  excitation over an element is openEMS's plain soft source with the
+  branch driven without it (`LumpedElement::branch_drive_source`), and a
+  parallel element with an inductor but no capacitor limits its edges'
+  capacitance to `min(1/(20·ω·R_e), 1/(20·ω²·L_e))`.
 
 **Lumped port** = LumpedElement(R) + Excitation + voltage ProbeBox + current
 ProbeBox, emitted into csx by the helper.
@@ -1357,7 +1359,12 @@ validity rules):
   with the bisection and for only those ≥ 0.85 cell without it (where the
   path stays in the bracket); the doubling came from face-cube paths
   through the non-monotonic `|2s/d − 1|` region (a scan of the third
-  point reproduced openEMS's side at `2b`).
+  point reproduced openEMS's side at `2b`). A half-size start already
+  within the tolerance is kept (never on Cartesian files, where `M(a) ≈
+  m/8`; on cylindrical raw files, whose `Volume` is 10…30 times the
+  widths' product, SIMPLE took it: `cyl_sar` at 0.02 and 0.1 g differed
+  by 1.4e-5 and 1.1e-3 of the peak before, now ≤ 1e-7 for every method
+  from 1 mg to 1 g; `sar_calc_edge` replays 0.1 g with SIMPLE and C95.3).
 - *SIMPLE*: each tissue voxel gets the average (tissue power over tissue
   mass) of its centred cube; no cube → 0 (counted unused).
 - *IEEE_C95_3 / IEEE_62704 validity* of a centred cube: inside the
@@ -2586,13 +2593,36 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     difference (ems's and openEMS's single-edge updates fit the same
     coefficients). The "series elements on dielectrics 2–5 %" of the
     earlier notes did not reproduce (7.6e-5 on ε_r = 4).
-  - Parallel R‖L with an excitation over it on a graded mesh still
-    differs by 0.6–3 % (each part alone agrees to 5e-7; not resolved).
+  - A parallel element with an inductor and *without* a capacitor gets
+    its edge capacitance limited (wave 13; `--debug-operator` dumps,
+    `vv`/`vi` turned back into each edge's `C` and `G`): at the
+    excitation's frequency `ω = 2π·f` (`f0 + fc` for a Gaussian, `f0` for
+    a sinusoid and for a custom signal, whose `f_max` does not count) the
+    edge's capacitive admittance stays below a twentieth of the element's
+    resistive and inductive ones, `C_e ≤ min(1/(20·ω·R_e),
+    1/(20·ω²·L_e))` with the per-edge (equal-part) `R_e`, `L_e`; edges
+    above the limit get it exactly, the conductance is untouched. Fitted
+    over `R` = 50…1000 Ω, `L` = 0.2…10 nH, two time steps (5e-13 and
+    9e-13 s: the limit does not depend on `dt`), `fc` = 1 and 2 GHz, a
+    sinusoid and a custom signal: the limit `C_max·R_e` equals
+    `1/(20·ω)` and `C_max·L_e` equals `1/(20·ω²)` to 5 digits. No limit
+    with a capacitor (R‖L‖C), on R, C or R‖C elements, or on series
+    elements. This was the "R‖L with an excitation over it on a graded
+    mesh differs by 0.6–3 %" (the larger the `R`, the more edges are
+    limited): ems now applies the limit on the file path
+    (`sim::map`, `limit_medium_capacitance`), and `lumped_graded_rl`
+    (R‖L with an excitation, R‖L‖C, an R‖L next to it) went from 3.0e-2
+    / 3.3e-6 / 1.2e-1 to 4.0e-7 / 4.2e-7 / 1.3e-5 (the last is the
+    passive element's small voltage, f32 round-off). It also explains
+    the large-value behaviour noted before: a 1 mm vacuum edge's limit
+    `dt²/(L_e·C_e) ≥ 20·ω²·dt² = 0.0732` (5 GHz, 1.93 ps), and the
+    divergence for large `L` or `R` (the limited capacitance breaks the
+    edge's stability: `R` = 150 Ω diverges on `lumped_graded_rl`, where
+    15 % of an edge's capacitance is left); ems warns when less than a
+    fifth is left.
   - Large element values behave oddly in openEMS (not reproduced): a
     series R above ~190 Ω per 1 mm vacuum edge gets a different,
-    unstable update (NaN within 16 steps at 2 kΩ), and a parallel
-    `L_e > dt²/(0.0732·C_e)` lowers the edge capacitance to
-    `dt²/(0.0732·L_e)` and diverges from ~3e-8 H.
+    unstable update (NaN within 16 steps at 2 kΩ).
 
 #### 5.16.2 Advanced physics
 
