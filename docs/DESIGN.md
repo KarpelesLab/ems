@@ -717,8 +717,79 @@ azimuth (a coax: ground = PEC `ρ_min` face, strip on the `ρ_max` face,
 1.0e-5 of the Yee wavenumber, `|S11|` ≤ −85.5 dB; along α at
 `R` = 200 mm (full-width strip, h = 1 mm, w = 2 mm between PMC ρ walls,
 CPML α faces) `Z_L` within 1.4e-4 of `η0·h/w`, `β` within 4.8e-5,
-`|S11|` ≤ −85.7 dB. CPW and stripline ports stay Cartesian (their feeds,
-probes and references assume a planar, symmetric cross section).
+`|S11|` ≤ −85.7 dB.
+
+**CPW and strip line on cylindrical grids** (wave 14; `CpwPort`,
+`StriplinePort`, shared check `port::line::cylindrical_line`). The same
+uniform lines as `MslPort`: along z with the height along ρ (metal on a
+`ρ` surface, widths and gaps angles: arcs at the metal or strip radius,
+which also scale the CPW gap excitation `amplitude/W`), along α with the
+height along ρ (width along z) or along z (width along ρ); lines along ρ
+and heights along α are refused. Along α the line coordinate is the arc
+at the metal radius (height along ρ) or at the centre of the box's ρ
+range (height along z). The quasi-static references (`quasi_static`,
+`z0`) are the flat ones with the arc lengths. Validation
+(`tests/validation_lines_cyl.rs`), against discrete references:
+
+- *strip line along z between two coaxial grounds*, the strip a full
+  cylinder at the mid radius: two discrete coaxes in parallel,
+  `Z = Z_in·Z_out/(Z_in + Z_out)` with `η/(2π)·Σ Δρ/ρ_{i+½}`: `Z_L`
+  within 7e-6, `β` within 7e-6 of the Yee wavenumber, `|S11|` ≤ −85 dB;
+- *CPW along z on a cylinder* (`ρ` = 1.3 mm, strip 30° wide, 2.2-cell
+  gaps, a shield `ρ` 1 … 1.6 mm with a PEC fin on the seam joining the
+  grounds to both shield walls, so that one TEM mode exists): the TEM
+  mode of a z-uniform Yee line is the discrete electrostatic solution
+  of its cross section (edge capacitances `ε·(dual length)/(edge
+  length)` in `(ρ, α)`), so the reference is `Z = 1/(c·C')` from a 2-D
+  Laplace solve on the same mesh (conjugate gradients in the test):
+  `Z_L` within 2.2e-5 of 53.53 Ω (the flat Wen formula with the arcs:
+  117.5 Ω), `β` within 1.9e-5, `|S11|` ≤ −84 dB;
+- *strip line along α* between two z planes at `R` = 200 mm (full width
+  between PMC ρ walls): `η·b/(4w)` within 1.4e-4, `β` 6.6e-5;
+- *CPW along α* on a z plane at `R` = 200 mm (a 5 × 2.5 mm PEC box): the
+  flat discrete line of the same `(ρ, z)` cross section within 2.7e-4
+  (curvature, `O((w/R)²)`), `β` 1.3e-5, `|S11|` ≤ −85 dB.
+
+Two cautions found on the way, both native and not cylindrical: (1) the
+probes must be past the decay of the feed's cut-off modes in the shield
+(the first CPW attempt, a 10 mm box with probes 7.5 mm from the feed,
+read 6 % off at the excited port and exact at the far one); (2) a
+zero-thickness metal edge more than half a cell beyond the last mesh
+line inside the metal makes the transverse mesh edge it cuts PEC (its
+midpoint is in the metal) while the line beyond keeps its free edges
+along the line: the metal border is no equipotential and the CPW is a
+slow-wave line (`ε_eff` = 1.40 in air for 2-cell gaps, Cartesian and
+cylindrical alike; `Z_L` 18 % high). `CpwPort`'s mesh requirements now
+say so; the thirds rule is safe.
+
+**Sectoral waveguide port** (wave 14; `SectorWaveguidePort`,
+`port/sector_waveguide.rs`). A rectangular-waveguide port has no
+uniform counterpart on a cylindrical grid except the guide whose cross
+section is a circular sector (`ρ ≤ b`, the grid's α span `φ_s < 2π`,
+PEC α faces and `ρ = b`), whose modes are those of a wedge
+(Marcuvitz §2.5, Harrington §5-8): `H_z ∝ J_ν(k_c ρ)·cos(να)` (TE_mn) or
+`E_z ∝ J_ν(k_c ρ)·sin(να)` (TM_mn) with the fractional order
+`ν = mπ/φ_s` and `k_c·b` the n-th zero of `J_ν'` or `J_ν`. ems now
+evaluates `J_ν` of real order (power series, A&S 9.1.10, with a Lanczos
+`Γ`; the zeros by bracketing), writes the mode functions as csx
+expressions (Horner polynomials in `(k_c ρ/2)²` times
+`(k_c ρ/2)^{ν−1}`, regular on the axis for `ν ≥ 1`), normalises them
+with the Lommel integrals over the sector and analyses the port like
+`CircWaveguidePort`. Orders `0 < ν < 1` (openings wider than `mπ`, a
+field singular at the axis) and closed azimuths (use
+`CircWaveguidePort`) are refused. Validation
+(`tests/validation_sector_waveguide.rs`, matched guide, CPML ends): a
+120° sector, TE11 (`ν = 3/2`, `k_c·b = j'_{3/2,1}` = 2.460536, cutoff
+11.75 GHz) on 8 × 8 cells: `|S11|` ≤ −42 dB, `|S21|` within 1.1e-3 of 1,
+the effective cutoff of the discrete mode `−0.46 %` from `j'_{3/2,1}/b`
+with a spread of ±0.012 % over 13–17 GHz (the port itself is clean; the
+offset is the cross section's discretisation), `−0.12 %` on 16 × 16
+cells (second order, ratio 3.7); a 72° sector, TM11 (`ν = 5/2`,
+`j_{5/2,1}` = 5.763459, over-moded: TE11 and TE01 propagate) on 12 × 8
+cells: `|S11|` ≤ −29 dB, `k_c,eff` −0.65 % ± 0.011 %. A curved
+(bent) rectangular guide along α has modes of non-integer order in the
+propagation constant (not a fixed cross-section problem) and is not
+provided.
 
 ### 5.6 Boundaries
 `Boundary::{Pec, Pmc, Mur{v_ph}, Pml(Cpml), Periodic}` per face, mirroring the
@@ -2351,14 +2422,17 @@ coaxial and circular-waveguide port helpers (`CoaxPort`,
 `CircWaveguidePort`, along `z` on the axis, also on sectors with
 symmetry walls, §5.5) and `LumpedPort` / `CurvePort`.
 
-Also the radial-line port (`RadialLinePort`, §5.5) and `MslPort` on
-the uniform lines along z or α (§5.5).
+Also the radial-line port (`RadialLinePort`, §5.5), `MslPort`,
+`CpwPort` and `StriplinePort` on the uniform lines along z or α, and the
+sectoral waveguide port (`SectorWaveguidePort`) on sector grids (§5.5).
 
 **Not available** (dropped with a warning or refused): plane waves
 (openEMS ignores them there too: no field at all, no message; §5.16.2),
-`MslPort` along ρ or above an α ground, and the CPW, stripline and
-rectangular-waveguide port helpers (`Error::Unsupported`): their
-geometry and analysis assume planar Cartesian cross sections. The
+the line ports (`MslPort`, `CpwPort`, `StriplinePort`) along ρ or with
+the height along α, and the rectangular-waveguide port helper
+(`Error::Unsupported`): its geometry and analysis assume a planar
+Cartesian cross section (the sectoral port above is its cylindrical
+counterpart). The
 material model of axis-aligned thin wires (§5.14) is Cartesian; on
 cylindrical grids thin wires use the oblique model.
 

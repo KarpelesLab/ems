@@ -21,6 +21,9 @@
 //!   V/I probes in a rectangular waveguide.
 //! * [`CircWaveguidePort`]: the same for a TE_nm or TM_nm mode of a
 //!   circular waveguide, on Cartesian or cylindrical grids.
+//! * [`SectorWaveguidePort`]: the same for a TE_mn or TM_mn mode of a
+//!   sectoral waveguide (a circular-sector cross section, Bessel functions
+//!   of fractional order), on a cylindrical sector grid.
 //! * [`CurvePort`]: a lumped port whose terminals are joined by a PEC
 //!   polyline (a one-cell feed edge plus a csx `Curve` or `Wire`).
 //! * [`CoaxPort`]: a coaxial-line port (Cartesian or cylindrical grids),
@@ -58,6 +61,9 @@ pub use waveguide::{RectWaveguidePort, WaveguidePortProperties};
 mod bessel;
 mod circ_waveguide;
 pub use circ_waveguide::{CircMode, CircWaveguidePort, CircWaveguidePortProperties};
+
+mod sector_waveguide;
+pub use sector_waveguide::{SectorMode, SectorWaveguidePort};
 
 pub mod radial;
 pub use radial::{RadialLinePort, RadialLinePortProperties, RadialLinePortResult};
