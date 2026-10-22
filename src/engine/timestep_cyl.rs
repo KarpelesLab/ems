@@ -415,11 +415,15 @@ mod tests {
         assert!((m1 / 3.16352e-14 - 1.0).abs() < 5e-6, "{m1:e}");
     }
 
+    /// `(ρ, α, z)` lines and openEMS's step by methods 3 and 1.
+    type Case<'a> = (&'a [f64], Vec<f64>, &'a [f64], f64, f64);
+
     #[test]
+    // 0.6366 is a recorded mesh line, not 2/π.
+    #[allow(clippy::approx_constant)]
     fn rho_edges_match_openems() {
-        // Meshes limited by an E_rho edge (the own-axis term per end):
-        // (rho, alpha, z) -> openEMS dt for methods 3 and 1.
-        let cases: [(&[f64], Vec<f64>, &[f64], f64, f64); 3] = [
+        // Meshes limited by an E_rho edge (the own-axis term per end).
+        let cases: [Case; 3] = [
             (
                 &[1.0, 2.2479, 3.4958, 4.7437, 5.9916, 7.2395, 8.4873],
                 uniform(3, TAU / 3.0),
