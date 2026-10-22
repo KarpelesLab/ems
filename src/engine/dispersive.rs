@@ -193,12 +193,14 @@
 //! poles, `db = 0` at installation are skipped (counted by
 //! [`skipped`](Dispersive::skipped)).
 
+use core::ops::Range;
+
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
 use super::grid::Grid;
 use super::operator::{Hooks, Operator, OperatorHandle};
-use super::slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+use super::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0};
 use crate::post::Complex64;
@@ -512,20 +514,31 @@ impl Side {
         self.axis.len()
     }
 
-    /// Saves the current field values of the edges.
-    fn capture(&mut self, f: &SlabRef<'_>) {
-        for e in 0..self.edges() {
+    /// The edges in the x-planes `planes` (edges are in plane order).
+    fn edges_in(&self, planes: &Range<usize>) -> Range<usize> {
+        let lo = self.plane.partition_point(|&p| (p as usize) < planes.start);
+        let hi = self.plane.partition_point(|&p| (p as usize) < planes.end);
+        lo..hi
+    }
+
+    /// Saves the current field values of the edges `edges`.
+    fn capture(&mut self, f: &SlabRef<'_>, edges: Range<usize>) {
+        for e in edges {
             let axis = Axis::ALL[self.axis[e] as usize];
             self.prev[e] = f.plane(axis, self.plane[e] as usize)[self.off[e] as usize] as f64;
         }
     }
 
     /// The implicit correction of every edge (module docs); `coef` is
-    /// `cb` (electric) or `db` (magnetic) per axis.
-    fn correct(&mut self, f: &mut SlabMut<'_>, coef: [&[f32]; 3], dt: f64) {
+    /// `cb` (electric) or `db` (magnetic) per axis; only the edges
+    /// `edges`.
+    fn correct(&mut self, f: &mut SlabMut<'_>, coef: [&[f32]; 3], dt: f64, edges: Range<usize>) {
         let p = f.nodes()[1] * f.nodes()[2];
-        let mut p0 = 0usize;
-        for e in 0..self.edges() {
+        let mut p0 = edges
+            .start
+            .checked_sub(1)
+            .map_or(0, |e| self.pole_end[e] as usize);
+        for e in edges {
             let p1 = self.pole_end[e] as usize;
             let ax = self.axis[e] as usize;
             let gi = self.plane[e] as usize;
@@ -607,21 +620,59 @@ impl Parts {
 
 impl SlabHooks for Parts {
     fn post_h_slab(&self, i: &mut SlabMut<'_>, u: &SlabRef<'_>, ctx: &SlabContext<'_>) {
-        let mut st = self.slab(ctx.slab);
-        let co = ctx.coefficients;
-        if st.h.edges() > 0 {
-            st.h.correct(i, [co.db(Axis::X), co.db(Axis::Y), co.db(Axis::Z)], self.dt);
-        }
-        st.e.capture(u);
+        self.post_h_planes(i, u, ctx, 0..usize::MAX);
     }
 
     fn post_e_slab(&self, u: &mut SlabMut<'_>, i: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        self.post_e_planes(u, i, ctx, 0..usize::MAX);
+    }
+
+    fn fusion(&self) -> Fusion {
+        Fusion::Planes
+    }
+
+    fn post_h_planes(
+        &self,
+        i: &mut SlabMut<'_>,
+        u: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
         let mut st = self.slab(ctx.slab);
         let co = ctx.coefficients;
-        if st.e.edges() > 0 {
-            st.e.correct(u, [co.cb(Axis::X), co.cb(Axis::Y), co.cb(Axis::Z)], self.dt);
+        let r = st.h.edges_in(&planes);
+        if !r.is_empty() {
+            st.h.correct(
+                i,
+                [co.db(Axis::X), co.db(Axis::Y), co.db(Axis::Z)],
+                self.dt,
+                r,
+            );
         }
-        st.h.capture(i);
+        let r = st.e.edges_in(&planes);
+        st.e.capture(u, r);
+    }
+
+    fn post_e_planes(
+        &self,
+        u: &mut SlabMut<'_>,
+        i: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        let mut st = self.slab(ctx.slab);
+        let co = ctx.coefficients;
+        let r = st.e.edges_in(&planes);
+        if !r.is_empty() {
+            st.e.correct(
+                u,
+                [co.cb(Axis::X), co.cb(Axis::Y), co.cb(Axis::Z)],
+                self.dt,
+                r,
+            );
+        }
+        let r = st.h.edges_in(&planes);
+        st.h.capture(i, r);
     }
 }
 

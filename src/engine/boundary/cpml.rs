@@ -212,6 +212,8 @@
 //! Per step the pass touches four field components per face layer and
 //! stores four `f32` `ψ` values per layer node.
 
+use core::ops::Range;
+
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::cyl_pml::CylLayer;
@@ -222,7 +224,7 @@ use crate::engine::Engine;
 use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
 use crate::engine::operator::{Hooks, Operator};
-use crate::engine::slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+use crate::engine::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::fdtd::{Cpml, Face};
 use crate::{Error, Result};
 
@@ -355,7 +357,7 @@ impl Slab {
     /// Applies the correction. `e_side`: target is `u` (derivative of `i`
     /// backwards), else target is `i` (derivative of `u` forwards).
     /// `coef` is `cb` (E) or `db` (H) of `comp` in global layout; `zero`
-    /// is an all-zero x-plane.
+    /// is an all-zero x-plane. Only the x-planes in `planes` are updated.
     fn apply(
         &mut self,
         tgt: &mut SlabMut<'_>,
@@ -363,6 +365,7 @@ impl Slab {
         coef: &[f32],
         zero: &[f32],
         e_side: bool,
+        planes: Range<usize>,
     ) {
         let n = src.nodes();
         let nz = n[2];
@@ -372,8 +375,9 @@ impl Slab {
         let (c, sign, normal) = (self.other, self.sign, self.normal);
         let (lo, hi) = (self.lo, self.hi);
         let len = hi[2] - lo[2];
-        let mut q = 0;
-        for i in lo[0]..hi[0] {
+        let (x0, x1) = (lo[0].max(planes.start), hi[0].min(planes.end));
+        let mut q = x0.saturating_sub(lo[0]) * (hi[1] - lo[1]) * len;
+        for i in x0..x1 {
             let cur = src.plane(c, i);
             // The neighbouring x-plane for an x-normal layer (possibly
             // the neighbour plane of the next / previous slab).
@@ -568,7 +572,14 @@ impl SlabHooks for CpmlParts {
     fn post_h_slab(&self, i: &mut SlabMut<'_>, u: &SlabRef<'_>, ctx: &SlabContext<'_>) {
         let mut p = self.pieces(ctx.slab);
         for s in &mut p.h {
-            s.apply(i, u, ctx.coefficients.db(s.comp), &self.zero, false);
+            s.apply(
+                i,
+                u,
+                ctx.coefficients.db(s.comp),
+                &self.zero,
+                false,
+                0..usize::MAX,
+            );
         }
         if let Some(c) = &mut p.cyl {
             c.post_h(i, u, |a| ctx.coefficients.db(a), &self.zero);
@@ -578,10 +589,52 @@ impl SlabHooks for CpmlParts {
     fn post_e_slab(&self, u: &mut SlabMut<'_>, i: &SlabRef<'_>, ctx: &SlabContext<'_>) {
         let mut p = self.pieces(ctx.slab);
         for s in &mut p.e {
-            s.apply(u, i, ctx.coefficients.cb(s.comp), &self.zero, true);
+            s.apply(
+                u,
+                i,
+                ctx.coefficients.cb(s.comp),
+                &self.zero,
+                true,
+                0..usize::MAX,
+            );
         }
         if let Some(c) = &mut p.cyl {
             c.post_e(u, i, |a| ctx.coefficients.cb(a), &self.zero);
+        }
+    }
+
+    /// Plane-wise except with the cylindrical `ρ_max` layer.
+    fn fusion(&self) -> Fusion {
+        if (0..self.slabs.len()).all(|s| self.pieces(s).cyl.is_none()) {
+            Fusion::Planes
+        } else {
+            Fusion::None
+        }
+    }
+
+    fn post_h_planes(
+        &self,
+        i: &mut SlabMut<'_>,
+        u: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        for s in &mut self.pieces(ctx.slab).h {
+            let db = ctx.coefficients.db(s.comp);
+            s.apply(i, u, db, &self.zero, false, planes.clone());
+        }
+    }
+
+    fn post_e_planes(
+        &self,
+        u: &mut SlabMut<'_>,
+        i: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        for s in &mut self.pieces(ctx.slab).e {
+            let cb = ctx.coefficients.cb(s.comp);
+            s.apply(u, i, cb, &self.zero, true, planes.clone());
         }
     }
 }

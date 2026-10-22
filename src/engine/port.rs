@@ -263,6 +263,11 @@ impl Operator for LumpedPort {
         Hooks::PRE_E | Hooks::POST_E
     }
 
+    /// `pre_e` only saves the edge voltages.
+    fn movable_hooks(&self) -> Hooks {
+        Hooks::PRE_E
+    }
+
     /// The element's branch energy ([`LumpedElement::branch_energy`]).
     fn energy(&self) -> f64 {
         self.element.branch_energy()

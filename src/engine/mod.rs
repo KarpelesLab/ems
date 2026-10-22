@@ -198,7 +198,7 @@ pub use port::LumpedPort;
 pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
 pub use run::{EnergyMeasure, Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
-pub use slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+pub use slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 pub use timestep::TimestepMethod;
 pub use wire::ThinWire;
 
@@ -207,7 +207,7 @@ use crate::fdtd::Face;
 use crate::{Error, Result};
 use boundary::periodic::Periodic;
 use fields::{FieldStore, Layout, read, write};
-use pool::{GAP_A, GAP_B, Gap, Plan, Pool, Shared};
+use pool::{GAP_A, GAP_B, GAP_M, Gap, Plan, Pool, Shared};
 
 /// Configures and builds an [`Engine`]; see [`Engine::builder`].
 #[derive(Debug, Clone)]
@@ -426,6 +426,8 @@ pub struct Engine {
 struct Registered {
     op: Box<dyn Operator>,
     hooks: Hooks,
+    /// The movable ones among `hooks` ([`Operator::movable_hooks`]).
+    movable: Hooks,
 }
 
 impl core::fmt::Debug for Engine {
@@ -498,14 +500,16 @@ impl Engine {
             starts: &self.shared.store.layout.slab_start,
         };
         if let Some(s) = op.slab_hooks(&part) {
-            write(&self.shared.slab_ops).0.push(s);
+            write(&self.shared.slab_ops).push(s);
         }
         // After `slab_hooks`: an operator may run serially only when it
         // could not go slab-parallel.
         let hooks = op.hooks();
+        let movable = op.movable_hooks() & hooks & (Hooks::POST_H | Hooks::PRE_E);
         self.ops.push(Registered {
             op: Box::new(op),
             hooks,
+            movable,
         });
         OperatorHandle {
             engine: self.id,
@@ -727,14 +731,18 @@ impl Engine {
         };
         // The serial gaps of each step: where some operator needs a hook
         // at that step (`Operator::hooks_at`), or always for the face and
-        // axis merges.
+        // axis merges. Where all `post_h` / `pre_e` hooks needed at a step
+        // are movable, they move to the gaps around the step (`GAP_M`).
         let force_a = self.periodic.is_some() || self.axis.is_some() || self.multigrid.is_some();
         let force_b = self.multigrid.is_some();
+        let mid = Hooks::POST_H | Hooks::PRE_E;
         let (sched, pre_h0) = {
             let co = read(&self.shared.coeffs);
-            let need = |step: u64| -> Hooks {
+            // The hooks needed at `step`, and whether its mid ones are all
+            // movable.
+            let need = |step: u64| -> (Hooks, bool) {
                 if mask == Hooks::NONE {
-                    return Hooks::NONE;
+                    return (Hooks::NONE, false);
                 }
                 let ctx = StepContext {
                     step,
@@ -742,29 +750,44 @@ impl Engine {
                     grid: &self.grid,
                     coefficients: &co,
                 };
-                self.ops
-                    .iter()
-                    .filter(|r| r.hooks != Hooks::NONE)
-                    .fold(Hooks::NONE, |m, r| m | (r.op.hooks_at(&ctx) & r.hooks))
+                self.ops.iter().filter(|r| r.hooks != Hooks::NONE).fold(
+                    (Hooks::NONE, !force_b),
+                    |(m, mv), r| {
+                        let h = r.op.hooks_at(&ctx) & r.hooks;
+                        (m | h, mv && r.movable.contains(h & mid))
+                    },
+                )
             };
-            let mut sched = Vec::with_capacity(n as usize);
-            let mut cur = need(plan.step0);
-            let pre_h0 = force_a || cur.contains(Hooks::PRE_H);
+            let mut sched: Vec<u8> = Vec::with_capacity(n as usize);
+            let (mut cur, mut cur_mv) = need(plan.step0);
+            let mut pre_h0 = force_a || cur.contains(Hooks::PRE_H);
             for t in 0..n {
-                let next = if t + 1 < n {
+                let (next, next_mv) = if t + 1 < n {
                     need(plan.step0 + t + 1)
                 } else {
-                    Hooks::NONE
+                    (Hooks::NONE, false)
                 };
                 let mut g = 0u8;
                 if force_a || cur.contains(Hooks::POST_E) || next.contains(Hooks::PRE_H) {
                     g |= GAP_A;
                 }
-                if force_b || cur.intersects(Hooks::POST_H | Hooks::PRE_E) {
+                if cur.intersects(mid) {
+                    if cur_mv {
+                        // `pre_e` in the gap before the step, `post_h` in
+                        // the one after it.
+                        g |= GAP_M | GAP_A;
+                        match sched.last_mut() {
+                            Some(p) => *p |= GAP_A,
+                            None => pre_h0 = true,
+                        }
+                    } else {
+                        g |= GAP_B;
+                    }
+                } else if force_b {
                     g |= GAP_B;
                 }
                 sched.push(g);
-                cur = next;
+                (cur, cur_mv) = (next, next_mv);
             }
             (sched, pre_h0)
         };
@@ -787,6 +810,7 @@ impl Engine {
                 Gap::Mid(t) => (t, &[Hooks::POST_H, Hooks::PRE_E]),
                 Gap::PostE(t) => (t, &[Hooks::POST_E]),
             };
+            let moved = sched[t as usize] & GAP_M != 0;
             let co = read(&shared.coeffs);
             let ctx = StepContext {
                 step: plan.step0 + t,
@@ -795,6 +819,13 @@ impl Engine {
                 coefficients: &co,
             };
             let mut f = shared.store.lock();
+            // Moved `post_h` hooks: first after the E update (`i` is
+            // unchanged since the H update; the merges below act on `u`).
+            if moved && matches!(g, Gap::PostE(_)) {
+                for r in ops.iter_mut().filter(|r| r.movable.contains(Hooks::POST_H)) {
+                    r.op.post_h(&mut f, &ctx);
+                }
+            }
             // Periodic faces: merge the kernel result before the operators
             // see it, and fold in their corrections afterwards.
             let post_e = matches!(g, Gap::PostE(_));
@@ -823,6 +854,13 @@ impl Engine {
                         Hooks::PRE_E => r.op.pre_e(&mut f, &ctx),
                         _ => r.op.post_e(&mut f, &ctx),
                     }
+                }
+            }
+            // Moved `pre_e` hooks: last before the H update (`u` stays
+            // unchanged until the E update).
+            if moved && matches!(g, Gap::PreH(_)) {
+                for r in ops.iter_mut().filter(|r| r.movable.contains(Hooks::PRE_E)) {
+                    r.op.pre_e(&mut f, &ctx);
                 }
             }
             if post_e_ops {

@@ -154,6 +154,28 @@ impl SlabRef<'_> {
     }
 }
 
+/// How the [`SlabHooks`] of an operator can run in a fused step
+/// ([`SlabHooks::fusion`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fusion {
+    /// Not at all: steps run unfused while the operator is registered.
+    None,
+    /// Plane by plane, through [`SlabHooks::post_h_planes`] and
+    /// [`SlabHooks::post_e_planes`].
+    Planes,
+    /// Whole slabs, for hooks that act on the voltages only:
+    /// [`post_h_slab`](SlabHooks::post_h_slab) reads `u` and nothing else
+    /// (no access to `i`), so the engine may call it before the slab's H
+    /// update, which leaves `u` unchanged; and
+    /// [`post_e_slab`](SlabHooks::post_e_slab) reads and writes `u` only,
+    /// and is called after the E update of the whole slab and the
+    /// plane-wise hooks of all operators. Steps are fused only if every
+    /// such operator is registered after all [`Planes`](Self::Planes)
+    /// ones, so the hooks still run in registration order where they
+    /// interact.
+    Voltages,
+}
+
 /// The slab-parallel part of an [`Operator`](super::Operator): bulk
 /// corrections (CPML) run by the worker pool inside the half-step, right
 /// after the kernel on each x-slab.
@@ -189,6 +211,54 @@ pub trait SlabHooks: Send + Sync + 'static {
     /// at `(n + 1)·dt`, `i` (read, own planes plus the last plane of the
     /// previous slab) at `(n + ½)·dt`.
     fn post_e_slab(&self, _u: &mut SlabMut<'_>, _i: &SlabRef<'_>, _ctx: &SlabContext<'_>) {}
+
+    /// How the hooks can run in a fused step (default [`Fusion::None`]).
+    ///
+    /// When the hooks of every registered operator allow it (see
+    /// [`Fusion`]), the engine runs the steps that have no serial hook
+    /// between their H and E updates *fused*: each worker updates H and
+    /// then E x-plane by x-plane, so the fields of a plane are streamed
+    /// from memory once per step instead of twice. Queried once, at
+    /// registration.
+    fn fusion(&self) -> Fusion {
+        Fusion::None
+    }
+
+    /// The part of [`post_h_slab`](Self::post_h_slab) that belongs to the
+    /// dual edges in the x-planes `planes` (a sub-range of the slab's
+    /// planes), with the same arguments; called instead of `post_h_slab`
+    /// in fused steps if [`fusion`](Self::fusion) is [`Fusion::Planes`].
+    ///
+    /// Within one half-step the engine calls it once for each plane of the
+    /// slab, in no particular order, so the work for a plane must not
+    /// depend on the other planes' calls. It may write `i` in `planes`
+    /// only, and read `i` in `planes` and `u` in `planes` and the plane
+    /// after them: those hold their values as in `post_h_slab`. Other
+    /// planes of `u` may already hold `u^{n+1}` (fused steps).
+    fn post_h_planes(
+        &self,
+        _i: &mut SlabMut<'_>,
+        _u: &SlabRef<'_>,
+        _ctx: &SlabContext<'_>,
+        _planes: Range<usize>,
+    ) {
+    }
+
+    /// The part of [`post_e_slab`](Self::post_e_slab) that belongs to the
+    /// E edges in the x-planes `planes`; called instead of `post_e_slab`
+    /// in fused steps if [`fusion`](Self::fusion) is [`Fusion::Planes`]. As
+    /// [`post_h_planes`](Self::post_h_planes): it may write `u` in
+    /// `planes` only, and read `u` in `planes` and `i` in `planes` and the
+    /// plane before them. Other planes of `u` may still hold `u^n` and
+    /// other planes of `i` may still hold `i^{n−½}` (fused steps).
+    fn post_e_planes(
+        &self,
+        _u: &mut SlabMut<'_>,
+        _i: &SlabRef<'_>,
+        _ctx: &SlabContext<'_>,
+        _planes: Range<usize>,
+    ) {
+    }
 
     /// Correction \[J/m\] to openEMS's energy measure
     /// ([`Engine::energy_openems`](super::Engine::energy_openems)) for the

@@ -5,7 +5,10 @@
 //! passing the barrier; workers then lock their own slab for writing and
 //! the neighbour slab(s) for reading (see [`fields`](super::fields)) for
 //! the kernel and for the operators' [slab hooks](super::SlabHooks).
-//! Between the half-steps one barrier separates H from E. Only where
+//! Between the half-steps one barrier separates H from E. Where the
+//! operators allow it, a step runs *fused* instead ([`Shared::fused_a`],
+//! [`Shared::fused_b`]): one barrier after the H update of each slab's
+//! last x-plane, then H and E plane by plane. Only where
 //! registered operators need serial hooks at a step ([`GAP_A`], from
 //! [`Operator::hooks_at`](super::Operator::hooks_at)) does the caller stop
 //! the workers at an extra barrier and run those hooks while they wait.
@@ -15,19 +18,61 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::JoinHandle;
 
 use super::coeffs::Coefficients;
-use super::fields::{FieldStore, read, write};
-use super::kernel::{energy_h_slab, update_e_slab, update_h_slab};
+use super::fields::{Block, FieldStore, read, write};
+use super::kernel::{
+    block_planes, block_planes_mut, energy_h_slab, planes_around, update_e_plane, update_e_slab,
+    update_h_plane, update_h_slab, update_he_plane,
+};
 use super::rows::KernelCoeffs;
 use super::run::EnergyMeasure;
-use super::slab::{SlabContext, SlabHooks, SlabMut, SlabRef};
+use super::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabRef};
 
 /// The slab hooks of all registered operators, in registration order.
-#[derive(Default, Clone)]
-pub(crate) struct SlabOps(pub(crate) Vec<Arc<dyn SlabHooks>>);
+#[derive(Clone)]
+pub(crate) struct SlabOps {
+    pub(crate) hooks: Vec<Arc<dyn SlabHooks>>,
+    /// [`SlabHooks::fusion`] of each.
+    modes: Vec<Fusion>,
+    /// Whether steps can run fused with these hooks.
+    fusable: bool,
+}
+
+impl SlabOps {
+    /// Appends `h`.
+    pub(crate) fn push(&mut self, h: Arc<dyn SlabHooks>) {
+        let m = h.fusion();
+        self.fusable &= match m {
+            Fusion::None => false,
+            // In registration order after the voltage-only hooks.
+            Fusion::Planes => !self.modes.contains(&Fusion::Voltages),
+            Fusion::Voltages => true,
+        };
+        self.modes.push(m);
+        self.hooks.push(h);
+    }
+
+    /// The hooks of mode `m`, in registration order.
+    fn of(&self, m: Fusion) -> impl Iterator<Item = &Arc<dyn SlabHooks>> {
+        self.hooks
+            .iter()
+            .zip(&self.modes)
+            .filter_map(move |(h, &mode)| (mode == m).then_some(h))
+    }
+}
+
+impl Default for SlabOps {
+    fn default() -> Self {
+        Self {
+            hooks: Vec::new(),
+            modes: Vec::new(),
+            fusable: true,
+        }
+    }
+}
 
 impl core::fmt::Debug for SlabOps {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "SlabOps({})", self.0.len())
+        write!(f, "SlabOps({})", self.hooks.len())
     }
 }
 
@@ -46,6 +91,10 @@ pub(crate) struct Shared {
     threads: usize,
     /// Zero plane (`ny·nz`) for out-of-domain neighbours.
     pub(crate) zero: Vec<f32>,
+    /// Per slab, a copy of the currents of its last x-plane, made in the
+    /// first phase of a fused step for the E update of the next slab
+    /// (see [`Shared::fused_a`]).
+    halo: Vec<RwLock<Block>>,
     /// Slab hooks; written only while the workers are idle.
     pub(crate) slab_ops: RwLock<SlabOps>,
     /// Per-x-plane energy partial sums (`f64` bits) written by an
@@ -76,6 +125,11 @@ pub(crate) struct Shared {
 pub(crate) const GAP_A: u8 = 1;
 /// See [`GAP_A`].
 pub(crate) const GAP_B: u8 = 2;
+/// Not a gap: the movable `post_h` and `pre_e` hooks of the step
+/// ([`Operator::movable_hooks`](super::Operator::movable_hooks)) run in
+/// the step's [`GAP_A`] and the one before it (both set), with no
+/// [`GAP_B`].
+pub(crate) const GAP_M: u8 = 4;
 
 /// `steps` whole steps starting at engine step `step0`.
 #[derive(Debug, Clone, Copy)]
@@ -114,7 +168,11 @@ impl Shared {
         let zero = vec![0.0; store.layout.plane];
         let plane_energy = (0..store.layout.n[0]).map(|_| AtomicU64::new(0)).collect();
         let kernel = KernelCoeffs::new(&coeffs, threads);
+        let halo = (0..store.layout.slabs())
+            .map(|_| RwLock::new(core::array::from_fn(|_| vec![0.0; store.layout.plane])))
+            .collect();
         Self {
+            halo,
             store,
             coeffs: RwLock::new(coeffs),
             kernel: RwLock::new(kernel),
@@ -198,7 +256,7 @@ impl Shared {
         } else {
             update_h_slab(&self.store, &rows, s);
         }
-        if ops.0.is_empty() {
+        if ops.hooks.is_empty() {
             return;
         }
         let st = &self.store;
@@ -223,7 +281,7 @@ impl Shared {
             dt,
             coefficients: &co,
         };
-        for op in &ops.0 {
+        for op in &ops.hooks {
             op.post_h_slab(&mut tgt, &src, &ctx);
         }
     }
@@ -232,7 +290,7 @@ impl Shared {
     fn e(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
         update_e_slab(&self.store, &read(&self.kernel).view(&co), &self.zero, s);
-        if ops.0.is_empty() {
+        if ops.hooks.is_empty() {
             return;
         }
         let st = &self.store;
@@ -260,7 +318,187 @@ impl Shared {
             dt,
             coefficients: &co,
         };
-        for op in &ops.0 {
+        for op in &ops.hooks {
+            op.post_e_slab(&mut tgt, &src, &ctx);
+        }
+    }
+
+    /// First phase of a fused step on slab `s`: the H update of the
+    /// slab's last x-plane, which needs the voltages of the next slab's
+    /// first plane before that slab updates them. Its currents are copied
+    /// to `halo[s]` for the E update of the next slab's first plane in
+    /// [`fused_b`](Self::fused_b). Voltage-only slab hooks
+    /// ([`Fusion::Voltages`]) run their H part first.
+    fn fused_a(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
+        let co = read(&self.coeffs);
+        let kc = read(&self.kernel);
+        let rows = kc.view(&co);
+        let st = &self.store;
+        let n = st.layout.n;
+        let p = st.layout.plane;
+        let (p0, p1) = st.layout.planes(s);
+        let (g, l) = (p1 - 1, p1 - 1 - p0);
+        let mut iw = write(&st.i[s]);
+        let uo = read(&st.u[s]);
+        let un = st.u.get(s + 1).map(read);
+        let ctx = SlabContext {
+            slab: s,
+            step,
+            dt,
+            coefficients: &co,
+        };
+        let src = SlabRef {
+            n,
+            planes: p0..p1,
+            block: &uo,
+            neighbour: un.as_deref().map(|b| (p1, b, 0)),
+        };
+        // Voltage-only H hooks: `u` is the same before and after the H
+        // update.
+        for op in ops.of(Fusion::Voltages) {
+            let mut tgt = SlabMut {
+                n,
+                planes: p0..p1,
+                block: &mut iw,
+            };
+            op.post_h_slab(&mut tgt, &src, &ctx);
+        }
+        let next = un.as_deref().map(|b| [&b[1][..p], &b[2][..p]]);
+        update_h_plane(
+            &rows,
+            n,
+            g,
+            block_planes_mut(&mut iw, l, p),
+            block_planes(&uo, l, p),
+            next,
+        );
+        let mut tgt = SlabMut {
+            n,
+            planes: p0..p1,
+            block: &mut iw,
+        };
+        for op in ops.of(Fusion::Planes) {
+            op.post_h_planes(&mut tgt, &src, &ctx, g..p1);
+        }
+        if s + 1 < st.layout.slabs() {
+            let mut h = write(&self.halo[s]);
+            for (d, c) in h.iter_mut().zip(block_planes(&iw, l, p)) {
+                d.copy_from_slice(c);
+            }
+        }
+    }
+
+    /// Second phase of a fused step on slab `s`: plane by plane, the H
+    /// update of plane `g` (all but the last, done by
+    /// [`fused_a`](Self::fused_a)) and then the E update of plane `g`,
+    /// whose inputs (the currents of planes `g` and `g − 1`) are final by
+    /// then, while the voltages of plane `g` are no longer needed by any H
+    /// update. With plane-wise slab hooks each update is followed by the
+    /// hooks of its plane ([`SlabHooks::post_h_planes`],
+    /// [`SlabHooks::post_e_planes`]); without, H and E are interleaved row
+    /// by row ([`update_he_plane`]). Every value is computed by the same
+    /// expression from the same inputs as in the unfused half-steps, so
+    /// results are bit-identical; the fields of a plane are read from
+    /// memory once per step instead of twice. Voltage-only slab hooks
+    /// ([`Fusion::Voltages`]) run after the whole slab.
+    fn fused_b(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
+        let co = read(&self.coeffs);
+        let kc = read(&self.kernel);
+        let rows = kc.view(&co);
+        let st = &self.store;
+        let n = st.layout.n;
+        let p = st.layout.plane;
+        let (p0, p1) = st.layout.planes(s);
+        let mut iw = write(&st.i[s]);
+        let mut uw = write(&st.u[s]);
+        let hp = s.checked_sub(1).map(|q| read(&self.halo[q]));
+        let zero = &self.zero[..p];
+        let ctx = SlabContext {
+            slab: s,
+            step,
+            dt,
+            coefficients: &co,
+        };
+        let hooks = ops.of(Fusion::Planes).next().is_some();
+        for g in p0..p1 {
+            let l = g - p0;
+            if hooks && g + 1 < p1 {
+                let (_, ucur, unext) = planes_around(&mut uw, l, p);
+                let [x, y, z] = ucur;
+                let unext = unext.map(|[_, y, z]| [y, z]);
+                update_h_plane(
+                    &rows,
+                    n,
+                    g,
+                    block_planes_mut(&mut iw, l, p),
+                    [x, y, z],
+                    unext,
+                );
+                let mut tgt = SlabMut {
+                    n,
+                    planes: p0..p1,
+                    block: &mut iw,
+                };
+                let src = SlabRef {
+                    n,
+                    planes: p0..p1,
+                    block: &uw,
+                    neighbour: None,
+                };
+                for op in ops.of(Fusion::Planes) {
+                    op.post_h_planes(&mut tgt, &src, &ctx, g..g + 1);
+                }
+            }
+            let (ipl, icur, _) = planes_around(&mut iw, l, p);
+            let prev = match ipl {
+                Some([_, y, z]) => [y, z],
+                None if g == 0 => [zero, zero],
+                None => {
+                    let h = hp.as_deref().expect("previous slab");
+                    [&h[1][..], &h[2][..]]
+                }
+            };
+            let (_, ucur, unext) = planes_around(&mut uw, l, p);
+            match unext {
+                Some([_, y, z]) if !hooks => {
+                    update_he_plane(&rows, n, g, icur, ucur, Some([y, z]), prev, zero)
+                }
+                _ => {
+                    let [x, y, z] = icur;
+                    update_e_plane(&rows, n, g, ucur, [x, y, z], prev, zero);
+                }
+            }
+            if hooks {
+                let mut tgt = SlabMut {
+                    n,
+                    planes: p0..p1,
+                    block: &mut uw,
+                };
+                let src = SlabRef {
+                    n,
+                    planes: p0..p1,
+                    block: &iw,
+                    neighbour: hp.as_deref().map(|b| (p0 - 1, b, 0)),
+                };
+                for op in ops.of(Fusion::Planes) {
+                    op.post_e_planes(&mut tgt, &src, &ctx, g..g + 1);
+                }
+            }
+        }
+        // Voltage-only E hooks: after the whole slab, as in an unfused
+        // step (they come last in registration order).
+        let src = SlabRef {
+            n,
+            planes: p0..p1,
+            block: &iw,
+            neighbour: hp.as_deref().map(|b| (p0 - 1, b, 0)),
+        };
+        for op in ops.of(Fusion::Voltages) {
+            let mut tgt = SlabMut {
+                n,
+                planes: p0..p1,
+                block: &mut uw,
+            };
             op.post_e_slab(&mut tgt, &src, &ctx);
         }
     }
@@ -300,7 +538,7 @@ impl Shared {
     /// ([`SlabHooks::energy_openems_slab`]), in registration order.
     fn openems_correction(&self, s: usize, co: &Coefficients, add: &mut dyn FnMut(usize, f64)) {
         let ops = read(&self.slab_ops).clone();
-        if ops.0.is_empty() {
+        if ops.hooks.is_empty() {
             return;
         }
         let st = &self.store;
@@ -313,7 +551,7 @@ impl Shared {
             block: &uo,
             neighbour: un.as_deref().map(|b| (p1, b, 0)),
         };
-        for op in &ops.0 {
+        for op in &ops.hooks {
             op.energy_openems_slab(s, &src, co, add);
         }
     }
@@ -502,19 +740,33 @@ fn worker(sh: Arc<Shared>, s: usize) {
         for t in 0..p.steps {
             let step = p.step0 + t;
             let g = sched[t as usize];
-            sh.h(s, p.energy_first && t == 0, &ops, step, p.dt);
-            sh.barrier.wait();
-            if g & GAP_B != 0 {
-                sh.barrier.wait(); // caller runs post_h / pre_e
+            if fusable(&ops, g, p.energy_first && t == 0) {
+                sh.fused_a(s, &ops, step, p.dt);
+                sh.barrier.wait();
+                sh.fused_b(s, &ops, step, p.dt);
+                sh.barrier.wait();
+            } else {
+                sh.h(s, p.energy_first && t == 0, &ops, step, p.dt);
+                sh.barrier.wait();
+                if g & GAP_B != 0 {
+                    sh.barrier.wait(); // caller runs post_h / pre_e
+                }
+                sh.e(s, &ops, step, p.dt);
+                sh.barrier.wait();
             }
-            sh.e(s, &ops, step, p.dt);
-            sh.barrier.wait();
             if g & GAP_A != 0 && t + 1 < p.steps {
                 sh.barrier.wait(); // caller runs post_e / pre_h
             }
         }
         // The last wait was the completion barrier.
     }
+}
+
+/// Whether a step with gap bits `g` runs fused ([`Shared::fused_a`],
+/// [`Shared::fused_b`]): no serial hooks between its H and E updates, no
+/// energy recording, and slab hooks that allow it ([`SlabHooks::fusion`]).
+fn fusable(ops: &SlabOps, g: u8, energy: bool) -> bool {
+    g & GAP_B == 0 && !energy && ops.fusable
 }
 
 /// Runs `plan` on all slabs: slab 0 on the calling thread, the others on
@@ -554,14 +806,21 @@ pub(crate) fn drive(
     for t in 0..plan.steps {
         let step = plan.step0 + t;
         let g = sched[t as usize];
-        sh.h(0, plan.energy_first && t == 0, &ops, step, plan.dt);
-        wait();
-        if g & GAP_B != 0 {
-            hook(Gap::Mid(t));
+        if fusable(&ops, g, plan.energy_first && t == 0) {
+            sh.fused_a(0, &ops, step, plan.dt);
+            wait();
+            sh.fused_b(0, &ops, step, plan.dt);
+            wait();
+        } else {
+            sh.h(0, plan.energy_first && t == 0, &ops, step, plan.dt);
+            wait();
+            if g & GAP_B != 0 {
+                hook(Gap::Mid(t));
+                wait();
+            }
+            sh.e(0, &ops, step, plan.dt);
             wait();
         }
-        sh.e(0, &ops, step, plan.dt);
-        wait();
         if g & GAP_A != 0 {
             hook(Gap::PostE(t));
             if t + 1 < plan.steps {

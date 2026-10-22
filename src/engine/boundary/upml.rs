@@ -109,6 +109,7 @@
 //! is used on every face (openEMS does the same: its operator dump on a
 //! `ρ_max` layer shows the same profile along `ρ`).
 
+use core::ops::Range;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -117,7 +118,7 @@ use crate::constants::{EPS0, MU0, Z0};
 use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
 use crate::engine::operator::{Hooks, Operator};
-use crate::engine::slab::{SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+use crate::engine::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::engine::{Coefficients, Engine};
 use crate::fdtd::Face;
 use crate::{Error, Result};
@@ -371,6 +372,42 @@ impl SlabHooks for Parts {
             r.refresh(i);
         }
         for r in &mut p.e {
+            r.apply(u);
+        }
+    }
+
+    fn fusion(&self) -> Fusion {
+        Fusion::Planes
+    }
+
+    fn post_h_planes(
+        &self,
+        i: &mut SlabMut<'_>,
+        u: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        let mut p = self.pieces(ctx.slab);
+        for r in p.e.iter_mut().filter(|r| planes.contains(&r.plane)) {
+            r.refresh(u);
+        }
+        for r in p.h.iter_mut().filter(|r| planes.contains(&r.plane)) {
+            r.apply(i);
+        }
+    }
+
+    fn post_e_planes(
+        &self,
+        u: &mut SlabMut<'_>,
+        i: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        let mut p = self.pieces(ctx.slab);
+        for r in p.h.iter_mut().filter(|r| planes.contains(&r.plane)) {
+            r.refresh(i);
+        }
+        for r in p.e.iter_mut().filter(|r| planes.contains(&r.plane)) {
             r.apply(u);
         }
     }

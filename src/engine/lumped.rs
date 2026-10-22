@@ -1159,6 +1159,11 @@ impl Operator for LumpedElement {
         self.used_hooks()
     }
 
+    /// `pre_e` only saves the edge voltages.
+    fn movable_hooks(&self) -> Hooks {
+        Hooks::PRE_E
+    }
+
     /// [`branch_energy`](Self::branch_energy).
     fn energy(&self) -> f64 {
         self.branch_energy()

@@ -169,6 +169,31 @@ pub trait Operator: Any + Send {
         self.hooks()
     }
 
+    /// The hooks among [`POST_H`](Hooks::POST_H) and
+    /// [`PRE_E`](Hooks::PRE_E) that only *read* the fields and that the
+    /// engine may therefore move out of the gap between the H and E
+    /// updates (default [`Hooks::NONE`]). Queried once, at registration.
+    ///
+    /// * A movable `post_h` reads `i` only (never `u`) and writes no
+    ///   field. The engine may call it after the E update and its slab
+    ///   hooks, which leave `i` unchanged, and before any `post_e` hook.
+    /// * A movable `pre_e` reads `u` only (never `i`) and writes no field.
+    ///   The engine may call it before the H update, after the `pre_h`
+    ///   hooks: the H update and its slab hooks leave `u` unchanged.
+    /// * The two must not depend on each other through the operator's own
+    ///   state (the engine may call `pre_e` before `post_h`).
+    ///
+    /// At a step where every operator that needs `post_h` or `pre_e`
+    /// ([`hooks_at`](Self::hooks_at)) declares those hooks movable, the
+    /// engine moves them (calling those of every operator that declares
+    /// them movable, in registration order) and runs H and E without a
+    /// serial phase between them, fused when possible (see
+    /// [`SlabHooks::fusion`]). Probes of currents and lumped elements
+    /// are such operators.
+    fn movable_hooks(&self) -> Hooks {
+        Hooks::NONE
+    }
+
     /// Slab-parallel work for the engine's x-slab `partition` (default
     /// none). Called once, at registration; the returned object is run by
     /// the worker threads (see [`SlabHooks`]). The operator may keep a

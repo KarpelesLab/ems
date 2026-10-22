@@ -257,6 +257,11 @@ impl Operator for Probe {
         }
     }
 
+    /// Current probes only read the currents.
+    fn movable_hooks(&self) -> Hooks {
+        Hooks::POST_H
+    }
+
     /// Only at the sampling steps.
     fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
         if ctx.step.is_multiple_of(self.interval) {
@@ -409,6 +414,16 @@ impl Operator for FieldProbe {
             Hooks::POST_H
         } else {
             Hooks::POST_E
+        }
+    }
+
+    /// Probes of H (and the other quantities of the currents) only read
+    /// the currents.
+    fn movable_hooks(&self) -> Hooks {
+        if self.sampler.quantity().from_currents() {
+            Hooks::POST_H
+        } else {
+            Hooks::NONE
         }
     }
 

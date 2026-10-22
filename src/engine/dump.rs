@@ -1379,6 +1379,14 @@ impl<S: DumpSink> Operator for TimeDump<S> {
         }
     }
 
+    /// openEMS-timed dumps of the currents only read them in `post_h`.
+    fn movable_hooks(&self) -> Hooks {
+        match self.sampler.timing {
+            DumpTiming::OpenEms if self.sampler.quantity().from_currents() => Hooks::POST_H,
+            _ => Hooks::NONE,
+        }
+    }
+
     /// openEMS timing with a fixed step interval: only at the due steps.
     fn hooks_at(&self, ctx: &StepContext<'_>) -> Hooks {
         match (self.sampler.timing, &self.scheduler.schedule) {
@@ -1665,6 +1673,14 @@ impl Operator for FreqDump {
         match self.sampler.timing {
             DumpTiming::State => Hooks::PRE_H | Hooks::POST_E,
             DumpTiming::OpenEms => Hooks::POST_H,
+        }
+    }
+
+    /// openEMS-timed dumps of the currents only read them in `post_h`.
+    fn movable_hooks(&self) -> Hooks {
+        match self.sampler.timing {
+            DumpTiming::OpenEms if self.sampler.quantity().from_currents() => Hooks::POST_H,
+            _ => Hooks::NONE,
         }
     }
 

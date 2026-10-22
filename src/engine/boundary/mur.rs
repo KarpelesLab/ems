@@ -94,8 +94,8 @@ use crate::axis::Axis;
 use crate::constants::C0;
 use crate::engine::coeffs::Coefficients;
 use crate::engine::{
-    EdgeMaterials, Engine, Fields, Hooks, Operator, SlabContext, SlabHooks, SlabMut, SlabPartition,
-    SlabRef, StepContext,
+    EdgeMaterials, Engine, Fields, Fusion, Hooks, Operator, SlabContext, SlabHooks, SlabMut,
+    SlabPartition, SlabRef, StepContext,
 };
 use crate::fdtd::Face;
 use crate::{Error, Result};
@@ -296,6 +296,11 @@ impl SlabHooks for MurSlabs {
             cell.borrow_mut().plane_mut(a, n[0])[n[1] * nz + n[2]] = v
         };
         update(edges, corners, self.openems_corners, &get, &mut set);
+    }
+
+    /// Both hooks act on the voltages only.
+    fn fusion(&self) -> Fusion {
+        Fusion::Voltages
     }
 }
 
