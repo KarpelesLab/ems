@@ -1107,6 +1107,23 @@ pub(crate) fn map_sources(
                         crossed[d] = lo > hi;
                         (start[d], stop[d]) = if r0 <= r1 { (lo, hi) } else { (hi, lo) };
                     }
+                    // openEMS on a closed azimuth (files): the loop runs on
+                    // the dual α lines from the one below the lower corner
+                    // to the one above the upper corner, clamped to its
+                    // lines α_{1/2} … α_{N−1/2}: a box from α = 0 (or to
+                    // 2π) leaves out the column on the seam (black box,
+                    // `cyl_current_seam`). A box over the whole ring keeps
+                    // ems's closed loop (design §5.16.2).
+                    let y = Axis::Y.index();
+                    let last = nodes[y] - 1;
+                    if grid.is_closed() && n != Axis::Y && fdtd.get_openems_run() && !crossed[y] {
+                        let (a, b) = (start[y].min(stop[y]), start[y].max(stop[y]));
+                        if !(a == 0 && b == last) && (a == 0 || b == last) {
+                            let (a, b) = (a.max(1), b.min(last - 1));
+                            crossed[y] = a > b;
+                            (start[y], stop[y]) = if start[y] <= stop[y] { (a, b) } else { (b, a) };
+                        }
+                    }
                 }
                 let Some((entries, layer)) =
                     current_loop(start, stop, s.norm_dir, nodes, flat_layer)

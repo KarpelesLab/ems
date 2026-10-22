@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems fixture "cyl_current_seam": z-normal current boxes (Type 1) over alpha sectors touching
+     the alpha = 0 seam of a closed coaxial grid (8 alpha cells), excited on a quarter of the ring
+     so that H_alpha varies with alpha. Hand-written for the black-box openEMS oracle
+     (scripts/openems-oracle/gen-cyl.sh); tests/openems_cyl.rs. -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1500" endCriteria="0" f_max="10e9" CylinderCoords="1">
+    <Excitation Type="0" f0="5e9" fc="5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8</XLines>
+      <YLines>0.0,0.7853981633974483,1.5707963267948966,2.356194490192345,3.141592653589793,3.9269908169872414,4.71238898038469,5.497787143782138,6.283185307179586</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="1,0,0">
+        <Primitives><Box Priority="0"><P1 X="2" Y="0.7853981633974483" Z="5"/><P2 X="8" Y="2.356194490192345" Z="5"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="i_0_pi" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="0" Z="15"/><P2 X="7" Y="3.141592653589793" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i_pi_2pi" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="3.141592653589793" Z="15"/><P2 X="7" Y="6.283185307179586" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i_q_pi" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="0.7853981633974483" Z="15"/><P2 X="7" Y="3.141592653589793" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i_full" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="0" Z="15"/><P2 X="7" Y="6.283185307179586" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i_h_3h" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="1.5707963267948966" Z="15"/><P2 X="7" Y="4.71238898038469" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i_first" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="0" Z="15"/><P2 X="7" Y="0.7853981633974483" Z="15"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="i_neg" Type="1" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="-1.5707963267948966" Z="15"/><P2 X="7" Y="1.5707963267948966" Z="15"/></Box></Primitives>
+      </ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

@@ -3595,10 +3595,21 @@ of the enclosed current in openEMS for `N` α cells (7/8, 3/4 measured):
 the box's upper α snaps to the last line before 2π and the loop covers
 α_0 … α_{N−1}; ems closes the ring (the full current, the rule of
 §5.16) and keeps that difference (`e2e_coax_monopole`). Sector boxes
-agree where they do not touch the α = 0 seam (a box from π/4 to π reads
-4 cells in both codes); one starting at α = 0 reads half a cell more in
-ems (4.5/8 for 0 … π, openEMS 4/8): the seam copy of the H_α dual edge
-counts with half its length. Not resolved. openEMS's probe file headers
+touching the seam (wave 14, fixture `cyl_current_seam`: z-normal boxes
+on a closed coax excited over a quarter of the ring, so that H_α varies
+with α; `--showProbeDiscretization`): openEMS runs the loop on the dual α
+lines from the one below the lower corner to the one above the upper
+corner, clamped to its dual lines `α_{1/2} … α_{N−1/2}`, so `[0, π]`
+encloses the E_z columns 1…4 like `[π/4, π]`, `[π, 2π]` the columns
+4…7, `[−π/2, π/2]` the columns 1…2, and `[0, π/4]` collapses to a line
+(openEMS disables it: "not a surface"). ems had included the seam column
+with half its dual edge (4.5/8 for `[0, π]` on a uniform field; 1.7–7.4
+relative L2 here). Files now clamp the α columns of a loop that touches
+the seam on one side to `1 … N − 1` (`sim::map`, the current-probe
+branch; a box over the whole ring keeps ems's closed loop, 0.11 apart
+here, and `[0, π/4]` is dropped with a warning): 2.5e-4…1.4e-3, the
+level of a box away from the seam on this model (`[π/4, π]` 2.5e-4).
+openEMS's probe file headers
 print α times the drawing unit like the other coordinates (ems does now),
 and it rejects α lines spanning more than 2π by a rounding error
 (6.28319 written with 6 digits: "Alpha Max-Min must not be larger than

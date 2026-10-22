@@ -416,6 +416,41 @@ mod tests {
     }
 
     #[test]
+    fn rho_edges_match_openems() {
+        // Meshes limited by an E_rho edge (the own-axis term per end):
+        // (rho, alpha, z) -> openEMS dt for methods 3 and 1.
+        let cases: [(&[f64], Vec<f64>, &[f64], f64, f64); 3] = [
+            (
+                &[1.0, 2.2479, 3.4958, 4.7437, 5.9916, 7.2395, 8.4873],
+                uniform(3, TAU / 3.0),
+                &[0.0, 0.4875, 2.0098],
+                1.53561e-12,
+                1.06515e-12,
+            ),
+            (
+                &[3.0, 3.73, 4.46, 5.1901, 5.9201],
+                uniform(11, TAU / 11.0),
+                &[0.0, 0.6366, 1.9249, 3.4407, 4.1733],
+                1.53861e-12,
+                1.1293e-12,
+            ),
+            (
+                &[3.0, 3.7112, 4.4224, 5.1336],
+                uniform(3, 0.6188213548033067),
+                &[0.0, 1.3598, 2.4018],
+                1.83028e-12,
+                1.38116e-12,
+            ),
+        ];
+        for (rho, alpha, z, m3, m1) in cases {
+            let d = dt(rho, alpha.clone(), z, TimestepMethod::Rennings);
+            assert!((d / m3 - 1.0).abs() < 5e-6, "{rho:?}: {d:e} vs {m3:e}");
+            let d = dt(rho, alpha, z, TimestepMethod::Cfl);
+            assert!((d / m1 - 1.0).abs() < 5e-6, "{rho:?}: {d:e} vs {m1:e}");
+        }
+    }
+
+    #[test]
     fn axis_and_multigrid_match_openems() {
         // The adv_cyl_multigrid mesh: 0.5 mm x 15 deg x 1 mm, closed, with
         // the axis; openEMS: 1.54044e-13 s on the single grid (any

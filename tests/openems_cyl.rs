@@ -334,3 +334,26 @@ fn cylindrical_lumped_ring_ending_at_tau_vanishes_in_openems() {
         sim.warnings()
     );
 }
+
+/// Current boxes over α sectors of a closed grid (`cyl_current_seam`,
+/// z-normal boxes on a coax excited over a quarter of the ring): openEMS
+/// integrates on the dual α lines around the box, clamped to its lines
+/// `α_{1/2} … α_{N−1/2}`, so a box from α = 0 or to 2π leaves out the
+/// column on the seam (`[0, π]` reads columns 1…4, as `[π/4, π]`;
+/// `[0, π/4]` collapses to a line and is dropped). ems does the same for
+/// files (it read half the seam column more, 1.7 relative L2 here); a box
+/// over the whole ring keeps ems's closed loop (openEMS: columns 1…7).
+#[test]
+fn cylindrical_current_boxes_at_the_seam_match_openems() {
+    let case = "cyl_current_seam";
+    for (n, e) in probe_l2(case, "model.xml") {
+        if n == "i_full" {
+            assert!(e > 0.05, "{n}: {e:e}");
+        } else {
+            assert!(e < 3e-3, "{n}: {e:e}");
+        }
+    }
+    let xml = std::fs::read_to_string(fixture(case).join("model.xml")).unwrap();
+    let mut sim = Simulation::from_xml_str(&xml).unwrap();
+    assert!(sim.run().unwrap().probe("i_first").is_none());
+}
