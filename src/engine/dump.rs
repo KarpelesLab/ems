@@ -1702,8 +1702,9 @@ impl Operator for FreqDump {
 /// the axis or a closed azimuth, where the H update has extra terms.
 /// Operators that complete the H update of their edges themselves
 /// ([`Operator::lookahead_current`](super::Operator::lookahead_current):
-/// openEMS's PML) are applied; other operators acting on H (CPML, H
-/// sources) are not.
+/// openEMS's PML) are applied, then the H sources
+/// ([`Operator::lookahead_sources`](super::Operator::lookahead_sources));
+/// other operators acting on H (CPML) are not.
 pub(crate) fn with_lookahead_currents<R>(
     engine: &Engine,
     f: impl FnOnce(&dyn Fn(Axis, [usize; 3]) -> f64) -> R,
@@ -1734,18 +1735,37 @@ pub(crate) fn with_lookahead_currents<R>(
             0.0
         }
     };
+    // H sources of the next step, applied after the update as the hooks
+    // do (registration order).
+    let ctx = super::StepContext {
+        step: engine.timestep(),
+        dt: engine.dt(),
+        grid: g,
+        coefficients: &co,
+    };
+    type SourceMap = std::collections::HashMap<(Axis, [usize; 3]), Vec<(f32, bool)>>;
+    let mut sources = SourceMap::new();
+    for r in &engine.ops {
+        for (axis, node, v, hard) in r.op.lookahead_sources(&ctx) {
+            sources.entry((axis, node)).or_default().push((v, hard));
+        }
+    }
     let get = |c: Axis, p: [usize; 3]| -> f64 {
         let (a, b) = c.others();
         let idx = g.index(p);
         let curl = (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p));
         let (da, db) = (co.da(c)[idx], co.db(c)[idx]);
         let k = da * i.get(c, p) - db * curl;
-        f64::from(
-            owners
-                .iter()
-                .find_map(|o| o.lookahead_current(c, p, k))
-                .unwrap_or(k),
-        )
+        let mut v = owners
+            .iter()
+            .find_map(|o| o.lookahead_current(c, p, k))
+            .unwrap_or(k);
+        if let Some(list) = sources.get(&(c, p)) {
+            for &(s, hard) in list {
+                v = if hard { s } else { v + s };
+            }
+        }
+        f64::from(v)
     };
     Some(f(&get))
 }

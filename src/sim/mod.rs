@@ -303,6 +303,13 @@ impl Simulation {
         if let Some(w) = boundaries.conformal.as_ref().and_then(|r| r.warning()) {
             warnings.push(w);
         }
+        if boundaries.pml_poles_ignored > 0 {
+            warnings.push(format!(
+                "{} dispersive pole(s) on edges inside a PML layer ignored (openEMS's layer \
+                 replaces their update; the static medium remains)",
+                boundaries.pml_poles_ignored
+            ));
+        }
         if opts.mesh_check {
             warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
         }

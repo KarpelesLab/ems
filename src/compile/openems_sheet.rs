@@ -62,6 +62,15 @@
 //!   stores the seam edge twice (`j = 0` and `j = N`, joined by the
 //!   periodic merge) and splits the edge's `C`, `G` and branches between
 //!   the copies by their halves of the dual face.
+//! * **Boundaries.** The "first mesh line" above is the last line an
+//!   absorbing boundary claims on a lower face: line 0 for PEC and PMC,
+//!   lines 0…1 for Mur, 0…n for `PML_n`; on an upper face the last 2
+//!   (Mur) or `n + 1` (`PML_n`) lines. A neighbouring cell whose lower
+//!   corner lies on such a line does not count, and a sheet edge whose
+//!   start node lies on one (along either in-plane axis) is PEC (black
+//!   box, wave 14: `--debug-PEC` and `--debug-operator` dumps of sheets
+//!   starting and ending at every line near Mur, `PML_3` and PMC faces;
+//!   design §5.16.3; Cartesian grids).
 //! * **Priorities.** A material or metal of higher priority at the edge
 //!   midpoint removes the sheet edge (it keeps its material); the sheet
 //!   wins ties. Edges on the outer mesh planes are left to the boundary.
@@ -246,6 +255,21 @@ pub(super) fn emulate(
     let seam_n = n[1] - 1;
     let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
     let mut done = std::collections::HashSet::new();
+    // The mesh lines each boundary claims (module docs): the first
+    // `r_lo + 1` and the last `r_hi + 1` lines of every axis.
+    let reach = |face: crate::Face| match fdtd.get_boundaries().get(face) {
+        crate::Boundary::Mur(_) => 1,
+        crate::Boundary::Pml(p) => p.cells,
+        _ => 0,
+    };
+    let region: [(usize, usize); 3] = core::array::from_fn(|a| {
+        let ax = Axis::ALL[a];
+        (
+            reach(crate::Face::new(ax, false)),
+            n[a].saturating_sub(1 + reach(crate::Face::new(ax, true))),
+        )
+    });
+    let in_region = |a: usize, i: usize| !cyl && i > 0 && (i <= region[a].0 || i >= region[a].1);
     for (e, name) in edges.into_iter().zip(names) {
         let d = e.axis.index();
         let nrm = e.normal.index();
@@ -312,7 +336,7 @@ pub(super) fn emulate(
             let mut p = mid;
             p.0[d] = lines[d][node[d]];
             p.0[t] = centre(c);
-            c != 0 && inside(p)
+            c != 0 && !in_region(t, c) && inside(p)
         });
         // The stored copies of the edge with their share of it.
         let copies: Vec<([usize; 3], f64)> = if seam {
@@ -323,7 +347,7 @@ pub(super) fn emulate(
         } else {
             vec![(node, 1.0)]
         };
-        if node[d] == 0 {
+        if node[d] == 0 || in_region(d, node[d]) || in_region(t, node[t]) {
             for &(p, _) in &copies {
                 materials.pec_mask_mut(e.axis)[grid.index(p)] = true;
                 out.pec += 1;

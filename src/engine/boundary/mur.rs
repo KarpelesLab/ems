@@ -256,14 +256,15 @@ fn update(
     // After the face edges: corner neighbours are face edges.
     for c in corners.iter_mut() {
         let [b, i0, i1] = c.saved;
-        let (n0, n1) = if openems_corners {
-            (0.0, 0.0)
+        let v = if openems_corners {
+            // The face of the lower axis alone, its neighbour at n + 1
+            // taken as 0.
+            i0 - c.k[0] * b
         } else {
-            (get(c.axis, c.inner[0]), get(c.axis, c.inner[1]))
+            let v0 = i0 + c.k[0] * (get(c.axis, c.inner[0]) - b);
+            let v1 = i1 + c.k[1] * (get(c.axis, c.inner[1]) - b);
+            0.5 * (v0 + v1)
         };
-        let v0 = i0 + c.k[0] * (n0 - b);
-        let v1 = i1 + c.k[1] * (n1 - b);
-        let v = 0.5 * (v0 + v1);
         set(c.axis, c.node, v);
         c.last = v;
     }
@@ -564,13 +565,15 @@ impl MurBoundary {
     }
 
     /// openEMS's update of the edges where two Mur faces meet (default
-    /// off): each of the two 1-D updates takes the interior neighbour at
-    /// `n + 1` as 0, `u_c^{n+1} = ½·(u_1^n + u_2^n) − ½·(k_1 + k_2)·u_c^n`,
-    /// as if each face read the other's edges before they were updated.
-    /// Identified by least-squares fits of the corner edges of an all-Mur
-    /// box from openEMS's per-step field dumps (black box, residual 4e-8;
-    /// design §5.16.1); ems's own corner average uses the updated
-    /// neighbours.
+    /// off): only the face of the lower axis (x before y before z) updates
+    /// the edge, with its interior neighbour at `n + 1` taken as 0,
+    /// `u_c^{n+1} = u_1^n − k_1·u_c^n`, as if that face read the other's
+    /// edge before it was updated. Identified by least-squares fits of the
+    /// twelve domain edges of an all-Mur box with a different last cell on
+    /// every face, from openEMS's per-step field dumps (black box, residual
+    /// 1e-7; design §5.16.1; the uniform box first measured could not tell
+    /// this from the average of both faces); ems's own corner average uses
+    /// the updated neighbours.
     pub fn openems_corners(mut self, on: bool) -> Self {
         self.openems_corners = on;
         self

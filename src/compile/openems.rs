@@ -48,6 +48,20 @@
 //! (or the background). [`openems_sigma_m`] rewrites csx's averages
 //! with that rule.
 //!
+//! # Thin metal under materials
+//!
+//! csx makes the edges of a metal sheet or line PEC whatever lies there;
+//! for solid metal it takes the highest priority at the edge midpoint.
+//! openEMS v0.37 applies the priority to sheets and lines too: a material
+//! of higher priority containing the midpoint (closed bounds, its faces
+//! included) removes the edge; at equal priority the property defined
+//! first in the file wins (black box, `--debug-PEC`: a sheet under a
+//! dielectric box below, above and through its plane at priorities 1, 2,
+//! 3 against the sheet's 2, defined after the sheet; the tie the other
+//! way round from the random sweep; a metal line under a box; lumped
+//! elements and conducting sheets do not count). [`thin_metal_priority`]
+//! clears those edges.
+//!
 //! # Material samples in metal
 //!
 //! csx leaves the material samples that fall into metal out of an edge's
@@ -68,6 +82,83 @@ use csx::discretize::MaterialGrid;
 use csx::primitives::{Primitive, Shape};
 use csx::properties::{MaterialQuantity, PropertyKind, TypeMask};
 use csx::{ContinuousStructure, CoordSystem, Vec3};
+
+/// Clears the PEC flag (csx node layout) of the edges of thin metal
+/// (sheets, lines: primitives of dimension below 3) whose midpoint lies in
+/// a material that wins the priority there over every metal primitive
+/// containing it (see the [module docs](self#thin-metal-under-materials)).
+/// Cartesian grids only; returns the number of edges cleared.
+pub(crate) fn thin_metal_priority(
+    model: &ContinuousStructure,
+    dims: [usize; 3],
+    pec: &mut [Vec<bool>; 3],
+) -> usize {
+    if model.grid.coord_system != CoordSystem::Cartesian {
+        return 0;
+    }
+    let cs = model.coord_system;
+    let thin: Vec<&Primitive> = model
+        .properties()
+        .iter()
+        .filter(|p| matches!(p.kind, PropertyKind::Metal))
+        .flat_map(|p| p.primitives.iter())
+        .filter(|q| q.dimension() < 3)
+        .collect();
+    let any_material = model
+        .properties()
+        .iter()
+        .any(|p| p.kind.material().is_some() && !p.primitives.is_empty());
+    if thin.is_empty() || !any_material {
+        return 0;
+    }
+    let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
+    let index = |n: [usize; 3]| n[0] + dims[0] * (n[1] + dims[1] * n[2]);
+    let mask = TypeMask::MATERIALS | TypeMask::of(csx::properties::PropertyType::Metal);
+    let mut cleared = 0;
+    for prim in thin {
+        let bb = prim.bounding_box(cs);
+        if bb.is_empty() {
+            continue;
+        }
+        let range = |a: usize| {
+            let l = lines[a];
+            let lo = l.partition_point(|&x| x < bb.min.0[a] - 1e-9 * (1.0 + bb.min.0[a].abs()));
+            let hi = l.partition_point(|&x| x <= bb.max.0[a] + 1e-9 * (1.0 + bb.max.0[a].abs()));
+            (lo.saturating_sub(1), hi.min(l.len()))
+        };
+        let r = [range(0), range(1), range(2)];
+        for (a, pec_a) in pec.iter_mut().enumerate() {
+            for i in r[0].0..r[0].1 {
+                for j in r[1].0..r[1].1 {
+                    for k in r[2].0..r[2].1 {
+                        let n = [i, j, k];
+                        if n[a] + 1 >= dims[a] || !pec_a[index(n)] {
+                            continue;
+                        }
+                        let m = Vec3(core::array::from_fn(|b| {
+                            if b == a {
+                                0.5 * (lines[b][n[b]] + lines[b][n[b] + 1])
+                            } else {
+                                lines[b][n[b]]
+                            }
+                        }));
+                        // Highest priority first, ties in definition
+                        // order: a material on top of every metal there.
+                        let hits = model.properties_at(m, CoordSystem::Cartesian, mask);
+                        let metal = hits
+                            .iter()
+                            .any(|h| matches!(h.property.kind, PropertyKind::Metal));
+                        if metal && hits[0].property.kind.material().is_some() {
+                            pec_a[index(n)] = false;
+                            cleared += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cleared
+}
 
 /// The model without its metal primitives, for openEMS's material
 /// averages (see the [module docs](self#material-samples-in-metal)), or

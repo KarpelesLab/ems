@@ -170,6 +170,7 @@ use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::{MurBoundary, MurMedia};
 use crate::engine::boundary::upml::OpenEmsPml;
+use crate::engine::dispersive::Field as DispersiveField;
 use crate::engine::dispersive::Scheme as DispersiveScheme;
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
@@ -512,6 +513,10 @@ pub struct BoundaryHandles {
     pub oblique_wires: Option<OperatorHandle<ObliqueWires>>,
     /// What the conformal PEC step did, if [`Compiled::conformal`] is set.
     pub conformal: Option<ConformalReport>,
+    /// Dispersive poles left out because their edge lies inside openEMS's
+    /// PML layer ([`Compiled::openems_pml`]: openEMS's layer replaces the
+    /// update there, its output is that of the static medium).
+    pub pml_poles_ignored: usize,
 }
 
 impl Compiled {
@@ -589,24 +594,41 @@ impl Compiled {
         if let Some(op) = cpml {
             h.cpml = Some(engine.add_operator(op));
         }
+        // openEMS's Mur faces take the interior neighbours before the
+        // dispersive correction of their update (black box: a Mur face
+        // next to a Lorentz medium fits no 1-D update of the corrected
+        // values; design §5.16.3).
+        if self.openems_pmc {
+            self.add_mur(engine, &mut h)?;
+        }
         if !self.dispersive.is_empty() {
+            let layers = h
+                .openems_pml
+                .as_ref()
+                .map(|p| engine.operator(p).layers().clone());
             let mut d = Dispersive::new().with_scheme(self.dispersive_scheme);
+            let mut any = false;
             for &e in &self.dispersive {
+                if let Some(l) = &layers
+                    && l.contains(e.field == DispersiveField::Electric, e.axis, e.node)
+                {
+                    h.pml_poles_ignored += 1;
+                    continue;
+                }
                 d.push_entry(e);
+                any = true;
             }
-            h.dispersive = Some(d.add_to(engine)?);
+            if any {
+                h.dispersive = Some(d.add_to(engine)?);
+            }
         }
         // After the dispersive poles: as slab hooks (see
         // `engine::boundary::mur`) the Mur faces then still see the poles'
         // correction of their interior edges, as the serial hook does.
-        if !self.mur.is_empty() {
-            let op = match &self.mur_media {
-                Some(m) => MurBoundary::with_faces_media(engine, &self.mur, &self.materials, m)?,
-                None => MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?,
-            }
-            .count_energy(self.openems_pmc)
-            .openems_corners(self.openems_pmc);
-            h.mur = Some(engine.add_operator(op));
+        // openEMS's Mur faces read them before it (files, registered
+        // above).
+        if !self.openems_pmc {
+            self.add_mur(engine, &mut h)?;
         }
         if !self.sheets.is_empty() {
             let mut s = ConductingSheet::new(self.max_frequency);
@@ -632,6 +654,20 @@ impl Compiled {
 }
 
 impl Compiled {
+    /// Registers the [`MurBoundary`] of every Mur face, if any.
+    fn add_mur(&self, engine: &mut Engine, h: &mut BoundaryHandles) -> Result<()> {
+        if !self.mur.is_empty() {
+            let op = match &self.mur_media {
+                Some(m) => MurBoundary::with_faces_media(engine, &self.mur, &self.materials, m)?,
+                None => MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?,
+            }
+            .count_energy(self.openems_pmc)
+            .openems_corners(self.openems_pmc);
+            h.mur = Some(engine.add_operator(op));
+        }
+        Ok(())
+    }
+
     /// The edges the field excitations drive (`true`: E edge, every copy
     /// of a cylindrical axis edge; `false`: H dual edge), for
     /// [`OpenEmsPml::with_driven`].
@@ -1248,6 +1284,7 @@ pub fn compile(
     }
     if fdtd.get_openems_run() {
         openems::strict_surfaces(model, mg.dims, &mut mg.pec);
+        openems::thin_metal_priority(model, mg.dims, &mut mg.pec);
         openems::openems_sigma_m(model, &mut mg);
     }
     let node_map = NodeMap::new(grid.nodes());

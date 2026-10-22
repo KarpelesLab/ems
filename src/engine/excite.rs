@@ -137,6 +137,20 @@ impl Operator for EdgeSource {
         }
     }
 
+    fn lookahead_sources(&self, ctx: &StepContext<'_>) -> Vec<(Axis, [usize; 3], f32, bool)> {
+        let t = match self.kind {
+            SourceKind::SoftH => ctx.time(),
+            SourceKind::HardH => ctx.h_time(),
+            _ => return Vec::new(),
+        };
+        let a = (self.amplitude)(t) as f32;
+        let hard = self.kind.is_hard();
+        self.edges
+            .iter()
+            .map(|&(axis, node, w)| (axis, node, w * a, hard))
+            .collect()
+    }
+
     fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let t = match self.kind {
             SourceKind::SoftH => ctx.time(),

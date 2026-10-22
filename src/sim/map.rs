@@ -389,14 +389,33 @@ fn dump_indices(
             .as_ref()
             .map(|r| r[i].value() * unit)
             .filter(|r| r.is_finite() && *r > 0.0);
-        out[i] = oe::sample_indices(
-            &cand,
-            (l[0], l[n - 1]),
-            d.corners[0][i],
-            d.corners[1][i],
-            stride,
-            res,
-        )?;
+        let (mut lo, mut hi) = (d.corners[0][i], d.corners[1][i]);
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        // Raw H and B: from the cell holding the lower corner (closed
+        // above, `snap_cell`) to the cell holding the upper one (closed
+        // below), as openEMS does on graded meshes (black box, design
+        // §5.16.3; Cartesian grids); for a box reaching into the mesh.
+        let tol = 1e-9 * (l[n - 1] - l[0]).abs();
+        if dual
+            && !grid.is_cylindrical()
+            && pos == DumpPosition::Native
+            && n >= 2
+            && hi >= l[0] - tol
+            && lo <= l[n - 1] + tol
+        {
+            let a = snap_cell(l, lo);
+            let b = if hi - lo <= tol {
+                a
+            } else {
+                l.partition_point(|&x| x <= hi + tol).saturating_sub(1)
+            };
+            let b = b.clamp(a, cand.len() - 1);
+            lo = cand[a];
+            hi = cand[b];
+        }
+        out[i] = oe::sample_indices(&cand, (l[0], l[n - 1]), lo, hi, stride, res)?;
     }
     Some(out)
 }
@@ -711,7 +730,8 @@ pub(crate) fn map_sources(
                 && let Some(f) = waveform.and_then(|w| w.nyquist_frequency())
             {
                 let omega = 2.0 * core::f64::consts::PI * f;
-                let kept = limit_medium_capacitance(engine, g.axis, &g.edges, omega);
+                let kept =
+                    limit_medium_capacitance(engine, g.axis, &g.edges, omega, Topology::Parallel);
                 if kept < 0.2 {
                     warnings.push(format!(
                         "lumped element {:?}: openEMS's limit on the edge capacitance of a \
@@ -721,6 +741,25 @@ pub(crate) fn map_sources(
                         100.0 * kept
                     ));
                 }
+            }
+        }
+        // openEMS limits the edge capacitance of every series element by
+        // its branch impedance at the excitation's frequency (design
+        // §5.16.3).
+        if g.topology == Topology::Series
+            && fdtd.get_openems_run()
+            && let Some(f) = waveform.and_then(|w| w.nyquist_frequency())
+        {
+            let omega = 2.0 * core::f64::consts::PI * f;
+            let kept = limit_medium_capacitance(engine, g.axis, &g.edges, omega, Topology::Series);
+            if kept < 0.2 {
+                warnings.push(format!(
+                    "lumped element {:?}: openEMS's limit on the edge capacitance of a \
+                     series element keeps {:.0} % of an edge's capacitance; the update may \
+                     become unstable (as it does in openEMS)",
+                    g.name,
+                    100.0 * kept
+                ));
             }
         }
         let ne = g.edges.len();
@@ -842,6 +881,23 @@ pub(crate) fn map_sources(
     // Soft E sources add after the lumped updates; hard sources overwrite
     // last; H sources act in post_h.
     for (name, op) in soft_e.into_iter().chain(others) {
+        // openEMS's hard E source edges have no update of their own: the
+        // operators acting after the update (its Mur faces) read them as
+        // 0 before the source writes (black box: a Mur face edge next to
+        // a hard source fits `u_1^n − k·u_0^n`, design §5.16.3). Not in
+        // openEMS's PML layers, whose update ems completes itself.
+        if openems && op.get_kind() == SourceKind::HardE {
+            let mut co = engine.coefficients_mut();
+            for (axis, node, _) in op.edges() {
+                if pml.is_some_and(|l| l.contains(true, axis, node)) {
+                    continue;
+                }
+                let i = idx(node);
+                let (ca, cb) = co.e_mut(axis);
+                ca[i] = 0.0;
+                cb[i] = 0.0;
+            }
+        }
         let h = engine.add_operator(op);
         mapped.sources.push((name, h));
     }
@@ -1309,13 +1365,19 @@ fn replace_medium(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
 /// it can leave an edge far below its medium capacitance, so a large `R`
 /// or `L` makes openEMS's update unstable (it diverges for a 1 mm vacuum
 /// edge with `L` ≳ 3e-8 H, or on the `lumped_graded_rl` element with
-/// `R` ≳ 150 Ω). Returns the smallest kept fraction of an edge's
-/// capacitance (1 when nothing was limited).
+/// `R` ≳ 150 Ω). A series element (any of R, L, C) is limited by its
+/// branch impedance instead, `C_e ≤ 1/(20·ω·|R_e + jωL_e + 1/(jωC_e')|)`
+/// with the element's per-edge `C_e'` (wave 14, same dumps: R, RL, L, LC
+/// and RLC branches, `R` = 1…1000 Ω, `L` = 1.1…50 nH, `C` = 0.5…5 pF, two
+/// frequencies, 5 digits; this is the "different update" of large series
+/// resistors noted before). Returns the smallest kept fraction of an
+/// edge's capacitance (1 when nothing was limited).
 fn limit_medium_capacitance(
     engine: &mut Engine,
     axis: Axis,
     edges: &[EdgeValues],
     omega: f64,
+    topology: Topology,
 ) -> f64 {
     let mut kept = 1.0f64;
     if !(omega.is_finite() && omega > 0.0) {
@@ -1327,11 +1389,25 @@ fn limit_medium_capacitance(
     let mut co = engine.coefficients_mut();
     let (ca, cb) = co.e_mut(axis);
     for e in edges {
-        let limit =
-            e.r.map(|r| 1.0 / (20.0 * omega * r))
-                .into_iter()
-                .chain(e.l.map(|l| 1.0 / (20.0 * omega * omega * l)))
-                .fold(f64::INFINITY, f64::min);
+        let limit = match topology {
+            Topology::Parallel => {
+                e.r.map(|r| 1.0 / (20.0 * omega * r))
+                    .into_iter()
+                    .chain(e.l.map(|l| 1.0 / (20.0 * omega * omega * l)))
+                    .fold(f64::INFINITY, f64::min)
+            }
+            // The series branch's admittance at ω.
+            Topology::Series => {
+                let r = e.r.unwrap_or(0.0);
+                let x = e.l.map_or(0.0, |l| omega * l) - e.c.map_or(0.0, |c| 1.0 / (omega * c));
+                let z = r.hypot(x);
+                if z > 0.0 {
+                    1.0 / (20.0 * omega * z)
+                } else {
+                    f64::INFINITY
+                }
+            }
+        };
         let i = idx(e.node);
         let (a, b) = (f64::from(ca[i]), f64::from(cb[i]));
         let cap = dt * (1.0 + a) / (2.0 * b);

@@ -231,6 +231,16 @@ pub trait Operator: Any + Send {
         let _ = (axis, node, kernel);
         None
     }
+
+    /// What a source operator's H hook would do in the look-ahead H update
+    /// of step `step` (`ctx`), after the update itself
+    /// ([`lookahead_current`](Self::lookahead_current)): the H dual edges
+    /// it drives with the value it adds (`false`) or sets (`true`).
+    /// Default: none.
+    fn lookahead_sources(&self, ctx: &StepContext<'_>) -> Vec<(Axis, [usize; 3], f32, bool)> {
+        let _ = ctx;
+        Vec::new()
+    }
 }
 
 /// Typed handle to an operator registered with
