@@ -238,6 +238,9 @@ cases! {
     sheet_resistive: 2e-4;
     sheet_full: 2e-4;
     sheet_graded: 2e-4;
+    // Polygon sheets with three oblique sides (copper, σt = 0.1 S).
+    sheet_triangle: 2e-4;
+    sheet_triangle_r: 2e-4;
     fdtd_odd: 1e-4;
     fdtd_ts_and_steps0: 1e-30;      // (the t = 0 row of E-type files)
 }

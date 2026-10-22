@@ -88,7 +88,9 @@ command line in the case's `meta.txt`:
   and the names of all files written (`exit:`, `files:`), the console
   output without wall-clock lines (`console.txt`) and the HDF5 structure
   (`structure.txt`); `cli_debug_cyl` and `cli_debug_cyl_sector` hold the
-  debug dumps of cylindrical grids; `cli_exit` holds openEMS's exit status for
+  debug dumps of cylindrical grids, `cli_debug_sheet` and
+  `cli_debug_cyl_sheet` the operator dumps of conducting sheets (openEMS's
+  sheet model, Cartesian and cylindrical); `cli_exit` holds openEMS's exit status for
   command-line errors and special invocations (`codes.txt`) and the
   options its `--help` lists (`options.txt`).
 - `gen-nf2ff.sh` regenerates the `nf2ff_*` cases of the `nf2ff` tool

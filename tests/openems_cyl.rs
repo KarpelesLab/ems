@@ -6,10 +6,11 @@
 //! resistive fin (`α = const` sheet, at `α = π/2` and on the `α = 0` seam).
 //!
 //! openEMS's sheet model is not ems's slab model (§5.9), on cylindrical
-//! grids as on Cartesian ones; the tests record how they differ: openEMS's
-//! tube has half the loss (twice the `Q`), its thin resistive fin is
-//! nearly reactive (the mode detunes by −13 %), and its fin on the seam has
-//! no effect. ems's values are the analytic ones (`tests/cylindrical_sheet.rs`).
+//! grids as on Cartesian ones: openEMS's tube has half the loss (twice the
+//! `Q`), its thin resistive fin is nearly reactive (the mode detunes by
+//! −13 %), and its fin on the seam has no effect. ems's native values are
+//! the analytic ones (`tests/cylindrical_sheet.rs`); for files ems runs
+//! openEMS's model (`compile/openems_sheet.rs`) and the signals agree.
 //! Also: openEMS ignores plane waves on cylindrical grids (`cyl_planewave`).
 #![cfg(feature = "xml")]
 
@@ -79,49 +80,44 @@ fn q_of(t: &[f64], v: &[f64]) -> (f64, f64) {
     (f, -TAU * f / slope)
 }
 
-/// `(f, Q)` of openEMS and of ems for `case`.
-fn both(case: &str) -> ((f64, f64), (f64, f64)) {
+/// `(f, Q)` of openEMS's ring-down for `case`.
+fn q_of_file(case: &str) -> (f64, f64) {
     let (t, v) = read_probe(&fixture(case).join("v0"));
-    let oe = q_of(&t, &v);
-    let mut sim = Simulation::from_xml(fixture(case).join("model.xml")).unwrap();
-    let res = sim.run().unwrap();
-    let p = res.probe("v0").unwrap();
-    let em = q_of(p.times(), p.scalar().unwrap());
-    eprintln!(
-        "{case}: openEMS f {:.4} GHz Q {:.2}; ems f {:.4} GHz Q {:.2}",
-        oe.0 / 1e9,
-        oe.1,
-        em.0 / 1e9,
-        em.1
-    );
-    (oe, em)
+    let q = q_of(&t, &v);
+    eprintln!("{case}: openEMS f {:.4} GHz Q {:.2}", q.0 / 1e9, q.1);
+    q
 }
 
 #[test]
-fn cylindrical_conducting_sheets_differ_from_openems_as_recorded() {
-    let (none_oe, none_em) = both("cyl_sheet_none");
-    // The empty cavities agree (no-axis cylindrical grids, §5.16.2).
-    assert!((none_oe.0 / none_em.0 - 1.0).abs() < 5e-4);
-    assert!(none_oe.1.abs() > 1e4 && none_em.1.abs() > 1e4);
-    // Lossy tube: openEMS has about half the loss (Q 397 against 196).
-    let (tube_oe, tube_em) = both("cyl_sheet_tube");
-    assert!((tube_em.1 / 195.9 - 1.0).abs() < 0.01, "{tube_em:?}");
-    let r = tube_oe.1 / tube_em.1;
-    assert!((1.9..2.2).contains(&r), "openEMS/ems Q ratio {r}");
-    // Resistive fin: openEMS detunes the mode by about −13 %.
-    let (fin_oe, fin_em) = both("cyl_sheet_fin");
-    assert!((fin_em.1 / 57.65 - 1.0).abs() < 0.02, "{fin_em:?}");
-    assert!((fin_em.0 / none_em.0 - 1.0).abs() < 2e-3);
-    let shift = fin_oe.0 / none_oe.0 - 1.0;
+fn cylindrical_conducting_sheets_match_openems() {
+    let none = q_of_file("cyl_sheet_none");
+    // Lossy tube: openEMS's model has about half the loss of the exact
+    // slab (Q 403 against 195.9, ems's native value in
+    // tests/cylindrical_sheet.rs).
+    let tube = q_of_file("cyl_sheet_tube");
+    assert!((tube.1 / 195.9 - 2.06).abs() < 0.05, "{tube:?}");
+    // Resistive fin: openEMS's model detunes the mode by about −13 %.
+    let fin = q_of_file("cyl_sheet_fin");
+    let shift = fin.0 / none.0 - 1.0;
     assert!(
         (-0.16..-0.10).contains(&shift),
         "openEMS fin detuning {shift}"
     );
-    // The same fin on the α = 0 seam: no effect in openEMS; ems as off it.
-    let (seam_oe, seam_em) = both("cyl_sheet_seam");
-    assert!((seam_oe.0 / none_oe.0 - 1.0).abs() < 1e-6);
-    assert!(seam_oe.1.abs() > 1e4);
-    assert!((seam_em.1 / fin_em.1 - 1.0).abs() < 2e-3);
+    // The same fin drawn on the α = 0 seam: no effect in openEMS (it
+    // updates the seam's α = 2π copy, where the fin is not).
+    let seam = q_of_file("cyl_sheet_seam");
+    assert!((seam.0 / none.0 - 1.0).abs() < 1e-6 && seam.1.abs() > 1e4);
+    // ems reproduces the model for files: the ring-down signals.
+    for case in [
+        "cyl_sheet_none",
+        "cyl_sheet_tube",
+        "cyl_sheet_fin",
+        "cyl_sheet_seam",
+    ] {
+        for (n, e) in probe_l2(case, "model.xml") {
+            assert!(e < 1e-4, "{case}/{n}: {e:e}");
+        }
+    }
 }
 
 /// openEMS ignores a plane wave on a cylindrical grid (no field at all,

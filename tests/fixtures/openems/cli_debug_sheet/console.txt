@@ -1,0 +1,8 @@
+Create FDTD operator
+Operator: Dumping FDTD operator information to vtk file: operator_dump ...Operator::CalcGaussianPulsExcitation: Requested excitation pusle would be 796 timesteps or 7.164e-10 s long. Cutting to max number of timesteps!
+FDTD simulation size: 14x15x14 --> 2940 FDTD cells 
+FDTD timestep is: 9e-13 s; Nyquist rate: 69 timesteps @8.05153e+09 Hz
+Excitation signal length is: 400 timesteps (3.6e-10s)
+Max. number of timesteps: 400 ( --> 1 * Excitation signal length)
+openEMS::SetupFDTD: Warning, max. number of timesteps is smaller than three times the excitation. 
+	You may want to choose a higher number of max. timesteps... 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems command-line fixture "cli_debug_cyl_sheet": the operator dump of openEMS's ConductingSheet
+     model on a closed cylindrical grid (graded radial mesh, no axis): a lossy tube (rho plane) over
+     alpha 0 .. 5.8 (on the seam), a partial disc (z plane) with borders off the mesh lines, a fin
+     (alpha plane) at pi/2 and a fin drawn on the alpha = 0 seam (no effect in openEMS), without
+     simulation. Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-cli.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="400" endCriteria="1e-3" TimeStep="5e-13" CylinderCoords="1">
+    <Excitation Type="0" f0="5e9" fc="5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>1.0,1.3,1.7,2.0,2.4,2.9,3.3,3.7,4.0</XLines>
+      <YLines>0.0,0.7853981633974483,1.5707963267948966,2.356194490192345,3.141592653589793,3.9269908169872414,4.71238898038469,5.497787143782138,6.283185307179586</YLines>
+      <ZLines>0.0,0.6,1.1,1.7,2.2,3.0,3.5,4.1,4.6,5.0</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="ex" Type="0" Excite="1,0,0">
+        <Primitives><Box Priority="0"><P1 X="2.4" Y="2.356194490192345" Z="4.1"/><P2 X="3.3" Y="2.356194490192345" Z="4.1"/></Box></Primitives>
+      </Excitation>
+      <ConductingSheet Name="tube" Conductivity="1e5" Thickness="1e-4">
+        <Primitives><Box Priority="0"><P1 X="2.0" Y="0" Z="0"/><P2 X="2.0" Y="5.8" Z="2.6"/></Box></Primitives>
+      </ConductingSheet>
+      <ConductingSheet Name="disc" Conductivity="1000" Thickness="1e-4">
+        <Primitives><Box Priority="0"><P1 X="1.2" Y="1.0" Z="3.5"/><P2 X="3.5" Y="4.4" Z="3.5"/></Box></Primitives>
+      </ConductingSheet>
+      <ConductingSheet Name="fin" Conductivity="100" Thickness="1e-6">
+        <Primitives><Box Priority="0"><P1 X="2.4" Y="1.5707963267948966" Z="0.3"/><P2 X="4.0" Y="1.5707963267948966" Z="2.9"/></Box></Primitives>
+      </ConductingSheet>
+      <ConductingSheet Name="seamfin" Conductivity="100" Thickness="1e-6">
+        <Primitives><Box Priority="0"><P1 X="2.4" Y="0" Z="0.3"/><P2 X="4.0" Y="0" Z="2.9"/></Box></Primitives>
+      </ConductingSheet>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

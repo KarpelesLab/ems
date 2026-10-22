@@ -1,5 +1,6 @@
 //! openEMS's `ConductingSheet` model (files only,
-//! [`Fdtd::openems_run`](crate::Fdtd::openems_run), Cartesian grids).
+//! [`Fdtd::openems_run`](crate::Fdtd::openems_run), Cartesian and
+//! cylindrical grids).
 //!
 //! ems's own sheet ([`crate::engine::sheet`]) is a thin lossy slab with
 //! skin effect, accurate to about 1 % against the exact slab (design
@@ -32,14 +33,35 @@
 //!   `k = 0`).
 //! * **Frequency.** `f0 + fc` of a Gaussian excitation, `f0` of a sine,
 //!   the `<FDTD f_max>` attribute for the other signals (0 without it).
-//! * **Width.** `w` sums half the widths (along the sheet, across the
-//!   edge) of the edge's two neighbouring sheet cells that lie in the
-//!   sheet (cell centre in a planar primitive of the sheet that wins the
-//!   priority there). A cell whose lower corner lies on the first mesh
-//!   line of either in-plane axis does not count (openEMS's own quirk: the
-//!   first row and column of a sheet that reaches the lower mesh boundary
-//!   are left out, so a sheet across a two-cell TEM line carries half its
-//!   current); an edge without counted cells is PEC.
+//! * **Width.** An edge whose midpoint lies in the sheet (a primitive of
+//!   the sheet that wins the priority there) is a sheet edge. Its width
+//!   `w` is the dual edge across it in the sheet plane (the half widths of
+//!   its two neighbouring cells along the sheet, across the edge) if it is
+//!   an *interior* edge, half of that on a *border* edge. The edge is
+//!   interior if the sheet contains the two points at its start node and
+//!   the centres of the two neighbouring cells (where the dual edges
+//!   through the start node cross them), else it is a border edge: one
+//!   rule for sheet borders on and off the mesh lines, axis-aligned or
+//!   oblique (polygon sides). A neighbouring cell whose lower corner lies
+//!   on the first mesh line of the axis across the edge never counts
+//!   (openEMS's quirk: a sheet across a two-cell TEM line carries half its
+//!   current), and an edge in the first cell of its own axis is PEC.
+//!   Measured on operator dumps of 140 hand-written and random models
+//!   (graded meshes, off-mesh borders, polygons, every normal), all edges
+//!   identical.
+//! * **Cylindrical grids.** The same model with the physical lengths: an
+//!   α edge `ρ·Δα`, a dual width across along α `ρ·Δα*` at the edge's
+//!   start node. On a closed azimuth openEMS updates the ρ and z edges of
+//!   the seam at `α = 2π` (the `α = 0` copy is not used): the neighbouring
+//!   cells there are cells `N − 1` and `N`, the copy of cell 0 (which
+//!   counts); the edge is in a box that contains 2π as written, or 0 and
+//!   `α_{N−1}`. openEMS compares box angles as written (no wrap), except
+//!   that a point past 2π (cell `N`) also matches as `α − 2π` in a box of
+//!   nonzero α extent: a fin drawn at `α = 0` has no effect (it is not on
+//!   the `2π` copy), boxes past 2π do not reach the first α cells. ems
+//!   stores the seam edge twice (`j = 0` and `j = N`, joined by the
+//!   periodic merge) and splits the edge's `C`, `G` and branches between
+//!   the copies by their halves of the dual face.
 //! * **Priorities.** A material or metal of higher priority at the edge
 //!   midpoint removes the sheet edge (it keeps its material); the sheet
 //!   wins ties. Edges on the outer mesh planes are left to the boundary.
@@ -48,6 +70,7 @@
 //! the sheet capacitances are set and pins it.
 
 use csx::ContinuousStructure;
+use csx::primitives::{Primitive, Shape};
 use csx::properties::{PropertyKind, TypeMask};
 use csx::{CoordSystem, Vec3};
 
@@ -124,20 +147,22 @@ pub(crate) fn bin(sigma: f64, t: f64, f: f64) -> usize {
 #[derive(Debug, Default)]
 pub(super) struct Emulation {
     /// Native sheet edges that are not emulated (kept for the slab
-    /// operator): those of cylindrical grids.
+    /// operator): those of cylindrical grids with an azimuthal multigrid.
     pub rest: Vec<SheetEdge>,
     /// Branch poles of the emulated edges.
     pub poles: Vec<EdgePole>,
     /// The emulated edges with the `[ε_r, κ]` they had.
     pub edges: Vec<(Axis, [usize; 3], [f64; 2])>,
-    /// Number of edges made PEC (no counted sheet cell).
+    /// Number of edges made PEC (in the first cell of their axis).
     pub pec: usize,
 }
 
-/// Does a primitive of the sheet `name` contain `p` (drawing units) and
-/// win the priority there (ties go to the sheet)?
-fn sheet_wins(model: &ContinuousStructure, name: &str, p: Vec3) -> bool {
-    let hits = model.properties_at(p, CoordSystem::Cartesian, TypeMask::PHYSICAL);
+/// Whether the sheet `name` contains `p` (drawing units, in the grid's
+/// coordinates `cs`) and wins the priority there (ties go to the sheet).
+/// `wrap`: on cylindrical grids, whether an `α` past 2π may also match
+/// as `α − 2π` ([`alpha_in`]).
+fn sheet_at(model: &ContinuousStructure, cs: CoordSystem, name: &str, p: Vec3, wrap: bool) -> bool {
+    let hits = model.properties_at(p, cs, TypeMask::PHYSICAL);
     let Some(top) = hits.first() else {
         return false;
     };
@@ -146,8 +171,32 @@ fn sheet_wins(model: &ContinuousStructure, name: &str, p: Vec3) -> bool {
     hits.iter()
         .take_while(|h| h.primitive.priority == prio)
         .any(|h| {
-            h.property.name == name && matches!(h.property.kind, PropertyKind::ConductingSheet(_))
+            h.property.name == name
+                && matches!(h.property.kind, PropertyKind::ConductingSheet(_))
+                && (cs == CoordSystem::Cartesian || alpha_in(model, h.primitive, p[1], wrap))
         })
+}
+
+/// openEMS's azimuth test of a cylindrical box (module docs): `α` within
+/// the box's α range as written, or (`wrap`) `α − 2π` for points past 2π
+/// (the copies of the first α cells) in a box of nonzero α extent. csx
+/// compares angles modulo 2π instead, which also puts a fin drawn at
+/// `α = 0` on the `α = 2π` copy of the seam (openEMS: not) and wraps
+/// boxes past 2π onto the first α cells. Other primitives keep csx's
+/// test.
+fn alpha_in(model: &ContinuousStructure, prim: &Primitive, alpha: f64, wrap: bool) -> bool {
+    let Shape::Box(b) = &prim.shape else {
+        return true;
+    };
+    if !prim.transform.is_empty() || prim.shape_cs(model.coord_system) != CoordSystem::Cylindrical {
+        return true;
+    }
+    let (a0, a1) = (b.start.value()[1], b.stop.value()[1]);
+    let (lo, hi) = (a0.min(a1), a0.max(a1));
+    let tol = 1e-12 * lo.abs().max(hi.abs()).max(1.0);
+    let tau = core::f64::consts::TAU;
+    let within = |a: f64| a >= lo - tol && a <= hi + tol;
+    within(alpha) || (wrap && hi - lo > tol && alpha >= tau - tol && within(alpha - tau))
 }
 
 /// Replaces the native sheet edges `edges` by openEMS's model (module
@@ -167,7 +216,7 @@ pub(super) fn emulate(
     if edges.is_empty() {
         return Ok(out);
     }
-    if grid.is_cylindrical() {
+    if grid.has_multigrid() {
         out.rest = edges;
         return Ok(out);
     }
@@ -186,69 +235,141 @@ pub(super) fn emulate(
     };
     let f = sheet_frequency(fdtd);
     let n = grid.nodes();
+    let cyl = grid.is_cylindrical();
+    let cs = if cyl {
+        CoordSystem::Cylindrical
+    } else {
+        CoordSystem::Cartesian
+    };
+    let closed = grid.is_closed();
+    // The seam: α line 0 and its copy N on a closed azimuth.
+    let seam_n = n[1] - 1;
     let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
+    let mut done = std::collections::HashSet::new();
     for (e, name) in edges.into_iter().zip(names) {
         let d = e.axis.index();
         let nrm = e.normal.index();
         let t = 3 - d - nrm;
-        let node = e.node;
-        // Outer mesh planes: the boundary decides.
-        if (0..3).any(|a| a != d && (node[a] == 0 || node[a] + 1 == n[a])) {
+        let mut node = e.node;
+        // ρ and z edges on the seam of a closed azimuth: one physical edge
+        // stored twice (j = 0 and j = N, joined by the periodic merge);
+        // openEMS evaluates it at α_N.
+        let seam = closed && d != 1 && (node[1] == 0 || node[1] == seam_n);
+        if seam {
+            node[1] = 0;
+        }
+        if !done.insert((d, node)) {
             continue;
         }
-        let mut mid = Vec3::new(lines[0][node[0]], lines[1][node[1]], lines[2][node[2]]);
-        mid.0[d] = 0.5 * (lines[d][node[d]] + lines[d][node[d] + 1]);
-        if !sheet_wins(model, &name, mid) {
+        // Outer mesh planes: the boundary decides (not the seam).
+        if (0..3).any(|a| a != d && !(closed && a == 1) && (node[a] == 0 || node[a] + 1 == n[a])) {
             continue;
         }
-        // Counted neighbouring cells along t.
-        let mut w = 0.0;
-        if node[d] >= 1 {
-            for c in [node[t].checked_sub(1), Some(node[t])]
-                .into_iter()
-                .flatten()
-            {
-                if c < 1 || c + 1 >= n[t] {
-                    continue;
-                }
-                let mut p = mid;
-                p.0[t] = 0.5 * (lines[t][c] + lines[t][c + 1]);
-                if sheet_wins(model, &name, p) {
-                    w += 0.5 * grid.delta(Axis::ALL[t], c);
-                }
+        // Line `i` of axis `a` as openEMS evaluates it (the seam at α_N).
+        let at = |a: usize, i: usize| {
+            if seam && a == 1 {
+                lines[1][seam_n]
+            } else {
+                lines[a][i]
             }
-        }
-        let idx = grid.index(node);
-        if w == 0.0 {
-            materials.pec_mask_mut(e.axis)[idx] = true;
-            out.pec += 1;
+        };
+        let mut mid = Vec3::new(at(0, node[0]), at(1, node[1]), at(2, node[2]));
+        mid.0[d] = 0.5 * (lines[d][node[d]] + lines[d][node[d] + 1]);
+        // The seam edge (at α_N = 2π) is in a box that contains 2π as
+        // written, or 0 and α_{N−1} (measured on tubes [0, a]: the seam
+        // edge is a sheet edge from a ≥ α_{N−1} on).
+        let on_sheet = sheet_at(model, cs, &name, mid, false)
+            || (seam
+                && sheet_at(model, cs, &name, mid, true)
+                && sheet_at(
+                    model,
+                    cs,
+                    &name,
+                    Vec3::new(mid[0], lines[1][seam_n - 1], mid[2]),
+                    false,
+                ));
+        if !on_sheet {
             continue;
         }
+        // An interior sheet edge carries the full width, a border edge
+        // half of it. The edge is interior if the sheet contains the two
+        // points at its start node along d and the centres of its two
+        // neighbouring cells along t (where the dual edges through the
+        // start node cross the cells); a cell with index 0 along t (lower
+        // corner on the first mesh line) never counts. On the seam the
+        // cells along α are N − 1 and N (the copy of cell 0, which
+        // counts). An edge in the first cell along d (index 0) is PEC.
+        let jt = if seam && t == 1 { seam_n } else { node[t] };
+        let centre = |c: usize| {
+            if seam && t == 1 && c == seam_n {
+                lines[1][seam_n] + 0.5 * (lines[1][1] - lines[1][0])
+            } else {
+                0.5 * (lines[t][c] + lines[t][c + 1])
+            }
+        };
+        let inside = |p: Vec3| sheet_at(model, cs, &name, p, true);
+        let interior = [jt - 1, jt].into_iter().all(|c| {
+            let mut p = mid;
+            p.0[d] = lines[d][node[d]];
+            p.0[t] = centre(c);
+            c != 0 && inside(p)
+        });
+        // The stored copies of the edge with their share of it.
+        let copies: Vec<([usize; 3], f64)> = if seam {
+            let (lo, hi) = (grid.delta(Axis::Y, 0), grid.delta(Axis::Y, seam_n - 1));
+            let mut top = node;
+            top[1] = seam_n;
+            vec![(node, lo / (lo + hi)), (top, hi / (lo + hi))]
+        } else {
+            vec![(node, 1.0)]
+        };
+        if node[d] == 0 {
+            for &(p, _) in &copies {
+                materials.pec_mask_mut(e.axis)[grid.index(p)] = true;
+                out.pec += 1;
+            }
+            continue;
+        }
+        // Sheet width across the edge: the dual edge along t (physical,
+        // at the edge's start node), half of it on a border edge.
+        let dual = if seam && t == 1 {
+            0.5 * (grid.delta(Axis::Y, 0) + grid.delta(Axis::Y, seam_n - 1))
+        } else {
+            grid.dual_delta(Axis::ALL[t], node[t])
+        };
+        let dual = if cyl && t == 1 {
+            grid.lines(Axis::X)[node[0]] * dual
+        } else {
+            dual
+        };
+        let w = if interior { dual } else { 0.5 * dual };
         let (sigma, th) = (e.conductivity, e.thickness);
         let row = TABLE[bin(sigma, th, f)];
-        let l = grid.delta(e.axis, node[d]);
-        let sq = w / l;
+        let sq = w / grid.edge_length(e.axis, node);
         let (st, lt) = (sigma * th, MU0 * th);
-        let c = dt * dt * sq / (row[1] * lt);
-        let g_e = row[0] * st * sq;
-        let (ab, ac) = e.axis.others();
-        let geo = grid.dual_delta(ab, node[ab.index()]) * grid.dual_delta(ac, node[ac.index()]) / l;
-        out.edges.push((
-            e.axis,
-            node,
-            [materials.eps_r(e.axis)[idx], materials.kappa(e.axis)[idx]],
-        ));
-        materials.eps_r_mut(e.axis)[idx] = c / (EPS0 * geo);
-        materials.kappa_mut(e.axis)[idx] = g_e / geo;
-        let m = EPS0 * geo;
-        for (lb, rb) in [(row[2], row[3]), (row[4], row[5])] {
-            let (lb, rb) = (lb * lt / sq, rb / (st * sq));
-            out.poles.push(EdgePole {
-                field: Field::Electric,
-                axis: e.axis,
-                node,
-                pole: Pole::drude((1.0 / (m * lb)).sqrt(), rb / lb),
-            });
+        for (p, share) in copies {
+            let idx = grid.index(p);
+            let s = sq * share;
+            let c = dt * dt * s / (row[1] * lt);
+            let g_e = row[0] * st * s;
+            let geo = grid.dual_face_area(e.axis, p) / grid.edge_length(e.axis, p);
+            out.edges.push((
+                e.axis,
+                p,
+                [materials.eps_r(e.axis)[idx], materials.kappa(e.axis)[idx]],
+            ));
+            materials.eps_r_mut(e.axis)[idx] = c / (EPS0 * geo);
+            materials.kappa_mut(e.axis)[idx] = g_e / geo;
+            let m = EPS0 * geo;
+            for (lb, rb) in [(row[2], row[3]), (row[4], row[5])] {
+                let (lb, rb) = (lb * lt / s, rb / (st * s));
+                out.poles.push(EdgePole {
+                    field: Field::Electric,
+                    axis: e.axis,
+                    node: p,
+                    pole: Pole::drude((1.0 / (m * lb)).sqrt(), rb / lb),
+                });
+            }
         }
     }
     Ok(out)

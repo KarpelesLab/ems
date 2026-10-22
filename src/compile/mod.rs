@@ -473,7 +473,8 @@ pub struct Compiled {
     /// used to grade the conducting-sheet layers.
     pub max_frequency: Option<f64>,
     /// Conducting-sheet edges that carry openEMS's sheet model instead
-    /// (models read from openEMS files, Cartesian grids;
+    /// (models read from openEMS files; on cylindrical grids without an
+    /// azimuthal multigrid;
     /// `compile/openems_sheet.rs`), with the `[ε_r, κ]` of the medium
     /// they replace: their `ε`/`κ` in [`materials`](Self::materials) and
     /// their branch poles in [`dispersive`](Self::dispersive) are the
@@ -1397,7 +1398,7 @@ pub fn compile(
     let mur_media = (fdtd.get_openems_run() && !cyl).then(|| mur_point_media(model, &grid, &mur));
     // openEMS's sheet model replaces the slab on files (last: it pins the
     // time step resolved with the final materials).
-    let (sheet_edges, openems_sheets) = if fdtd.get_openems_run() && !cyl {
+    let (sheet_edges, openems_sheets) = if fdtd.get_openems_run() {
         let emu = openems_sheet::emulate(
             model,
             &grid,
@@ -1409,8 +1410,8 @@ pub fn compile(
         )?;
         if emu.pec > 0 {
             warnings.push(format!(
-                "{} conducting-sheet edge(s) without a counted sheet cell made PEC (openEMS's \
-                 rule, e.g. along the lower mesh boundary)",
+                "{} conducting-sheet edge(s) in the first mesh cell of their axis made PEC \
+                 (openEMS's rule)",
                 emu.pec
             ));
         }

@@ -3027,27 +3027,44 @@ keeps the slab):
   All 30 bins were measured (σ = 1e6 S/m) and reproduce with other `σ`,
   `t`, `dt` and positions in the bin to 7 digits. Bin 0 conducts
   `0.9988·σt` at DC; from bin 26 on `r_2` is clamped at 1000.
-- **Cells.** A sheet cell counts if its centre is in the sheet and the
-  sheet wins the priority there; cells whose lower corner lies on the
-  first mesh line of either in-plane axis never count (so a sheet across
-  a two-cell line carries half its current: the "half loss" above), and
-  a sheet edge without counted cells is PEC. A material or metal of
-  higher priority at the edge midpoint removes the sheet edge (ties go to
-  the sheet). openEMS's time step ignores the sheet; ems resolves it
-  before the sheet capacitances are set and pins it.
+- **Cells** (wave 14; the wave-13 rule, half widths of the counted
+  cells, was right on uniform meshes only). An edge whose midpoint is in
+  the sheet (the sheet wins the priority there; ties go to the sheet) is
+  a sheet edge; a material or metal of higher priority at the midpoint
+  removes it. Its width is the dual edge across it in the sheet plane if
+  the edge is *interior*, half of it on a *border* edge, with no other
+  values: interior means that the sheet contains the two points at the
+  edge's start node and the centres of its two neighbouring cells (where
+  the dual edges through the start node cross the cells). A neighbouring
+  cell with its lower corner on the first mesh line of the axis across
+  the edge never counts (so a sheet across a two-cell line carries half
+  its current: the "half loss" above), and an edge in the first cell of
+  its own axis is PEC. Measured on `--debug-operator` dumps: sheets
+  starting on, below and between mesh lines on graded meshes (a step
+  sweep of the border through a cell: the width switches at the cell
+  centre across the edge and at the edge's start node along it, never at
+  its end node), the corner of two off-mesh borders (half, not a
+  quarter), and the edges along oblique polygon sides, where the
+  start-node sample point decides (the cell-centre points at the edge
+  midpoint, ems's former rule, missed 7 of the 60 border edges of a
+  triangle); then 34 random polygons (3–5 oblique sides, every normal,
+  uniform and graded meshes, copper and resistive) and the fixture
+  `cli_debug_cyl_sheet`/`cli_debug_sheet` models: every E coefficient
+  identical (`tests/cli.rs`). openEMS's time step ignores the sheet; ems
+  resolves it before the sheet capacitances are set and pins it.
 
 Agreement now (probe files): copper across the TEM line 3e-7 (reflected)
 and 1.4e-6 (transmitted), a partial-width sheet on a six-cell line
 4e-7…3e-6, the sweep boxes (`sweep_sheet_*`: copper, resistive, a sheet
 across the whole box, a graded mesh with a dielectric and a metal block)
-3e-6…7e-5, the ring-down level of a lossy closed box; the operator dumps
-are identical. Not reproduced: polygon sheets with oblique sides
-(2.5e-3 on a triangle in the sweep box): openEMS's width of the edges
-along an oblique side follows no rule found (tested: cell centres,
-corners, quarter points of the cells and of the dual face, neighbouring
-edges); ems uses the cell centres, exact for axis-aligned and 45° sides.
-`tests/openems_adv.rs` checks the copper line and the `≈ 0.5` loss ratio
-of both codes.
+3e-6…7e-5 (graded 7e-6…1.8e-5, was 1.8e-5…5e-5), triangles with three
+oblique sides (`sweep_sheet_triangle`, copper, 1.9e-5…4.4e-5, was
+2.2e-5…5.4e-5; `sweep_sheet_triangle_r`, `σt = 0.1 S`, 2.2e-5…4.3e-5, was
+4.0e-3…7.4e-3), the ring-down level of a lossy closed box; the operator
+dumps are identical. Not reproduced: two sheets meeting on a line (openEMS
+gives the line edges to the first sheet but the sample points to the
+other; ems: csx's last sheet). `tests/openems_adv.rs` checks the copper
+line and the `≈ 0.5` loss ratio of both codes.
 
 **Waveguide mode probes** (§5.5, `compile/mode.rs`; resolves the open
 convention of §10). Measured on a 20 × 10 mm guide (TE10, uniform 1 mm
@@ -3135,18 +3152,39 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   `--debug-PEC`): `.vts` structured grids with Cartesian points, the
   same values wherever both codes describe the same edge (§5.15);
 - conducting sheets (`cyl_sheet_*`, half-wave coaxial cavity of §5.9,
-  `Q` from the ring-down, same fit for both codes): openEMS's sheet model
-  behaves as on Cartesian grids. A thick lossy inner tube (`σ = 1e5 S/m`,
-  `t = 100 µm`) gives `Q = 403` (ems 195.4, analytic 195.9): half the
-  surface loss, as for copper on a Cartesian line. A thin resistive fin
-  (`σt = 1e-4 S`) at `α = π/2` detunes the mode by −13 % (`Q = 139`; ems:
-  no detuning, `Q = 57.7`, analytic 57.65): nearly reactive, as on
-  Cartesian grids. The same fin on the α = 0 seam has no effect in openEMS
-  (the frequency and `Q` of the empty cavity). ems keeps the slab model
-  on cylindrical grids (the Cartesian emulation of the conducting-sheet
-  paragraph above is not applied there; the α = 0 seam result looks like
-  its first-row rule, not investigated); `tests/openems_cyl.rs` records
-  the ratios.
+  `Q` from the ring-down): openEMS's sheet model behaves as on Cartesian
+  grids. A thick lossy inner tube (`σ = 1e5 S/m`, `t = 100 µm`) gives
+  `Q = 403` (ems natively 195.4, analytic 195.9): half the surface loss,
+  as for copper on a Cartesian line. A thin resistive fin
+  (`σt = 1e-4 S`) at `α = π/2` detunes the mode by −13 % (`Q = 139`; ems
+  natively: no detuning, `Q = 57.7`, analytic 57.65): nearly reactive.
+  The same fin on the α = 0 seam has no effect in openEMS. Since wave 14
+  ems runs openEMS's model on cylindrical grids too (files, no azimuthal
+  multigrid; `compile/openems_sheet.rs`), measured on operator dumps of
+  about 70 cylindrical models (tubes, discs and fins, graded radial
+  meshes, sectors through and around the seam): the Cartesian rules with
+  physical lengths (an α edge `ρ_i·Δα`, a dual width along α `ρ_i·Δα*`
+  at the edge's start node `ρ_i`, e.g. a disc's ρ edges). The seam of a
+  closed azimuth: openEMS's operator holds the ρ and z edges at `α = 0`
+  as zeros and updates the copy at `α = 2π` (line `N`), whose
+  neighbouring cells along α are `N − 1` and `N`, a copy of cell 0 that
+  is not subject to the first-cell rule (a full tube's seam edge is
+  interior, the edge at `α_1` a border edge); the α edges of cell 0 are
+  PEC by the first-cell rule (a probe on one reads 0). openEMS tests box
+  angles as written: a fin drawn at `α = 0` is not on the `2π` copy (no
+  effect, the fixture's result), one drawn at `2π` is; a point past 2π
+  (cell `N`) also matches as `α − 2π` in a box of nonzero α extent; a box
+  `[0, a]` contains the seam edge from `a ≥ α_{N−1}` on (tested
+  `a` = 0.8…2π; a box `[−1, 1]` is the one case measured that this
+  does not describe: its seam edge is not a sheet edge). Agreement
+  (`tests/openems_cyl.rs`): the four cavities 8e-7 (empty, seam fin),
+  2.2e-5 (fin), 2.7e-5 (tube), against 2.1 (`Q` ratio) and a 13 %
+  frequency shift before; operator dumps identical
+  (`cli_debug_cyl_sheet`). Residual: next to the seam a sheet ρ/z edge
+  differs by 5e-3 (nearby probes 2e-4) when the field there is driven
+  directly (a source on the adjacent α edge); C, G and the branches of
+  that edge were each varied (±0.5 % on `C` gives 1e-3…1e-2), so it is in
+  openEMS's handling of the seam copies, not resolved.
 
 **Current probes on a closed azimuth.** A current box over the full
 azimuth (α from 0 to 2π, the usual coax port current) reads `(N − 1)/N`
@@ -3313,10 +3351,11 @@ probes and the feature under test in the middle, 600 steps of 1.5 ps;
 formulations agree. 60 of the models are fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
-Matrix (174 models; 163 agree to ≲ 1e-4, 8 differ, 3 are rejected by
+Matrix (175 models; 165 agree to ≲ 1e-4, 7 differ, 3 are rejected by
 openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
 on the set-up; wave 13 added the σ_m, sheet and LinPoly-vertex models and
-closed their differences):
+closed their differences; wave 14 replaced the polygon sheet model by two
+committed triangles, `sweep_sheet_triangle{,_r}`, and closed it):
 
 | area | models | agree | differ (magnitude) |
 |---|---|---|---|
@@ -3329,7 +3368,7 @@ closed their differences):
 | probes: weights, solid/off-grid/point E and H boxes, diagonal and reversed voltage boxes, current NormDir variants, FD samples of all types, Start/StopTime, two primitives, transformed, Cylinder/Curve/Point/Polygon primitives, ten shapes for field probes and dumps | 17 | 17 | (wave 13: current-probe corners half-way between lines snap inwards, zero-length Cylinder/CylindricalShell = point box; fixture `current_probe_ties`, 2e-8…2e-6, was 4.6 % resp. skipped) |
 | dumps: VTK/HDF5, SubSampling, OptResolution (modes 0–2), FD, without DumpMode, two primitives, transformed | 8 | 8 | |
 | boundaries: names, numbers, case, Mur phase velocity, mixed, PML_n (3, 4, 8, `PML`), AbsorbingBC (both signs and types, in a box) | 17 | 17 | (PML: 0.8 % in an open box to 4–13 % in a PEC guide below cut-off with the CPML; ems runs openEMS's layer for files since wave 13, §5.16.2: `pml_open` 4e-6, a re-built guide 1e-6) |
-| lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper, resistive, whole-box, graded and polygon sheets | 9 | 8 | ConductingSheet polygon with oblique sides 2.5e-3 (§5.16.2) |
+| lumped elements, conducting sheets: Caps, C only, series RLC, on a Cylinder; copper, resistive, whole-box, graded sheets and triangles with oblique sides (copper, resistive) | 10 | 10 | (wave 14: oblique sides were 2.5e-3…7e-3, §5.16.2) |
 | FDTD: OverSampling, f_max, TimeStepFactor, TimeStepMethod 1 and 3 (graded), MaxTime, CellConstantMaterial, endCriteria, CoordSystem, 0 steps, odd values | 11 | 11 | |
 | other properties: unknown property element, properties without primitives | 2 | 2 | |
 

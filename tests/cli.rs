@@ -665,6 +665,67 @@ fn debug_files_cylindrical() {
     }
 }
 
+/// The E update coefficients of openEMS's conducting-sheet model
+/// (`compile/openems_sheet.rs`, design §5.16.2) against openEMS's
+/// operator dumps: `cli_debug_sheet` (graded Cartesian mesh: a pentagon
+/// with oblique sides, a box sheet with off-mesh borders cut by a
+/// dielectric and a metal block, a sheet reaching the lower mesh
+/// boundary) and `cli_debug_cyl_sheet` (closed cylindrical grid: a tube
+/// over α 0 … 5.8 through the seam, a partial disc, a fin at π/2 and a fin
+/// drawn on the α = 0 seam). `vv` and `vi` of every E edge agree (on the
+/// closed grid without the `α = 0` copies of ρ and z edges and the `2π`
+/// and extra α lines, masked as in [`debug_files_cylindrical`]).
+#[test]
+fn debug_operator_sheets() {
+    for (case, f, closed) in [
+        ("cli_debug_sheet", "operator_dump.vtr", false),
+        ("cli_debug_cyl_sheet", "operator_dump.vts", true),
+    ] {
+        let r = run_case(case);
+        assert_eq!(r.code.to_string(), meta(case, "exit"), "{case}: exit");
+        assert_eq!(written(&r.dir), oracle_files(case), "{case}: files");
+        let read = |d: &Path| std::fs::read_to_string(d.join(f)).unwrap();
+        assert_eq!(
+            vtk_skeleton(&read(&fixture(case))),
+            vtk_skeleton(&read(&r.dir)),
+            "{case}/{f}: structure"
+        );
+        #[cfg(feature = "hdf5-deflate")]
+        {
+            let text = read(&fixture(case));
+            let ext: Vec<usize> = text
+                .split("WholeExtent=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let (nx, ny) = (ext[1] + 1, ext[3] + 1);
+            let a = payload::inline(&text);
+            let b = payload::inline(&read(&r.dir));
+            for name in ["vv", "vi"] {
+                let va = &a.iter().find(|(n, _)| n == name).unwrap().1;
+                let vb = &b.iter().find(|(n, _)| n == name).unwrap().1;
+                assert_eq!(va.len(), vb.len(), "{case}/{f} {name}");
+                let mut worst = 0.0f64;
+                for (idx, (x, y)) in va.iter().zip(vb).enumerate() {
+                    let (p, c) = (idx / 3, idx % 3);
+                    let j = (p / nx) % ny;
+                    if closed && (j + 2 >= ny || (j == 0 && c != 1)) {
+                        continue;
+                    }
+                    worst = worst.max((x - y).abs() / x.abs().max(1e-3));
+                }
+                eprintln!("{case}/{f} {name}: max relative diff {worst:.1e}");
+                assert!(worst < 1e-5, "{case}/{f} {name}: {worst:e}");
+            }
+        }
+    }
+}
+
 /// `--disable-dumps`: no dump files, but the boxes of the disabled dumps
 /// are still written. (openEMS v0.37 exits with status 1 after such a run,
 /// reporting an internal error; ems exits normally.)
