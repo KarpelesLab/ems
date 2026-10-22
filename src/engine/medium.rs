@@ -223,16 +223,15 @@ struct Sample {
     value: (f64, f64),
 }
 
-/// The common medium of the `faces` of `lo..=hi` (see the
-/// [module docs](self#which-edges-are-sampled)), `None` without samples,
-/// or a description of the first inhomogeneity.
-pub(crate) fn surface_medium(
+/// The sampled E and H edges of the `faces` of `lo..=hi` (see the
+/// [module docs](self#which-edges-are-sampled)).
+fn surface_samples(
     grid: &Grid,
     media: &impl EdgeMedia,
     lo: [usize; 3],
     hi: [usize; 3],
     faces: [bool; 6],
-) -> core::result::Result<Option<Medium>, String> {
+) -> (Vec<Sample>, Vec<Sample>) {
     let n = grid.nodes();
     let (mut e, mut h): (Vec<Sample>, Vec<Sample>) = (Vec::new(), Vec::new());
     for face in Face::ALL {
@@ -297,6 +296,87 @@ pub(crate) fn surface_medium(
             }
         }
     }
+    (e, h)
+}
+
+/// Tolerance scales of the conductivities (see [`surface_medium`]).
+fn loss_scales(grid: &Grid, eps_r: f64, mu_r: f64) -> (f64, f64) {
+    let d_min = Axis::ALL
+        .map(|ax| grid.min_delta(ax))
+        .into_iter()
+        .fold(f64::INFINITY, f64::min);
+    (EPS0 * eps_r * C0 / d_min, MU0 * mu_r * C0 / d_min)
+}
+
+/// Whether two sampled values agree (relative tolerance 1e-4 on `ε`/`μ`,
+/// the conductivity against `scale` when larger).
+fn agree((v, l): (f64, f64), (v0, l0): (f64, f64), scale: f64) -> bool {
+    let tol = 1e-4;
+    let close = |x: f64, y: f64, sc: f64| (x - y).abs() <= tol * sc.max(x.abs());
+    close(v, v0, v0) && close(l, l0, scale)
+}
+
+/// The axis along which the medium on the `faces` of `lo..=hi` is
+/// stratified: every sampled edge has the medium of the other sampled
+/// edges of the same kind (E/H, axis) at the same index along it. `None`
+/// if no axis qualifies (or the surface is homogeneous). The first
+/// qualifying axis of the one with the most distinct levels is returned.
+pub(crate) fn layered_axis(
+    grid: &Grid,
+    media: &impl EdgeMedia,
+    lo: [usize; 3],
+    hi: [usize; 3],
+    faces: [bool; 6],
+) -> Option<Axis> {
+    let (e, h) = surface_samples(grid, media, lo, hi, faces);
+    let (ev, hv) = (e.first()?.value, h.first()?.value);
+    let (ks, ss) = loss_scales(grid, ev.0, hv.0);
+    let mut best: Option<(usize, Axis)> = None;
+    for s in Axis::ALL {
+        let mut ok = true;
+        let mut levels = 0;
+        for (list, scale, is_e) in [(&e, ks, true), (&h, ss, false)] {
+            // First value per (axis, level).
+            let mut seen: Vec<((Axis, usize), (f64, f64))> = Vec::new();
+            for x in list.iter() {
+                let key = (x.axis, x.node[s.index()]);
+                match seen.iter().find(|(k, _)| *k == key) {
+                    Some((_, v0)) => {
+                        if !agree(x.value, *v0, scale) {
+                            ok = false;
+                        }
+                    }
+                    None => seen.push((key, x.value)),
+                }
+            }
+            if is_e {
+                let mut distinct: Vec<(f64, f64)> = Vec::new();
+                for (_, v) in &seen {
+                    if !distinct.iter().any(|d| agree(*v, *d, scale)) {
+                        distinct.push(*v);
+                    }
+                }
+                levels = distinct.len();
+            }
+        }
+        if ok && levels > 1 && best.is_none_or(|(n, _)| levels > n) {
+            best = Some((levels, s));
+        }
+    }
+    best.map(|(_, s)| s)
+}
+
+/// The common medium of the `faces` of `lo..=hi` (see the
+/// [module docs](self#which-edges-are-sampled)), `None` without samples,
+/// or a description of the first inhomogeneity.
+pub(crate) fn surface_medium(
+    grid: &Grid,
+    media: &impl EdgeMedia,
+    lo: [usize; 3],
+    hi: [usize; 3],
+    faces: [bool; 6],
+) -> core::result::Result<Option<Medium>, String> {
+    let (e, h) = surface_samples(grid, media, lo, hi, faces);
     let first = |s: &[Sample]| s.first().map(|x| x.value);
     let (ev, hv) = match (first(&e), first(&h)) {
         (None, None) => return Ok(None),
@@ -313,18 +393,11 @@ pub(crate) fn surface_medium(
     // Relative tolerance on ε, μ; the conductivities are compared relative
     // to `ε0·ε_r·c0/Δ_min` (loss tangent 1 at the frequency whose
     // wavelength is the smallest cell) when that is larger than the value.
-    let d_min = Axis::ALL
-        .map(|ax| grid.min_delta(ax))
-        .into_iter()
-        .fold(f64::INFINITY, f64::min);
-    let tol = 1e-4;
-    let k_scale = EPS0 * ev.0 * C0 / d_min;
-    let s_scale = MU0 * hv.0 * C0 / d_min;
-    let close = |x: f64, y: f64, scale: f64| (x - y).abs() <= tol * scale.max(x.abs());
+    let (k_scale, s_scale) = loss_scales(grid, ev.0, hv.0);
     let check = |s: &[Sample], (v0, l0): (f64, f64), scale: f64, names: [&str; 2]| {
         for x in s {
             let (v, l) = x.value;
-            if !(close(v, v0, v0) && close(l, l0, scale)) {
+            if !agree((v, l), (v0, l0), scale) {
                 let r = &s[0];
                 return Err(format!(
                     "the medium on the box surface is not homogeneous: {} edge along {} at {:?} \

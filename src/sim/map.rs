@@ -802,6 +802,9 @@ pub(crate) fn map_sources(
             Some(_) => 0.0,
         };
         let (wf, delay) = (w.clone(), pw.delay + lag);
+        // The spectral incident field of layered / dispersive backgrounds
+        // needs the end of the excitation.
+        let duration = w.duration().map_or(f64::INFINITY, |d| delay + d);
         let amplitude = move |t| wf.value(t - delay, dt);
         if let Some(b) = bloch {
             let spec = match super::bloch::periodic_spec(pw, fdtd, nodes, b.k) {
@@ -824,7 +827,8 @@ pub(crate) fn map_sources(
             }
             continue;
         }
-        match PlaneWave::new(engine, &pw.spec, amplitude) {
+        let spec = pw.spec.clone().with_duration(duration);
+        match PlaneWave::new(engine, &spec, amplitude) {
             Ok(op) => mapped
                 .plane_waves
                 .push((pw.name.clone(), engine.add_operator(op))),

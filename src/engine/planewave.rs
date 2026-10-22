@@ -116,6 +116,72 @@
 //! over the band; `m0` is a few cells). For oblique incidence the spacing
 //! `Δξ` is matched with the lossless dispersion relation.
 //!
+//! # Layered and dispersive backgrounds
+//!
+//! A background stratified along one axis `s` ([`PlaneWaveSpec::with_layers`]:
+//! dielectric or lossy layers, a substrate on a ground plane, layers
+//! crossing the box surface), or one with dispersive poles on the box
+//! surface ([`PlaneWaveSpec::with_dispersion`], Drude/Lorentz/Debye of a
+//! [`Dispersive`](super::Dispersive) operator), gets an incident field
+//! computed **in the frequency domain from the engine's own discrete
+//! equations** instead of the auxiliary grid:
+//!
+//! * The wave has a fixed transverse slowness `p = k̂_t/v` (`v` the phase
+//!   velocity of the incidence medium at the matching frequency, so the
+//!   direction is `k̂` there): `x(r, t) = g(s, t − p·(r − r_ref))`. On a
+//!   uniform transverse mesh `e^{−jω p·r}` is an exact eigenfunction of the
+//!   transverse Yee differences, so per frequency the 3-D update equations
+//!   reduce to a 1-D system along one column of edges (`u_t1, u_t2, i_s`
+//!   on node levels, `u_s, i_t1, i_t2` on dual levels), with the engine's
+//!   coefficients (semi-implicit losses) and the poles' discrete
+//!   susceptibilities (`χ(Ω_t)` trapezoidal, `χ(Ω)` leapfrog, see
+//!   [`dispersive`](super::dispersive)). Its solution is the exact discrete
+//!   plane wave of the layered medium — reflections and transmissions of
+//!   every interface, the mesh grading along `s`, oblique incidence,
+//!   evanescent (total internal reflection) layers — for every frequency,
+//!   not only at a matching frequency.
+//! * The column is that of the box surface (an interior mesh line through
+//!   a box edge; in a homogeneous dispersive background only its medium
+//!   is used). In a layered background it spans the whole domain along
+//!   `s` and ends on the domain's PEC/PMC face or, for an open end
+//!   ([`LayerEnd`], [`PlaneWaveSpec::with_layer_ends`]), in a uniform
+//!   extension of the end medium with a stretched-coordinate PML. A current
+//!   sheet in the extension on the side the wave comes from radiates it;
+//!   the same sheet in the same line filled with the incidence medium
+//!   (open at both ends) gives the pure incident wave, which normalises
+//!   the solution so that the incident `E_t` at `r_ref` is `E0_t·a(t)`
+//!   (the component along `s` follows from the discrete equations).
+//! * Per frequency bin of an FFT window (time step `dt/2`; bins above the
+//!   engine's Nyquist frequency, where `a(t)` has no content, and where the
+//!   incident wave does not propagate in the incidence medium are skipped)
+//!   the two sheet solutions are combined for the polarisation; the
+//!   column fields times the excitation spectrum are inverse-FFT'd into
+//!   time series per level and component. The DC bin is singular and not
+//!   solved: it is a constant per series, fixed by the field being zero
+//!   once the pulse has passed. The window grows until the series have
+//!   decayed to 1e-6 of their peak in its third quarter (else
+//!   [`Error::Invalid`]: resonant layers or an excitation that does not
+//!   end); the incident field before `t = 0` must be below 1e-5 (strong
+//!   dispersion near a cutoff, e.g. a Drude medium near its plasma
+//!   frequency, sends slow components that would have had to arrive
+//!   before the run starts: an error asking to delay the excitation).
+//! * Each correction reads its series with cubic interpolation at its
+//!   transverse delay `p·(r − r_ref)` (fixed per edge). Corrections of
+//!   edges whose poles the [`Dispersive`](super::Dispersive) operator
+//!   integrates implicitly (trapezoidal, and all Debye poles) are added to
+//!   the start value before the kernel (`pre_e` / `pre_h`, divided by
+//!   `ca` / `da`), so that the implicit solve sees them.
+//!
+//! This needs the excitation's duration ([`PlaneWaveSpec::with_duration`]):
+//! the amplitude function is sampled once at set-up. Every edge taking part
+//! must have the column's medium at its level (layered) or the background
+//! medium (homogeneous), poles included, else [`Error::Invalid`]. Measured
+//! (`tests/planewave_layered.rs`): leakage −125 … −134 dB for a half-space,
+//! a slab and a grounded substrate across the box at 0–40° (both
+//! polarisations, also on a graded mesh along the layers) and for Debye,
+//! Drude and Lorentz backgrounds; the field in the box equals the discrete
+//! 1-D Yee response of the stack to 1.4e-7 at normal incidence.
+//!
 //! # Energy
 //!
 //! The injected wave is real field energy: inside the box the fields are
@@ -135,13 +201,23 @@
 //! # Limitations
 //!
 //! * The background must be homogeneous and isotropic around the box
-//!   surface; scatterers belong strictly inside the box. Dispersive
-//!   (Debye/Lorentz) backgrounds are not supported.
+//!   surface, or stratified along one axis that the wave crosses
+//!   (`|k̂_s| ≥ 1e-3`), with isotropic layers; scatterers belong strictly
+//!   inside the box. The spectral incident field is exact on a uniform
+//!   transverse mesh (graded meshes across the layers leak like the
+//!   auxiliary grid's oblique incidence); it needs an excitation that ends.
 //! * The box must stay clear of absorbing boundaries (CPML, Mur): the
 //!   corrections are applied in the serial `post_h` / `post_e` hooks and
 //!   assume the plain Yee update on the surface.
 
+mod spectral;
+
+use std::collections::HashMap;
+
+pub use spectral::LayerEnd;
+
 use super::Engine;
+use super::dispersive::{EdgePole, Field, Pole, Scheme};
 use super::excite::Amplitude;
 use super::fields::Fields;
 use super::medium::{CoefficientMedia, EdgeMedia, Medium};
@@ -150,6 +226,31 @@ use crate::axis::Axis;
 use crate::constants::{EPS0, MU0};
 use crate::post::Complex64;
 use crate::{Error, Result};
+
+/// Poles per edge: `(electric, axis index, node)`.
+type PoleMap = HashMap<(bool, usize, [usize; 3]), Vec<Pole>>;
+
+fn pole_map(entries: &[EdgePole]) -> PoleMap {
+    let mut m = PoleMap::new();
+    for e in entries {
+        m.entry((e.field == Field::Electric, e.axis.index(), e.node))
+            .or_default()
+            .push(e.pole);
+    }
+    m
+}
+
+/// What [`PlaneWave::new`] hands to the spectral set-up.
+struct SpectralInput<'a> {
+    k_hat: [f64; 3],
+    e0: [f64; 3],
+    h0: [f64; 3],
+    r_ref: [f64; 3],
+    f: f64,
+    poles: &'a PoleMap,
+    e_raw: Vec<Raw>,
+    h_raw: Vec<Raw>,
+}
 
 /// Geometry and physics of a [`PlaneWave`] (see the [module docs](self)).
 #[derive(Debug, Clone, PartialEq)]
@@ -173,8 +274,28 @@ pub struct PlaneWaveSpec {
     pub sigma_m: f64,
     /// Frequency \[Hz\] at which the auxiliary grid's dispersion is matched
     /// to the 3-D grid along `direction`; `0` (default) picks 20 mean cells
-    /// per wavelength.
+    /// per wavelength. With a [layered or dispersive
+    /// background](self#layered-and-dispersive-backgrounds), the frequency
+    /// at which the incidence medium's phase velocity sets the transverse
+    /// slowness (the direction is exact there).
     pub match_frequency: f64,
+    /// Stratification axis of a [layered
+    /// background](self#layered-and-dispersive-backgrounds) (`None`:
+    /// homogeneous).
+    pub layers: Option<Axis>,
+    /// How the layered medium ends at the lower and upper domain faces
+    /// along [`layers`](Self::layers) (default: open at both).
+    pub layer_ends: [LayerEnd; 2],
+    /// Time \[s\] after which the amplitude function is zero (needed by
+    /// the spectral incident field of layered and dispersive backgrounds;
+    /// default 0).
+    pub duration: f64,
+    /// Dispersive poles of the background near the box (see
+    /// [`with_dispersion`](Self::with_dispersion)).
+    pub poles: Vec<EdgePole>,
+    /// Time integration of those poles (that of the engine's
+    /// [`Dispersive`](super::Dispersive) operator).
+    pub pole_scheme: Scheme,
 }
 
 impl PlaneWaveSpec {
@@ -196,6 +317,11 @@ impl PlaneWaveSpec {
             kappa: 0.0,
             sigma_m: 0.0,
             match_frequency: 0.0,
+            layers: None,
+            layer_ends: [LayerEnd::Open; 2],
+            duration: 0.0,
+            poles: Vec::new(),
+            pole_scheme: Scheme::Trapezoidal,
         }
     }
 
@@ -241,14 +367,64 @@ impl PlaneWaveSpec {
         self.match_frequency = f;
         self
     }
+
+    /// Declares the background stratified along `axis`: the media may vary
+    /// along it (also across the box surface) but not across it (see the
+    /// [module docs](self#layered-and-dispersive-backgrounds)).
+    #[must_use]
+    pub fn with_layers(mut self, axis: Axis) -> Self {
+        self.layers = Some(axis);
+        self
+    }
+
+    /// Sets how the layered medium ends at the lower and upper domain
+    /// faces along the stratification axis (default [`LayerEnd::Open`]).
+    #[must_use]
+    pub fn with_layer_ends(mut self, lower: LayerEnd, upper: LayerEnd) -> Self {
+        self.layer_ends = [lower, upper];
+        self
+    }
+
+    /// Sets the time \[s\] after which the amplitude function is zero.
+    #[must_use]
+    pub fn with_duration(mut self, d: f64) -> Self {
+        self.duration = d;
+        self
+    }
+
+    /// Takes the dispersive poles of the engine (e.g.
+    /// [`Dispersive::entries`](super::Dispersive::entries) and
+    /// [`Dispersive::scheme`](super::Dispersive::scheme)) into account: a
+    /// box surface with poles gets the spectral incident field of the
+    /// dispersive background. Only the entries within one node of the box
+    /// on at least two axes are kept (the box surface and any column
+    /// through it).
+    #[must_use]
+    pub fn with_dispersion(mut self, entries: &[EdgePole], scheme: Scheme) -> Self {
+        let (lo, hi) = (self.start, self.stop);
+        self.poles = entries
+            .iter()
+            .filter(|e| {
+                (0..3)
+                    .filter(|&a| e.node[a] + 1 >= lo[a] && e.node[a] <= hi[a] + 1)
+                    .count()
+                    >= 2
+            })
+            .copied()
+            .collect();
+        self.pole_scheme = scheme;
+        self
+    }
 }
 
-/// One correction: `field[axis][node] += coef · Σ w_q · aux[m + q]`.
+/// One correction: `field[axis][node] += coef · Σ w_q · aux[m + q]`
+/// (spectral: `series[n·UP + m + q]` at step `n`).
 #[derive(Debug, Clone, Copy)]
 struct Correction {
     axis: Axis,
     node: [usize; 3],
     coef: f64,
+    series: usize,
     m: usize,
     w: [f64; 4],
 }
@@ -279,6 +455,8 @@ const AUX_TAPER: usize = 256;
 /// ```
 pub struct PlaneWave {
     spec: PlaneWaveSpec,
+    /// The spectral incident field (layered or dispersive background).
+    spectral: Option<Box<Spectral>>,
     amplitude: Amplitude,
     k_hat: [f64; 3],
     e0: [f64; 3],
@@ -300,11 +478,30 @@ pub struct PlaneWave {
     h_corr: Vec<Correction>,
 }
 
+/// State of the spectral incident field.
+#[derive(Debug, Clone)]
+struct Spectral {
+    inc: spectral::Incident,
+    s: Axis,
+    /// Steps done (time of the E voltages `steps·dt`).
+    steps: u64,
+    dt: f64,
+    /// Node and dual positions along `s` of the stored levels.
+    nodes: Vec<f64>,
+    duals: Vec<f64>,
+    /// Corrections of edges with implicitly integrated (trapezoidal)
+    /// poles, applied before the kernel (`pre_e` / `pre_h`, coefficient
+    /// divided by `ca` / `da`) so that the poles' implicit solve sees them.
+    e_pre: Vec<Correction>,
+    h_pre: Vec<Correction>,
+}
+
 impl core::fmt::Debug for PlaneWave {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PlaneWave")
             .field("spec", &self.spec)
             .field("spacing", &self.dxi)
+            .field("spectral", &self.spectral.is_some())
             .field("reference_point", &self.r_ref)
             .field("e_corrections", &self.e_corr.len())
             .field("h_corrections", &self.h_corr.len())
@@ -455,11 +652,16 @@ fn interp(v: &[f64], m: usize, w: &[f64; 4]) -> f64 {
     w[0] * v[m] + w[1] * v[m + 1] + w[2] * v[m + 2] + w[3] * v[m + 3]
 }
 
-/// A correction before its stencil is known.
+/// A correction before its stencil is known: the corrected edge, the
+/// coefficient without the incident field's polarisation, and the edge
+/// whose incident value it needs (`comp` at `cnode`, at `pos`).
 struct Raw {
     axis: Axis,
     node: [usize; 3],
     coef: f64,
+    comp: Axis,
+    cnode: [usize; 3],
+    pos: [f64; 3],
     xi: f64,
 }
 
@@ -596,7 +798,7 @@ impl PlaneWave {
         for a in Axis::ALL {
             let (b, c) = a.others();
             let (ai, bi, ci) = (a.index(), b.index(), c.index());
-            let (cb_a, ea) = (co.cb(a), e0[ai]);
+            let cb_a = co.cb(a);
             for pa in lo[ai]..hi[ai] {
                 for pb in lo[bi]..=hi[bi] {
                     for pc in lo[ci]..=hi[ci] {
@@ -647,20 +849,28 @@ impl PlaneWave {
                                     mismatch = Some(describe(engine, &co, "H", d, q, false));
                                 }
                             }
-                            if cbv != 0.0 && h0[di] != 0.0 {
+                            if cbv != 0.0 {
+                                let pos = h_pos(d, q);
                                 e_raw.push(Raw {
                                     axis: a,
                                     node: p,
-                                    coef: cbv * s * h0[di] * grid.dual_delta(d, q[di]),
-                                    xi: xi(h_pos(d, q)),
+                                    coef: cbv * s * grid.dual_delta(d, q[di]),
+                                    comp: d,
+                                    cnode: q,
+                                    pos,
+                                    xi: xi(pos),
                                 });
                             }
-                            if dbv != 0.0 && ea != 0.0 {
+                            if dbv != 0.0 {
+                                let pos = e_pos(a, p);
                                 h_raw.push(Raw {
                                     axis: d,
                                     node: q,
-                                    coef: dbv * s * ea * grid.delta(a, pa),
-                                    xi: xi(e_pos(a, p)),
+                                    coef: dbv * s * grid.delta(a, pa),
+                                    comp: a,
+                                    cnode: p,
+                                    pos,
+                                    xi: xi(pos),
                                 });
                             }
                         }
@@ -669,6 +879,43 @@ impl PlaneWave {
             }
         }
         drop(co);
+        // Layered or dispersive background: the spectral incident field.
+        let poles = pole_map(&spec.poles);
+        let touches =
+            |e: bool, axis: Axis, node: [usize; 3]| poles.contains_key(&(e, axis.index(), node));
+        if spec.layers.is_some()
+            || e_raw
+                .iter()
+                .any(|r| touches(true, r.axis, r.node) || touches(false, r.comp, r.cnode))
+            || h_raw
+                .iter()
+                .any(|r| touches(false, r.axis, r.node) || touches(true, r.comp, r.cnode))
+        {
+            return Self::new_spectral(
+                engine,
+                spec,
+                Box::new(amplitude),
+                SpectralInput {
+                    k_hat,
+                    e0,
+                    h0,
+                    r_ref,
+                    f,
+                    poles: &poles,
+                    e_raw,
+                    h_raw,
+                },
+            );
+        }
+        // Homogeneous: only the components of the incident polarisation.
+        e_raw.retain(|r| h0[r.comp.index()] != 0.0);
+        h_raw.retain(|r| e0[r.comp.index()] != 0.0);
+        for r in &mut e_raw {
+            r.coef *= h0[r.comp.index()];
+        }
+        for r in &mut h_raw {
+            r.coef *= e0[r.comp.index()];
+        }
         if let Some(m) = mismatch {
             return Err(Error::Invalid(format!(
                 "plane wave: {m}, not the background {medium:?} of the source; the medium \
@@ -742,6 +989,7 @@ impl PlaneWave {
                         axis: c.axis,
                         node: c.node,
                         coef: c.coef,
+                        series: 0,
                         m,
                         w,
                     }
@@ -773,6 +1021,7 @@ impl PlaneWave {
         let transit = 1.1 * far / v;
         Ok(Self {
             spec: spec.clone(),
+            spectral: None,
             amplitude: Box::new(amplitude),
             k_hat,
             e0,
@@ -795,6 +1044,317 @@ impl PlaneWave {
         })
     }
 
+    /// The spectral variant of [`new`](Self::new) (see the [module
+    /// docs](self#layered-and-dispersive-backgrounds)).
+    fn new_spectral(
+        engine: &Engine,
+        spec: &PlaneWaveSpec,
+        amplitude: Amplitude,
+        inp: SpectralInput<'_>,
+    ) -> Result<Self> {
+        let grid = engine.grid();
+        let n = grid.nodes();
+        let (lo, hi) = (spec.start, spec.stop);
+        let k_hat = inp.k_hat;
+        let s = spec.layers.unwrap_or_else(|| {
+            Axis::ALL.into_iter().fold(Axis::X, |b, a| {
+                if k_hat[a.index()].abs() > k_hat[b.index()].abs() {
+                    a
+                } else {
+                    b
+                }
+            })
+        });
+        let si = s.index();
+        // The column: on the box surface where possible (an interior mesh
+        // line), else through the box.
+        let mut col = [0usize; 3];
+        for t in Axis::ALL {
+            let ti = t.index();
+            col[ti] = if t == s {
+                0
+            } else if lo[ti] > 0 {
+                lo[ti]
+            } else if hi[ti] + 1 < n[ti] {
+                hi[ti]
+            } else {
+                (lo[ti] + hi[ti]) / 2
+            };
+        }
+        let co = engine.coefficients();
+        let dt = engine.dt();
+        let med = |e: bool, axis: Axis, node: [usize; 3]| -> spectral::EdgeMed {
+            let i = grid.index(node);
+            let (b, c) = axis.others();
+            let (ca, cb, geo) = if e {
+                (
+                    co.ca(axis)[i] as f64,
+                    co.cb(axis)[i] as f64,
+                    grid.dual_delta(b, node[b.index()]) * grid.dual_delta(c, node[c.index()])
+                        / grid.delta(axis, node[axis.index()]),
+                )
+            } else {
+                (
+                    co.da(axis)[i] as f64,
+                    co.db(axis)[i] as f64,
+                    grid.delta(b, node[b.index()]) * grid.delta(c, node[c.index()])
+                        / grid.dual_delta(axis, node[axis.index()]),
+                )
+            };
+            spectral::EdgeMed {
+                e,
+                ca,
+                cb,
+                geo,
+                poles: inp
+                    .poles
+                    .get(&(e, axis.index(), node))
+                    .cloned()
+                    .unwrap_or_default(),
+            }
+        };
+        let slot_axis = |k: usize| -> (bool, Axis) {
+            let (t1, t2) = s.others();
+            [
+                (true, t1),
+                (true, t2),
+                (false, s),
+                (true, s),
+                (false, t1),
+                (false, t2),
+            ][k]
+        };
+        let mut meds = Vec::new();
+        // Material table: layered, per slot and engine level along s;
+        // homogeneous, one E and one H medium from the box surface.
+        let mut table = vec![[None::<usize>; 6]; n[si]];
+        if spec.layers.is_some() {
+            for (lev, row) in table.iter_mut().enumerate() {
+                for (k, slot) in row.iter_mut().enumerate() {
+                    if k >= 3 && lev + 1 >= n[si] {
+                        continue;
+                    }
+                    let (e, axis) = slot_axis(k);
+                    let mut node = col;
+                    node[si] = lev;
+                    let m = med(e, axis, node);
+                    if m.cb != 0.0 {
+                        meds.push(m);
+                        *slot = Some(meds.len() - 1);
+                    }
+                }
+            }
+        } else {
+            let e = inp.e_raw.first().map(|r| med(true, r.axis, r.node));
+            let h = inp.h_raw.first().map(|r| med(false, r.axis, r.node));
+            let (Some(e), Some(h)) = (e, h) else {
+                return Err(Error::Invalid(
+                    "plane wave: no edge of the box surface takes part".into(),
+                ));
+            };
+            meds.push(e);
+            meds.push(h);
+        }
+        let layered = spec.layers.is_some();
+        let index = |k: usize, lev: usize| -> Option<usize> {
+            if layered {
+                table.get(lev).and_then(|r| r[k])
+            } else {
+                Some(usize::from(!slot_axis(k).0))
+            }
+        };
+        // Every edge taking part must have the column's medium at its level.
+        let wm = 2.0 * core::f64::consts::PI * inp.f;
+        let check = |e: bool, axis: Axis, node: [usize; 3]| -> Result<()> {
+            let m = med(e, axis, node);
+            let Some(y) = m.y_at(wm, dt, spec.pole_scheme) else {
+                return Ok(());
+            };
+            let k = spectral::slot_of(s, e, axis);
+            let want = index(k, node[si]).and_then(|i| meds[i].y_at(wm, dt, spec.pole_scheme));
+            match want {
+                Some(w) if (y - w).norm() <= 1e-5 * w.norm() => Ok(()),
+                _ => Err(Error::Invalid(format!(
+                    "plane wave: {}, not the {} background along {s} at level {} of the \
+                     source (column {col:?})",
+                    describe(engine, &co, if e { "E" } else { "H" }, axis, node, e),
+                    if layered { "layered" } else { "homogeneous" },
+                    node[si],
+                ))),
+            }
+        };
+        for r in &inp.e_raw {
+            check(true, r.axis, r.node)?;
+            check(false, r.comp, r.cnode)?;
+        }
+        for r in &inp.h_raw {
+            check(false, r.axis, r.node)?;
+            check(true, r.comp, r.cnode)?;
+        }
+        drop(co);
+        let setup = spectral::Setup {
+            grid,
+            dt,
+            s,
+            col,
+            layered,
+            ends: spec.layer_ends,
+            lo,
+            hi,
+            meds,
+            med_index: Box::new(index),
+            scheme: spec.pole_scheme,
+            k_hat,
+            e0: inp.e0,
+            match_frequency: inp.f,
+            duration: spec.duration,
+        };
+        let inc = spectral::synthesise(&setup, &|t| amplitude(t))?;
+        let delta = dt / spectral::UP as f64;
+        let p = inc.p;
+        let finish = |raw: &[Raw], e: bool, half: f64| -> Result<Vec<Correction>> {
+            raw.iter()
+                .map(|r| {
+                    let id = inc
+                        .id(s, e, r.comp, r.cnode[si])
+                        .ok_or_else(|| Error::Invalid("plane wave: level out of range".into()))?;
+                    let tau = dot(
+                        p,
+                        [
+                            r.pos[0] - inp.r_ref[0],
+                            r.pos[1] - inp.r_ref[1],
+                            r.pos[2] - inp.r_ref[2],
+                        ],
+                    );
+                    // Sample position at step 0 (negative: the wave has not
+                    // arrived yet), biased by BIAS samples.
+                    let c0 = half * spectral::UP as f64 + inc.pre as f64 - tau / delta;
+                    let fl = c0.floor();
+                    let (_, w) = stencil(1.0 + (c0 - fl));
+                    let m = fl as isize - 1 + BIAS as isize;
+                    if m < 0 {
+                        return Err(Error::Invalid(
+                            "plane wave: the total-field box is too large for the spectral \
+                             incident field"
+                                .into(),
+                        ));
+                    }
+                    Ok(Correction {
+                        axis: r.axis,
+                        node: r.node,
+                        coef: r.coef,
+                        series: id,
+                        m: m as usize,
+                        w,
+                    })
+                })
+                .collect()
+        };
+        // E corrections read the incident H at (n + ½)·dt, H corrections
+        // the incident E at n·dt.
+        let mut e_corr = finish(&inp.e_raw, false, 0.5)?;
+        let mut h_corr = finish(&inp.h_raw, true, 0.0)?;
+        // Edges whose poles the Dispersive operator solves implicitly with
+        // the kernel result (slab hooks between the kernel and the serial
+        // post hooks): their corrections must enter the kernel result,
+        // i.e. be added to the start value divided by ca (da).
+        let implicit = |e: bool, c: &Correction| {
+            inp.poles
+                .get(&(e, c.axis.index(), c.node))
+                .is_some_and(|ps| {
+                    ps.iter().any(|p| {
+                        spec.pole_scheme == Scheme::Trapezoidal || matches!(p, Pole::Debye { .. })
+                    })
+                })
+        };
+        let (mut e_pre, mut h_pre) = (Vec::new(), Vec::new());
+        {
+            let co = engine.coefficients();
+            let split = |list: &mut Vec<Correction>, pre: &mut Vec<Correction>, e: bool| {
+                list.retain(|c| {
+                    if !implicit(e, c) {
+                        return true;
+                    }
+                    let i = grid.index(c.node);
+                    let a = if e {
+                        co.ca(c.axis)[i]
+                    } else {
+                        co.da(c.axis)[i]
+                    } as f64;
+                    if a.abs() < 1e-3 {
+                        return true;
+                    }
+                    pre.push(Correction {
+                        coef: c.coef / a,
+                        ..*c
+                    });
+                    false
+                });
+            };
+            split(&mut e_corr, &mut e_pre, true);
+            split(&mut h_corr, &mut h_pre, false);
+        }
+        let v = spec.medium().velocity();
+        let far = (0..8).fold(0.0f64, |m, c: usize| {
+            let r = Axis::ALL.map(|ax| {
+                let l = grid.lines(ax);
+                let a = ax.index();
+                l[if c >> a & 1 == 1 { hi[a] } else { lo[a] }]
+            });
+            m.max(dot(
+                k_hat,
+                [
+                    r[0] - inp.r_ref[0],
+                    r[1] - inp.r_ref[1],
+                    r[2] - inp.r_ref[2],
+                ],
+            ))
+        });
+        let transit = (1.1 * far / v).max(inc.t_last - spec.duration);
+        let ls = grid.lines(s);
+        let nodes = ls[inc.k0..=inc.k1].to_vec();
+        let duals = (inc.k0..inc.k1).map(|k| grid.dual_line(s, k)).collect();
+        Ok(Self {
+            spec: spec.clone(),
+            spectral: Some(Box::new(Spectral {
+                inc,
+                s,
+                steps: engine.timestep(),
+                dt,
+                nodes,
+                duals,
+                e_pre,
+                h_pre,
+            })),
+            amplitude,
+            k_hat,
+            e0: inp.e0,
+            h0: inp.h0,
+            r_ref: inp.r_ref,
+            dxi: 0.0,
+            m0: 0,
+            lead: 0.0,
+            gain: 1.0,
+            transit,
+            main: 0,
+            e: Vec::new(),
+            h: Vec::new(),
+            ca: Vec::new(),
+            cb: Vec::new(),
+            da: Vec::new(),
+            db: Vec::new(),
+            e_corr,
+            h_corr,
+        })
+    }
+
+    /// Whether the incident field is the spectral one of a [layered or
+    /// dispersive background](self#layered-and-dispersive-backgrounds)
+    /// (else the auxiliary 1-D grid).
+    pub fn is_spectral(&self) -> bool {
+        self.spectral.is_some()
+    }
+
     /// The settings.
     pub fn spec(&self) -> &PlaneWaveSpec {
         &self.spec
@@ -805,7 +1365,8 @@ impl PlaneWave {
         self.k_hat
     }
 
-    /// Spacing `Δξ` of the auxiliary 1-D grid \[m\].
+    /// Spacing `Δξ` of the auxiliary 1-D grid \[m\] (0 for the spectral incident
+    /// field of a layered or dispersive background, which has none).
     pub fn spacing(&self) -> f64 {
         self.dxi
     }
@@ -831,6 +1392,40 @@ impl PlaneWave {
         (self.e_corr.len(), self.h_corr.len())
     }
 
+    /// The spectral incident E (`e`) or H at `r`, linear between the
+    /// stored levels along the stratification axis.
+    fn spectral_at(&self, sp: &Spectral, r: [f64; 3], e: bool) -> Option<[f64; 3]> {
+        let inc = &sp.inc;
+        let si = sp.s.index();
+        let t = if e {
+            sp.steps as f64 * sp.dt
+        } else {
+            (sp.steps as f64 - 0.5) * sp.dt
+        };
+        let tau = dot(
+            inc.p,
+            [
+                r[0] - self.r_ref[0],
+                r[1] - self.r_ref[1],
+                r[2] - self.r_ref[2],
+            ],
+        );
+        let mut out = [0.0; 3];
+        for a in Axis::ALL {
+            let node = e != (a == sp.s);
+            let pos = if node { &sp.nodes } else { &sp.duals };
+            let x = r[si];
+            let j = pos.windows(2).position(|w| w[0] <= x && x <= w[1])?;
+            let f = (x - pos[j]) / (pos[j + 1] - pos[j]);
+            let val = |k: usize| {
+                inc.id(sp.s, e, a, inc.k0 + k)
+                    .map_or(0.0, |id| inc.value(id, t - tau, sp.dt))
+            };
+            out[a.index()] = (1.0 - f) * val(j) + f * val(j + 1);
+        }
+        Some(out)
+    }
+
     /// Fractional auxiliary position of `r` for nodes offset by `half`, if
     /// the stencil fits.
     fn aux_at(&self, r: [f64; 3], half: f64) -> Option<(usize, [f64; 4])> {
@@ -847,6 +1442,9 @@ impl PlaneWave {
     /// voltages (`n·dt` after `n` steps), or `None` if `r` lies before
     /// the auxiliary grid's start or beyond its end.
     pub fn incident_e(&self, r: [f64; 3]) -> Option<[f64; 3]> {
+        if let Some(sp) = &self.spectral {
+            return self.spectral_at(sp, r, true);
+        }
         let (m, w) = self.aux_at(r, 0.0)?;
         let f = interp(&self.e, m, &w);
         Some(self.e0.map(|x| x * f))
@@ -856,18 +1454,70 @@ impl PlaneWave {
     /// currents (`(n − ½)·dt` after `n` steps), or `None` as for
     /// [`incident_e`](Self::incident_e).
     pub fn incident_h(&self, r: [f64; 3]) -> Option<[f64; 3]> {
+        if let Some(sp) = &self.spectral {
+            return self.spectral_at(sp, r, false);
+        }
         let (m, w) = self.aux_at(r, 0.5)?;
         let f = interp(&self.h, m, &w);
         Some(self.h0.map(|x| x * f))
     }
 }
 
+/// Bias of the spectral corrections' sample offsets (samples before the
+/// series start, where the incident field is zero).
+const BIAS: usize = 1 << 24;
+
+/// `Σ_q w_q·v[base − BIAS + q]` of a correction (zero outside the series).
+fn series_value(v: &[f32], base: usize, w: &[f64; 4]) -> f64 {
+    let Some(base) = base.checked_sub(BIAS) else {
+        return 0.0;
+    };
+    match v.get(base..base + 4) {
+        Some(x) => {
+            w[0] * x[0] as f64 + w[1] * x[1] as f64 + w[2] * x[2] as f64 + w[3] * x[3] as f64
+        }
+        None => 0.0,
+    }
+}
+
 impl Operator for PlaneWave {
     fn hooks(&self) -> Hooks {
-        Hooks::POST_H | Hooks::POST_E
+        match &self.spectral {
+            Some(sp) if !sp.e_pre.is_empty() || !sp.h_pre.is_empty() => Hooks::ALL,
+            _ => Hooks::POST_H | Hooks::POST_E,
+        }
     }
 
-    fn post_h(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
+    fn pre_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        if let Some(sp) = &self.spectral {
+            let n = ctx.step as usize * spectral::UP;
+            for c in &sp.h_pre {
+                let v = series_value(&sp.inc.series[c.series], n + c.m, &c.w);
+                *fields.i.get_mut(c.axis, c.node) += (c.coef * v) as f32;
+            }
+        }
+    }
+
+    fn pre_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        if let Some(sp) = &self.spectral {
+            let n = ctx.step as usize * spectral::UP;
+            for c in &sp.e_pre {
+                let v = series_value(&sp.inc.series[c.series], n + c.m, &c.w);
+                *fields.u.get_mut(c.axis, c.node) += (c.coef * v) as f32;
+            }
+        }
+    }
+
+    fn post_h(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        if let Some(sp) = &self.spectral {
+            // The incident E at n·dt − τ.
+            let n = ctx.step as usize * spectral::UP;
+            for c in &self.h_corr {
+                let v = series_value(&sp.inc.series[c.series], n + c.m, &c.w);
+                *fields.i.get_mut(c.axis, c.node) += (c.coef * v) as f32;
+            }
+            return;
+        }
         // The H kernel read u^n; the auxiliary E is at n·dt.
         for c in &self.h_corr {
             *fields.i.get_mut(c.axis, c.node) += (c.coef * interp(&self.e, c.m, &c.w)) as f32;
@@ -879,6 +1529,16 @@ impl Operator for PlaneWave {
     }
 
     fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        if let Some(sp) = &mut self.spectral {
+            // The incident H at (n + ½)·dt − τ.
+            let n = ctx.step as usize * spectral::UP;
+            for c in &self.e_corr {
+                let v = series_value(&sp.inc.series[c.series], n + c.m, &c.w);
+                *fields.u.get_mut(c.axis, c.node) += (c.coef * v) as f32;
+            }
+            sp.steps = ctx.step + 1;
+            return;
+        }
         // The E kernel read i^{n+½}; so does the auxiliary H now.
         for c in &self.e_corr {
             *fields.u.get_mut(c.axis, c.node) += (c.coef * interp(&self.h, c.m, &c.w)) as f32;

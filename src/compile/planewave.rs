@@ -27,10 +27,19 @@
 //!   materials of the faces that do not lie on the domain boundary must be
 //!   one homogeneous, isotropic medium (relative tolerance 1e-4, PEC edges
 //!   ignored); its `ε_r`, `μ_r`, `κ` and `σ_m` go into the spec (lossy
-//!   backgrounds included). Otherwise compiling fails with
-//!   [`Error::Invalid`] naming the plane wave and
-//!   the offending edges. Dispersive materials on the surface are not
-//!   detected (only their static part is seen).
+//!   backgrounds included). Natively (not for openEMS files,
+//!   [`Fdtd::openems_run`]) a surface whose medium varies along one axis
+//!   only is a **layered** background
+//!   ([`PlaneWaveSpec::with_layers`], ends from the domain boundaries along
+//!   that axis: PEC, PMC, else open), and the compiled dispersive poles are
+//!   handed to the spec ([`PlaneWaveSpec::with_dispersion`]), so a
+//!   dispersive surface gets the exact incident field of its medium
+//!   ([`crate::engine::planewave`], layered and dispersive backgrounds).
+//!   Otherwise compiling fails with [`Error::Invalid`] naming the plane
+//!   wave and the offending edges. For openEMS files dispersive materials
+//!   on the surface are not detected (only their static part is seen) and
+//!   layered surfaces are an error, as before: openEMS itself injects a
+//!   vacuum plane wave whatever the materials (design §5.16.2).
 //! * The auxiliary grid's dispersion is matched at the centre of the
 //!   waveform: `f0` of a Gaussian (`fc/2` for `f0 = 0`), `f0` of a
 //!   sinusoid, otherwise half the maximum frequency of the settings, or
@@ -40,9 +49,11 @@ use csx::properties::ExcitationType;
 use csx::{ContinuousStructure, PropertyKind};
 
 use super::snap_primitive;
-use crate::engine::medium::{interior_faces, surface_medium};
-use crate::engine::{EdgeMaterials, Grid, PlaneWaveSpec};
-use crate::fdtd::Fdtd;
+use crate::axis::Axis;
+use crate::engine::dispersive::Scheme;
+use crate::engine::medium::{interior_faces, layered_axis, surface_medium};
+use crate::engine::{EdgeMaterials, EdgePole, Grid, LayerEnd, PlaneWaveSpec};
+use crate::fdtd::{Boundary, Face, Fdtd};
 use crate::waveform::Waveform;
 use crate::{Error, Result};
 
@@ -159,22 +170,54 @@ pub(super) fn plane_wave_sources(
     out
 }
 
+/// How a layered medium along `axis` ends at the domain faces.
+fn layer_ends(fdtd: &Fdtd, axis: Axis) -> [LayerEnd; 2] {
+    [false, true].map(|max| match fdtd.get_boundaries()[Face::new(axis, max)] {
+        Boundary::Pec => LayerEnd::Pec,
+        Boundary::Pmc => LayerEnd::Pmc,
+        _ => LayerEnd::Open,
+    })
+}
+
+/// The stratification axis of the box surface of `spec`, if its medium
+/// varies along one axis only and the wave crosses the layers.
+fn crosses_layers(spec: &PlaneWaveSpec, grid: &Grid, materials: &EdgeMaterials) -> Option<Axis> {
+    let (lo, hi) = (spec.start, spec.stop);
+    let ax = layered_axis(grid, materials, lo, hi, interior_faces(grid, lo, hi))?;
+    let d = spec.direction;
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (d[ax.index()].abs() >= 1e-3 * len).then_some(ax)
+}
+
 /// Sets the background of every source to the medium on its box surface
-/// (see the [module docs](self)).
+/// (see the [module docs](self)); natively (not for openEMS files) also
+/// stratified backgrounds and the dispersive poles on the surface.
 ///
 /// # Errors
-/// [`Error::Invalid`] if the surface of a box is not homogeneous.
+/// [`Error::Invalid`] if the surface of a box is neither homogeneous nor
+/// (natively) stratified along one axis.
 pub(super) fn set_backgrounds(
     sources: &mut [PlaneWaveSource],
     grid: &Grid,
     materials: &EdgeMaterials,
+    fdtd: &Fdtd,
+    poles: &[EdgePole],
+    scheme: Scheme,
 ) -> Result<()> {
+    let native = !fdtd.get_openems_run();
     for s in sources {
         let (lo, hi) = (s.spec.start, s.spec.stop);
         let faces = interior_faces(grid, lo, hi);
+        if native && !poles.is_empty() {
+            s.spec = s.spec.clone().with_dispersion(poles, scheme);
+        }
         match surface_medium(grid, materials, lo, hi, faces) {
             Ok(Some(m)) => s.spec = s.spec.clone().with_medium(m),
             Ok(None) => {}
+            Err(_) if native && let Some(ax) = crosses_layers(&s.spec, grid, materials) => {
+                let [a, b] = layer_ends(fdtd, ax);
+                s.spec = s.spec.clone().with_layers(ax).with_layer_ends(a, b);
+            }
             Err(e) => {
                 return Err(Error::Invalid(format!(
                     "plane wave {:?} (box {lo:?}..={hi:?}): {e}; the total-field box must \

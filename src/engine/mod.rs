@@ -193,7 +193,7 @@ pub use material::{CellMaterials, Material};
 pub use medium::Medium;
 pub use oblique_wire::{ObliqueWire, ObliqueWires};
 pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
-pub use planewave::{PlaneWave, PlaneWaveSpec};
+pub use planewave::{LayerEnd, PlaneWave, PlaneWaveSpec};
 pub use port::LumpedPort;
 pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
 pub use run::{EnergyMeasure, Progress, RunLimits, RunOutcome, StopReason};
