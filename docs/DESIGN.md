@@ -1862,8 +1862,15 @@ Measured (`tests/conformal_modes.rs`, guide `a` = 10 mm, 1 mm cells, 50
 cells along z, CPML(8), TE11 port, −50 dB criterion): staircase 6401
 steps, conformal 6701 steps (9101 before the deviation currents) (2.2 s; 0.25 ms per step against 0.075 for
 staircase, the serial operator covering ~22 % of this small grid's faces).
-The operator's look-ahead energy omits the CPML correction (exact
-elsewhere).
+Energy look-ahead (wave 14): the merge groups' share of the invariant,
+`½·g^{n+½}ᵀ·M·g^{n+3/2}`, evaluates `g^{n+3/2}` in `post_e` from the
+circulations of `u^{n+1}`; it now adds the CPML and cylindrical-PML
+corrections there too, without advancing their state, so it is bit for
+bit the current the next `post_h` computes (unit test
+`energy_lookahead_includes_the_pml`; before, the groups in a layer
+evaluated an unstretched current). The kernel's faces still use their
+pre-correction `i^{n+½}` (§5.8), unchanged. The step counts of the guide
+runs (6701, 2651) did not change at the criterion's 100-step resolution.
 
 **Validation** (`tests/conformal_modes.rs`, `cavity_table` / `coax_table`,
 release, `--ignored`; PEC block with a vacuum region carved out, centres off
@@ -1931,8 +1938,7 @@ edges read `E·l_open`. The power-iteration check costs a few hundred
 matrix–vector products on the whole grid at setup (single thread); the
 operator is serial (0.25 vs 0.075 ms per step on the 25 × 25 × 50 guide
 above; the deviation currents add one unknown per small face to the
-blocks). The energy look-ahead of the merge groups omits the CPML and
-cylindrical-PML corrections (exact elsewhere).
+blocks).
 
 #### 5.13.1 Thin PEC sheets
 
@@ -2030,14 +2036,22 @@ all regions (or uncut faces, then taken over by the operator) **on the
 same side of the sheet**: candidates are reached across pieces and uncut
 edges only, which never cross the sheet. Hosts sharing regions form
 blocks with `PᵀLP`, and each interpolated region keeps a deviation
-current (§5.13). Regions without a valid stencil (or in absorbing layers)
-are merged, as before, with the
+current (§5.13). Where the host stencil fails (the host has no free
+neighbour along an axis, as in the 45° wedge where the plate meets the
+box), the best triangle of free same-side candidates within three steps
+(the eight nearest to the centroid, smallest largest weight) is tried
+(wave 14: 26 → 8 merged regions in the triangle tests, 17 → 9 on the
+coarse sphere). Regions without a valid stencil are merged, as before,
+with the
 region **on the same side** of the in-plane neighbour across their
 most-open piece (that neighbour can be an uncut face, which is then owned
 by the operator), until the group reaches the threshold: one current with
 `L_g = Σ f_r·L` and the merged contour, `K' → P·K'`, still symmetric. A
 group has at least half a face of area but no more than its members'
-perimeter, so its row stays near that of an uncut face. Merging never
+perimeter, so its row stays near that of an uncut face. Since wave 14
+each small member keeps a deviation current as for solid metal
+(`i_m = g + d_m`, `M_dd = (f_r + a)·L`, soft groups solved in blocks).
+Merging never
 crosses the sheet (pieces belong to one side), so the two sides stay
 decoupled. The power iteration of §5.13 runs on the combined system
 (pieces as extra unknowns, seeded on the cut cells), with the same
@@ -2053,7 +2067,7 @@ since csx drops oblique sheets):
 | cavity | cells | staircase | merged regions (wave 12) | conformal sheet now |
 |---|---|---|---|---|
 | cylindrical shell TE11 (r = 10 mm, PMC z faces: `H_z` on the cut z faces) | 5 / 10 / 20 per radius | −13.9 / −6.74 / −3.27 % | +1.41 / +0.567 / +0.260 % (order 1.2) | +0.093 / +0.0308 / +0.0086 % (order 1.6, 1.85) |
-| right isosceles triangle (legs 20 mm) behind a 45° plate, lowest TE (`cos πx/a + cos πy/a`) | 20 / 40 / 80 | −4.95 / −2.51 / −1.26 % | +2.29 / +1.19 / – % (order 0.9) | −0.0532 / −0.0160 / −0.0042 % (order 1.7, 1.9) |
+| right isosceles triangle (legs 20 mm) behind a 45° plate, lowest TE (`cos πx/a + cos πy/a`) | 20 / 40 / 80 | −4.95 / −2.51 / −1.26 % | +2.29 / +1.19 / – % (order 0.9) | −0.0660 / −0.0168 / −0.0042 % (order 1.97, 2.0; wave 13: −0.0532 / −0.0160 / −0.0042 %) |
 | cylindrical shell TM010 | 5 / 10 / 20 per radius | −6.84 / −3.76 / −1.91 % | −0.323 / −0.081 / −0.0197 % | −0.279 / −0.0618 / −0.0151 % (order 2.2, 2.0) |
 | same triangle, TM21 | 20×21 / 40×41 | −2.54 / −1.26 % | −0.160 / −0.042 % | −0.169 / −0.0435 % (order 1.96) |
 | spherical shell lowest TM (r = 10 mm) | 5 per radius | −10.4 % | +0.31 % | +0.106 % |
@@ -2073,18 +2087,97 @@ about two axes, with plate edges inside cut faces). Bit-identical results
 for 1 and 4 threads. Without sheets the solid-metal scheme is bit-identical
 to before (probe signals compared).
 
-**Limitations.** Merged sheet regions (no valid stencil: the plate's ends
-in the triangle, 14–26 regions) have no deviation currents yet. One sheet partitions each face: faces cut by two sheets
-(junctions, crossing plates) use the partition of the sheet with more cuts
-there, which leaves a gap of under a cell at the junction (warning); closed
-boxes of oblique plates therefore leak at their corners. Sheets touching
-solid conformal metal in the same cells are combined approximately (piece
-`cb` scaled by both fractions; owned faces drop their solid-metal `f_A`).
-Open polyhedra, boxes given in cylindrical coordinates and conducting
-(`ConductingSheet`) oblique sheets are not handled. A trace that bulges
-into a face without crossing its edges is not seen. Sources, lumped
-elements and CPML on cut edges are not supported (the operator owns those
-voltages). Voltage probes on a cut edge read the sum of its pieces.
+*Wave 14, merged regions.* With the deviation currents and the wider
+stencil the triangle TE row reads −0.0660 / −0.0168 / −0.0042 % (order
+1.97, 2.0; before −0.0532 / −0.0160 / −0.0042 %, order 1.7, 1.9): the
+coarse level was lower by a cancellation of the first-order corner
+merges, the finest is unchanged. The result does not depend on `a` in
+0.25–3 (−0.0659 … −0.0667 %; `a` = 30 puts the deviations' local
+resonance near the mode, −0.088 %). TM21 unchanged (−0.1688 /
+−0.0435 %), spherical shell +0.113 % (+0.106 %), cylindrical-grid shells
+unchanged to the digits of the table below.
+
+**Absorbing layers** (wave 14; `tests/conformal_sheet_pml.rs`,
+`tests/cylindrical_conformal_pml.rs`). The kernel's CPML skips the sheet
+operator's unknowns (cut edges `cb = 0`, owned faces `db = 0`), so cut
+cells in a layer were not stretched: two oblique plates running into a
+CPML diverged (+358 dB), the radial wedge of §5.13 with sheet walls into
+the `ρ_max` PML too (+668 dB). The operator now applies the layers
+itself, with their grading and arithmetic: the CPML recursion of each
+piece's derivative term across the layer (from the regions of the faces
+of the right normal), of each region's circulation term (its pieces and
+edges across the layer, added to every reduced current driving it), and
+of the corrections of uncut edges (the region's current minus the
+primary's, whose term the CPML already stretched); the cylindrical layer
+likewise (`CylLayer::e_edge`, `h_face`, the z / α layers inside it in
+the corners). Small regions are interpolated inside the layers too:
+merged there (as small volume faces are), the level plates below held a
+field that grew from −74 dB after 4000 steps (~1 dB per 1000 steps), and
+with hard merges (no deviation currents) the tilted plates decayed 40 %
+slower and settled 6 dB higher. Measured (1 mm cells, plates 4.2 mm apart
+tilted 0.35 rad about x, or level 0.03 and 0.17 of a cell off the mesh
+planes, CPML(8), against a domain 160 cells longer): reflection
+−82.2 dB tilted, −78.0 dB level (plates on the mesh planes, csx's mask:
+−78.5 dB); 36 000 steps: both settle at the static level the source
+leaves (−89.5 / −92.7 dB; mesh-plane plates −92.5 dB) and stay. Radial
+sheet walls into `ρ_max` PML(8): −89.3 dB (solid conformal walls
+−89.4 dB, staircase −90.3 dB); with z PML in the corners 30 000 steps
+end at −77.8 dB without growth (solid walls −76.5 dB). 1 and 3 threads
+bit-identical.
+
+**Junctions** (wave 14; `compile::conformal::sheets::junction`,
+`tests/conformal_sheet_junction.rs`). One sheet used to partition each
+face: where a second sheet crossed it, or a sheet ended on another sheet
+or on solid metal inside the face, the ending sheet's trace did not
+separate and its two sides shared the face's current. Faces cut by two
+or more sheets, or touched by solid metal, are now divided by the planar
+arrangement of all traces: the face sides (split at cuts and metal
+transitions), each sheet's chord restricted to its extent (16 samples,
+bisected), the metal's open-polygon chords. A segment end within `1e-6`
+of the face size from another segment is moved onto it; a sheet whose
+extent ends on another sheet's surface or on the metal (tested on the
+surfaces) is extended along its trace to that surface's chord (at most a
+quarter of the face: chords of curved traces are off by their sagitta).
+Segments are split at intersections, dangling ends pruned (plate edges,
+which do not separate), the bounded faces of the graph are the regions,
+those in the metal dropped (point next to the longest side against the
+open polygon); each piece goes to the region with the longest open part
+of it, and pieces of edges partly in metal get their open lengths
+(`SheetCutEdge::open`, so `cb_p = cb·l_open/l` instead of the edge
+fraction times the piece fraction). Faces cut by one sheet without metal
+keep the arc partition (unit test: the arrangement reproduces it). A
+second defect showed up where a septum touches a curved solid wall: the
+sheet system took over, as hosts, the uncut faces the solid-metal scheme
+needed for its small faces, which then merged among themselves below the
+threshold (`s` = 1.046 whatever the threshold; TE run diverged). The
+solid-metal scheme is now built first against the sheets' cut faces, and
+the faces it drives are excluded from the sheet system.
+Measured (2-D cross sections, PMC z faces for TE; leak = largest |E| on
+edges in the undriven part / outside a cell from the walls, against the
+probe's peak):
+
+| cavity | mode | before (h = 1 / 0.5 mm) | now (h = 1 / 0.5 mm) |
+|---|---|---|---|
+| box of four plates (20 × 13 mm, 17°), septum ending on two of them (T), plates ending at the corners (L); 8 × 13 part | TE01 | +3.61 / +3.09 %, leak 0.91 / 1.19 | −0.134 / −0.032 %, leak 4e-7 |
+| same, all plates 1 mm past each other (X) | TE01 | +2.08 %, leak 0.62 | −0.134 / −0.032 %, leak 4e-7 |
+| same (T, L) | TM11 | −0.356 % | −0.355 / −0.082 % |
+| circle of solid metal (r = 10 mm) with a septum sheet along a diameter at 23°, ending on the wall or 1 mm into it; half disc | TE11 | diverged (`s` = 1.046) / −0.100 %, leak 2.4 | +0.032 / +0.0086 %, leak 1e-6 |
+| same | TM11 | −0.235 / −0.056 % | −0.235 / −0.056 % |
+| cylindrical grid: shell (r = 6 mm, 12 mm off the axis) with a septum plate ending on it | TE11 | – | −0.380 / −0.026 %, leak 4e-7 |
+
+(TM fields have no `H_z` on the shared z-face regions, so the old gap
+did not show in TM.) Bit-identical for 1 and 3 threads.
+
+**Limitations.** Open polyhedra, boxes given in cylindrical coordinates
+and conducting (`ConductingSheet`) oblique sheets are not handled. A
+trace that bulges into a face without crossing its edges is not seen,
+nor a sheet ending inside a face more than a quarter of the face short
+of another surface (it stays a slit). Sources and lumped elements on cut
+edges are not supported (the operator owns those voltages). Voltage
+probes on a cut edge read the sum of its pieces. Small volume-cut faces
+remain merged inside CPML layers (§5.13); for sheets, merging there was
+measured unstable, so the remaining merges in layers are the stencil
+fallback only.
 
 **Cylindrical grids** (§5.15; `compile::conformal` submodule
 `sheets::cyl`). The same Cartesian sheet surfaces are cut against the
