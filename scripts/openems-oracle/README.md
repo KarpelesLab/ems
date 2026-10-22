@@ -45,6 +45,16 @@ case with its input XML, the openEMS outputs needed by the tests, and a
 note of the openEMS revision (`~/.cache/ems-openems/REVISION`). Tests read
 the committed fixtures only; CI does not need the oracle.
 
+`REVISION_PIN` names the openEMS-Project revision the committed fixtures
+were made with. The `openEMS oracle` workflow builds that revision on
+pushes and pull requests (so a regenerated fixture set must reproduce the
+committed one), and upstream HEAD on its weekly run or a manual run with
+`upstream` set; that run only reports drift (it may fail without
+blocking). When the fixtures are regenerated with a newer oracle, update
+`REVISION_PIN` with them. Upstream after the pin (2026-10-21, be30220)
+writes VTK XML files in appended format, lists GPU options in `--help` and
+otherwise reproduces every numeric fixture.
+
 The `gen-*.sh` scripts regenerate the fixture sets; run them from the
 repository root (`OPENEMS` overrides the oracle path, `OEPY` its python).
 Each runs

@@ -4,12 +4,20 @@ name: openEMS oracle
 # openEMS (scripts/openems-oracle, clean-room rules in its README) and runs
 # the test suite against them. Catches fixtures that no longer reproduce and
 # upstream behaviour changes. Light on purpose: weekly, on demand, and when
-# the fixtures or the oracle scripts change.
+# the fixtures or the oracle scripts change. Pushes and pull requests build
+# the openEMS-Project revision the fixtures were made with
+# (scripts/openems-oracle/REVISION_PIN); the weekly run (and a manual run
+# with `upstream`) builds upstream HEAD instead and only reports drift.
 
 on:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      upstream:
+        description: "Build upstream openEMS-Project HEAD instead of the pinned revision"
+        type: boolean
+        default: false
   push:
     branches: [master]
     paths:
@@ -33,12 +41,23 @@ jobs:
     name: Regenerate fixtures and test
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Upstream HEAD only reports drift; the pinned revision must pass.
+    continue-on-error: ${{ github.event_name == 'schedule' || inputs.upstream == true }}
     steps:
       - uses: actions/checkout@v6
 
       - name: openEMS revision
         id: rev
-        run: echo "rev=$(git ls-remote https://github.com/thliebig/openEMS-Project.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+        env:
+          UPSTREAM: ${{ github.event_name == 'schedule' || inputs.upstream == true }}
+        run: |
+          if [ "$UPSTREAM" = true ]; then
+            rev=$(git ls-remote https://github.com/thliebig/openEMS-Project.git HEAD | cut -f1)
+          else
+            rev=$(cut -d' ' -f1 scripts/openems-oracle/REVISION_PIN)
+          fi
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "openEMS-Project revision: $rev (upstream HEAD: $UPSTREAM)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cache oracle
         id: cache
