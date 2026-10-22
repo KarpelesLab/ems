@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 0; Drude box inside PML layers; raw H line dump on a graded mesh; tags: MUR PEC PML csheet drude dump graded lumpedR lumpedRL material metal -->
+<openEMS>
+  <FDTD NumberOfTimesteps="800" endCriteria="1e-30">
+    <Excitation Type="0" f0="5.36071e+09" fc="2.25225e+09"/>
+    <BoundaryCond xmin="MUR" xmax="PML_5" ymin="PML_4" ymax="PEC" zmin="PEC" zmax="PML_4"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LorentzMaterial Name="drude0"><Property Epsilon="1.66627" EpsilonPlasmaFrequency="5.05949e+09" EpsilonRelaxTime="2.51858e-09"/><Primitives><Box Priority="0"><P1 X="7.5" Y="4.75" Z="1"/><P2 X="10.5" Y="5.625" Z="6"/></Box></Primitives></LorentzMaterial>
+      <LorentzMaterial Name="drude1"><Property Epsilon="1.16089" EpsilonPlasmaFrequency="6.0159e+09" EpsilonRelaxTime="1.45431e-09"/><Primitives><Box Priority="1"><P1 X="16.5" Y="1.625" Z="3"/><P2 X="19.5" Y="4.75" Z="6"/></Box></Primitives></LorentzMaterial>
+      <Material Name="mat2"><Property Epsilon="2.01601" Mue="1" Kappa="0.0222495" Sigma="0"/><Primitives><Box Priority="4"><P1 X="12" Y="3.75" Z="3"/><P2 X="15" Y="6" Z="5"/></Box></Primitives></Material>
+      <Metal Name="pec0"><Primitives><Box Priority="0"><P1 X="4.5" Y="4.75" Z="8"/><P2 X="6" Y="6" Z="9"/></Box></Primitives></Metal>
+      <ConductingSheet Name="cs" Conductivity="5.8e+07" Thickness="1e-05"><Primitives><Box Priority="1"><P1 X="1.5" Y="2.625" Z="7"/><P2 X="1.5" Y="5.125" Z="9"/></Box></Primitives></ConductingSheet>
+      <LumpedElement Name="le0" Direction="2" Caps="1" R="45.1862"><Primitives><Box Priority="5"><P1 X="10.5" Y="4.125" Z="6"/><P2 X="13.5" Y="5.125" Z="7"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="le1" Direction="0" Caps="0" R="49.9402" L="8.5273e-09"><Primitives><Box Priority="5"><P1 X="7.5" Y="4.125" Z="6"/><P2 X="9" Y="4.125" Z="6"/></Box></Primitives></LumpedElement>
+      <Excitation Name="src" Type="0" Excite="0.27,0,1"><Primitives><Box Priority="0"><P1 X="15" Y="3.125" Z="1"/><P2 X="15" Y="3.125" Z="2"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u0" Type="0"><FD_Samples>5.36071e+09,6.43286e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="12" Y="2.625" Z="1"/><P2 X="13.5" Y="2.625" Z="1"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e1" Type="2"><Primitives><Box Priority="0"><P1 X="3.2" Y="0.625" Z="5"/><P2 X="3.2" Y="0.625" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e2" Type="2"><FD_Samples>5.36071e+09,6.43286e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="10.5" Y="4.75" Z="8"/><P2 X="10.5" Y="4.75" Z="8"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="D1" DumpType="1" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="10.5" Y="3.75" Z="3"/><P2 X="15" Y="3.75" Z="3"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1.5,3,4.5,6,7.5,9,10.5,12,13.5,15,16.5,18,19.5,21,22.5,24</XLines>
+      <YLines>0,0.625,1.125,1.625,2.125,2.625,3.125,3.75,4.125,4.75,5.125,5.625,6,6.25</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

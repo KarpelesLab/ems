@@ -122,6 +122,10 @@ command line in the case's `meta.txt`:
   the `ems` binary on them): it runs openEMS (and the `nf2ff` tool when
   the case has an `nf2ff.xml`), copies back the files on the `keep:` line
   of `meta.txt` and records the time step and the number of steps run.
+- `gen-rsweep.sh [CASE...]` regenerates the `rs_*` cases (models of the
+  randomized differential sweep, each exposing one openEMS behaviour;
+  `tests/openems_rsweep.rs`, which runs the `ems` binary on them) like
+  `gen-pml.sh` (the `keep:` line of `meta.txt`).
 - `gen-pml.sh [CASE...]` regenerates the `pml_*` cases (openEMS's
   `PML_<n>` layers: one face, overlapping layers with a graded layer,
   media, metal and a source inside them and raw line dumps through the

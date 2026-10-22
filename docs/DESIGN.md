@@ -2990,7 +2990,9 @@ regeneration script and test file:
   `tests/openems_sweep.rs`;
 - end-to-end models (`e2e_*`, §5.16.4): `gen-e2e.sh`,
   `tests/openems_e2e.rs`;
-- `PML_n` layers (`pml_*`, §5.16.2): `gen-pml.sh`, `tests/openems_pml.rs`.
+- `PML_n` layers (`pml_*`, §5.16.2): `gen-pml.sh`, `tests/openems_pml.rs`;
+- models of the randomized differential sweep (`rs_*`, §5.16.3):
+  `gen-rsweep.sh`, `tests/openems_rsweep.rs`.
 
 ems follows openEMS for models read from files; Rust-built models keep the
 ems conventions where noted (`Fdtd::openems_run`, `Fdtd::file_equivalent`).
@@ -3193,11 +3195,15 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
 - **Boundaries.** PEC and Mur (with phase velocity) agree to ~1e-6; Mur
   without it, see §5.16.2. Two Mur details found on the end-to-end models
   (per-edge least-squares fits of openEMS's per-step dumps, residuals
-  4e-8): an edge on two Mur faces takes both interior neighbours at
-  `n + 1` as 0, `u^{n+1} = ½(u_1^n + u_2^n) − ½(k_1 + k_2)·u^n`
-  (`MurBoundary::openems_corners`; an all-Mur box went from 5e-3 to 1e-6),
-  and the H component normal to an upper Mur face is never updated in the
-  face plane (it feeds no E update; ems holds it at 0 for files, which
+  4e-8): an edge on two Mur faces takes the update of the face of the
+  lower axis (x before y before z) alone, with its interior neighbour at
+  `n + 1` as 0, `u^{n+1} = u_1^n − k_1·u^n` (`MurBoundary::openems_corners`;
+  an all-Mur box went from 5e-3 to 1e-6; wave 13 had fitted the average of
+  both faces on a uniform box, where the two are the same; wave 14's box
+  with a different last cell on every face tells them apart, residual
+  1e-7 on all twelve domain edges), and the H component normal to an
+  upper Mur face (wave 14: also an upper PML face) is never updated in
+  the face plane (it feeds no E update; ems holds it at 0 for files, which
   matters for the energy and for dumps on the face). PMC: the wall is the outermost dual layer
   (tangential H there held at 0), half a cell inside. PML: ems runs
   openEMS's own layer for files (§5.16.2, ~1e-6; the CPML differed by
@@ -3269,9 +3275,15 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     edge's stability: `R` = 150 Ω diverges on `lumped_graded_rl`, where
     15 % of an edge's capacitance is left); ems warns when less than a
     fifth is left.
-  - Large element values behave oddly in openEMS (not reproduced): a
-    series R above ~190 Ω per 1 mm vacuum edge gets a different,
-    unstable update (NaN within 16 steps at 2 kΩ).
+  - Series elements (wave 14) get their edge capacitance limited too, by
+    the branch impedance at the same `ω`: `C_e ≤ 1/(20·ω·|R_e + jωL_e +
+    1/(jωC_e')|)` (`--debug-operator` dumps of R, L, RL, LC and RLC
+    branches, `R` = 1…1000 Ω, `L` = 1.1…50 nH, `C` = 0.5…5 pF, two
+    frequencies, 5 digits). This is the "different, unstable update" of a
+    series R above ~190 Ω per 1 mm vacuum edge noted before (NaN within
+    16 steps at 2 kΩ: the limited capacitance), and it made series
+    elements over several columns, or with an excitation, differ by
+    1e-3…1 (random sweep below); ems applies it for files.
 
 #### 5.16.2 Advanced physics
 
@@ -3806,6 +3818,80 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
   tolerance (a line exactly one resolution away was taken: 2, 4, 6, 8,
   11, … instead of every second line); raw H/B dumps snap their box to
   the dual lines (openEMS: H at 5.5 … 12.5 for a box 6 … 12).
+
+**Randomized differential sweep** (wave 14; `scratchpad` generator, not
+committed: per seed a random graded mesh of 10–16 cells per axis, each
+face PEC, PMC, Mur or `PML_3…6`, up to three material boxes (ε, μ, κ,
+σ_m, Drude, Lorentz), metal boxes and sheets on and off the mesh,
+conducting sheets, up to two lumped elements (R, C, R‖C, R‖L, series
+RLC, with or without caps and an excitation), a soft or hard E or a soft
+H source, three to six probes (some off-grid, some with FD samples), a
+raw line dump, Gaussian pulses, energy end criteria; plus raw E and H
+dumps of the whole domain, the global comparison). A probe counts as a
+disagreement above 1e-4 relative L2 unless its difference is below
+1e-5 of the dump field scale at its geometry (f32 round-off of a weak
+signal: a vacuum PEC box showed 1e-3 on probes at 1e-6 of the field
+maximum while the whole field agreed to 1e-6); runs where both codes
+diverge count as agreeing. 230 models: before 77 of the first 100 and,
+after the fixes of the first 130, 90 of 100 fresh ones agreed to 1e-4;
+now 212 of 230 (19 of them unstable in both codes, from R‖L elements with
+openEMS's capacitance limit). Found and fixed (files; each with a
+fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
+
+- **Thin metal under materials**: a material of higher priority (or
+  equal, defined first) at a metal sheet's or line's edge midpoint wins
+  the edge (`compile::openems::thin_metal_priority`; csx makes sheets PEC
+  regardless; `rs_3` 0.97 → 6.5e-6, `rs_29` 0.4 → 6.3e-5).
+- **Dispersive poles in openEMS's PML** have no effect (the static ε
+  remains; bit-identical probe files with and without the poles inside a
+  layer): ems leaves them out (`BoundaryHandles::pml_poles_ignored`,
+  warning; `rs_0` 0.34 → 5e-6).
+- **Mur and dispersive media**: openEMS's Mur faces read their interior
+  neighbours before the dispersive correction of their update (a Mur face
+  next to a Lorentz medium fits no 1-D update of the corrected values);
+  ems registers the Mur operator before the poles for files (`rs_1` 0.4
+  → 2e-5).
+- **Mur domain edges**: the lower axis's face alone (above; `rs_11` dump
+  0.64 → 5e-7).
+- **Hard E sources** have no update of their own in openEMS: a Mur face
+  next to one reads 0 for it (`u_0^{n+1} = u_1^n − k·u_0^n`); ems zeroes
+  the coefficients of hard E source edges outside PML layers (`rs_12`
+  1.5 → 3e-5).
+- **A Mur face carrying an E excitation** is not updated while the
+  excitation runs: the face stays 0 except the source edges, which hold
+  just the signal, up to step `L + 11` (`L` the excitation length; four
+  lengths and two time steps; the other Mur faces are unaffected)
+  (`MurBoundary::hold_faces`; sweep case 134 12 → 2e-6, 162 12 → 3e-2:
+  the H probe beside the face is still off).
+- **The look-ahead H** of the last dump and probe sample includes H
+  sources (`Operator::lookahead_sources`; a soft H source's dump was 0.4
+  off at its last step).
+- **Raw H dumps** snap to cells like H probes (the cell holding the lower
+  corner, closed above, to the cell holding the upper one, closed below;
+  graded meshes; `rs_0`, `rs_29`).
+- **Series lumped elements**: the capacitance limit (§5.16.1; `rs_109`
+  0.3 → 3e-4, the weak E probes).
+- **Conducting sheets**: a border edge's width is half the dual length
+  (not half the border cell; `rs_99` 74 → 2.4e-4, the H probe beside the
+  sheet corner), and the lines an absorbing boundary claims behave like
+  the first mesh line: on a lower face lines 0…1 (Mur) or 0…n (`PML_n`),
+  on an upper one the last 2 or `n + 1` lines; a sheet cell whose lower
+  corner lies on one does not count and a sheet edge starting on one is
+  PEC (`--debug-PEC`/`--debug-operator` dumps of sheets starting and
+  ending at every line near Mur, `PML_3` and PMC faces; `rs_116` was
+  unstable).
+- the H normal to an upper PML face (above).
+
+Not resolved (18 of 230): series elements (9 with an excitation over a
+csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an
+excitation, 2e-4…3.6e-2), the H probe next to a held Mur face (162,
+3e-2), conducting sheets with dispersive or lossy media near Mur/PML
+faces (56, 63, 71, 77, 152: 2e-4…5e-2 in the H dumps), a Lorentz layer
+with a hard source and a port (185, 0.99) and a Drude/PMC model with an H
+source (157, 2.0) that look like a slow growth in one code, an R‖L
+element where openEMS keeps a few % of an edge's capacitance (55, both
+growing at different rates), and 51 and 85 (6e-4, 3e-3; not analysed).
+ems's `--debug-PEC` dump does not list lumped caps (openEMS's does).
 
 Not reproduced (documented differences):
 

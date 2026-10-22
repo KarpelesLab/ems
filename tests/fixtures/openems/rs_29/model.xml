@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 29; metal sheet tied with a dielectric (first defined wins); raw H dump; tags: MUR PMC PML dump graded material metal metalsheet -->
+<openEMS>
+  <FDTD NumberOfTimesteps="800" endCriteria="1e-30">
+    <Excitation Type="0" f0="5.93547e+09" fc="3.14005e+09"/>
+    <BoundaryCond xmin="MUR" xmax="PMC" ymin="PML_3" ymax="PML_3" zmin="MUR" zmax="PML_4"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="mat0"><Property Epsilon="3.33294" Mue="1" Kappa="0.016051" Sigma="0"/><Primitives><Box Priority="3"><P1 X="2" Y="8.625" Z="8"/><P2 X="3.5" Y="11.25" Z="13"/></Box></Primitives></Material>
+      <Material Name="mat1"><Property Epsilon="5.79856" Mue="1" Kappa="0" Sigma="0"/><Primitives><Box Priority="0"><P1 X="0.625" Y="7.5" Z="3"/><P2 X="3" Y="13.875" Z="8"/></Box></Primitives></Material>
+      <Metal Name="pec0"><Primitives><Box Priority="0"><P1 X="1.375" Y="10.125" Z="6.3"/><P2 X="1.375" Y="13.575" Z="9"/></Box></Primitives></Metal>
+      <Metal Name="pec1"><Primitives><Box Priority="1"><P1 X="1.125" Y="1.875" Z="4"/><P2 X="2" Y="8.625" Z="6"/></Box></Primitives></Metal>
+      <Excitation Name="src" Type="0" Excite="0,1,0"><Primitives><Box Priority="0"><P1 X="5.875" Y="1.875" Z="10"/><P2 X="5.875" Y="3.75" Z="10"/></Box></Primitives></Excitation>
+      <ProbeBox Name="e0" Type="2"><FD_Samples>5.93547e+09,7.12256e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="1.125" Y="1.875" Z="7"/><P2 X="1.125" Y="1.875" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="3" Y="12.375" Z="7"/><P2 X="4" Y="12.375" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e2" Type="2"><Primitives><Box Priority="0"><P1 X="3.75" Y="12.375" Z="10"/><P2 X="3.75" Y="12.375" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i3" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="4.75" Y="5.25" Z="1"/><P2 X="5.875" Y="7.5" Z="1"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h4" Type="3"><Primitives><Box Priority="0"><P1 X="5.7" Y="8.625" Z="2"/><P2 X="5.7" Y="8.625" Z="2"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="D1" DumpType="1" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="4.25" Y="7.5" Z="2"/><P2 X="5.875" Y="7.5" Z="2"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,0.625,1.125,1.375,2,2.5,3,3.5,3.75,4,4.25,4.75,5.5,5.875,6.375</XLines>
+      <YLines>0,1.875,3.75,5.25,7.5,8.625,10.125,11.25,12.375,13.875,15.375</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

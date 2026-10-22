@@ -1,0 +1,13 @@
+# openEMS reference outputs for tests/openems_rsweep.rs; regenerate with
+# scripts/openems-oracle/gen-rsweep.sh rs_116
+oracle revision:
+  openEMS-Project e89286f (2026-10-18)
+   openEMS c3a956b (v0.37.0-19)
+   CSXCAD f90b407 (v0.7.0-1)
+   fparser 4b9c845
+command: openEMS model.xml --numThreads=1 --engine=basic 
+dt: 1.28755e-12
+steps: 810
+end: end-criteria of -40dB reached after 810 timesteps (-40.6986dB)
+keep: e0 i2 u1
+args: 

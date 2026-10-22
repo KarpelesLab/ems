@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 12; hard E source next to a Mur face; tags: MUR PEC PML dump graded hardsource material metalsheet -->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30">
+    <Excitation Type="0" f0="4.5627e+09" fc="2.39218e+09"/>
+    <BoundaryCond xmin="PML_3" xmax="PEC" ymin="PML_4" ymax="PEC" zmin="MUR" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="mat0"><Property Epsilon="1.15247" Mue="1" Kappa="0.0488152" Sigma="0"/><Primitives><Box Priority="4"><P1 X="4" Y="11.25" Z="7.5"/><P2 X="9" Y="14.75" Z="10.5"/></Box></Primitives></Material>
+      <Metal Name="pec0"><Primitives><Box Priority="4"><P1 X="8" Y="8.75" Z="5"/><P2 X="8" Y="12.75" Z="10"/></Box></Primitives></Metal>
+      <Excitation Name="src" Type="1" Excite="1,0,0"><Primitives><Box Priority="0"><P1 X="10" Y="14" Z="0.75"/><P2 X="11" Y="14" Z="0.75"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u0" Type="0"><Primitives><Box Priority="0"><P1 X="11" Y="14.75" Z="10.5"/><P2 X="12" Y="14.75" Z="10.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e1" Type="2"><Primitives><Box Priority="0"><P1 X="9" Y="12.75" Z="7.5"/><P2 X="9" Y="12.75" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u2" Type="0"><Primitives><Box Priority="0"><P1 X="7" Y="5" Z="5"/><P2 X="7" Y="7.5" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u3" Type="0"><Primitives><Box Priority="0"><P1 X="5" Y="10.75" Z="9"/><P2 X="5" Y="10.75" Z="10.5"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="D1" DumpType="1" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="8" Y="10.75" Z="3.25"/><P2 X="8" Y="14" Z="3.25"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13</XLines>
+      <YLines>0,0.5,1.5,2.5,3.5,5,6,7.5,8.75,9.5,10.75,11.25,12.75,14,14.75,15.75</YLines>
+      <ZLines>0,0.75,1.25,2.5,3.25,3.75,5,6.5,7.5,9,10,10.5,11</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
