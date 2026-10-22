@@ -117,6 +117,41 @@ pub(crate) fn extract(
     (gamma, z, a + b, (a - b) / z)
 }
 
+/// The grid kind of a line port: `Ok(true)` on a cylindrical grid for the
+/// lines that are uniform along their propagation axis there (along z
+/// with the height along ρ, along α with the height along ρ or z),
+/// `Ok(false)` on a Cartesian grid; [`Error::Unsupported`] otherwise
+/// (lines along ρ, heights along α). `kind` and `number` name the port.
+pub(crate) fn cylindrical_line(
+    model: &csx::ContinuousStructure,
+    dir: crate::Axis,
+    height: crate::Axis,
+    kind: &str,
+    number: u32,
+) -> Result<bool> {
+    use crate::Axis;
+    match model.grid.coord_system {
+        csx::CoordSystem::Cartesian => Ok(false),
+        csx::CoordSystem::Cylindrical
+            if matches!(
+                (dir, height),
+                (Axis::Z, Axis::X) | (Axis::Y, Axis::X) | (Axis::Y, Axis::Z)
+            ) =>
+        {
+            Ok(true)
+        }
+        csx::CoordSystem::Cylindrical => Err(Error::Unsupported(format!(
+            "{kind} port {number}: on a cylindrical grid the line must be uniform: along z or \
+             α with the height along ρ, or along α with the height along z (got propagation \
+             {dir} and height {height})"
+        ))),
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::Unsupported(format!(
+            "{kind} port {number}: unsupported coordinate system"
+        ))),
+    }
+}
+
 /// Index of the mesh line within a relative tolerance of `x`.
 pub(crate) fn line_index(lines: &[f64], x: f64) -> Option<usize> {
     let (k, &l) = lines

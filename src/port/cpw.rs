@@ -131,6 +131,18 @@ impl CpwPortProperties {
 ///   strip of width `S` (`centre_width`) is centred in the box, the gaps
 ///   `W` (`gap`) are on both sides of it, and the grounds fill the rest of
 ///   the box on each side (their width must be positive).
+/// * **Cylindrical grids** (`(ρ, α, z)` axes `X`, `Y`, `Z`): the same
+///   boxes in `(ρ, α, z)`, for the lines that are uniform along their
+///   propagation axis (as for [`MslPort`](super::MslPort)): along z with
+///   the metal on a `ρ` surface (widths and gaps angles, arcs at the
+///   metal radius), along α with the metal on a `ρ` surface (width along
+///   z) or on a `z` plane (width along ρ). Lines along ρ and metal planes
+///   normal to α are refused. Along α the feed, `stop`,
+///   [`reference_shift`](Self::reference_shift) and the probe positions
+///   are angles and `γ` is per metre of arc at the metal radius (metal on
+///   a `ρ` surface) or at the centre of the box's ρ range (`z` plane).
+///   [`quasi_static`](Self::quasi_static) is then the flat CPW with the
+///   arc lengths (a large-radius approximation).
 ///
 /// # Written properties
 ///
@@ -165,7 +177,13 @@ impl CpwPortProperties {
 /// edges need not be mesh lines; with lines on them, the zero-thickness
 /// strip and grounds act as if the gaps were narrower (lower impedance);
 /// the usual remedy is the "thirds rule" at each of the four edges (lines
-/// one third of a cell inside the metal and two thirds outside).
+/// one third of a cell inside the metal and two thirds outside). Keep each
+/// metal edge within half a cell past the last mesh line in the metal: a
+/// metal edge further out (beyond the midpoint of the next cell) makes the
+/// transverse mesh edge that it cuts PEC (its midpoint is in the metal)
+/// while the line beyond keeps its free edges along the line, so the
+/// metal border is no equipotential and the line is a slow-wave structure
+/// (`ε_eff` 1.4 in air for 2-cell gaps, design §5.5).
 ///
 /// # Reference plane
 ///
@@ -358,9 +376,10 @@ impl CpwPort {
     /// their names and ids.
     ///
     /// # Errors
-    /// [`Error::Unsupported`] on a non-Cartesian grid; [`Error::Invalid`]
+    /// [`Error::Unsupported`] on a cylindrical grid for a line along ρ or
+    /// a metal plane normal to α; [`Error::Invalid`]
     /// for equal propagation and height axes, a zero length, non-positive
-    /// strip or gap widths, a box too narrow for the grounds, `h = 0` with
+    /// strip or gap widths, a non-positive reference radius, a box too narrow for the grounds, `h = 0` with
     /// [`backed`](Self::backed), non-finite values, a non-positive feed
     /// resistance or permittivity, a port already added, a property name
     /// already present in the model, an unknown metal property, or a mesh
@@ -370,11 +389,6 @@ impl CpwPort {
         let err = |m: String| Error::Invalid(format!("CPW port {n}: {m}"));
         if self.props.is_some() {
             return Err(err("already added".into()));
-        }
-        if model.grid.coord_system != csx::CoordSystem::Cartesian {
-            return Err(Error::Unsupported(format!(
-                "CPW port {n}: needs a Cartesian grid"
-            )));
         }
         if self.dir == self.height {
             return Err(err(format!(
@@ -405,6 +419,7 @@ impl CpwPort {
                 self.centre_width, self.gap
             )));
         }
+        let cyl = line::cylindrical_line(model, self.dir, self.height, "CPW", n)?;
         let w_axis = Axis::ALL
             .into_iter()
             .find(|&a| a != self.dir && a != self.height)
@@ -416,6 +431,31 @@ impl CpwPort {
             return Err(err(format!("zero length along {}", self.dir)));
         }
         let hm = self.stop[h];
+        // Cylindrical grids: widths along α are angles (arcs at the metal
+        // radius), and along α the line coordinate is the arc at the
+        // metal radius (height along ρ) or at the centre of the box's ρ
+        // range (height along z).
+        let arc = |r: f64| -> Result<f64> {
+            if r.is_nan() || r <= 0.0 {
+                return Err(err(format!("the reference radius {r} must be > 0")));
+            }
+            Ok(r)
+        };
+        let w_scale = if cyl && w_axis == Axis::Y {
+            arc(hm)?
+        } else {
+            1.0
+        };
+        let du_line = if cyl && self.dir == Axis::Y {
+            let r = if self.height == Axis::X {
+                hm
+            } else {
+                0.5 * (self.start[w] + self.stop[w])
+            };
+            du * arc(r)?
+        } else {
+            du
+        };
         let sub_h = (self.stop[h] - self.start[h]).abs();
         if self.backed && sub_h == 0.0 {
             return Err(err(
@@ -448,8 +488,8 @@ impl CpwPort {
                 )));
             }
         }
-        let layout =
-            choose_probes(model.grid.lines(p), feed, end, self.shift, du).ok_or_else(|| {
+        let layout = choose_probes(model.grid.lines(p), feed, end, self.shift, du_line)
+            .ok_or_else(|| {
                 err(format!(
                     "needs three equally spaced mesh lines along {} past the feed at {feed} \
                      and not beyond {end}",
@@ -554,7 +594,7 @@ impl CpwPort {
                 let mut out = Vec::with_capacity(2);
                 for (k, &(a, b, sign)) in gaps.iter().enumerate() {
                     let mut v = [0.0; 3];
-                    v[w] = sign * amp / (gap * du);
+                    v[w] = sign * amp / (gap * du * w_scale);
                     let mut ex = Excitation::new(v).with_number(n);
                     ex.delay = Scalar::new(self.delay);
                     let name = names[3 + k].clone();
@@ -587,7 +627,7 @@ impl CpwPort {
             let (a, b) = (layout.v_pos[k], layout.v_pos[k + 1]);
             model.add_primitive(*id, prim(point(a, s_lo), point(b, s_hi)))?;
         }
-        self.dims = Some([sw * du, gap * du, sub_h * du]);
+        self.dims = Some([sw * du * w_scale, gap * du * w_scale, sub_h * du]);
         self.props = Some(CpwPortProperties {
             metal,
             elements,

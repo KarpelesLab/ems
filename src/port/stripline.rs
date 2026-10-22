@@ -99,6 +99,18 @@ impl StriplinePortProperties {
 ///   "upper" one); the strip lies on the mid-plane between them. The
 ///   grounds and the dielectric are part of the model, not of the port.
 /// * The remaining axis spans the strip width `w`.
+/// * **Cylindrical grids** (`(ρ, α, z)` axes `X`, `Y`, `Z`): the same
+///   boxes in `(ρ, α, z)`, for the lines that are uniform along their
+///   propagation axis (as for [`MslPort`](super::MslPort)): along z
+///   between two coaxial ground cylinders (height along ρ, the width an α
+///   range: an angle, the arc at the strip radius), along α between them
+///   (width along z) or between two `z` planes (width along ρ). Lines
+///   along ρ and heights along α are refused. Along α the feed, `stop`,
+///   [`reference_shift`](Self::reference_shift) and the probe positions
+///   are angles and `γ` is per metre of arc at the strip radius (height
+///   along ρ) or at the centre of the strip's ρ range (height along z).
+///   [`z0`](Self::z0) is then Cohn's flat value with the arc width (a
+///   large-radius approximation).
 ///
 /// # Written properties
 ///
@@ -291,9 +303,10 @@ impl StriplinePort {
     /// their names and ids.
     ///
     /// # Errors
-    /// [`Error::Unsupported`] on a non-Cartesian grid; [`Error::Invalid`]
+    /// [`Error::Unsupported`] on a cylindrical grid for a line along ρ or
+    /// a height along α; [`Error::Invalid`]
     /// for equal propagation and height axes, a zero length, height or
-    /// width, non-finite values, a non-positive feed resistance or
+    /// width, a non-positive reference radius, non-finite values, a non-positive feed resistance or
     /// permittivity, a port already added, a property name already present
     /// in the model, an unknown metal property, or a mesh that does not
     /// meet the [requirements](#mesh-requirements).
@@ -302,11 +315,6 @@ impl StriplinePort {
         let err = |m: String| Error::Invalid(format!("stripline port {n}: {m}"));
         if self.props.is_some() {
             return Err(err("already added".into()));
-        }
-        if model.grid.coord_system != csx::CoordSystem::Cartesian {
-            return Err(Error::Unsupported(format!(
-                "stripline port {n}: needs a Cartesian grid"
-            )));
         }
         if self.dir == self.height {
             return Err(err(format!(
@@ -329,6 +337,7 @@ impl StriplinePort {
         {
             return Err(err(format!("feed resistance {r} must be finite and > 0")));
         }
+        let cyl = line::cylindrical_line(model, self.dir, self.height, "stripline", n)?;
         let w_axis = Axis::ALL
             .into_iter()
             .find(|&a| a != self.dir && a != self.height)
@@ -364,8 +373,33 @@ impl StriplinePort {
                 )));
             }
         }
-        let layout =
-            choose_probes(model.grid.lines(p), feed, end, self.shift, du).ok_or_else(|| {
+        // Cylindrical grids: a width along α is an angle (the arc at the
+        // strip radius), and along α the line coordinate is the arc at the
+        // strip radius (height along ρ) or at the centre of the strip's ρ
+        // range (height along z).
+        let arc = |r: f64| -> Result<f64> {
+            if r.is_nan() || r <= 0.0 {
+                return Err(err(format!("the reference radius {r} must be > 0")));
+            }
+            Ok(r)
+        };
+        let w_scale = if cyl && w_axis == Axis::Y {
+            arc(mid)?
+        } else {
+            1.0
+        };
+        let du_line = if cyl && self.dir == Axis::Y {
+            let r = if self.height == Axis::X {
+                mid
+            } else {
+                0.5 * (w_lo + w_hi)
+            };
+            du * arc(r)?
+        } else {
+            du
+        };
+        let layout = choose_probes(model.grid.lines(p), feed, end, self.shift, du_line)
+            .ok_or_else(|| {
                 err(format!(
                     "needs three equally spaced mesh lines along {} past the feed at {feed} \
                      and not beyond {end}",
@@ -503,7 +537,7 @@ impl StriplinePort {
             let (a, b) = (layout.v_pos[k], layout.v_pos[k + 1]);
             model.add_primitive(*id, prim(point(a, s_lo, mid), point(b, s_hi, mid)))?;
         }
-        self.dims = Some([(w_hi - w_lo) * du, (g_hi - g_lo).abs() * du]);
+        self.dims = Some([(w_hi - w_lo) * du * w_scale, (g_hi - g_lo).abs() * du]);
         self.props = Some(StriplinePortProperties {
             metal,
             elements,
