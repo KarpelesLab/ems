@@ -269,7 +269,8 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
 ) {
     // openEMS's measure on Cartesian grids: the dual edges on the outer
     // planes normal to their own axis have full-cell lengths (`i` twice
-    // ems's, energy ×4), and the tangential E of the x faces is left out.
+    // ems's, energy ×4), and the E on the three upper faces (the last
+    // node along any axis) is left out.
     let end_w = if OE && full_ends { 4.0 } else { 1.0 };
     let lay = &store.layout;
     let [nx, ny, nz] = lay.n;
@@ -300,17 +301,18 @@ fn h_slab<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
             end_w,
         );
         if ENERGY {
-            let x_end = gi == 0 || gi + 1 == nx;
             let mut we = 0.0f64;
+            let upper = OE && full_ends;
             for (a, uc) in u.into_iter().enumerate() {
-                if OE && full_ends && x_end && a > 0 {
+                if upper && gi + 1 == nx {
                     continue;
                 }
                 let mut acc = [0.0f64; 4];
-                for j in 0..ny {
+                let (rows, len) = if upper { (ny - 1, nz - 1) } else { (ny, nz) };
+                for j in 0..rows {
                     let r = j * nz;
                     let (ca, cb) = (co.row(a, gi, j), co.row(3 + a, gi, j));
-                    e_energy_row::<OE>(&mut acc, r, &uc[r..r + nz], ca, cb);
+                    e_energy_row::<OE>(&mut acc, r, &uc[r..r + len], ca, cb);
                 }
                 we += (acc[0] + acc[1]) + (acc[2] + acc[3]);
             }

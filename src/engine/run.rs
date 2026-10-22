@@ -63,9 +63,9 @@ pub enum EnergyMeasure {
     /// `ε0·Σ u² + μ0·Σ i²` over every edge, unweighted, with `u` at `n·dt`
     /// and `i` at `(n + ½)·dt`. On Cartesian grids the dual edges of the
     /// outer planes normal to their own axis count with openEMS's
-    /// full-cell length (`4·i²`, ems's being half cells), and the
-    /// tangential E of the two x faces is left out (black box, design
-    /// §5.16.1). It is evaluated on the state (an extra
+    /// full-cell length (`4·i²`, ems's being half cells), and the E
+    /// on the three upper faces (x, y or z at its last line) is left out
+    /// (black box, design §5.16.1). It is evaluated on the state (an extra
     /// read-only H pass) also without
     /// [`check_after_interval`](RunLimits::check_after_interval).
     OpenEms,

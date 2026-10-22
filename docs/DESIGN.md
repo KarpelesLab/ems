@@ -3149,8 +3149,10 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   edges on the outer planes normal to their own axis (H_x at x = 0 and
   x = max, …) count with openEMS's full-cell dual length, i.e. `4·i²` in
   terms of ems's half-cell currents (the same full boundary cells as in
-  its time step); (2) the tangential E of the two x faces is not counted
-  (y and z faces are; on PEC faces it is 0 anyway); (3) besides every
+  its time step); (2) the E on the three upper faces (x, y or z at its
+  last line) is not counted, the lower faces' is (on PEC faces it is 0
+  anyway; wave 13 had read this as "both x faces", which the symmetric
+  boxes could not tell apart); (3) besides every
   Nyquist interval openEMS checks once more after half the Gaussian
   excitation's length, `⌊L/2⌋` steps (496 of 992, 298 of 596, 323 of 647,
   354 of 709: a threshold between the regular checks stops the run
@@ -3162,8 +3164,30 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   −10 dB criterion stopped at 684 instead of 496 → 496 (fixtures
   `end_criteria_half`, `end_criteria_mur`; ≤ 3e-4 dB down to −32 dB,
   2.5e-3 dB at −61 dB). `e2e_drude_slab` (Drude/Lorentz poles, plane
-  wave) went from 0.41 to 0.027 dB at −50 dB; the remaining part is not
-  resolved (pole state, plane-wave source).
+  wave) went from 0.41 to 0.027 dB at −50 dB in wave 13. Wave 14 split
+  that model (end-criterion scans: the ratio openEMS prints at the stop
+  step for thresholds every few dB): with a soft source instead of the
+  plane wave the Drude and Lorentz slabs agree to 2e-4 dB (no pole state
+  in the measure, as assumed), and the vacuum line with a soft source was
+  still 0.03–0.99 dB off: a TEM pulse leaving through the Mur z faces.
+  A least-squares fit of per-plane weights to 19 printed ratios of that
+  line (raw E/H dumps every step, openEMS's own fields) gave weight 0 for
+  the E on the z = max plane and 1 elsewhere (max. error 1e-4 dB), and
+  an asymmetric all-Mur box (source vector (1, 0.7, 0.4)) then fixed rule
+  (2): upper faces left out, 1e-4 dB on 8 checks, where "both x faces"
+  left 0.028 dB and "upper faces without the x-min face" 0.0277 dB. Now
+  (`end_criteria_tem`, new): the line 0.0000…0.0004 dB on every check
+  (was up to 0.99 dB, one stop 18 steps late), `end_criteria_mur`
+  −60.7507 against −60.7506 (was −60.7531), `end_criteria` −32.2832
+  against −32.2833, `e2e_waveguide_iris` −40.0719 exact, and
+  `e2e_drude_slab` 0.0127 dB at −50 dB (was 0.027) with the same stop
+  step at every threshold from −10 to −60 dB (two of eight were 17 steps
+  apart). What is left there is a constant 0.013 dB from the first check
+  on, i.e. the maximum energy while the pulse is in the total-field box:
+  openEMS's plane-wave injection error (§5.16.2; fields 1e-3 apart). With
+  the plane wave in vacuum the late ratios differ by 0.1–0.3 dB, the
+  energy of openEMS's −37 dB leakage into the scattered-field region,
+  which ems does not have (not emulated).
 - **Materials.** Edge averaging agrees with csx's (anisotropic, weighted,
   lossy, μ, σ: ~1e-6); `CellConstantMaterial` samples cell centres.
 - **Boundaries.** PEC and Mur (with phase velocity) agree to ~1e-6; Mur

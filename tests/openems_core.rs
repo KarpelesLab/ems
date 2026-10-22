@@ -384,9 +384,10 @@ fn end_criteria() {
     // A multiple of the 57-step Nyquist interval.
     assert_eq!(res.outcome().unwrap().steps % 57, 0);
     // The energy decay at the stop step: openEMS prints −32.2833 dB
-    // (ems −32.2830 dB; −32.2837 dB before the full-cell outer dual edges
-    // and the x-face rule of `EnergyMeasure::OpenEms`).
-    check_stop_ratio("end_criteria", &res, 1e-3);
+    // (ems −32.2832 dB; −32.2830 dB with the E of the x faces left out
+    // instead of the upper faces, −32.2837 dB before the full-cell outer
+    // dual edges of `EnergyMeasure::OpenEms`).
+    check_stop_ratio("end_criteria", &res, 5e-4);
 }
 
 /// The energy ratio of the deciding check agrees with the one openEMS
@@ -421,10 +422,22 @@ fn end_criteria_half() {
 #[test]
 fn end_criteria_mur() {
     // Deep in the decay of an asymmetric Mur box: openEMS −60.7506 dB
-    // (ems −60.753 dB; the symmetric box of `end_criteria` with this
-    // threshold was 1 dB off before the energy-measure rules).
+    // (ems −60.7507 dB; −60.7531 dB with the E of both x faces left out
+    // instead of the upper faces; the symmetric box of `end_criteria` with
+    // this threshold was 1 dB off before the energy-measure rules).
     let res = Check::new("end_criteria_mur").check();
-    check_stop_ratio("end_criteria_mur", &res, 5e-3);
+    check_stop_ratio("end_criteria_mur", &res, 5e-4);
+}
+
+#[test]
+fn end_criteria_tem() {
+    // A TEM pulse leaving through Mur faces (PEC x, PMC y walls, graded z):
+    // openEMS leaves the E on the three upper faces out of its energy.
+    // openEMS stops at 234 (−45.2156 dB); ems stopped at 252 with the E
+    // of both x faces left out instead (its ratio at 234 was −44.226 dB).
+    let res = Check::new("end_criteria_tem").check();
+    assert_eq!(res.outcome().unwrap().steps, 234);
+    check_stop_ratio("end_criteria_tem", &res, 5e-4);
 }
 
 #[test]

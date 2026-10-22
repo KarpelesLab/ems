@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "end_criteria_tem": a TEM pulse (PEC x and PMC y walls) leaving through Mur z faces of a graded mesh; openEMS's energy leaves out the E on the three upper faces
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="5000" endCriteria="1e-4" f_max="10e9">
+    <Excitation Type="0" f0="5e9" fc="5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PMC" ymax="PMC" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="src" Type="0" Excite="1,0,0"><Primitives><Box Priority="0"><P1 X="0" Y="1.5" Z="30"/><P2 X="6" Y="4.5" Z="30"/></Box></Primitives></Excitation>
+                  <ProbeBox Name="ex_refl" Type="2"><Primitives><Box Priority="0"><P1 X="3" Y="3" Z="10"/><P2 X="3" Y="3" Z="10"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ex_inc" Type="2"><Primitives><Box Priority="0"><P1 X="3" Y="3" Z="35"/><P2 X="3" Y="3" Z="35"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ex_trans" Type="2"><Primitives><Box Priority="0"><P1 X="3" Y="3" Z="55"/><P2 X="3" Y="3" Z="55"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="hy_trans" Type="3"><Primitives><Box Priority="0"><P1 X="3" Y="3" Z="55"/><P2 X="3" Y="3" Z="55"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ux_in_slab" Type="0"><Primitives><Box Priority="0"><P1 X="0" Y="3" Z="43"/><P2 X="6" Y="3" Z="43"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1.5,3,4.5,6</XLines>
+      <YLines>0,1.5,3,4.5,6</YLines>
+      <ZLines>0,1.5,3,4.5,6,7.5,9,10.5,12,13.5,15,16.5,18,19.5,21,22.5,24,25.5,27,28.5,30,31.428571,32.857143,34.285714,35.714286,37.142857,38.571429,40,41.5,43,44.5,46,47.333333,48.666667,50,51.5,53,54.5,56,57.5,59,60.5,62,63.5,65,66.5,68,69.5,71,72.5,74,75.5,77,78.5,80</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
