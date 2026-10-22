@@ -195,8 +195,14 @@ fn xml_round_trip_is_bit_identical() {
             .max_timesteps(1500),
     );
     // A file runs with openEMS's conventions (its axis update, design
-    // §5.16.2): the same as the API with `openems_run`.
-    let mut direct = Simulation::new(&model, &fdtd.clone().threads(2).openems_run(true)).unwrap();
+    // §5.16.2, and its time step, §5.16.1): the same as the API with
+    // `openems_run` and openEMS's criterion.
+    let direct_fdtd = fdtd
+        .clone()
+        .threads(2)
+        .openems_run(true)
+        .timestep_method(ems::engine::TimestepMethod::Rennings);
+    let mut direct = Simulation::new(&model, &direct_fdtd).unwrap();
     let a = direct.run().unwrap();
     let mut doc = OpenEmsDocument {
         structure: model.clone(),

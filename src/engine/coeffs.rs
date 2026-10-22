@@ -144,9 +144,10 @@ pub enum TimeStep {
 /// a periodic excitation of period `T`, `dt = T/(⌊T/dt⌋ + 1)`
 /// ([`periodic_timestep`](super::timestep::periodic_timestep)).
 ///
-/// On a cylindrical grid the criterion is replaced by the operator limit
-/// of [`courant_limit`] (openEMS's cylindrical time step has not been
-/// characterised).
+/// On a cylindrical grid the criteria take openEMS's cylindrical form
+/// ([`openems_timestep_cyl`](super::timestep_cyl::openems_timestep_cyl):
+/// physical cell geometry, Gershgorin with the axis, one grid per
+/// multigrid zone).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenEmsTimestep {
     /// The criterion.
@@ -179,9 +180,9 @@ impl OpenEmsTimestep {
                     "time step {dt:e} s must be positive and finite"
                 )));
             }
-            // The criteria are Cartesian; a cylindrical grid uses its
-            // operator limit (power iteration, see `courant_limit`).
-            None if grid.is_cylindrical() => courant_limit(grid),
+            None if grid.is_cylindrical() => {
+                super::timestep_cyl::openems_timestep_cyl(grid, materials, self.method)
+            }
             None => super::timestep::openems_timestep(grid, materials, self.method),
         };
         let mut dt = f * base;
