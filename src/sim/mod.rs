@@ -307,6 +307,10 @@ impl Simulation {
             warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
         }
         let part = |part| k.map(|k| BlochMap { part, k });
+        let layers = boundaries
+            .openems_pml
+            .as_ref()
+            .map(|h| engine.operator(h).layers().clone());
         let mut mapped = map::map_sources(
             &mut engine,
             &compiled.sources,
@@ -314,6 +318,7 @@ impl Simulation {
             fdtd,
             &mut warnings,
             part(WavePart::Real),
+            layers.as_ref(),
         )?;
         mapped.lumped_ids = mapped
             .lumped
@@ -333,6 +338,7 @@ impl Simulation {
                     fdtd,
                     &mut ignored,
                     part(WavePart::Imag),
+                    layers.as_ref(),
                 )?;
                 Some(Box::new(BlochState {
                     imag,

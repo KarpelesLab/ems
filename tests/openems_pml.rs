@@ -10,6 +10,8 @@
 //!   layers, raw E/H line dumps through the corners (feature `hdf5`);
 //! * `pml_medium`: layers in a lossy magnetic medium (conductivities
 //!   dropped inside the layer);
+//! * `pml_lumped`: lumped elements across and inside a layer (their R
+//!   and C act outside it only);
 //! * `pml_end`: the energy end criterion (stop step and level);
 //! * `pml_cyl`: a cylindrical grid with the axis, layers on `ρ_max` and
 //!   both z faces;
@@ -187,6 +189,30 @@ fn corners() {
         }
         eprintln!("{case}/{f}: {:.2e} of the largest value", num / den);
         assert!(num < 1e-4 * den, "{case}/{f}: {num:e} of {den:e}");
+    }
+}
+
+/// Lumped elements reaching into a layer: openEMS's layer replaces the
+/// update of its edges, so an element's R and C act only outside it (the
+/// caps and an excitation over the element still do). Measured: the
+/// probes 5e-7…1.1e-5, the field probe deep in the layer 7e-5 (diverged,
+/// ~1e7, with the R and C folded into the layer's coefficients).
+#[test]
+fn lumped_in_layer() {
+    let (dir, console) = run("pml_lumped");
+    check_steps("pml_lumped", &console);
+    for (f, tol) in [
+        ("u_src", 1e-5),
+        ("u_mid", 2e-5),
+        ("u_cross", 5e-5),
+        ("u_cross_in", 5e-5),
+        ("u_rc", 2e-5),
+        ("u_port", 1e-5),
+        ("i_port", 3e-5),
+        ("e_in", 3e-4),
+        ("h_in", 2e-4),
+    ] {
+        compare_probe("pml_lumped", &dir, f, tol);
     }
 }
 

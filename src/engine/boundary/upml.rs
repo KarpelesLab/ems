@@ -189,6 +189,20 @@ impl Profile {
     }
 }
 
+/// Which edges lie inside the layers of an [`OpenEmsPml`] (those whose
+/// update the layer replaces; the interface planes are outside), from
+/// [`OpenEmsPml::layers`].
+#[derive(Debug, Clone)]
+pub struct PmlLayers(Profile);
+
+impl PmlLayers {
+    /// Whether the E edge (`e_side`) or H dual edge along `comp` at `node`
+    /// lies inside a layer.
+    pub fn contains(&self, e_side: bool, comp: Axis, node: [usize; 3]) -> bool {
+        self.0.at(e_side, comp, node).iter().any(|&a| a != 0.0)
+    }
+}
+
 /// The edges with state of one component in one x-plane, in contiguous
 /// segments along z. The coefficients of a row depend on `k` and on the
 /// row's position, and most rows of a layer share them, so they are kept
@@ -491,6 +505,7 @@ pub struct OpenEmsPml {
     /// Edges whose coefficients were rewritten (E, H).
     edges: [usize; 2],
     parts: Option<Arc<Parts>>,
+    layers: PmlLayers,
 }
 
 impl OpenEmsPml {
@@ -498,8 +513,9 @@ impl OpenEmsPml {
     /// time step and coefficients): rewrites the coefficients of the layer
     /// edges and prepares the state of the others (see the
     /// [module docs](self)). Create it after every change of the medium
-    /// coefficients (lumped elements excepted, which should not reach
-    /// into a layer).
+    /// coefficients. Lumped elements must not act on layer edges
+    /// ([`layers`](Self::layers)): openEMS ignores their R and C there,
+    /// and folding them into the rewritten coefficients is unstable.
     ///
     /// # Errors
     /// [`Error::Invalid`] if a face is listed twice, has no cells or more
@@ -615,7 +631,13 @@ impl OpenEmsPml {
             h: h_runs,
             edges,
             parts: None,
+            layers: PmlLayers(prof),
         })
+    }
+
+    /// The edges inside the layers.
+    pub fn layers(&self) -> &PmlLayers {
+        &self.layers
     }
 
     /// The faces and their cell counts, in the order given.

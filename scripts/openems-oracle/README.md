@@ -125,7 +125,8 @@ command line in the case's `meta.txt`:
 - `gen-pml.sh [CASE...]` regenerates the `pml_*` cases (openEMS's
   `PML_<n>` layers: one face, overlapping layers with a graded layer,
   media, metal and a source inside them and raw line dumps through the
-  corners, a lossy magnetic medium, the energy end criterion, a
+  corners, a lossy magnetic medium, lumped elements reaching into a
+  layer, the energy end criterion, a
   cylindrical grid, and PML variants of the waveguide-iris and
   microstrip-filter models; `tests/openems_pml.rs`, which runs the `ems`
   binary on them): it copies back the files on the `keep:` line of

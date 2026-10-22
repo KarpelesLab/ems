@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Lumped elements reaching into openEMS's PML_6 layer on xmax (Mur on the
+  other faces): a 50 ohm resistor across the interface plane (x = 14), an
+  R||C box with caps inside the layer, and a 50 ohm port (R with an
+  excitation over it) inside the layer. openEMS's layer replaces the
+  update of its edges, so the R and C have no effect there (the caps and
+  the excitation do).
+  Hand-written for the ems PML fixtures (scripts/openems-oracle/gen-pml.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="800" endCriteria="1e-30">
+    <Excitation Type="0" f0="6e9" fc="5e9"/>
+    <BoundaryCond xmin="MUR" xmax="PML_6" ymin="MUR" ymax="MUR" zmin="MUR" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="5" Y="8" Z="3"/><P2 X="5" Y="8" Z="7"/></Box></Primitives></Excitation>
+      <LumpedElement Name="r_cross" Direction="2" Caps="1" R="50"><Primitives><Box Priority="5"><P1 X="12" Y="3" Z="3"/><P2 X="16" Y="3" Z="7"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="rc_in" Direction="2" Caps="1" R="100" C="1e-12"><Primitives><Box Priority="5"><P1 X="15" Y="7" Z="4"/><P2 X="17" Y="9" Z="6"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="port" Direction="2" Caps="1" R="50"><Primitives><Box Priority="5"><P1 X="16" Y="13" Z="4"/><P2 X="16" Y="13" Z="6"/></Box></Primitives></LumpedElement>
+      <Excitation Name="port_exc" Type="0" Excite="0,0,-1"><Primitives><Box Priority="5"><P1 X="16" Y="13" Z="4"/><P2 X="16" Y="13" Z="6"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u_src" Type="0"><Primitives><Box Priority="0"><P1 X="5" Y="8" Z="3"/><P2 X="5" Y="8" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u_cross" Type="0"><Primitives><Box Priority="0"><P1 X="13" Y="3" Z="3"/><P2 X="13" Y="3" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u_cross_in" Type="0"><Primitives><Box Priority="0"><P1 X="15" Y="3" Z="3"/><P2 X="15" Y="3" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u_rc" Type="0"><Primitives><Box Priority="0"><P1 X="16" Y="8" Z="4"/><P2 X="16" Y="8" Z="6"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u_port" Type="0"><Primitives><Box Priority="0"><P1 X="16" Y="13" Z="4"/><P2 X="16" Y="13" Z="6"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_port" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="15" Y="12" Z="5"/><P2 X="17" Y="14" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u_mid" Type="0"><Primitives><Box Priority="0"><P1 X="10" Y="8" Z="3"/><P2 X="10" Y="8" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e_in" Type="2"><Primitives><Box Priority="0"><P1 X="18" Y="10" Z="5"/><P2 X="18" Y="10" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_in" Type="3"><Primitives><Box Priority="0"><P1 X="18" Y="10" Z="5"/><P2 X="18" Y="10" Z="5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

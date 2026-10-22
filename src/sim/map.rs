@@ -10,6 +10,7 @@ use super::results::{ProbeKind, ProbeLocation};
 use crate::Result;
 use crate::axis::Axis;
 use crate::compile::{ModelSources, NodeMap};
+use crate::engine::boundary::PmlLayers;
 use crate::engine::cylindrical;
 use crate::engine::port::loop_entries;
 use crate::engine::{
@@ -107,6 +108,9 @@ struct Group {
     sources: Vec<(usize, Vec<f64>)>,
     /// Cylindrical grids: every edge csx listed, copies included.
     raw: Vec<[usize; 3]>,
+    /// Edges inside openEMS's PML layers, taken out of `edges` (their
+    /// caps stay).
+    in_layer: Vec<EdgeValues>,
 }
 
 /// `(series, parallel)` edge counts of a set of edge start nodes along
@@ -417,6 +421,7 @@ pub(crate) fn map_sources(
     fdtd: &Fdtd,
     warnings: &mut Vec<String>,
     bloch: Option<BlochMap>,
+    pml: Option<&PmlLayers>,
 ) -> Result<Mapped> {
     let mut mapped = Mapped::default();
     let dt = engine.dt();
@@ -464,6 +469,7 @@ pub(crate) fn map_sources(
                 can_source: false,
                 sources: Vec::new(),
                 raw: Vec::new(),
+                in_layer: Vec::new(),
             });
             groups.len() - 1
         });
@@ -512,6 +518,43 @@ pub(crate) fn map_sources(
     } else if cylindrical {
         for g in &mut groups {
             redistribute(g);
+        }
+    }
+    // openEMS's PML layer replaces the update of its edges: an element's
+    // R and C have no effect there, with an inductor or in series openEMS
+    // diverges (black box, design §5.16.2). The element keeps its values
+    // per edge (spread over all its edges) and its caps.
+    if let Some(layers) = pml {
+        for g in &mut groups {
+            let (inside, keep): (Vec<EdgeValues>, Vec<EdgeValues>) = g
+                .edges
+                .iter()
+                .copied()
+                .partition(|e| layers.contains(true, g.axis, e.node));
+            if inside.is_empty() {
+                continue;
+            }
+            let unstable = g.topology == Topology::Series || inside.iter().any(|e| e.l.is_some());
+            warnings.push(format!(
+                "lumped element {:?}: {} of its {} edge(s) lie inside a PML layer and are \
+                 ignored there (openEMS's layer replaces their update{})",
+                g.name,
+                inside.len(),
+                inside.len() + keep.len(),
+                if unstable {
+                    "; openEMS's run diverges with an inductor or a series element there"
+                } else {
+                    ""
+                }
+            ));
+            g.edges = keep;
+            g.in_layer = inside;
+        }
+        lumped_edge.clear();
+        for (gi, g) in groups.iter().enumerate() {
+            for (e, ev) in g.edges.iter().enumerate() {
+                lumped_edge.insert((g.axis, ev.node), (gi, e));
+            }
         }
     }
     // openEMS semantics (black box, design §5.16.1): an excitation over a
@@ -641,14 +684,22 @@ pub(crate) fn map_sources(
     // ---- install lumped elements (caps first), then sources.
     for g in groups {
         if g.edges.is_empty() {
-            warnings.push(format!(
-                "lumped element {:?}: no usable edges; ignored",
-                g.name
-            ));
+            if g.in_layer.is_empty() {
+                warnings.push(format!(
+                    "lumped element {:?}: no usable edges; ignored",
+                    g.name
+                ));
+            } else if g.caps {
+                add_caps(engine, g.axis, &g.in_layer);
+            }
             continue;
         }
         if g.caps {
-            add_caps(engine, g.axis, &g.edges);
+            if g.in_layer.is_empty() {
+                add_caps(engine, g.axis, &g.edges);
+            } else {
+                add_caps(engine, g.axis, &[&g.edges[..], &g.in_layer[..]].concat());
+            }
         }
         if g.topology == Topology::Parallel && fdtd.get_openems_run() {
             replace_medium(engine, g.axis, &g.edges);
@@ -737,7 +788,9 @@ pub(crate) fn map_sources(
             if worst > 1.0 {
                 explicit = false;
                 warnings.push(format!(
-                    "lumped element {:?}: inductance too small for openEMS's explicit                      inductor update (dt²/(L·C) = {worst:.3} per edge > 1, where openEMS                      becomes unstable); the implicit trapezoidal update is used",
+                    "lumped element {:?}: inductance too small for openEMS's explicit \
+                     inductor update (dt²/(L·C) = {worst:.3} per edge > 1, where openEMS \
+                     becomes unstable); the implicit trapezoidal update is used",
                     g.name
                 ));
             }

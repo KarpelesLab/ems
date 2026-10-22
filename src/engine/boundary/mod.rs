@@ -17,4 +17,4 @@ pub mod upml;
 pub use abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 pub use cpml::{CpmlBoundary, CpmlCoefficients};
 pub use mur::{MurBoundary, MurMedia};
-pub use upml::OpenEmsPml;
+pub use upml::{OpenEmsPml, PmlLayers};

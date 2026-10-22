@@ -3647,9 +3647,40 @@ with the same stop step (2.4e-2), the microstrip filter with `PML_8`
 line ends (`pml_msl_filter`) 2e-7…5e-7 on the ports, 1e-5 on the stub
 field (3e-3).
 
-Not reproduced: lumped elements reaching into a layer (openEMS's
-handling there was not measured); on cylindrical grids with the axis
-both codes differ near the axis also without PML (`pml_cyl` has none).
+*Lumped elements in a layer* (wave 14; probe files of a vacuum box with
+`PML_6` on x_max, elements across and inside the layer, compared with the
+same box without them): openEMS's R and C have no effect on layer edges
+(probe files bit-identical with and without a 50 Ω resistor, a 1 pF
+capacitor or an R‖C on lines inside the layer; the operator dump does not
+change either), they act on the edges outside it (an element across the
+interface plane x = 14 changes the fields through its outer columns
+only, with the per-edge values of the whole element) and on the interface
+plane; the element's caps (PEC) and an excitation over it act inside the
+layer too. With an inductor (R‖L) or a series element (LEtype 1) inside
+the layer openEMS diverges (NaN within 800 steps). ems had folded the R
+and C into the layer's rewritten coefficients and diverged (R‖C) or ran
+a different update (R: 0.25–0.99 relative difference). Files now leave
+an element's edges inside a layer out after spreading its values over
+all its edges (`sim::map`, `upml::PmlLayers`; caps kept, the excitation
+a plain soft source, a warning), inductors and series elements included
+(openEMS's divergence is not reproduced, the warning says so). Fixture
+`pml_lumped` (a resistor across the interface, an R‖C box with caps
+and a 50 Ω port inside the layer, Mur on the other faces): 4.7e-7…1.1e-5
+on the voltages and currents, 2.5e-5 / 6e-5 on the H / E probe three
+cells deep in the layer (was ~1e7: diverged); in a closed PEC box with
+the same layer the codes differ by 5e-5…3e-4 with and without the
+elements (the ring-down's round-off).
+
+*Sources in a layer, round-off* (wave 14): the `pml_corner` H line dump
+(5e-5 of its own largest value) is 1.8e-6 of the H scale of its E field
+(`E_max/Z0`; the line runs through a weak-H region of the layer): f32
+round-off of the static field the source leaves in the layer, not a
+formulation difference (with the source moved out of the layer the same
+dumps agree to 3.6e-6 and 4e-7). Not emulated (it would need openEMS's
+operation order in single precision).
+
+Not reproduced: on cylindrical grids with the axis both codes differ
+near the axis also without PML (`pml_cyl` has none).
 
 **Current probes** (§5.16.1). On a graded microstrip mesh the voltages
 agree to 6e-7; the current probes (flat boxes on primary x planes around
