@@ -3120,9 +3120,62 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     a lower-priority block under the metal, off-grid metal in 30 %) all
     agree to the printed digits (2 of 100 were 1.3–1.9e-3 off before) and
     the material dumps are identical; fixture `metal_material_tie` (5e-7…
-    9e-7). Not reproduced: cylindrical grids, where openEMS's rule
-    differs (ems applies the Cartesian formula to the coordinate lines;
-    the cylindrical fixtures fix `TimeStep`).
+    9e-7). Cylindrical grids: next item.
+- **Time step on cylindrical grids** (wave 14, `engine::timestep_cyl`,
+  files and `TimeStep::OpenEms`; ems had used its operator limit there
+  and the cylindrical fixtures fixed `TimeStep`). openEMS evaluates the
+  same two criteria with the physical cylindrical circuit values and
+  these conventions, fitted from `--no-simulation -vvv` (step and
+  limiting edge of every grid) on ~560 random meshes (sectors and closed
+  grids, with and without the axis, graded ρ, α, z, ρ_min from 0.3 to
+  50 mm) and the operator dump:
+  - geometry outside the mesh comes from lines extrapolated with the
+    outermost cell (the radius of the cell beyond `ρ_max` enters; the
+    dual line below `ρ_min` is `ρ_min − Δρ_0/2`, clipped at 0), while
+    indices outside clamp as on Cartesian meshes; Gershgorin takes full
+    boundary duals and counts the faces beyond the boundary (the
+    Cartesian half-cell rule when cells are mirror images);
+  - z components swap their α widths: the dual face of E_z at `α_j` is
+    `Δα_j·(ρ_hi² − ρ_lo²)/2` with the *primary* `Δα_j`, the face of H_z
+    in cell `j` takes the *dual* width (the operator dump has the same
+    coefficients; equal on uniform α);
+  - Rennings shifts the geometry, not only the materials, of the face
+    below (cancels on Cartesian meshes), and evaluates the own-axis term
+    at each end `m` of the edge, `½Σ_m max(P_c(m) + |D_b(m)|, P_b(m) +
+    |D_c(m)|)` (`P_b(m) = L̄_c/C_b(m)`; the Cartesian formula when both
+    ends pick the same branch, which they do on Cartesian meshes). An E_ρ
+    edge of a uniform mesh gets `½(ρ_{i+1}/ρ_{i+½} + ρ_{i+½}/ρ_i)/Δρ²`;
+    the end-averaged form had `½(ρ_{i+½}/ρ_i + ρ_{i+½}/ρ_{i+1})/Δρ²`, up to
+    2 % off (14 of 160 sectors, 6 of 80 closed grids);
+  - a closed azimuth gets openEMS's extra line `α_1 + 2π` and is treated
+    as a sector;
+  - with the axis openEMS uses the Gershgorin criterion whatever
+    `TimeStepMethod` says (both methods print the same step on all 160
+    axis meshes), without the axis z edge (updated outside the
+    operator) and with the H_ρ faces of zero area left out;
+  - `MultiGrid`: one grid per zone; a zone boundary on line `I` makes an
+    inner grid of the lines `ρ_0 … ρ_I` and every second α line, and the
+    outer grid's step is set by its edges with ρ index `> I`; the step
+    is the smallest ("split position @I+1" in openEMS's console; openEMS
+    rejects some splits, "split invalid", which ems accepts).
+  Agreement to the printed 6 digits: all 160 sector, 80 closed, 160
+  axis meshes (vacuum, both methods) and 251 runs of the `ems` binary
+  with random ε, μ, κ boxes, closed and multigrid grids, except 4 of 60
+  closed grids with a material ending between `α_{N−1}` and 2π or
+  starting inside the first cell: openEMS reads the materials of its
+  `2π` and extra lines neither periodically nor at the literal angles
+  (a box over `[−1, 6.2]` rad leaves the extra line in vacuum and the
+  `2π` line in the material; one over `[0, 2π]` fills both), up to 5 %;
+  ems takes the periodic images. Full precision (probe time columns): 1e-8
+  … 6e-8 on the fixtures. The cylindrical fixtures now run on openEMS's
+  own step (regenerated: `adv_cyl_*`, `cyl_*`, `dump_cyl*`, `pml_cyl`,
+  `e2e_coax_monopole`), except the debug dumps (`cli_debug_cyl*`), the
+  conducting-sheet cavity (`cyl_sheet_*`: openEMS's thin fin model grows
+  without bound at its own, 11 % longer step) and `adv_cyl_multigrid`
+  (§5.16.2). The closed dump `dump_cyl_closed` then records the state
+  after the last step, which ems now samples on cylindrical grids with
+  the axis or a closed azimuth too (its look-ahead H update; only E is
+  merged there).
 - **Dumps of a Dirac or step excitation** record every step (openEMS's
   Nyquist rate is then 1 step whatever `f_max` says; ems used `f_max`
   and wrote every 12th step of `dump_dirac`, wave 13; agreement 5e-7).
@@ -3450,14 +3503,18 @@ mesh; TE11-like field on a graded mesh), with mode functions `sin`, `1`,
 with `CylinderCoords="1"` on `<FDTD>` (a `CoordSystem` attribute there is
 ignored by openEMS, which then runs the `(ρ, α, z)` lines as a Cartesian
 mesh); `α` lines are radians. ems follows the grid's `CoordSystem` and
-accepts `CylinderCoords` silently. With equal `dt` (openEMS's own rule
-gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
-2e-13 s on a 0.5 mm / 15° mesh; it warns but runs):
-- without the axis (coax, annular cavity, closed azimuth): 1e-6, also
-  static dielectrics;
-- with the axis (closed azimuth): 5.5e-7…4.4e-6 (`adv_cyl_axis`; the
-  coax-fed monopole `e2e_coax_monopole` 4.6e-7…1.8e-6) with openEMS's
-  axis update on the file path, 4.4–5.1e-3 (1.7–2.2e-4) before.
+accepts `CylinderCoords` silently. Both codes step with openEMS's own
+time step (§5.16.1; it is smaller than ems's operator bound near the
+axis, 1.54e-13 vs 2e-13 s on a 0.5 mm / 15° mesh); numbers after the
+regeneration on it in wave 14:
+- without the axis (coax, annular cavity, closed azimuth): 1.6e-6…3.9e-5
+  (`adv_cyl_coax`, `adv_cyl_noaxis`; their α probe 1.6e-4), also static
+  dielectrics (with a fixed 2e-13 or 5e-13 s step: 1e-6);
+- with the axis (closed azimuth): 6.5e-7…3.6e-6 (`adv_cyl_axis`; the
+  coax-fed monopole `e2e_coax_monopole` 6.2e-7…3.3e-6, Z_in 4.7e-7) with
+  openEMS's axis update on the file path (5.5e-7…4.4e-6 and
+  4.6e-7…1.8e-6 at the fixed steps; 4.4–5.1e-3 and 1.7–2.2e-4 before the
+  axis update).
   openEMS's operator dump gives exactly ems's coefficients for every
   edge next to the axis; the axis z edge is updated outside it. Per-step
   E and H dumps (`DumpMode` 0, every step, a 6 × 6 × 4 cavity with two
@@ -3479,8 +3536,9 @@ gives a smaller step than ems's operator bound near the axis, 1.54e-13 vs
   for ems's embedding (§5.15.1), so ems keeps its embedding (accuracy
   rule of §5.16; not fitted);
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
-  (midpoint rule in `(ρ, α, z)`, physical areas): 0.5–1e-3 on a
-  Drude-filled coax (static `ε` alone 1e-6);
+  (midpoint rule in `(ρ, α, z)`, physical areas): 1.7–3.8e-3 on a
+  Drude-filled coax at openEMS's step of 1.8e-12 s (0.5–1e-3 at a fixed
+  5e-13 s; static `ε` alone 1e-6);
 - plane waves (`cyl_planewave`): openEMS ignores a `PlaneWave` excitation
   on a cylindrical grid (fields identically zero, no message, for
   propagation along z and along ρ; the same box on a Cartesian mesh runs);

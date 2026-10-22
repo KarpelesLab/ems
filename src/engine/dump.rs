@@ -1698,8 +1698,9 @@ impl Operator for FreqDump {
 /// step `N` of an engine that has completed `N` steps, evaluated locally
 /// from the current fields and coefficients (`i' = da·i − db·curl u`)
 /// without running the step (see [`FieldSampler::sample_lookahead`]);
-/// `None` on periodic and multigrid grids and on cylindrical grids with
-/// the axis or a closed azimuth, where the H update has extra terms.
+/// `None` on multigrid grids (zone projection) and on periodic Cartesian
+/// grids. (The axis and the closed azimuth of a cylindrical grid only
+/// merge the E copies, so their H update is the plain one.)
 /// Operators that complete the H update of their edges themselves
 /// ([`Operator::lookahead_current`](super::Operator::lookahead_current):
 /// openEMS's PML) are applied, then the H sources
@@ -1710,10 +1711,9 @@ pub(crate) fn with_lookahead_currents<R>(
     f: impl FnOnce(&dyn Fn(Axis, [usize; 3]) -> f64) -> R,
 ) -> Option<R> {
     let g = engine.grid();
-    if (g.is_cylindrical() && (g.has_axis() || g.is_closed()))
-        || g.has_multigrid()
-        || engine.periodic.is_some()
-    {
+    // The axis and the seam of a cylindrical grid merge E copies only;
+    // their H update is the plain one.
+    if g.has_multigrid() || (engine.periodic.is_some() && !g.is_cylindrical()) {
         return None;
     }
     let co = engine.coefficients();

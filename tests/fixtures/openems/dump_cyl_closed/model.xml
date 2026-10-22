@@ -8,7 +8,7 @@
   Hand-written for the ems dump fixtures (scripts/openems-oracle/gen-dumps.sh).
 -->
 <openEMS>
-  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e12" OverSampling="4" CylinderCoords="1" TimeStep="1e-13">
+  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e12" OverSampling="4" CylinderCoords="1">
     <Excitation Type="10" f0="40e9" Function="exp(-((t-1e-11)/3e-12)^2)"/>
     <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
   </FDTD>

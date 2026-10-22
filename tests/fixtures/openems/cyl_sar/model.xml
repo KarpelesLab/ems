@@ -5,7 +5,7 @@
   Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
 -->
 <openEMS>
-  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e9" TimeStep="3e-12" CylinderCoords="1">
+  <FDTD NumberOfTimesteps="300" endCriteria="0" f_max="2e9" CylinderCoords="1">
     <Excitation Type="10" f0="1.5e9" Function="sin(2*pi*1e9*t)"/>
     <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
   </FDTD>

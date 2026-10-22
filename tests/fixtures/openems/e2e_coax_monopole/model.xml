@@ -6,7 +6,7 @@
   Hand-written for the ems end-to-end fixtures (scripts/openems-oracle/gen-e2e.sh).
 -->
 <openEMS>
-  <FDTD TimeStep="3e-13" NumberOfTimesteps="6000" endCriteria="1e-4" f_max="4e9" CylinderCoords="1">
+  <FDTD NumberOfTimesteps="6000" endCriteria="1e-4" f_max="4e9" CylinderCoords="1">
     <Excitation Type="0" f0="2.5e9" fc="1.5e9"/>
     <BoundaryCond xmin="PEC" xmax="MUR" ymin="PEC" ymax="PEC" zmin="MUR" zmax="MUR"/>
   </FDTD>

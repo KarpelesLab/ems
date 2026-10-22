@@ -70,6 +70,6 @@ run dump_cyl "" '_00000000(06|12)\.vts$'
 run dump_cyl native '_00000000(06|12)\.vts$' --nativeFieldDumps
 rm -f "$FIX/dump_cyl/native/"*.h5 "$FIX/dump_cyl/native/structure.txt" 2> /dev/null || true
 run dump_sar "" "$ALL"
-run dump_cyl_closed "" '_00000000(31|62)\.vts$'
+run dump_cyl_closed "" '_00000000(30|60)\.vts$'
 run dump_dirac "" "$ALL"
 echo "fixtures written to $FIX"

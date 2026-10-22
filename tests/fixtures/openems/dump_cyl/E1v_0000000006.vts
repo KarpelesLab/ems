@@ -3,14 +3,14 @@
   <StructuredGrid WholeExtent="0 4 0 4 0 3">
   <Piece Extent="0 4 0 4 0 3">
     <PointData>
-      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.17940058392889935">
-        AQAAAACAAACwBAAA0QEAAA==eJxjYKAuiLzcbwVj3+k8aA1jrwy6YklIb+4EXrj6GX7L98DYjPqc1th1IEAUkr23SbSXXHD/yrFdMPZHl2C4e73LOneiq/19239XZpcGWHzNLK3dSSXzd9f2edrYBxvbyApG7r25tdOWc3GbtQVv4K4LrGus5fvCLR8e17MAqb/2qGN3ff1zsF2nOm/tYThtscct5rKNKPsZy6etOpYrtpjbPfj1xeammr/N9SfHbPKCpKyl6prA4fGTS3/Xmsb3YHt/XVi7+8Cs41Yge/d+/bEnNMXcFmSvlKyY9a7JqdYXgfaKtJlanoj/YYHuft5Ffbt+t3WBzdTsE98TbihsA/a3uevOBV32BMP4zpVj8PgBhpUNjO1V1omhFxhWVsCwAotvmKVlDQwra5Cb7YKN9wDDCuxmrsVtu815A62gYbUTGFY7oGFlDQwrK2hY2QDDygYUVp3sZ3a6t+nsBIXVo19f9txW898DDavdwLACh+1vLn2rdY3vwfb+vLDWetes47ugYWUDDCtwHMnIiu3ePTl1NzSsdgLDage6+7kX9Vn9aOvaBQ0rG2BYgdPGB3NXy/ld9hhpg9oAOS/cQsoLq4jICwU0yIPE2EssAABC29wQ
+      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.17755446513330717">
+        AQAAAACAAACwBAAAngEAAA==eJxjYKAucO5daAVjqy05Zw1jP9/xwZKQXofdInD1Gvxb98DYkg3C1th1IIATBfaSC0qnP9gFY4u/S4G7d7HMnJ3oaplPZe2KTbADi9cctdwdJLpmt8DFMJtUUWsbR7mkvdzhvba3Xk20/tOVvEstYJf1mTMllgl1bhYg9dcnTN6t3f8TbNfEn4/3HDjqsMe4/7qN969rlg4nTC03XjC1e2/636b2bLjNhaVnbdbPUrf239kLDo8ZO1x3rXVhB+vdrbFn9yrOq1b8QHtV5zPufSpmbwuyV6RFyTrnd4W1BtDeo2p+llqcvBhhtl1m4a7KyjlgMwstVfY418vbgNgHfsbvdG6PJBjGwLCCxw8wrGyQwgpDLzCsrIBhZQkNK2tgWFlDw2oPMKxsoWG1GxhWVtCw2gkMqx3QsLIGhpUVNKxsgGFlAw2rncCw2gkNqz3AsNoDDavdwLDaBQ0rK2BYWUHDyhoYVrugYWULDKu90LDaDQyr3dCw2gkMK4y4BoaVFTCsdkHDygYYVnugYWUJDCsM9dQGwzkPAgCo69Lh
         <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
           <Value index="0">
             0
           </Value>
           <Value index="1">
-            0.17940058393
+            0.17755446513
           </Value>
         </InformationKey>
       </DataArray>

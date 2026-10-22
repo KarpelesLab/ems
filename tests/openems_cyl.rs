@@ -157,8 +157,8 @@ fn kept(case: &str) -> Vec<String> {
 }
 
 /// Relative L2 difference of each kept scalar probe of `case` (openEMS's
-/// files) against ems run on `model` (both codes step with the fixed
-/// `TimeStep` of the model, so the samples coincide).
+/// files) against ems run on `model` (both codes step with the model's
+/// `TimeStep`, or with openEMS's own step, which ems reproduces to ~1e-8).
 fn probe_l2(case: &str, model: &str) -> Vec<(String, f64)> {
     let xml = std::fs::read_to_string(fixture(case).join(model)).unwrap();
     probe_l2_xml(case, model, &xml)
@@ -179,10 +179,16 @@ fn probe_l2_sim(case: &str, model: &str, mut sim: Simulation) -> Vec<(String, f6
             let p = res.probe(&n).unwrap();
             let (et, ev) = (p.times(), p.scalar().unwrap());
             let (mut num, mut den) = (0.0, 0.0);
+            // Both codes step with openEMS's time step (equal to ~1e-8);
+            // ems's samples are interpolated to openEMS's times.
+            let dt = et[1] - et[0];
             for (&ti, &vi) in t.iter().zip(&v) {
-                let k = et.partition_point(|&x| x < ti - 1e-18);
-                let e = if k < et.len() && (et[k] - ti).abs() < 1e-18 {
+                let k = et.partition_point(|&x| x < ti);
+                let e = if k < et.len() && (et[k] - ti).abs() < 1e-6 * dt {
                     ev[k]
+                } else if k > 0 && k < et.len() && et[k] - et[k - 1] < 1.5 * dt {
+                    let s = (ti - et[k - 1]) / (et[k] - et[k - 1]);
+                    ev[k - 1] + s * (ev[k] - ev[k - 1])
                 } else {
                     0.0
                 };

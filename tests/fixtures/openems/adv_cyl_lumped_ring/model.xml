@@ -2,7 +2,7 @@
 <!-- Radial 20 Ohm lumped resistor over the whole ring of a closed-azimuth coax (rho = 2...8 mm, 16 alpha cells): openEMS spreads it like a homogeneous conductivity (R_e proportional to 1/rho) and counts the alpha = 2 pi copies as 17 parallel columns (21.25 Ohm physically).
      Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-adv.sh). -->
 <openEMS>
-  <FDTD NumberOfTimesteps="3000" endCriteria="0" f_max="10e9" TimeStep="5e-13" CylinderCoords="1">
+  <FDTD NumberOfTimesteps="3000" endCriteria="0" f_max="10e9" CylinderCoords="1">
     <Excitation Type="10" f0="10e9" Function="exp(-((t-3e-10)/7e-11)^2)*cos(2*pi*1e10*(t-3e-10))"/>
     <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
   </FDTD>

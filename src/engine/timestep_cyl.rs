@@ -87,7 +87,11 @@ impl<'a> Sub<'a> {
         let closed = grid.is_closed();
         let mut lines = [
             grid.lines(Axis::X)[..rho_lines].to_vec(),
-            grid.lines(Axis::Y).iter().step_by(stride).copied().collect::<Vec<_>>(),
+            grid.lines(Axis::Y)
+                .iter()
+                .step_by(stride)
+                .copied()
+                .collect::<Vec<_>>(),
             grid.lines(Axis::Z).to_vec(),
         ];
         if closed {
@@ -232,7 +236,8 @@ impl<'a> Sub<'a> {
     fn nodes(&self) -> impl Iterator<Item = [isize; 3]> + '_ {
         let n = self.n;
         (self.imin..n[0]).flat_map(move |i| {
-            (0..n[1]).flat_map(move |j| (0..n[2]).map(move |k| [i as isize, j as isize, k as isize]))
+            (0..n[1])
+                .flat_map(move |j| (0..n[2]).map(move |k| [i as isize, j as isize, k as isize]))
         })
     }
 
@@ -428,7 +433,10 @@ mod tests {
         let g = g.with_multigrid(&[8]).unwrap();
         let d = openems_timestep_cyl(&g, &m, TimestepMethod::Rennings);
         assert!((d / 3.06136e-13 - 1.0).abs() < 5e-6, "{d:e}");
-        let outer = 1.0 / Sub::new(&g, &m, None, 21, 1, 9).omega2(TimestepMethod::Rennings).sqrt();
+        let outer = 1.0
+            / Sub::new(&g, &m, None, 21, 1, 9)
+                .omega2(TimestepMethod::Rennings)
+                .sqrt();
         assert!((outer / 1.05352e-12 - 1.0).abs() < 5e-6, "{outer:e}");
     }
 }

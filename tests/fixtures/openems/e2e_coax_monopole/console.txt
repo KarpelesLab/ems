@@ -1,9 +1,8 @@
 Create cylindrical FDTD operator
-Operator::CalcGaussianPulsExcitation: Requested excitation pusle would be 6367 timesteps or 1.9101e-09 s long. Cutting to max number of timesteps!
 FDTD simulation size: 24x4x37 --> 5328 FDTD cells 
-FDTD timestep is: 3e-13 s; Nyquist rate: 416 timesteps @4.00641e+09 Hz
-Excitation signal length is: 6000 timesteps (1.8e-09s)
-Max. number of timesteps: 6000 ( --> 1 * Excitation signal length)
+FDTD timestep is: 4.27166e-13 s; Nyquist rate: 292 timesteps @4.00857e+09 Hz
+Excitation signal length is: 4471 timesteps (1.90986e-09s)
+Max. number of timesteps: 6000 ( --> 1.34198 * Excitation signal length)
 openEMS::SetupFDTD: Warning, max. number of timesteps is smaller than three times the excitation. 
 	You may want to choose a higher number of max. timesteps... 
 Create FDTD engine (cylindrical mesh using sse compression + multithreading)

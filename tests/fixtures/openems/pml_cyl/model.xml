@@ -7,7 +7,7 @@
   Hand-written for the ems PML fixtures (scripts/openems-oracle/gen-pml.sh).
 -->
 <openEMS>
-  <FDTD NumberOfTimesteps="2000" endCriteria="1e-30" TimeStep="2e-13" CylinderCoords="1" OverSampling="40">
+  <FDTD NumberOfTimesteps="2000" endCriteria="1e-30" CylinderCoords="1" OverSampling="40">
     <Excitation Type="0" f0="10e9" fc="9e9"/>
     <BoundaryCond xmin="PEC" xmax="PML_4" ymin="PEC" ymax="PEC" zmin="PML_3" zmax="PML_3"/>
   </FDTD>
