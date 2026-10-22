@@ -3534,7 +3534,20 @@ regeneration on it in wave 14:
 - `MultiGrid`: 3.0e-3…2.0e-2 (1–3e-2 before the axis update);
   openEMS's multigrid changes its own solution by 0.6–1 % against 0.1 %
   for ems's embedding (§5.15.1), so ems keeps its embedding (accuracy
-  rule of §5.16; not fitted);
+  rule of §5.16; not fitted). Wave 14 established openEMS's structure
+  from its time step (§5.16.1) and its console: a zone boundary on line
+  `I` runs a separate coarse operator on the lines `ρ_0 … ρ_I` with every
+  second α line (its own Gershgorin step, "split position @I+1") next to
+  the full-mesh operator, which updates the edges with ρ index `> I`;
+  it rejects splits that leave the outer grid few lines ("split
+  invalid"), and its multigrid engine is always the multithreaded one.
+  Its field dumps of the inner region are interpolated from the coarse
+  lines (DumpMode 0 and `--nativeFieldDumps` alike; the odd α lines
+  of the inner rings are not plain interpolants), so the per-step
+  regression used for the axis update does not apply directly; the
+  coupling of the two operators (which grid owns the ring `ρ_I`, how the
+  fine H at `ρ_{I+½}` sees the coarse E) is not fitted, and
+  `adv_cyl_multigrid` keeps its fixed `TimeStep`;
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 1.7–3.8e-3 on a
   Drude-filled coax at openEMS's step of 1.8e-12 s (0.5–1e-3 at a fixed

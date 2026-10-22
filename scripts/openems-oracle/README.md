@@ -71,7 +71,8 @@ command line in the case's `meta.txt`:
   1 g averaging, plane waves, `CellConstantMaterial`, radial material
   interfaces (`cyl_radial`), the radial-line port's properties
   (`cyl_radial_port`), sources and lumped
-  elements at α > π and a lumped ring ending at α = 2π;
+  elements at α > π, a lumped ring ending at α = 2π and current boxes at
+  the α = 0 seam (`cyl_current_seam`);
   `tests/openems_cyl.rs`, `tests/openems_dumps.rs`), copying back the
   files listed on the `keep:` line of the case's `meta.txt` (shell
   patterns) and listing the structure of kept HDF5 files
