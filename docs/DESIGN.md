@@ -4582,7 +4582,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-21, after wave 13)
+### Status (2026-10-23, after wave 14)
 
 | Step | State |
 |---|---|
@@ -4690,28 +4690,48 @@ currents on interpolated and merged faces (remove the wall-guided wave
 and a late-time growth of cut cells in a CPML that predated the wave),
 cylindrical ρ_max PML on merged faces (§5.13).
 
+Wave 14 (openEMS parity on the file path, §5.15, §5.16): openEMS's time
+step on cylindrical grids (`engine::timestep_cyl`, its printed digits on
+~650 meshes and runs; the cylindrical fixtures run on it) and α seam
+current loops; materials averaged as if metal were absent (time-step ties
+up to 1.4 %), the f32 CFL step, H probes snapped to cells, the energy
+measure without E on the three upper faces (Mur TEM lines 0.99 dB →
+4e-4 dB), lumped R/C ignored inside its PML, a randomized differential
+sweep of 230 combined-feature models (212 agree; 11 fixes: sheet and
+line priorities, poles in the PML, Mur/pole order, Mur corners, hard E
+sources, the series-element capacitance limit, held Mur faces, …);
+openEMS's ConductingSheet width rule (also cylindrical, oblique polygon
+sides).
+
+Wave 14 (native): plane waves in layered and dispersive backgrounds from
+the exact discrete spectral incident field (−125…−135 dB leakage, §5.11);
+NF2FF over a stratified ground (half-space, layers, grounded slab;
+`Nf2ffResult::with_ground`, §5.10); CPW, stripline and a sectoral
+waveguide port on cylindrical grids (§5.5); conformal sheets with
+deviation currents on merged regions, stretched in CPML and ρ_max PML
+layers, junctions of several sheets and sheets touching solid metal
+(§5.13); fused H/E engine steps on large slabs (×1.3–1.7 at 200³–256³,
+bit-identical, §6.1).
+
 Remaining:
-- openEMS's time step on cylindrical grids (different rule; those
-  fixtures fix `TimeStep`), ~1e-7 single-precision differences of its
-  printed step, metal boxes sharing a face with higher-priority material
-  (up to 1.4 %); the end-criterion residual of dispersive runs (0.027 dB
-  on `e2e_drude_slab`); α current loops of sector boxes touching the
-  α = 0 seam on closed cylindrical grids (§5.16.2); azimuthal multigrid
-  as openEMS runs it (3e-3…2e-2).
-- From the sweep: polyhedron/STL surface ties (position dependent in
-  openEMS, no consistent rule), tie round-off (csx tolerance, §8.1 item
-  17), ConductingSheet polygons with oblique sides (2.5e-3), the
-  ConductingSheet model on cylindrical grids; static fields of sources
-  inside openEMS's PML (round-off), lumped elements reaching into it.
-- SAR averaging: ties between equal face cubes decided by openEMS's
-  rounding, whole-cell cubes in uniform tissue, ~1 % of small C95.3 face
-  cubes (§5.12).
-- Ports on cylindrical grids: CPW, stripline, rectangular waveguide.
-- Conformal: merged sheet regions without deviation currents, sheets in
-  PML layers, PML corrections in the merge groups' energy look-ahead;
-  junctions of several oblique sheets in one cell; a csx way to express a
-  feed on an oblique wire; layered/dispersive backgrounds for plane waves
-  and NF2FF.
+- openEMS's azimuthal multigrid coupling (3e-3…2e-2), closed-grid time
+  steps with material ending at 2π (4 of 60, ≤ 5 %), the Drude fixture on
+  cylindrical grids (3.8e-3), sheets next to the α seam (5e-3 on one
+  edge), two sheets meeting on a line.
+- From the random sweep (§5.16.3): series elements over several columns,
+  H probes next to held Mur faces, conducting sheets near Mur/PML faces in
+  lossy or dispersive media, two slow-growth cases.
+- From the feature sweep: polyhedron/STL surface ties (position dependent
+  in openEMS), tie round-off (csx tolerance, §8.1 item 17); openEMS's
+  Rennings step below 4e-8.
+- SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
+  ~1 % of small C95.3 face cubes (§5.12).
+- Native: small solid conformal faces still merged in CPML layers, sheets
+  ending short of a surface (slits), sources on sheet-cut edges; lossy
+  backgrounds for NF2FF and surface-wave power; plane waves on non-uniform
+  meshes across layers and the Bloch variant in layers; fused steps for
+  energy steps, multigrid, plane waves and conformal operators; temporal
+  blocking; the idle-machine benchmark.
 
 Benchmark (`bench_vacuum`, vacuum box with PEC walls, idle AMD Threadripper
 9970X, 32 cores / 64 threads, master `fa06fca`), in Mcells/s:
