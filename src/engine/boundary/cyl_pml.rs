@@ -433,7 +433,21 @@ impl CylLayer {
     /// for operators that update a face themselves (conformal merge
     /// groups, whose kernel `db` is 0 so the layer's correction vanishes).
     pub(crate) fn h_face(&self, a: Axis, p: [usize; 3]) -> Option<FaceStretch> {
-        let c = self.h.iter().find(|c| c.comp == a)?;
+        Self::stretch(&self.h, a, p)
+    }
+
+    /// The E-side stretch of the edge along `a` at node `p`, if it is in
+    /// the layer ([`h_face`](Self::h_face) for E edges: conformal sheet
+    /// pieces, whose kernel `cb` is 0). Its
+    /// [`correction`](FaceStretch::correction) of the edge's derivative
+    /// terms `x1` (`D_next` of `i_prev`) and `x2` (`D_prev` of `i_next`) is
+    /// what the layer adds: `u ← u + cb·(Y − S)`.
+    pub(crate) fn e_edge(&self, a: Axis, p: [usize; 3]) -> Option<FaceStretch> {
+        Self::stretch(&self.e, a, p)
+    }
+
+    fn stretch(comps: &[Comp], a: Axis, p: [usize; 3]) -> Option<FaceStretch> {
+        let c = comps.iter().find(|c| c.comp == a)?;
         let inside = |r: (usize, usize), x: usize| (r.0..r.1).contains(&x);
         if !(inside(c.x, p[0]) && inside(c.j, p[1]) && inside(c.k, p[2])) {
             return None;

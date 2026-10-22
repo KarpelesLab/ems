@@ -32,12 +32,29 @@
 //! the sheet), and the hosts sharing small regions form blocks with the
 //! consistent inductance `PᵀLP`. That is second order for `H` tangential
 //! to the sheet (TE fields), where merging (constant extrapolation, the
-//! fallback for regions without a valid stencil and inside absorbing
-//! layers) is first order. Each interpolated region also keeps a
-//! deviation current (inductance `(f_r + a)·L`, see the
+//! fallback for regions without a valid stencil) is first order. Each
+//! interpolated region, and each small member of a merge group, also keeps
+//! a deviation current (inductance `(f_r + a)·L`, see the
 //! [module docs](super#deviation-currents-no-spurious-static-fields)), so
-//! no spurious static field is left on its cut pieces; merged regions do
-//! not have one yet. The stability check covers the whole system.
+//! no spurious static field is left on its cut pieces. The stability check
+//! covers the whole system.
+//!
+//! # Absorbing layers
+//!
+//! Unlike small volume-cut faces, small regions are interpolated inside
+//! CPML layers too (merged there, the cut cells along a plate running
+//! into a layer held a field that the layer did not absorb and that grew,
+//! design §5.13.1). The kernel's CPML skips the operator's unknowns (cut
+//! edges have `cb = 0`, owned faces `db = 0`), so the operator applies the
+//! layer's stretch itself, with the layer's grading and arithmetic: to
+//! the Ampère sum of each piece (its derivative term across the layer,
+//! from the regions of the faces of the right normal), to the circulation
+//! of each region (the terms on the edges across the layer, added to the
+//! reduced currents driving the region), and to the corrections of uncut
+//! edges (the difference of the region's current from the face's
+//! primary, whose term the CPML already stretched). The cylindrical
+//! `ρ_max` PML is applied the same way ([`FaceStretch`], including the z /
+//! α layers' stretch inside it in the corners).
 //!
 //! # Coupling with the kernel
 //!
@@ -75,6 +92,8 @@ use super::{
 };
 use crate::axis::Axis;
 use crate::engine::Grid;
+use crate::engine::boundary::cpml::CpmlCoefficients;
+use crate::engine::boundary::cyl_pml::FaceStretch;
 use crate::engine::coeffs::Coefficients;
 use crate::engine::fields::Fields;
 use crate::engine::kernel::flush;
@@ -387,8 +406,9 @@ impl Prepared {
 
     /// Builds the operator for merge threshold `tau` on `grid`; `co` holds
     /// the coefficients after the volume edge scaling, `exclude` the faces
-    /// the volume scheme modifies (never used as hosts), `absorbing`
-    /// whether a face touches an absorbing layer (no interpolation there).
+    /// the volume scheme modifies (never used as hosts), `layers` the
+    /// absorbing layers, whose stretch the operator applies to the regions
+    /// and pieces in them.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn construct(
         &self,
@@ -397,9 +417,9 @@ impl Prepared {
         dt: f64,
         tau: f64,
         exclude: &HashSet<Key>,
-        absorbing: &dyn Fn(Axis, [usize; 3]) -> bool,
         copies: &Copies<'_>,
         deviation: f64,
+        layers: &super::ConformalPec,
     ) -> Build {
         let n = grid.nodes();
         let idx = |p: [usize; 3]| index(n, p);
@@ -448,7 +468,6 @@ impl Prepared {
                     grid,
                     tau,
                     exclude,
-                    absorbing,
                     copies,
                     merged: &merged,
                 };
@@ -531,12 +550,18 @@ impl Prepared {
             class_of[r] = c;
             classes[c].push(r);
         }
+        // With deviation currents a merge group's small members keep a
+        // deviation each (soft merging, as for solid metal): such groups
+        // join the blocks, after the hosts.
         let is_host = |c: &Vec<usize>| c.len() == 1 && host_set.contains(&c[0]);
+        let is_soft = |c: &Vec<usize>| deviation > 0.0 && c.len() > 1;
+        let in_block = |c: &Vec<usize>| is_host(c) || is_soft(c);
         let order: Vec<usize> = (0..classes.len())
-            .filter(|&c| !is_host(&classes[c]))
+            .filter(|&c| !in_block(&classes[c]))
             .chain((0..classes.len()).filter(|&c| is_host(&classes[c])))
+            .chain((0..classes.len()).filter(|&c| is_soft(&classes[c])))
             .collect();
-        let scalar = order.iter().filter(|&&c| !is_host(&classes[c])).count();
+        let scalar = order.iter().filter(|&&c| !in_block(&classes[c])).count();
         let mut gid: Vec<usize> = vec![usize::MAX; nreg];
         for (g, &c) in order.iter().enumerate() {
             for &r in &classes[c] {
@@ -636,6 +661,39 @@ impl Prepared {
                 combo[*s].push((scalar + qd, 1.0));
             }
         }
+        // Soft merge groups: the group current `g` (mass `Σ f_r·L`) and a
+        // deviation per small member (`i_m = g + d_m`, mass `(f_r + a)·L`,
+        // coupling `f_r·L`).
+        for (g, &c) in order.iter().enumerate().skip(scalar) {
+            if !is_soft(&classes[c]) {
+                continue;
+            }
+            let qg = g - scalar;
+            for &m in &classes[c] {
+                let reg = &regions[m];
+                if reg.fraction >= tau || !live(reg) {
+                    continue;
+                }
+                let f = &faces[reg.face];
+                let cross = (reg.fraction * f.l, reg.fraction * f.r);
+                let qd = ml.len();
+                ml.push(HashMap::from([
+                    (qd, (cross.0 + deviation * f.l, cross.1)),
+                    (qg, cross),
+                ]));
+                ml[qg].insert(qd, cross);
+                link.push(qd);
+                let (a, b) = (find(&mut link, qd), find(&mut link, qg));
+                link[a.max(b)] = a.min(b);
+                let mut terms: BTreeMap<Ref, f64> = BTreeMap::new();
+                for &(v, sg, _, _) in &reg.terms {
+                    *terms.entry(v).or_insert(0.0) += sg;
+                }
+                let (l, r) = ml[qd][&qd];
+                groups.push(SGroup::new(terms, l, r, dt));
+                combo[m].push((scalar + qd, 1.0));
+            }
+        }
         for (q, ex) in extra.into_iter().enumerate() {
             let g = &mut groups[scalar + q];
             for (v, w) in ex {
@@ -672,12 +730,19 @@ impl Prepared {
             g.db = 0.0;
         }
         report.groups = groups.len();
-        // Slots: the reduced currents, then the interpolated regions.
+        // Slots: the reduced currents, then the interpolated regions and
+        // the merged members with a deviation.
         let mut slots: Vec<Vec<(usize, f64)>> = (0..groups.len()).map(|g| vec![(g, 1.0)]).collect();
         let mut slot: Vec<usize> = gid.clone();
         for (r, _) in &interp {
             slot[*r] = slots.len();
             slots.push(combo[*r].clone());
+        }
+        for r in 0..nreg {
+            if !is_interp.contains(&r) && combo[r].len() > 1 {
+                slot[r] = slots.len();
+                slots.push(combo[r].clone());
+            }
         }
         // Primary region per face (largest fraction), writes and
         // corrections.
@@ -708,27 +773,120 @@ impl Prepared {
                         let axis = Axis::from_index(a).expect("axis");
                         let cb = co.cb(axis)[idx(p)] as f64;
                         if cb > 0.0 {
+                            // The CPML of the edge stretches the kernel's
+                            // term of this face's current (the primary's)
+                            // only; the difference gets its own recursion.
+                            let normal = f.axis;
+                            let stretch =
+                                match layers.cyl_h.as_ref().and_then(|c| c.e_edge(axis, p)) {
+                                    Some(st) => Stretch::Cyl {
+                                        st,
+                                        first: normal == axis.prev(),
+                                        psi: [0.0; 6],
+                                    },
+                                    None => layers
+                                        .cpml_e_at(axis, p, n)
+                                        .into_iter()
+                                        .find(|(d, _)| {
+                                            d.index() == 3 - axis.index() - normal.index()
+                                        })
+                                        .map_or(Stretch::None, |(_, c)| Stretch::cartesian(&c)),
+                                };
                             corrections.push(Correction {
                                 axis,
                                 node: p,
                                 cbs: cb * s,
                                 region: sr,
                                 primary: sp,
+                                stretch,
                             });
                         }
                     }
                 }
             }
         }
-        // Piece incidences.
+        // Piece incidences (all, and by the normal of the face).
         let mut inc: Vec<BTreeMap<usize, f64>> = vec![BTreeMap::new(); self.pieces.len()];
+        let mut inc_by: Vec<[BTreeMap<usize, f64>; 3]> =
+            vec![Default::default(); self.pieces.len()];
         for (r, reg) in regions.iter().enumerate() {
+            let normal = faces[reg.face].axis.index();
             for &(v, s, _, _) in &reg.terms {
                 if let Ref::Piece(j) = v {
                     for &(g, w) in &combo[r] {
                         *inc[j].entry(g).or_insert(0.0) += s * w;
+                        *inc_by[j][normal].entry(g).or_insert(0.0) += s * w;
                     }
                 }
+            }
+        }
+        let terms_of = |m: &BTreeMap<usize, f64>, sign: f64| -> Vec<(usize, f64)> {
+            m.iter()
+                .filter(|t| t.1.abs() > 1e-12)
+                .map(|(&g, &w)| (g, sign * w))
+                .collect()
+        };
+        // Absorbing layers: the stretch of the pieces' Ampère sums (E
+        // side) and of the regions' circulations (H side), as the CPML and
+        // the cylindrical PML apply them to kernel edges and faces.
+        let mut pml = SheetPml::default();
+        for (e, nodes, ids) in &self.cut {
+            let p = nodes[0];
+            let (next, prev) = (e.next().index(), e.prev().index());
+            if let Some(st) = layers.cyl_h.as_ref().and_then(|c| c.e_edge(*e, p)) {
+                for &j in ids {
+                    pml.e_cyl.push(CylE {
+                        piece: j,
+                        x: [
+                            terms_of(&inc_by[j][prev], 1.0),
+                            terms_of(&inc_by[j][next], -1.0),
+                        ],
+                        stretch: st,
+                        psi: [0.0; 6],
+                    });
+                }
+                continue;
+            }
+            for (d, c) in layers.cpml_e_at(*e, p, n) {
+                let normal = 3 - e.index() - d.index();
+                for &j in ids {
+                    pml.e.push(PmlE {
+                        piece: j,
+                        inc: terms_of(&inc_by[j][normal], 1.0),
+                        stretch: Stretch::cartesian(&c),
+                    });
+                }
+            }
+        }
+        for (r, reg) in regions.iter().enumerate() {
+            let f = &faces[reg.face];
+            let (a, p) = (f.axis, f.node);
+            // The region's contour terms on the edges along `ax`.
+            let on = |ax: Axis, sign: f64| -> Vec<(Ref, f64)> {
+                reg.terms
+                    .iter()
+                    .filter(|t| t.2.0 == ax.index())
+                    .map(|t| (t.0, sign * t.1))
+                    .collect()
+            };
+            let (b, c) = a.others();
+            if let Some(st) = layers.cyl_h.as_ref().and_then(|l| l.h_face(a, p)) {
+                pml.h_cyl.push(CylH {
+                    targets: combo[r].clone(),
+                    x: [on(c, 1.0), on(b, -1.0)],
+                    stretch: st,
+                    psi: [0.0; 6],
+                });
+                continue;
+            }
+            for (d, co) in layers.cpml_h_at(a, p, n) {
+                // T_d: the terms on the edges along the third axis.
+                let other = if d == b { c } else { b };
+                pml.h.push(PmlH {
+                    targets: combo[r].clone(),
+                    terms: on(other, 1.0),
+                    stretch: Stretch::cartesian(&co),
+                });
             }
         }
         let pieces = self
@@ -763,6 +921,7 @@ impl Prepared {
                 circ: vec![0.0; ng],
                 next: vec![0.0; ng],
                 scratch: Vec::new(),
+                pml,
             },
             owned,
             report,
@@ -967,7 +1126,6 @@ struct Ctx<'a> {
     grid: &'a Grid,
     tau: f64,
     exclude: &'a HashSet<Key>,
-    absorbing: &'a dyn Fn(Axis, [usize; 3]) -> bool,
     copies: &'a Copies<'a>,
     merged: &'a HashSet<usize>,
 }
@@ -1049,9 +1207,8 @@ impl Ctx<'_> {
     }
 
     /// Whether a candidate keeps its own current and may serve a stencil.
-    fn free(&self, t: Target, fa: Axis) -> bool {
-        let p = self.node(t);
-        if (self.absorbing)(fa, p) || self.centroid(t).is_none() {
+    fn free(&self, t: Target) -> bool {
+        if self.centroid(t).is_none() {
             return false;
         }
         match t {
@@ -1085,15 +1242,21 @@ impl Ctx<'_> {
     /// candidate across its most open piece) and one free neighbour of the
     /// host along each in-plane axis (preferably away from `r`), all on
     /// `r`'s side of the sheet; barycentric weights at `r`'s centroid,
-    /// scaled to currents. `None` if there is no valid stencil.
+    /// scaled to currents. Where that fails (a narrow wedge of the sheet
+    /// against a wall or another sheet leaves the host without a free
+    /// neighbour along one axis), the best triangle of free candidates
+    /// near `r` ([`wider_stencil`](Self::wider_stencil)). `None` if there
+    /// is no valid stencil.
     fn stencil(&self, r: usize) -> Option<Vec<(Target, f64)>> {
+        self.host_stencil(r).or_else(|| self.wider_stencil(r))
+    }
+
+    /// The host stencil of [`stencil`](Self::stencil).
+    fn host_stencil(&self, r: usize) -> Option<Vec<(Target, f64)>> {
         let reg = &self.split.regions[r];
         reg.centroid?;
         let f = &self.split.faces[reg.face];
         let (a, p) = (f.axis, f.node);
-        if (self.absorbing)(a, p) {
-            return None;
-        }
         let mut host: Option<((f64, f64), Target)> = None;
         for &(v, _, ek, pk) in &reg.terms {
             if !self.open(v) {
@@ -1101,7 +1264,7 @@ impl Ctx<'_> {
             }
             let fp = self.prepared.frac_ref(v);
             for t in self.across(a, p, ek, pk) {
-                if !self.free(t, a) {
+                if !self.free(t) {
                     continue;
                 }
                 let score = (fp, self.fraction(t));
@@ -1132,7 +1295,7 @@ impl Ctx<'_> {
                 }
                 for t in self.across(a, hn, ek, pk) {
                     let tn = self.node(t);
-                    if tn[d.index()] == hn[d.index()] || tn == p || !self.free(t, a) {
+                    if tn[d.index()] == hn[d.index()] || tn == p || !self.free(t) {
                         continue;
                     }
                     let rr = rel(t);
@@ -1150,6 +1313,84 @@ impl Ctx<'_> {
         }
         let d: Vec<[f64; 2]> = pts.iter().map(|x| x.1).collect();
         let w = interpolation_weights(&d)?;
+        self.scaled(r, &pts, &w)
+    }
+
+    /// The fallback of [`stencil`](Self::stencil): the free candidates on
+    /// `r`'s side within [`WIDE_DEPTH`] steps across open pieces and uncut
+    /// edges (through any region), the [`WIDE_NEAREST`] nearest to `r`'s
+    /// centroid, and of their triangles the one with the smallest largest
+    /// weight (first in distance order on ties).
+    fn wider_stencil(&self, r: usize) -> Option<Vec<(Target, f64)>> {
+        let reg = &self.split.regions[r];
+        reg.centroid?;
+        let f = &self.split.faces[reg.face];
+        let (a, p) = (f.axis, f.node);
+        let (b, c) = a.others();
+        let scale = [
+            self.grid.delta(b, p[b.index()]),
+            self.grid.delta(c, p[c.index()]),
+        ];
+        let xs = self.pos(a, Target::Region(r));
+        let mut seen: Vec<Target> = vec![Target::Region(r)];
+        let mut front = vec![Target::Region(r)];
+        let mut cand: Vec<(f64, Target, [f64; 2])> = Vec::new();
+        for _ in 0..WIDE_DEPTH {
+            let mut next = Vec::new();
+            for &t in &front {
+                for (v, ek, pk) in self.terms(t) {
+                    if !self.open(v) {
+                        continue;
+                    }
+                    for u in self.across(a, self.node(t), ek, pk) {
+                        if seen.contains(&u) {
+                            continue;
+                        }
+                        seen.push(u);
+                        next.push(u);
+                        if self.free(u) {
+                            let x = self.pos(a, u);
+                            let d = [(x[0] - xs[0]) / scale[0], (x[1] - xs[1]) / scale[1]];
+                            cand.push((d[0].hypot(d[1]), u, d));
+                        }
+                    }
+                }
+            }
+            front = next;
+        }
+        // (Stable: ties keep the discovery order.)
+        cand.sort_by(|x, y| x.0.total_cmp(&y.0));
+        cand.truncate(WIDE_NEAREST);
+        let mut best: Option<(f64, [usize; 3], Vec<f64>)> = None;
+        for i in 0..cand.len() {
+            for j in i + 1..cand.len() {
+                for k in j + 1..cand.len() {
+                    let Some(w) = interpolation_weights(&[cand[i].2, cand[j].2, cand[k].2]) else {
+                        continue;
+                    };
+                    let m = w.iter().fold(0f64, |m, w| m.max(w.abs()));
+                    if best.as_ref().is_none_or(|b| m < b.0) {
+                        best = Some((m, [i, j, k], w));
+                    }
+                }
+            }
+        }
+        let (_, ix, w) = best?;
+        let pts: Vec<(Target, [f64; 2])> = ix.iter().map(|&q| (cand[q].1, cand[q].2)).collect();
+        self.scaled(r, &pts, &w)
+    }
+
+    /// Barycentric weights `w` of the stencil points `pts` of region `r`
+    /// scaled to currents (dual edge at `r`'s centroid over the points').
+    fn scaled(
+        &self,
+        r: usize,
+        pts: &[(Target, [f64; 2])],
+        w: &[f64],
+    ) -> Option<Vec<(Target, f64)>> {
+        let reg = &self.split.regions[r];
+        let f = &self.split.faces[reg.face];
+        let (a, p) = (f.axis, f.node);
         let ls = centroid_dual_length(self.grid, a, p, reg.centroid?);
         Some(
             pts.iter()
@@ -1159,6 +1400,11 @@ impl Ctx<'_> {
         )
     }
 }
+
+/// Steps of the [`Ctx::wider_stencil`] search.
+const WIDE_DEPTH: usize = 3;
+/// Candidates of the [`Ctx::wider_stencil`] search.
+const WIDE_NEAREST: usize = 8;
 
 /// Counts for the report.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1291,6 +1537,113 @@ struct Correction {
     /// Slots of the region and of the face's primary region.
     region: usize,
     primary: usize,
+    /// Absorbing layer of the edge, for the face's derivative term.
+    stretch: Stretch,
+}
+
+/// A recursion of an absorbing layer for one derivative term.
+#[derive(Debug, Clone, PartialEq)]
+enum Stretch {
+    None,
+    /// CPML: `Ψ ← b·Ψ + a·S`, term `+ (1/κ − 1)·S + Ψ` (`k = 1/κ − 1`).
+    Cartesian {
+        b: f64,
+        a: f64,
+        k: f64,
+        psi: f64,
+    },
+    /// Cylindrical `ρ_max` PML: the term is the stretch's `x1` (`first`) or
+    /// `−x2` ([`FaceStretch::correction`]).
+    Cyl {
+        st: FaceStretch,
+        first: bool,
+        psi: [f32; 6],
+    },
+}
+
+impl Stretch {
+    fn cartesian(c: &CpmlCoefficients) -> Self {
+        Self::Cartesian {
+            b: c.b,
+            a: c.a,
+            k: 1.0 / c.kappa - 1.0,
+            psi: 0.0,
+        }
+    }
+
+    /// The correction of the term `s` (added to the circulation or the
+    /// Ampère sum); `commit` advances the state.
+    fn correction(&mut self, s: f64, commit: bool) -> f64 {
+        match self {
+            Self::None => 0.0,
+            Self::Cartesian { b, a, k, psi } => {
+                let p = *b * *psi + *a * s;
+                if commit {
+                    *psi = p;
+                }
+                *k * s + p
+            }
+            Self::Cyl { st, first, psi } => {
+                let mut q = *psi;
+                let (x1, x2) = if *first {
+                    (s as f32, 0.0)
+                } else {
+                    (0.0, -s as f32)
+                };
+                let c = st.correction(&mut q, x1, x2) as f64;
+                if commit {
+                    *psi = q;
+                }
+                c
+            }
+        }
+    }
+}
+
+/// The CPML recursion of a piece's derivative term (E side): the term is
+/// `Σ w·g` over `inc`.
+#[derive(Debug, Clone, PartialEq)]
+struct PmlE {
+    piece: usize,
+    inc: Vec<(usize, f64)>,
+    stretch: Stretch,
+}
+
+/// The cylindrical `ρ_max` PML of a piece: `x = [x1, x2]` as `Σ w·g`.
+#[derive(Debug, Clone, PartialEq)]
+struct CylE {
+    piece: usize,
+    x: [Vec<(usize, f64)>; 2],
+    stretch: FaceStretch,
+    psi: [f32; 6],
+}
+
+/// The CPML recursion of a region's derivative term (H side), added to
+/// the circulations of the reduced currents `targets` driving it.
+#[derive(Debug, Clone, PartialEq)]
+struct PmlH {
+    targets: Vec<(usize, f64)>,
+    terms: Vec<(Ref, f64)>,
+    stretch: Stretch,
+}
+
+/// The cylindrical `ρ_max` PML of a region: `x = [x1, x2]` from its
+/// contour terms.
+#[derive(Debug, Clone, PartialEq)]
+struct CylH {
+    targets: Vec<(usize, f64)>,
+    x: [Vec<(Ref, f64)>; 2],
+    stretch: FaceStretch,
+    psi: [f32; 6],
+}
+
+/// The absorbing-layer corrections of the split system.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct SheetPml {
+    e: Vec<PmlE>,
+    e_cyl: Vec<CylE>,
+    h: Vec<PmlH>,
+    h_cyl: Vec<CylH>,
 }
 
 /// The split-cell system of conformal thin PEC sheets, registered by
@@ -1320,6 +1673,8 @@ pub struct ConformalSheets {
     circ: Vec<f64>,
     next: Vec<f64>,
     scratch: Vec<f64>,
+    /// Absorbing-layer corrections of pieces and regions.
+    pml: SheetPml,
 }
 
 impl ConformalSheets {
@@ -1339,6 +1694,35 @@ impl ConformalSheets {
             Ref::Main(a, p) => f.u.get(Axis::from_index(a).expect("axis"), p) as f64,
             Ref::Piece(j) => self.pieces[j].u,
         }
+    }
+
+    /// Adds the absorbing layers' corrections of the regions in them to
+    /// the circulations; `commit` advances their state (the H update),
+    /// otherwise it is the energy look-ahead of `post_e`.
+    fn add_pml(&mut self, f: &Fields<'_>, commit: bool) {
+        let mut circ = core::mem::take(&mut self.circ);
+        let mut pml = core::mem::take(&mut self.pml);
+        let sum =
+            |t: &[(Ref, f64)]| -> f64 { t.iter().map(|&(v, s)| s * self.voltage(v, f)).sum() };
+        for t in &mut pml.h {
+            let c = t.stretch.correction(sum(&t.terms), commit);
+            for &(g, w) in &t.targets {
+                circ[g] += w * c;
+            }
+        }
+        for t in &mut pml.h_cyl {
+            let (x1, x2) = (sum(&t.x[0]) as f32, sum(&t.x[1]) as f32);
+            let mut psi = t.psi;
+            let c = t.stretch.correction(&mut psi, x1, x2) as f64;
+            if commit {
+                t.psi = psi;
+            }
+            for &(g, w) in &t.targets {
+                circ[g] += w * c;
+            }
+        }
+        self.circ = circ;
+        self.pml = pml;
     }
 
     fn circulations(&mut self, f: &Fields<'_>) {
@@ -1368,6 +1752,7 @@ impl Operator for ConformalSheets {
 
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         self.circulations(f);
+        self.add_pml(f, true);
         let (mut next, mut x) = (
             core::mem::take(&mut self.next),
             core::mem::take(&mut self.scratch),
@@ -1386,14 +1771,27 @@ impl Operator for ConformalSheets {
     }
 
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        for c in &self.corrections {
-            let d = c.cbs * (self.slot_i[c.region] - self.slot_i[c.primary]);
+        for c in &mut self.corrections {
+            let ds = self.slot_i[c.region] - self.slot_i[c.primary];
+            let d = c.cbs * (ds + c.stretch.correction(ds, true));
             let u = f.u.get_mut(c.axis, c.node);
             *u = flush((*u as f64 + d) as f32);
         }
+        let groups = &self.groups;
+        let sum = |t: &[(usize, f64)]| -> f64 { t.iter().map(|&(g, w)| w * groups[g].i).sum() };
         for p in &mut self.pieces {
-            let s: f64 = p.inc.iter().map(|&(g, s)| s * self.groups[g].i).sum();
-            p.u = flush((p.ca * p.u + p.cb * s) as f32) as f64;
+            p.u = flush((p.ca * p.u + p.cb * sum(&p.inc)) as f32) as f64;
+        }
+        for t in &mut self.pml.e {
+            let p = &mut self.pieces[t.piece];
+            let c = t.stretch.correction(sum(&t.inc), true);
+            p.u = flush((p.u + p.cb * c) as f32) as f64;
+        }
+        for t in &mut self.pml.e_cyl {
+            let p = &mut self.pieces[t.piece];
+            let (x1, x2) = (sum(&t.x[0]) as f32, sum(&t.x[1]) as f32);
+            let c = t.stretch.correction(&mut t.psi, x1, x2) as f64;
+            p.u = flush((p.u + p.cb * c) as f32) as f64;
         }
         for (a, nodes, ids) in &self.cut {
             let s: f64 = ids.iter().map(|&j| self.pieces[j].u).sum();
@@ -1401,8 +1799,10 @@ impl Operator for ConformalSheets {
                 f.u.set(*a, *node, s as f32);
             }
         }
-        // For the energy at the new time (`energy`).
+        // For the energy at the new time (`energy`): the circulations the
+        // next `post_h` uses (layer corrections included, not committed).
         self.circulations(f);
+        self.add_pml(f, false);
     }
 
     /// Pieces plus `½·g^{n+½}ᵀ·M·g^{n+3/2}`, with `g^{n+3/2}` the value the

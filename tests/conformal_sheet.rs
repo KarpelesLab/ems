@@ -417,11 +417,16 @@ fn diagonal_plate_triangle_te() {
         conf.push(errs[0].abs().max(errs[1].abs()));
     }
     // Merging the small regions instead (wave 12): +2.29 / +1.19 % at
-    // n = 20 / 40 (first order). The corners (merged regions where the
-    // plate meets the box) make n = 20 pre-asymptotic.
-    let order = (conf[1] / conf[2]).log2();
-    eprintln!("observed order {order:.2}");
-    assert!(order > 1.6, "order {order} ({conf:?})");
+    // n = 20 / 40 (first order). Wave 13 merged the regions where the
+    // plate meets the box (no host stencil in the 45° wedge), which made
+    // n = 20 pre-asymptotic (−0.0532 / −0.0160 / −0.0042 %); they are now
+    // interpolated from a wider stencil (−0.0660 / −0.0168 / −0.0042 %).
+    let order = [(conf[0] / conf[1]).log2(), (conf[1] / conf[2]).log2()];
+    eprintln!("observed order {order:.2?}");
+    assert!(
+        order[0] > 1.8 && order[1] > 1.8,
+        "order {order:?} ({conf:?})"
+    );
 }
 
 /// Lowest TM mode (`(m, n) = (2, 1)`, `f = c·√5/(2a)`) of the right

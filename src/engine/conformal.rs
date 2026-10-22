@@ -137,6 +137,11 @@
 //! that layer made a run diverge. Interpolating in the layers instead and
 //! area floors there were measured worse (floors: +0.51 % instead of
 //! +0.07 % on the coaxial impedance, from the mismatch at the layer).
+//! The energy look-ahead of the merge groups ([`Operator::energy`])
+//! includes these corrections (evaluated in `post_e` without advancing
+//! their state), so it is exactly the next update's value. Thin-sheet
+//! regions are interpolated inside the layers as well, and their operator
+//! stretches pieces and regions itself (see [Thin PEC sheets](self#thin-pec-sheets)).
 
 //! # Stability check
 //!
@@ -166,8 +171,8 @@
 //! combined system
 //! (the pieces as extra unknowns). The [`ConformalSheets`] operator holds
 //! the split unknowns; see its module docs (`conformal/sheets.rs`) for
-//! the coupling with the kernel. Faces owned by the sheet system are never
-//! used by the solid-metal scheme.
+//! the coupling with the kernel and the absorbing layers. Faces owned by
+//! the sheet system are never used by the solid-metal scheme.
 
 use std::collections::{HashMap, HashSet};
 
@@ -321,6 +326,9 @@ pub struct ConformalPec {
     /// ([`set_cpml`](Self::set_cpml)), per cell of the layer in increasing
     /// index order.
     cpml_h: Vec<(Face, usize, Vec<CpmlCoefficients>)>,
+    /// E-side grading of the same layers (for the pieces of thin-sheet
+    /// cut edges in them), per E position in increasing index order.
+    cpml_e: Vec<(Face, usize, Vec<CpmlCoefficients>)>,
     /// The cylindrical `ρ_max` layer ([`set_cpml`](Self::set_cpml)), whose
     /// H-side stretch merge groups apply to their members in it.
     cyl_h: Option<CylLayer>,
@@ -382,10 +390,11 @@ impl ConformalPec {
         self.centroids.push(Some(centroid));
     }
 
-    /// Declares absorbing layers (CPML): `(face, cells)`. Small faces in
-    /// them, or whose interpolation stencil would reach into them, are
-    /// merged instead of interpolated (see the
-    /// [module docs](self#absorbing-layers)).
+    /// Declares absorbing layers (CPML): `(face, cells)`. Small volume-cut
+    /// faces in them, or whose interpolation stencil would reach into them,
+    /// are merged instead of interpolated (see the
+    /// [module docs](self#absorbing-layers); thin-sheet regions are
+    /// interpolated there too).
     pub fn set_absorbing_layers(&mut self, layers: impl IntoIterator<Item = (Face, usize)>) {
         for (f, n) in layers {
             self.absorbing[f.index()] = self.absorbing[f.index()].max(n);
@@ -401,7 +410,9 @@ impl ConformalPec {
     /// [`apply`](Self::apply). The cylindrical PML of a `ρ_max` face
     /// ([`CpmlBoundary::is_cylindrical_rho_max`]) is applied likewise: its
     /// stretch of the radius (and of the z or α faces' layers in the
-    /// corners) filters each merged member's circulation.
+    /// corners) filters each merged member's circulation. The thin-sheet
+    /// operator applies both layers to its pieces and regions in them
+    /// (E and H side).
     pub fn set_cpml(&mut self, cpml: &CpmlBoundary) {
         self.cyl_h = cpml.cyl_layer();
         for (face, params) in cpml.layers() {
@@ -413,7 +424,60 @@ impl ConformalPec {
                 self.cpml_h.retain(|l| l.0 != face);
                 self.cpml_h.push((face, params.cells, h.to_vec()));
             }
+            if let Some(e) = cpml.e_profile(face) {
+                self.cpml_e.retain(|l| l.0 != face);
+                self.cpml_e.push((face, params.cells, e.to_vec()));
+            }
         }
+    }
+
+    /// The Cartesian CPML recursions of the face normal to `a` at `p` (H
+    /// side): `(d, coefficients)` for each layer whose H positions contain
+    /// the face along its derivative direction `d ≠ a`.
+    fn cpml_h_at(&self, a: Axis, p: [usize; 3], n: [usize; 3]) -> Vec<(Axis, CpmlCoefficients)> {
+        let mut out = Vec::new();
+        for (face, cells, h) in &self.cpml_h {
+            let d = face.axis();
+            if d == a {
+                continue;
+            }
+            let (np, k) = (n[d.index()], p[d.index()]);
+            let pos = if face.is_max() {
+                let inner = np - 1 - cells;
+                (k >= inner).then(|| k - inner)
+            } else {
+                (k < *cells).then_some(k)
+            };
+            if let Some(c) = pos.and_then(|q| h.get(q)) {
+                out.push((d, *c));
+            }
+        }
+        out
+    }
+
+    /// The Cartesian CPML recursions of the E edge along `e` at `p`:
+    /// `(d, coefficients)` for each layer whose E positions (the layer's
+    /// lines, outer face included, interface excluded) contain the edge
+    /// along `d ≠ e`.
+    fn cpml_e_at(&self, e: Axis, p: [usize; 3], n: [usize; 3]) -> Vec<(Axis, CpmlCoefficients)> {
+        let mut out = Vec::new();
+        for (face, cells, c) in &self.cpml_e {
+            let d = face.axis();
+            if d == e {
+                continue;
+            }
+            let (np, k) = (n[d.index()], p[d.index()]);
+            let pos = if face.is_max() {
+                let first = np - cells;
+                (k >= first).then(|| k - first)
+            } else {
+                (k < *cells).then_some(k)
+            };
+            if let Some(c) = pos.and_then(|q| c.get(q)) {
+                out.push((d, *c));
+            }
+        }
+        out
     }
 
     /// Whether the face normal to `a` at `p` touches an absorbing layer
@@ -524,7 +588,6 @@ impl ConformalPec {
             .collect();
         let mut tau = self.options.merge_below.clamp(0.0, 1.0);
         let rounds = self.options.max_rounds.max(1);
-        let absorbing = |a: Axis, p: [usize; 3]| self.in_absorbing(a, p, n);
         for round in 0..rounds {
             let built = sheet.as_ref().map(|p| {
                 p.construct(
@@ -533,9 +596,9 @@ impl ConformalPec {
                     dt,
                     tau,
                     &volume_faces,
-                    &absorbing,
                     &copies,
                     self.options.deviation_area.clamp(0.0, 1.0),
+                    self,
                 )
             });
             let empty = HashSet::new();
@@ -1074,21 +1137,7 @@ impl ConformalPec {
                 cyl_terms.push(CylTerm::new(g, a, p, st));
                 continue;
             }
-            for (face, cells, h) in &self.cpml_h {
-                let d = face.axis();
-                if d == a {
-                    continue;
-                }
-                let (np, k) = (n[d.index()], p[d.index()]);
-                let pos = if face.is_max() {
-                    let inner = np - 1 - cells;
-                    (k >= inner).then(|| k - inner)
-                } else {
-                    (k < *cells).then_some(k)
-                };
-                let Some(c) = pos.and_then(|q| h.get(q)) else {
-                    continue;
-                };
+            for (d, c) in self.cpml_h_at(a, p, n) {
                 // T_d = sign·(u_o(p + e_d) − u_o(p)), the part of the curl
                 // of face a differentiating along d (CPML module docs).
                 let (sign, other) = if d == a.next() {
@@ -1722,6 +1771,46 @@ impl MergedFaces {
         }
     }
 
+    /// Adds the CPML and cylindrical-PML corrections of the merged faces in
+    /// the layers to the circulations; `commit` advances their state (the
+    /// H update), otherwise it is left as it is (the energy look-ahead of
+    /// `post_e`, which so evaluates exactly what the next update does).
+    fn add_pml(&mut self, f: &Fields<'_>, commit: bool) {
+        let Self { pml, cyl, circ, .. } = self;
+        for t in pml.iter_mut() {
+            let at = *t.at.get_or_insert_with(|| {
+                [
+                    f.u.layout().locate(t.nodes[0]),
+                    f.u.layout().locate(t.nodes[1]),
+                ]
+            });
+            let o = t.other;
+            let d = t.sign * (f.u.at(o, at[0]) as f64 - f.u.at(o, at[1]) as f64);
+            let psi = t.b * t.psi + t.a * d;
+            if commit {
+                t.psi = psi;
+            }
+            for &(g, w) in &t.targets {
+                circ[g] += w * (t.k * d + psi);
+            }
+        }
+        for t in cyl.iter_mut() {
+            let at = *t
+                .at
+                .get_or_insert_with(|| t.edges.map(|(_, p)| f.u.layout().locate(p)));
+            let v = |q: usize| f.u.at(t.edges[q].0, at[q]);
+            let (x1, x2) = (v(0) - v(1), v(2) - v(3));
+            let mut psi = t.psi;
+            let c = t.stretch.correction(&mut psi, x1, x2) as f64;
+            if commit {
+                t.psi = psi;
+            }
+            for &(g, w) in &t.targets {
+                circ[g] += w * c;
+            }
+        }
+    }
+
     /// Number of reduced currents.
     pub fn len(&self) -> usize {
         self.groups.len()
@@ -1740,31 +1829,7 @@ impl Operator for MergedFaces {
 
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         self.circulations(f);
-        for t in &mut self.pml {
-            let at = *t.at.get_or_insert_with(|| {
-                [
-                    f.u.layout().locate(t.nodes[0]),
-                    f.u.layout().locate(t.nodes[1]),
-                ]
-            });
-            let o = t.other;
-            let d = t.sign * (f.u.at(o, at[0]) as f64 - f.u.at(o, at[1]) as f64);
-            t.psi = t.b * t.psi + t.a * d;
-            for &(g, w) in &t.targets {
-                self.circ[g] += w * (t.k * d + t.psi);
-            }
-        }
-        for t in &mut self.cyl {
-            let at = *t
-                .at
-                .get_or_insert_with(|| t.edges.map(|(_, p)| f.u.layout().locate(p)));
-            let v = |q: usize| f.u.at(t.edges[q].0, at[q]);
-            let (x1, x2) = (v(0) - v(1), v(2) - v(3));
-            let c = t.stretch.correction(&mut t.psi, x1, x2) as f64;
-            for &(g, w) in &t.targets {
-                self.circ[g] += w * c;
-            }
-        }
+        self.add_pml(f, true);
         let (mut next, mut x) = (
             core::mem::take(&mut self.next),
             core::mem::take(&mut self.scratch),
@@ -1781,13 +1846,16 @@ impl Operator for MergedFaces {
     }
 
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        // For the energy at t = (n + 1)·dt (`energy`).
+        // For the energy at t = (n + 1)·dt (`energy`): the circulations the
+        // next `post_h` uses, PML corrections included (not committed).
         self.circulations(f);
+        self.add_pml(f, false);
     }
 
     /// `½·i^{n+½}ᵀ·M·i^{n+3/2}` at `t = (n + 1)·dt`, with `i^{n+3/2}` the
     /// expression the next `post_h` evaluates (from the circulations of
-    /// `post_e`; solved here, on demand).
+    /// `post_e`, with the absorbing layers' corrections; solved here, on
+    /// demand).
     fn energy(&self) -> f64 {
         let mut next = vec![0.0; self.groups.len()];
         self.advance(&self.circ, &mut Vec::new(), &mut next);
@@ -2169,6 +2237,65 @@ mod tests {
         let a = e.energy();
         let b = e.step_with_energy();
         assert_eq!(a, b);
+    }
+
+    /// [`sliver`] moved to `x0` along x.
+    fn sliver_at(x0: usize) -> ConformalPec {
+        let mut c = ConformalPec::new();
+        let shift = |mut p: [usize; 3]| {
+            p[0] = p[0] + x0 - 5;
+            p
+        };
+        for f in sliver().faces() {
+            c.push_face(ConformalFace {
+                node: shift(f.node),
+                ..*f
+            });
+        }
+        for e in sliver().edges() {
+            c.push_edge(ConformalEdge {
+                node: shift(e.node),
+                ..*e
+            });
+        }
+        c
+    }
+
+    #[test]
+    fn energy_lookahead_includes_the_pml() {
+        // The sliver inside a CPML layer: its merge group applies the
+        // layer's correction, and the look-ahead currents of the energy
+        // (after `post_e`) are exactly the next update's.
+        let mut e = engine(0.99);
+        let cpml = CpmlBoundary::new(&e, [(Face::XMax, crate::Cpml::cells(6))]).unwrap();
+        let mut c = sliver_at(8);
+        c.set_cpml(&cpml);
+        let r = c.apply(&mut e).unwrap();
+        assert!(r.verified && r.groups == 1, "{r:?}");
+        e.add_operator(cpml);
+        {
+            let mut f = e.fields_mut();
+            f.u.set(Axis::X, [8, 5, 5], 1.0);
+            f.u.set(Axis::Y, [7, 7, 4], -0.5);
+        }
+        let merged = |e: &Engine| -> MergedFaces {
+            e.ops
+                .iter()
+                .find_map(|r| (&*r.op as &dyn core::any::Any).downcast_ref::<MergedFaces>())
+                .expect("merge groups")
+                .clone()
+        };
+        for _ in 0..5 {
+            e.run(7);
+            let m = merged(&e);
+            assert!(!m.pml.is_empty());
+            let mut ahead = vec![0.0; m.groups.len()];
+            m.advance(&m.circ, &mut Vec::new(), &mut ahead);
+            e.step();
+            let now: Vec<f64> = merged(&e).groups.iter().map(|g| g.i).collect();
+            assert_eq!(ahead, now);
+            assert!(now.iter().any(|&i| i != 0.0));
+        }
     }
 
     #[test]

@@ -10,8 +10,8 @@
 
 mod common;
 
-use csx::primitives::LinPoly;
-use csx::{ContinuousStructure, CoordSystem, Primitive, Property};
+use csx::primitives::{BoxShape, LinPoly};
+use csx::{ContinuousStructure, CoordSystem, Primitive, Property, Transform};
 use ems::compile::{CompileOptions, compile};
 use ems::engine::{ConformalReport, EdgeSource, Engine, Probe};
 use ems::{Axis, Boundary, Face, Fdtd};
@@ -34,13 +34,15 @@ fn lines(lo: f64, hi: f64, n: usize) -> Vec<f64> {
 /// `ρ_max` if `pml`; `zpml`: `None` for one 1 mm z cell between PMC
 /// plates, `Some(nz)` for `nz` z cells with PML(4) on both z faces (corners
 /// with the ρ layer). A soft `E_α` source on every uncut α edge of ρ index
-/// 8 (mid-height).
+/// 8 (mid-height). `sheet`: the walls are zero-thickness radial plates
+/// (conformal sheets) instead of solid metal.
 fn wedge_engine(
     nr: usize,
     zpml: Option<usize>,
     conformal: bool,
     pml: bool,
     threads: usize,
+    sheet: bool,
 ) -> (Engine, Option<ConformalReport>) {
     let mut m = ContinuousStructure::new();
     m.coord_system = CoordSystem::Cylindrical;
@@ -56,6 +58,19 @@ fn wedge_engine(
     let far = 2.0 * rho[nr];
     let at = |a: f64| (far * a.cos(), far * a.sin());
     for (a0, a1) in [(WALLS.1, A0 + 0.1), (-A0 - 0.1, WALLS.0)] {
+        if sheet {
+            let wall = if a0 == WALLS.1 { a0 } else { a1 };
+            let mut t = Transform::new();
+            t.rotate_axis(2, wall);
+            m.add_primitive(
+                metal,
+                Primitive::new(BoxShape::new([0.0, 0.0, -1.0], [far, 0.0, nz as f64 + 2.0]))
+                    .with_transform(t)
+                    .with_coord_system(CoordSystem::Cartesian),
+            )
+            .unwrap();
+            continue;
+        }
         m.add_primitive(
             metal,
             Primitive::new(LinPoly::new(
@@ -107,8 +122,9 @@ fn wedge(
     conformal: bool,
     pml: bool,
     threads: usize,
+    sheet: bool,
 ) -> (Vec<f64>, Option<ConformalReport>) {
-    let (mut e, rep) = wedge_engine(nr, None, conformal, pml, threads);
+    let (mut e, rep) = wedge_engine(nr, None, conformal, pml, threads, sheet);
     let mid = NA / 2;
     let probes: Vec<_> = [mid, mid + 4, mid - 5]
         .map(|j| e.add_operator(Probe::voltage(Axis::Y, [probe, j, 0])))
@@ -130,17 +146,17 @@ fn rel_db(test: &[f64], reference: &[f64]) -> f64 {
 }
 
 /// Layer from ρ = 50 mm (index 60), probe at 45 mm (index 50).
-fn reflection(conformal: bool) -> (f64, Option<ConformalReport>) {
+fn reflection(conformal: bool, sheet: bool) -> (f64, Option<ConformalReport>) {
     let (inner, probe) = (60, 50);
-    let (reference, _) = wedge(inner + 560, probe, conformal, false, 4);
-    let (v, rep) = wedge(inner + 8, probe, conformal, true, 4);
+    let (reference, _) = wedge(inner + 560, probe, conformal, false, 4, sheet);
+    let (v, rep) = wedge(inner + 8, probe, conformal, true, 4, sheet);
     (rel_db(&v, &reference), rep)
 }
 
 #[test]
 fn conformal_walls_in_the_rho_max_pml() {
-    let (stair, _) = reflection(false);
-    let (conf, rep) = reflection(true);
+    let (stair, _) = reflection(false, false);
+    let (conf, rep) = reflection(true, false);
     let rep = rep.unwrap();
     eprintln!("wedge into the rho_max PML: staircase {stair:.1} dB, conformal {conf:.1} dB");
     eprintln!("{rep:?}");
@@ -150,9 +166,24 @@ fn conformal_walls_in_the_rho_max_pml() {
 
 #[test]
 fn conformal_rho_max_pml_threads_bit_identical() {
-    let (a, _) = wedge(68, 50, true, true, 1);
-    let (b, _) = wedge(68, 50, true, true, 3);
+    let (a, _) = wedge(68, 50, true, true, 1, false);
+    let (b, _) = wedge(68, 50, true, true, 3, false);
     assert_eq!(a, b);
+    let (a, _) = wedge(68, 50, true, true, 1, true);
+    let (b, _) = wedge(68, 50, true, true, 3, true);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn conformal_sheet_walls_in_the_rho_max_pml() {
+    // The walls as radial conformal sheets: the pieces of the cut α edges
+    // and the regions of the cut faces in the layer take its stretch from
+    // the sheet operator. (Unstretched, the run diverged.)
+    let (conf, rep) = reflection(true, true);
+    let rep = rep.unwrap();
+    eprintln!("sheet wedge into the rho_max PML: {conf:.1} dB ({rep:?})");
+    assert!(rep.verified && rep.sheet_edges > 0, "{rep:?}");
+    assert!(conf < -60.0, "{conf}");
 }
 
 #[test]
@@ -163,17 +194,25 @@ fn conformal_walls_in_pml_corners_decay() {
     // decays like the staircase run's (−77 dB at the end) without late
     // growth. Before: merged faces unstretched in the ρ layer diverged;
     // with hard merges (no deviation currents) the energy grew
-    // exponentially from ~−95 dB after 7000 steps.
-    let (mut e, rep) = wedge_engine(68, Some(12), true, true, 4);
-    assert!(rep.unwrap().verified);
-    let mut w = Vec::new();
-    for _ in 0..30 {
-        e.run(500);
-        w.push(e.energy());
+    // exponentially from ~−95 dB after 7000 steps. The same with sheet
+    // walls (pieces and regions stretched by the sheet operator), over
+    // 30 000 steps.
+    for (sheet, blocks) in [(false, 30), (true, 60)] {
+        let (mut e, rep) = wedge_engine(68, Some(12), true, true, 4, sheet);
+        assert!(rep.unwrap().verified);
+        let mut w = Vec::new();
+        for _ in 0..blocks {
+            e.run(500);
+            w.push(e.energy());
+        }
+        let peak = w.iter().fold(0f64, |m, &x| m.max(x));
+        let late = w[20..].iter().fold(0f64, |m, &x| m.max(x));
+        eprintln!(
+            "corners (sheet walls {sheet}): late max {:.1} dB, end {:.1} dB",
+            10.0 * (late / peak).log10(),
+            10.0 * (w[blocks - 1] / peak).log10()
+        );
+        assert!(late < 1e-6 * peak, "{w:?}");
+        assert!(w[blocks - 1] <= w[20], "{w:?}");
     }
-    let peak = w.iter().fold(0f64, |m, &x| m.max(x));
-    let late = w[20..].iter().fold(0f64, |m, &x| m.max(x));
-    eprintln!("corners: late max {:.1} dB", 10.0 * (late / peak).log10());
-    assert!(late < 1e-6 * peak, "{w:?}");
-    assert!(w[29] <= w[20], "{w:?}");
 }
