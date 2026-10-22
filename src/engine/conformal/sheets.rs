@@ -112,6 +112,12 @@ pub struct SheetCutEdge {
     pub node: [usize; 3],
     /// Cut parameters.
     pub cuts: Vec<f64>,
+    /// Open (non-metal) length of each piece as a fraction of the edge,
+    /// where solid metal covers part of the edge (`cuts.len() + 1` values),
+    /// or empty: the pieces are open, their capacitance scaled by the
+    /// edge's volume fraction ([`ConformalEdge`](super::ConformalEdge)) if
+    /// it has one.
+    pub open: Vec<f64>,
 }
 
 /// One part of a cut face outside the sheet(s).
@@ -221,7 +227,10 @@ pub(super) fn validate(
             && !e.cuts.is_empty()
             && e.cuts.len() < 255
             && e.cuts.iter().all(|t| *t > 0.0 && *t < 1.0)
-            && e.cuts.windows(2).all(|w| w[0] < w[1]);
+            && e.cuts.windows(2).all(|w| w[0] < w[1])
+            && (e.open.is_empty()
+                || (e.open.len() == e.cuts.len() + 1
+                    && e.open.iter().all(|f| (0.0..=1.0).contains(f))));
         if !ok || cuts.insert(canon(e.axis, e.node), e.cuts.len()).is_some() {
             return bad(format!("edge {e:?}"));
         }
@@ -293,11 +302,13 @@ fn faces_of_edge(a: Axis, p: [usize; 3], n: [usize; 3]) -> Vec<(Axis, [usize; 3]
 
 impl Prepared {
     /// Indexes the sheet input against the coefficients `co` (after the
-    /// volume edge scaling); `copies` gives the stored copies of an edge.
+    /// volume edge scaling; `base`: before it, for edges with explicit
+    /// open piece lengths); `copies` gives the stored copies of an edge.
     pub(super) fn new(
         edges: &[SheetCutEdge],
         faces: &[SheetCutFace],
         co: &Coefficients,
+        base: &Coefficients,
         n: [usize; 3],
         dt: f64,
         copies: &Copies<'_>,
@@ -309,6 +320,7 @@ impl Prepared {
         let mut cut_of: HashMap<Key, usize> = HashMap::new();
         for e in edges {
             let all = copies(e.axis, e.node);
+            let co = if e.open.is_empty() { co } else { base };
             let (ca, cb) = if all.len() == 1 {
                 let k = idx(e.node);
                 (co.ca(e.axis)[k] as f64, co.cb(e.axis)[k] as f64)
@@ -330,11 +342,18 @@ impl Prepared {
             };
             let mut ids = Vec::with_capacity(e.cuts.len() + 1);
             let mut last = 0.0;
-            for t in e.cuts.iter().copied().chain(core::iter::once(1.0)) {
+            for (k, t) in e
+                .cuts
+                .iter()
+                .copied()
+                .chain(core::iter::once(1.0))
+                .enumerate()
+            {
                 ids.push(pieces.len());
+                let open = e.open.get(k).copied().unwrap_or(t - last);
                 pieces.push(PieceInfo {
                     ca,
-                    cb: cb * (t - last),
+                    cb: cb * open,
                     full: cb,
                 });
                 last = t;
@@ -388,6 +407,11 @@ impl Prepared {
             });
         }
         out
+    }
+
+    /// Keys of the listed cut faces.
+    pub(super) fn face_keys(&self) -> HashSet<Key> {
+        self.face_index.keys().copied().collect()
     }
 
     /// Seeds of the stability iteration: the pieces (array 3) and the

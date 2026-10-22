@@ -127,6 +127,8 @@ pub(in crate::compile::conformal) fn geometry(
     model: &csx::ContinuousStructure,
     snap: f64,
     threads: usize,
+    solid: &SolidProfiles,
+    solid_at: &(dyn Fn(Vec3) -> bool + Sync),
     warnings: &mut Vec<String>,
 ) -> SheetGeometry {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
@@ -301,6 +303,7 @@ pub(in crate::compile::conformal) fn geometry(
                 cut_edges.push(SheetCutEdge {
                     axis: Axis::from_index(key.0).expect("axis"),
                     node: key.1,
+                    open: piece_open(solid.get(key), &c),
                     cuts: c,
                 });
             }
@@ -337,7 +340,6 @@ pub(in crate::compile::conformal) fn geometry(
             }
         }
     }
-    let mut multi = 0usize;
     let mut out_faces = Vec::with_capacity(faces.len());
     for &(f, _, n) in &faces {
         let fa = Axis::from_index(f).expect("axis");
@@ -351,22 +353,6 @@ pub(in crate::compile::conformal) fn geometry(
         let nocut: Vec<f64> = Vec::new();
         let xs: [&[Cross]; 4] = fe.map(|k| crossings.get(&k).unwrap_or(&none).as_slice());
         let cs: [&[f64]; 4] = fe.map(|k| cuts.get(&k).unwrap_or(&nocut).as_slice());
-        let mut count: HashMap<usize, usize> = HashMap::new();
-        for x in xs.iter().flat_map(|v| v.iter()).filter(|x| x.metal) {
-            *count.entry(x.sheet).or_insert(0) += 1;
-        }
-        if count.len() > 1 {
-            multi += 1;
-        }
-        let Some(s) = count
-            .iter()
-            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-            .map(|(&s, _)| s)
-        else {
-            // The face's cut edges are cut on their other copies only.
-            continue;
-        };
-        let sh = &sheets[s];
         let lb = lines[b][n[b] + 1] - lines[b][n[b]];
         let lc = lines[c][n[c] + 1] - lines[c][n[c]];
         let origin = param(n);
@@ -376,6 +362,80 @@ pub(in crate::compile::conformal) fn geometry(
             q[c] += v;
             cart(q)
         };
+        // z faces, (b, c) = (ρ, α): area element ρ dρ dα.
+        let r0 = origin[0];
+        let annular = |p: &[(f64, f64)]| rho_area(p, r0);
+        let (area_of, total): (&AreaFn<'_>, f64) = if fa == Axis::Z {
+            (&annular, 0.5 * lc * ((r0 + lb) * (r0 + lb) - r0 * r0))
+        } else {
+            (&shoelace, lb * lc)
+        };
+        let on_sheet = |s: usize, (u, v): (f64, f64)| {
+            let sh = &sheets[s];
+            sh.on_metal(sh.project(sh.local(world((u, v)))))
+        };
+        let edge_crossings = |s: usize, q: usize| {
+            let (a, p) = fe[q];
+            let sh = &sheets[s];
+            let q0 = param(p);
+            let mut q1 = q0;
+            q1[a] = lines[a][p[a] + 1];
+            if a == 1 {
+                if axis && p[0] == 0 {
+                    Vec::new()
+                } else {
+                    arc_crossings(sh, q0, q1[1] - q0[1])
+                }
+            } else {
+                sh.crossings(cart(q0), cart(q1))
+            }
+        };
+        // (The solid-metal test is in the grid's (ρ, α, z) coordinates.)
+        let pt = |(u, v): (f64, f64)| {
+            let mut q = origin;
+            q[b] += u;
+            q[c] += v;
+            Vec3::new(q[0], q[1], q[2])
+        };
+        let ends_on = |s: usize, others: &[usize], (u, v): (f64, f64), (du, dv): (f64, f64)| {
+            let size = (world((lb, lc)) - world((0.0, 0.0))).norm();
+            let tol = 1e-6 * size;
+            let eps = 1e-4 * lb.min(lc);
+            let w = world((u, v));
+            others.iter().any(|&j| j != s && sheets[j].touches(w, tol))
+                || (solid_at(pt((u + eps * du, v + eps * dv)))
+                    && !solid_at(pt((u - eps * du, v - eps * dv))))
+        };
+        if let Some(regions) = junction_regions(
+            xs,
+            cs,
+            &fe,
+            solid,
+            |s| sheets[s].side(cart(origin)),
+            &edge_crossings,
+            &on_sheet,
+            &ends_on,
+            (lb, lc),
+            area_of,
+            total,
+        ) {
+            out_faces.push(SheetCutFace {
+                axis: fa,
+                node: n,
+                regions,
+            });
+            continue;
+        }
+        let Some(s) = xs
+            .iter()
+            .flat_map(|v| v.iter())
+            .find(|x| x.metal)
+            .map(|x| x.sheet)
+        else {
+            // The face's cut edges are cut on their other copies only.
+            continue;
+        };
+        let sh = &sheets[s];
         let trace_metal = |p0: (f64, f64), p1: (f64, f64)| {
             [0.25, 0.5, 0.75].iter().all(|&w| {
                 let q = sh.local(world((p0.0 + w * (p1.0 - p0.0), p0.1 + w * (p1.1 - p0.1))));
@@ -390,34 +450,12 @@ pub(in crate::compile::conformal) fn geometry(
                 .collect()
         });
         let start = sh.side(cart(origin));
-        let regions = if fa == Axis::Z {
-            // (b, c) = (ρ, α): area element ρ dρ dα.
-            let r0 = origin[0];
-            let total = 0.5 * lc * ((r0 + lb) * (r0 + lb) - r0 * r0);
-            face_regions_with(
-                &events,
-                cs,
-                start,
-                lb,
-                lc,
-                &trace_metal,
-                &|p| rho_area(p, r0),
-                total,
-            )
-        } else {
-            face_regions(&events, cs, start, lb, lc, &trace_metal)
-        };
+        let regions = face_regions_with(&events, cs, start, lb, lc, &trace_metal, area_of, total);
         out_faces.push(SheetCutFace {
             axis: fa,
             node: n,
             regions,
         });
-    }
-    if multi > 0 {
-        warnings.push(format!(
-            "conformal PEC sheets: {multi} face(s) cut by more than one sheet use the \
-             partition of one of them (small leaks at sheet junctions)"
-        ));
     }
     // PEC mask overrides (see the Cartesian `geometry`), on every copy.
     let others = other_primitives(model, &sheets);

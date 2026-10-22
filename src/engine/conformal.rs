@@ -172,7 +172,11 @@
 //! (the pieces as extra unknowns). The [`ConformalSheets`] operator holds
 //! the split unknowns; see its module docs (`conformal/sheets.rs`) for
 //! the coupling with the kernel and the absorbing layers. Faces owned by
-//! the sheet system are never used by the solid-metal scheme.
+//! the sheet system are never used by the solid-metal scheme, and the sheet
+//! system does not take over (as hosts or merge partners) the uncut faces
+//! the solid-metal scheme drives next to it: deprived of them, small faces
+//! where a sheet touches a curved wall merged among themselves below the
+//! threshold and the scheme was unstable (`s` = 1.046).
 
 use std::collections::{HashMap, HashSet};
 
@@ -563,7 +567,8 @@ impl ConformalPec {
         };
         self.validate(n, &copies)?;
         let dt = engine.dt();
-        let mut co = engine.coefficients().clone();
+        let base = engine.coefficients().clone();
+        let mut co = base.clone();
         for e in &self.edges {
             let (_, cb) = co.e_mut(e.axis);
             let k = index(n, e.node);
@@ -576,7 +581,15 @@ impl ConformalPec {
             }
         }
         let sheet = (!self.sheet_faces.is_empty()).then(|| {
-            sheets::Prepared::new(&self.sheet_edges, &self.sheet_faces, &co, n, dt, &copies)
+            sheets::Prepared::new(
+                &self.sheet_edges,
+                &self.sheet_faces,
+                &co,
+                &base,
+                n,
+                dt,
+                &copies,
+            )
         });
         if let Some(p) = &sheet {
             seeds.extend(p.seeds());
@@ -590,12 +603,22 @@ impl ConformalPec {
         let rounds = self.options.max_rounds.max(1);
         for round in 0..rounds {
             let built = sheet.as_ref().map(|p| {
+                // The faces the solid-metal scheme drives next to the
+                // sheets (hosts, merge partners of its small faces) are
+                // not taken over by the sheet system: stranded, its small
+                // faces merged among themselves below the threshold
+                // (unstable where a septum touches a curved wall).
+                let mut exclude = volume_faces.clone();
+                if !self.faces.is_empty() {
+                    let (_, pre, _) = self.construct(&co, &grid, dt, tau, &p.face_keys());
+                    exclude.extend(pre.driven_keys(n));
+                }
                 p.construct(
                     &co,
                     &grid,
                     dt,
                     tau,
-                    &volume_faces,
+                    &exclude,
                     &copies,
                     self.options.deviation_area.clamp(0.0, 1.0),
                     self,
@@ -1809,6 +1832,14 @@ impl MergedFaces {
                 circ[g] += w * c;
             }
         }
+    }
+
+    /// Keys of the faces the operator drives.
+    fn driven_keys(&self, n: [usize; 3]) -> HashSet<Key> {
+        self.faces
+            .iter()
+            .map(|(a, p, _)| (a.index(), index(n, *p)))
+            .collect()
     }
 
     /// Number of reduced currents.

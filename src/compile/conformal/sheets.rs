@@ -43,8 +43,14 @@
 //! points and corners with straight chords for the traces (exact for
 //! planes, second order for curved sheets), as for solid metal. Pieces
 //! (the parts of the four edges between cuts) belong to the region of the
-//! arc containing their midpoint. Faces whose edges are cut by two or more
-//! sheets use the partition of one of them (warning).
+//! arc containing their midpoint.
+//!
+//! Faces cut by two or more sheets, or touched by solid metal, are divided
+//! by the planar arrangement of all their traces and the metal's chords
+//! instead (`junction`, src/compile/conformal/sheets/junction.rs), so a
+//! sheet ending on another sheet or on a metal surface inside the face
+//! separates its two sides; pieces of edges partly in solid metal get
+//! their open lengths ([`SheetCutEdge::open`]).
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
@@ -52,6 +58,8 @@ use std::collections::{BTreeSet, HashMap};
 use super::{par, range};
 
 mod cyl;
+mod junction;
+use super::{Profile, SolidProfiles};
 use crate::axis::Axis;
 use crate::engine::{SheetCutEdge, SheetCutFace, SheetRegion};
 use csx::primitives::{Primitive, Shape};
@@ -134,6 +142,21 @@ impl Sheet<'_> {
         [p0, p1].iter().all(|&p| self.phi(self.local(p)) == 0.0)
             && self.phi(q) == 0.0
             && self.on_metal(self.project(q))
+    }
+
+    /// Whether the world point `p` lies on the sheet within `tol` (world
+    /// length): on the surface and its projection on the extent.
+    fn touches(&self, p: Vec3, tol: f64) -> bool {
+        let q = self.local(p);
+        let d = match self.surf {
+            Surf::Plane { nrm, val } => (q[nrm] - val).abs(),
+            Surf::Cyl { a, ax, r, .. } => {
+                let w = q - a;
+                ((w - ax * w.dot(ax)).norm() - r).abs()
+            }
+            Surf::Sph { c, r } => ((q - c).norm() - r).abs(),
+        };
+        d <= tol && self.on_metal(self.project(q))
     }
 
     /// Whether the surface point `q` (local) is on the sheet.
@@ -404,6 +427,8 @@ pub(super) fn geometry(
     model: &csx::ContinuousStructure,
     snap: f64,
     threads: usize,
+    solid: &SolidProfiles,
+    solid_at: &(dyn Fn(Vec3) -> bool + Sync),
     warnings: &mut Vec<String>,
 ) -> SheetGeometry {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
@@ -509,6 +534,7 @@ pub(super) fn geometry(
             cut_edges.push(SheetCutEdge {
                 axis: Axis::from_index(key.0).expect("axis"),
                 node: key.1,
+                open: piece_open(solid.get(key), &c),
                 cuts: c,
             });
         }
@@ -535,7 +561,6 @@ pub(super) fn geometry(
             }
         }
     }
-    let mut multi = 0usize;
     let mut out_faces = Vec::with_capacity(faces.len());
     for &(f, _, n) in &faces {
         let axis = Axis::from_index(f).expect("axis");
@@ -549,22 +574,6 @@ pub(super) fn geometry(
         let nocut: Vec<f64> = Vec::new();
         let xs: [&[Cross]; 4] = fe.map(|k| crossings.get(&k).unwrap_or(&none).as_slice());
         let cs: [&[f64]; 4] = fe.map(|k| cuts.get(&k).unwrap_or(&nocut).as_slice());
-        // The sheet with the most cuts here.
-        let mut count: HashMap<usize, usize> = HashMap::new();
-        for x in xs.iter().flat_map(|v| v.iter()).filter(|x| x.metal) {
-            *count.entry(x.sheet).or_insert(0) += 1;
-        }
-        if count.len() > 1 {
-            multi += 1;
-        }
-        let Some(s) = count
-            .iter()
-            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-            .map(|(&s, _)| s)
-        else {
-            continue;
-        };
-        let sh = &sheets[s];
         let lb = lines[b][n[b] + 1] - lines[b][n[b]];
         let lc = lines[c][n[c] + 1] - lines[c][n[c]];
         let origin = node(n);
@@ -574,6 +583,54 @@ pub(super) fn geometry(
             p[c] += v;
             p
         };
+        let on_sheet = |s: usize, (u, v): (f64, f64)| {
+            let sh = &sheets[s];
+            sh.on_metal(sh.project(sh.local(world((u, v)))))
+        };
+        let edge_crossings = |s: usize, q: usize| {
+            let (a, p) = fe[q];
+            let mut e = p;
+            e[a] += 1;
+            sheets[s].crossings(node(p), node(e))
+        };
+        let ends_on = |s: usize, others: &[usize], (u, v): (f64, f64), (du, dv): (f64, f64)| {
+            let size = lb.hypot(lc);
+            let (tol, eps) = (1e-6 * size, 1e-4 * size.min(lb).min(lc));
+            let w = world((u, v));
+            others.iter().any(|&j| j != s && sheets[j].touches(w, tol))
+                || (solid_at(world((u + eps * du, v + eps * dv)))
+                    && !solid_at(world((u - eps * du, v - eps * dv))))
+        };
+        if let Some(regions) = junction_regions(
+            xs,
+            cs,
+            &fe,
+            solid,
+            |s| sheets[s].side(origin),
+            &edge_crossings,
+            &on_sheet,
+            &ends_on,
+            (lb, lc),
+            &shoelace,
+            lb * lc,
+        ) {
+            out_faces.push(SheetCutFace {
+                axis,
+                node: n,
+                regions,
+            });
+            continue;
+        }
+        // One sheet, no solid metal: the arc partition.
+        let Some(s) = xs
+            .iter()
+            .flat_map(|v| v.iter())
+            .find(|x| x.metal)
+            .map(|x| x.sheet)
+        else {
+            continue;
+        };
+        let sh = &sheets[s];
         let trace_metal = |p0: (f64, f64), p1: (f64, f64)| {
             [0.25, 0.5, 0.75].iter().all(|&w| {
                 let q = sh.local(world((p0.0 + w * (p1.0 - p0.0), p0.1 + w * (p1.1 - p0.1))));
@@ -593,12 +650,6 @@ pub(super) fn geometry(
             node: n,
             regions,
         });
-    }
-    if multi > 0 {
-        warnings.push(format!(
-            "conformal PEC sheets: {multi} face(s) cut by more than one sheet use the \
-             partition of one of them (small leaks at sheet junctions)"
-        ));
     }
     let others = other_primitives(model, &sheets);
     let mut pec = Vec::new();
@@ -656,6 +707,98 @@ fn covered(
         b.expanded(pad).intersects(&eb)
             && (!solid || q.contains_in(mid, CoordSystem::Cartesian, model.coord_system))
     })
+}
+
+/// Open length fraction of each piece of an edge cut at `cuts`, for an
+/// edge touched by solid metal with the open intervals `profile` (empty:
+/// no solid metal, the pieces are open).
+fn piece_open(profile: Option<&Profile>, cuts: &[f64]) -> Vec<f64> {
+    let Some(p) = profile else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(cuts.len() + 1);
+    let mut lo = 0.0;
+    for &t in cuts.iter().chain(core::iter::once(&1.0)) {
+        out.push(p.open_between(lo, t));
+        lo = t;
+    }
+    out
+}
+
+/// Whether sheet `s` ending at a face point (outward direction) ends on
+/// one of the sheets `others` or on solid metal ([`junction_regions`]).
+type EndsOn<'a> = dyn Fn(usize, &[usize], (f64, f64), (f64, f64)) -> bool + 'a;
+
+/// A test of face points.
+type PointTest<'a> = Box<dyn Fn((f64, f64)) -> bool + 'a>;
+
+/// The regions of a face by [`junction::partition`] if it needs it: two
+/// or more sheets on the face's edges (cuts), or solid metal on them.
+/// `xs` are the crossings and `cs` the cuts of the face edges `fe`,
+/// `side(s)` the side of the face's corner node for sheet `s`,
+/// `crossings(s, q)` all crossings of sheet `s`'s surface with edge `q`
+/// (`xs` holds only those of edges near the sheet's extent), `on_sheet(s,
+/// p)` whether face point `p` lies on sheet `s`, `ends_on(s, others, p,
+/// d)` whether sheet `s` ending at face point `p` (outward direction `d`)
+/// ends on one of the sheets `others` or on solid metal; `None` for a face
+/// cut by one sheet and free of solid metal.
+#[allow(clippy::too_many_arguments)]
+fn junction_regions(
+    xs: [&[Cross]; 4],
+    cs: [&[f64]; 4],
+    fe: &[(usize, [usize; 3]); 4],
+    solid: &SolidProfiles,
+    side: impl Fn(usize) -> bool,
+    crossings: &dyn Fn(usize, usize) -> Vec<(f64, bool)>,
+    on_sheet: &dyn Fn(usize, (f64, f64)) -> bool,
+    ends_on: &EndsOn<'_>,
+    (lb, lc): (f64, f64),
+    area_of: &AreaFn<'_>,
+    area: f64,
+) -> Option<Vec<SheetRegion>> {
+    let mut ids: Vec<usize> = xs
+        .iter()
+        .flat_map(|v| v.iter())
+        .filter(|x| x.metal)
+        .map(|x| x.sheet)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let metal = fe.iter().any(|k| solid.contains_key(k));
+    if ids.is_empty() || (ids.len() == 1 && !metal) {
+        return None;
+    }
+    let profiles: Option<[Profile; 4]> = metal.then(|| {
+        fe.map(|k| {
+            solid
+                .get(&k)
+                .cloned()
+                .unwrap_or_else(|| Profile::uniform(false))
+        })
+    });
+    let tests: Vec<PointTest<'_>> = ids
+        .iter()
+        .map(|&s| Box::new(move |p| on_sheet(s, p)) as PointTest<'_>)
+        .collect();
+    let traces: Vec<junction::FaceTrace<'_>> = ids
+        .iter()
+        .zip(&tests)
+        .map(|(&s, t)| junction::FaceTrace {
+            events: core::array::from_fn(|q| crossings(s, q)),
+            start_positive: side(s),
+            on_sheet: &**t,
+        })
+        .collect();
+    Some(junction::partition(
+        &traces,
+        cs,
+        profiles.as_ref(),
+        lb,
+        lc,
+        area_of,
+        area,
+        &|k, p, d| ends_on(ids[k], &ids, p, d),
+    ))
 }
 
 /// Perimeter coordinate in `[0, 4)` of edge `q` at its own parameter `t`
@@ -939,7 +1082,14 @@ mod tests {
     fn plate_through_nodes_does_not_depend_on_rounding() {
         let run = |exact| {
             let mut w = Vec::new();
-            let (e, f, mut p) = geometry(&diagonal(exact), 1e-6, 1, &mut w);
+            let (e, f, mut p) = geometry(
+                &diagonal(exact),
+                1e-6,
+                1,
+                &HashMap::new(),
+                &|_| false,
+                &mut w,
+            );
             p.sort_by_key(|&(a, k, v)| (a.index(), k, v));
             (e, f, p)
         };

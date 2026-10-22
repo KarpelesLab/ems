@@ -100,7 +100,7 @@ struct Profile {
 }
 
 impl Profile {
-    fn uniform(metal: bool) -> Self {
+    pub(super) fn uniform(metal: bool) -> Self {
         Self {
             start_metal: metal,
             transitions: Vec::new(),
@@ -121,6 +121,22 @@ impl Profile {
             self.transitions.pop();
         }
         self
+    }
+
+    /// Open length of the part `[lo, hi]` of the edge (fraction of the
+    /// edge).
+    pub(super) fn open_between(&self, lo: f64, hi: f64) -> f64 {
+        let mut metal = self.start_metal;
+        let mut last = 0.0f64;
+        let mut open = 0.0;
+        for &t in self.transitions.iter().chain(core::iter::once(&1.0)) {
+            if !metal {
+                open += (t.min(hi) - last.max(lo)).max(0.0);
+            }
+            last = t;
+            metal = !metal;
+        }
+        open
     }
 
     /// Open length fraction.
@@ -273,11 +289,22 @@ pub(super) fn geometry(
     threads: usize,
     warnings: &mut Vec<String>,
 ) -> Geometry {
-    let mut out = solid_geometry(model, pec, threads);
+    let (mut out, solid) = solid_geometry(model, pec, threads);
+    // The metal test of the solid geometry (grid coordinates), for sheets
+    // ending on a metal surface.
+    let index = model.spatial_index(
+        model.grid.coord_system,
+        TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
+    );
+    let ctx = Ctx {
+        index,
+        lines: [0, 1, 2].map(|a| model.grid.lines(a)),
+    };
+    let solid_at = |p: Vec3| !solid.is_empty() && ctx.metal(p);
     let (edges, faces, pec) = if model.grid.coord_system == CoordSystem::Cylindrical {
-        sheets::cylindrical_geometry(model, snap, threads, warnings)
+        sheets::cylindrical_geometry(model, snap, threads, &solid, &solid_at, warnings)
     } else {
-        sheets::geometry(model, snap, threads, warnings)
+        sheets::geometry(model, snap, threads, &solid, &solid_at, warnings)
     };
     out.pec.extend(pec);
     for e in edges {
@@ -321,12 +348,17 @@ pub(super) fn scale_excitations(
     }
 }
 
-/// The solid-metal part of [`geometry`].
+/// Open intervals of the E edges touched by solid metal, by `(axis index,
+/// node)` (edges not listed are open).
+type SolidProfiles = HashMap<(usize, [usize; 3]), Profile>;
+
+/// The solid-metal part of [`geometry`], and the edge profiles (for the
+/// sheets touching the metal).
 fn solid_geometry(
     model: &csx::ContinuousStructure,
     pec: &[&[bool]; 3],
     threads: usize,
-) -> Geometry {
+) -> (Geometry, SolidProfiles) {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
     let dims = lines.map(<[f64]>::len);
     let mut out = Geometry {
@@ -335,7 +367,7 @@ fn solid_geometry(
     };
     let bb = metal_bbox(model);
     if bb.is_empty() || !(bb.min.is_finite() && bb.max.is_finite()) {
-        return out;
+        return (out, HashMap::new());
     }
     let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
     let ctx = Ctx {
@@ -504,7 +536,8 @@ fn solid_geometry(
             out.conformal.push_edge(e);
         }
     }
-    out
+    profiles.retain(|_, p| p.start_metal || !p.transitions.is_empty());
+    (out, profiles)
 }
 
 /// The open polygon of a face (see [`face_fraction`]) in local `(u, v)`
