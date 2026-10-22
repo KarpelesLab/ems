@@ -1162,7 +1162,7 @@ recorded near fields, by the surface equivalence principle (Balanis,
   η = η0·√(μ_r/ε_r) of the background.
 - **Background.** The box must lie in one homogeneous, isotropic,
   lossless medium (`Nf2ff::with_background`, `Nf2ffResult::with_background`,
-  `Nf2ffBox::background`). `Simulation::add_nf2ff` detects it from the
+  `Nf2ffBox::background`), possibly over a stratified ground (below). `Simulation::add_nf2ff` detects it from the
   engine coefficients of the recorded faces (`engine::Medium::of_box_surface`
   sampling: tangential E on the face, crossing H, tangential H half a cell
   either side; `C = (1 + ca)·dt/(2cb)`, `G = (1 − ca)/cb`, alike for H;
@@ -1235,8 +1235,48 @@ recorded near fields, by the surface equivalence principle (Balanis,
   `P_far/P_box = 0.996`. openEMS does write frequency-domain field
   dumps on cylindrical grids (`dump_cyl`); its `nf2ff` tool (below) was
   not compared on them.
-- **Not done.** Lossy and inhomogeneous (layered) backgrounds;
-  frequency-dependent phase centres.
+- **Layered ground** (wave 14; `nf2ff::Ground`,
+  `Nf2ffResult::with_ground`, `src/nf2ff/ground.rs`). A box over a planar
+  stratified medium that extends to infinity (a dielectric half-space,
+  layers on it, a substrate on PEC/PMC) cannot enclose it; the box
+  currents are instead radiated with the layered-medium Green's function
+  in its far-zone (stationary-phase) form. Every plane wave of the
+  currents' spectrum meets the stack with the transmission-line
+  coefficients of its `k_t` (TE `Z = ωμ/k_z`, TM `Z = k_z/(ωε)`, tangential
+  E as voltage, layers by `Z_in` recursion; Chew, *Waves and Fields in
+  Inhomogeneous Media*, ch. 2), and the far field in either medium is
+  `2πj·k_z·Ê(k_t)e^{−jkr}/r` of its own spectral amplitude:
+  - box side (`r̂·n̂ ≥ 0`): `E = E_0(r̂) + e^{−2jk cosθ h}[Γ_TE (E'·ê)ê +
+    Γ_TM M(E'_TM)]` with `E' = E_0(r̂')` the free far field towards the
+    mirror direction, `M` the reflection about the interface, `h` the
+    phase centre's height (PEC: `Γ = −1`, image theory);
+  - inside a lossless bottom half-space: the transmitted wave,
+    `E·ê = (k_zN/k_z1)T_TE e^{φ}(E_0(d̂)·ê)`, `E·p̂_N = (k_N/k_1)T_TM
+    e^{φ}(E_0(d̂)·p̂_1)`, `φ = −jk_z1 h + jk_zN(h + D)`, with `d̂ = (k_t −
+    k_z1 n̂)/k_1` complex beyond the critical angle (the radiation
+    integrals continued analytically: the evanescent spectrum of a
+    source near a denser half-space); `η`, `k` of that half-space for `U`.
+
+  Lossy layers are allowed (no far field inside a lossy bottom
+  half-space); surface waves (a grounded slab's TM0) carry box power that
+  reaches no far-field direction. Mirrors normal to other axes combine.
+  Validation:
+
+  | Case | Result |
+  |---|---|
+  | PEC / PMC ground vs the PEC / PMC mirror (analytic dipoles, vertical and horizontal) | 1e-9 |
+  | Analytic dipoles 0.3 m over `ε_r = 4`: `E_θ` (vertical) / `E_φ` (horizontal) vs Balanis §4.8 `R_v` / `R_h` | ≤ 3e-3 of the free field |
+  | Vanishing slab on PEC vs PEC; vacuum layer on PEC vs deeper PEC; quarter-wave slab on PEC | 1e-5, 1e-9, `Γ = +1` |
+  | FDTD dipole (10 mm cells, 1 GHz) 45 mm over `ε_r = 4`, box from 10 mm above the interface: upper pattern vs `sinθ·|1 + R_v e^{−2jkh cosθ}|` | 3.3e-4 / 6.0e-4 at 0.8 / 1 GHz |
+  | Same: `P_far` (upper + transmitted, 360 θ steps) / `P_box`; share into the ground | 0.9888 / 0.9900; 77.7 % / 75.6 %, `D_max` 29 / 33 at θ = 150° (critical angle) |
+  | FDTD dipole over a 40 mm `ε_r = 3` grounded slab: two boxes (10 mm vs 30 mm over the slab, ±60 vs ±80 mm) | far fields within 6.4e-3 of the peak; space wave 5.7 % of `P_box` (TM0 surface wave) |
+  | Vacuum "slab" on the PEC face (no surface wave): `P_far/P_box` | 0.9885 |
+
+  (The remaining 1 % of the power balance is the near-source co-location
+  error of the short dipole, the same as without ground, §5.10 table.)
+- **Not done.** Lossy backgrounds around the box; frequency-dependent
+  phase centres; the far field inside a lossy bottom half-space;
+  surface-wave power (the box flux includes it, the far field does not).
 - **openEMS's `nf2ff` tool** (`io::openems::nf2ff`, binary `ems-nf2ff`,
   feature `hdf5`). openEMS transforms its NF2FF box dumps with a separate
   program, `nf2ff <job.xml>`, that reads E/H dumps named in an XML file
@@ -1330,11 +1370,77 @@ csx `PlaneWave` excitations (type 10) are injected with the TF/SF technique
   propagation factor (attenuation included) to 2e-5, E_inc(r_ref)/a at the
   matching frequency 1 to 2e-6. A csx model in ε_r = 4: background
   detected exactly, probe E within 1e-3 of a(t − ξ/v).
+- **Layered and dispersive backgrounds** (wave 14;
+  `engine::planewave` module docs, `src/engine/planewave/spectral.rs`). A
+  box crossing planar layers (`PlaneWaveSpec::with_layers`, ends
+  `LayerEnd::{Open, Pec, Pmc}`) or with dispersive poles on its surface
+  (`with_dispersion`) gets the exact discrete incident field computed
+  per frequency instead of the auxiliary grid:
+  - the wave has a fixed transverse slowness `p = k̂_t/v_inc(f_m)`; on a
+    uniform transverse mesh `e^{−jωp·r}` diagonalises the transverse Yee
+    differences, so the 3-D equations reduce to a 1-D system along one
+    column of edges (six unknowns per level, `i_s`/`u_s` eliminated
+    locally, banded LU with partial pivoting), built from the engine's
+    own `ca, cb, da, db` and the poles' discrete `χ` (trapezoidal
+    `χ(Ω_t)`, leapfrog `χ(Ω)`);
+  - the column spans the domain along `s` (layered) or the box ± 2 nodes
+    (homogeneous dispersive, its medium only); open ends get a uniform
+    extension of the end medium with a frequency-domain stretched-
+    coordinate PML (cubic, design round trip 1e-10), closed ends the
+    domain's PEC/PMC planes; a current sheet in the incidence-side
+    extension radiates the wave; the same line filled with the incidence
+    medium (opened at a closed far end) gives the pure incident wave, which
+    normalises `E_t(r_ref) = E0_t·a(t)` (two sheets, `u_t1` and `u_t2`,
+    combined for the polarisation);
+  - FFT window at `dt/2` (radix 2), bins above the engine Nyquist
+    frequency or where the incident wave is evanescent in the incidence
+    medium skipped (else the layers can trap it: a real-axis pole); the
+    DC bin is not solved (singular) — a constant per series fixed by the
+    field being zero after the pulse; the window doubles until the
+    series' third quarter is below 1e-6 of the peak (error otherwise:
+    resonant layers, or an excitation that does not end); the incident
+    field before `t = 0` must stay below 1e-5 (error: a Drude medium near
+    its plasma frequency sends slow components that would have had to
+    arrive before the run);
+  - corrections read their series with cubic interpolation at their fixed
+    transverse delay; those of edges whose poles the `Dispersive`
+    operator solves implicitly (trapezoidal, all Debye) are added to the
+    start value before the kernel (`pre_e`/`pre_h`, divided by `ca`/`da`):
+    added after the implicit solve they leaked −35…−41 dB;
+  - every edge taking part must have the column's medium at its level
+    (layered) or the background's (homogeneous), poles included;
+  - `Simulation` (native, not openEMS files): a box surface whose medium
+    varies along one axis the wave crosses (`|k̂_s| ≥ 1e-3`) is layered,
+    ends from the domain boundaries (PEC, PMC, else open); compiled poles
+    are handed over; the duration is the waveform's (non-terminating
+    waveforms: the plane wave is dropped with a warning).
+
+  Measured (`tests/planewave_layered.rs`, 1 mm cubic mesh, 36³ with CPML,
+  box 13…23, 8 ± 4 GHz pulse):
+
+  | Case | Leakage |
+  |---|---|
+  | `ε_r = 4` half-space across the box: normal, 30° TE / TM, (1,1,2) mixed, −z 30° TM | −132, −130, −127, −126, −130 dB |
+  | 40°: `ε_r = 6` slab across the bottom face; grounded `ε_r = 3` substrate (PEC z_min, from above) TE / TM; half-space on a z mesh graded 0.7…1.3 mm | −126, −130 / −125, −133 dB |
+  | Homogeneous Debye, Drude, Lorentz (trapezoidal and leapfrog), normal and 30° (10 ± 2 GHz) | −127 … −135 dB |
+  | Drude layer (4 cells) across the box, 25° TM | −130 dB |
+  | `Simulation`, csx substrate across the box, 30° TM | −132 dB |
+  | Vacuum, 30° (layered mode; the auxiliary grid gives −77 dB) | −130 dB |
+
+  Physics: at normal incidence the field in the box equals the
+  independent discrete 1-D Yee response of an `ε_r = 5` slab to 1.4e-7;
+  at 35° the field 3 cells into an `ε_r = 4` half-space is the continuum
+  Fresnel `t` (TE / TM) to 4.9e-3 / 4.6e-3 (second-order mesh error); in
+  dispersive backgrounds `E(x2)/E(x1)` is the discrete factor of
+  `ε∞ + χ_d` to 2.2e-7. Set-up 0.2–0.4 s for these boxes.
 - **Energy** see §5.8: the end criterion waits for the transit of the
   incident pulse through the box.
-- **Limitations.** Homogeneous isotropic background around the box
-  (dispersive backgrounds not detected; lossy backgrounds not supported by
-  the periodic-cell variant), box clear of CPML/Mur. Cartesian grids only:
+- **Limitations.** Homogeneous isotropic background around the box, or
+  layered along one axis the wave crosses, or dispersive (spectral
+  incident field: uniform transverse mesh for exactness, an excitation
+  that ends, no slow components before `t = 0`); lossy backgrounds not
+  supported by the periodic-cell variant, which also ignores layers and
+  poles; box clear of CPML/Mur. Cartesian grids only:
   on a cylindrical grid the excitation is dropped with a warning, as
   openEMS ignores it there (§5.16.2); a TF/SF box in `(ρ, α, z)` would
   need the incident field evaluated analytically at the edge positions
@@ -3064,7 +3170,15 @@ region; ems's leakage stays below −120 dB, so scattered-field probes
 cannot be compared. In an ε_r = 4 background openEMS's plane wave is not
 usable (the scattered region holds a wave as large as the incident one);
 ems's is (§5.11), so that case is not matched. The lag's travel time uses
-the background speed, which only matters there.
+the background speed, which only matters there. Boxes crossing layers
+(wave 14, the 1-D line of `adv_pw_line_slab` with the `ε_r = 4` slab
+across the exit or the entry face; scratch runs, not a fixture): openEMS
+runs them and injects the same vacuum wave, so its scattered-field region
+holds a wave of 0.75–0.9 of the incident amplitude (in the homogeneous
+line 1.4 %). ems keeps the file path as it was — the layered surface is
+a compile error naming the plane wave, dispersion on the surface is not
+seen — and handles layered and dispersive backgrounds natively only
+(§5.11).
 
 **Conducting sheets** (§5.9). openEMS's `ConductingSheet` (a
 "behavioural" model, per its documentation) is a different model from
