@@ -115,6 +115,8 @@ struct Edge {
     c: f64,
     /// The edge voltage after the last update.
     last: f32,
+    /// No update before this step ([`MurBoundary::hold_faces`]).
+    hold: u64,
 }
 
 /// An edge on two Mur faces: average of two 1-D updates.
@@ -132,6 +134,8 @@ struct Corner {
     c: f64,
     /// The edge voltage after the last update.
     last: f32,
+    /// No update before this step ([`MurBoundary::hold_faces`]).
+    hold: u64,
 }
 
 /// Per-edge phase velocities for the face edges of Mur faces without a
@@ -244,10 +248,14 @@ fn update(
     edges: &mut [Edge],
     corners: &mut [Corner],
     openems_corners: bool,
+    step: u64,
     get: &dyn Fn(Axis, [usize; 3]) -> f32,
     set: &mut dyn FnMut(Axis, [usize; 3], f32),
 ) {
     for e in edges.iter_mut() {
+        if step < e.hold {
+            continue;
+        }
         let [b, i] = e.saved;
         let v = i + e.k * (get(e.axis, e.inner) - b);
         set(e.axis, e.node, v);
@@ -255,6 +263,9 @@ fn update(
     }
     // After the face edges: corner neighbours are face edges.
     for c in corners.iter_mut() {
+        if step < c.hold {
+            continue;
+        }
         let [b, i0, i1] = c.saved;
         let v = if openems_corners {
             // The face of the lower axis alone, its neighbour at n + 1
@@ -296,7 +307,14 @@ impl SlabHooks for MurSlabs {
         let mut set = |a: Axis, n: [usize; 3], v: f32| {
             cell.borrow_mut().plane_mut(a, n[0])[n[1] * nz + n[2]] = v
         };
-        update(edges, corners, self.openems_corners, &get, &mut set);
+        update(
+            edges,
+            corners,
+            self.openems_corners,
+            ctx.step,
+            &get,
+            &mut set,
+        );
     }
 
     /// Both hooks act on the voltages only.
@@ -516,6 +534,7 @@ impl MurBoundary {
                                 inner: inner(face, node),
                                 k: coef(face, t, o, node)?,
                                 saved: [0.0; 2],
+                                hold: 0,
                                 c: full_c(t, node, inner(face, node)),
                                 last: 0.0,
                             }),
@@ -528,6 +547,7 @@ impl MurBoundary {
                                 inner: [inner(face, node), inner(g, node)],
                                 k: [coef(face, t, o, node)?, coef(g, t, a, node)?],
                                 saved: [0.0; 3],
+                                hold: 0,
                                 c: full_c(t, node, inner(g, inner(face, node))),
                                 last: 0.0,
                             }),
@@ -562,6 +582,35 @@ impl MurBoundary {
             slabs: None,
             locs: None,
         })
+    }
+
+    /// Holds the boundary edges of `faces` (and the domain edges on them)
+    /// before step `until`: they are not updated then and keep what the
+    /// other operators write (0 from their PEC coefficients, plus sources).
+    /// openEMS does this to a Mur face that carries an E excitation while
+    /// the excitation runs (black box: such a face stays 0 except for the
+    /// source, which holds just the signal, up to step `L + 11` for an
+    /// excitation of `L` steps, measured for four signal lengths and two
+    /// time steps; the other Mur faces are not affected; design §5.16.3).
+    /// Call it before registering.
+    pub fn hold_faces(mut self, faces: &[Face], until: u64) -> Self {
+        let on = |node: [usize; 3], inner: [usize; 3]| {
+            faces.iter().any(|f| {
+                let a = f.axis().index();
+                node[a] != inner[a] && (node[a] == 0) != f.is_max()
+            })
+        };
+        for e in &mut self.edges {
+            if on(e.node, e.inner) {
+                e.hold = until;
+            }
+        }
+        for c in &mut self.corners {
+            if on(c.node, c.inner[0]) || on(c.node, c.inner[1]) {
+                c.hold = until;
+            }
+        }
+        self
     }
 
     /// openEMS's update of the edges where two Mur faces meet (default
@@ -723,12 +772,15 @@ impl Operator for MurBoundary {
 
     /// The same updates as the slab mode's (`update`), on the locations
     /// precomputed in `pre_e`.
-    fn post_e(&mut self, fields: &mut Fields<'_>, _ctx: &StepContext<'_>) {
+    fn post_e(&mut self, fields: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let u = &mut fields.u;
         let Some((le, lc)) = &self.locs else {
             return;
         };
         for (e, l) in self.edges.iter_mut().zip(le.iter()) {
+            if ctx.step < e.hold {
+                continue;
+            }
             let [b, i] = e.saved;
             let v = i + e.k * (u.at(e.axis, l[1]) - b);
             u.set_at(e.axis, l[0], v);
@@ -736,15 +788,18 @@ impl Operator for MurBoundary {
         }
         // After the face edges: corner neighbours are face edges.
         for (c, l) in self.corners.iter_mut().zip(lc.iter()) {
+            if ctx.step < c.hold {
+                continue;
+            }
             let [b, i0, i1] = c.saved;
-            let (n0, n1) = if self.openems_corners {
-                (0.0, 0.0)
+            let v = if self.openems_corners {
+                // As the slab update: the lower axis's face alone.
+                i0 - c.k[0] * b
             } else {
-                (u.at(c.axis, l[1]), u.at(c.axis, l[2]))
+                let v0 = i0 + c.k[0] * (u.at(c.axis, l[1]) - b);
+                let v1 = i1 + c.k[1] * (u.at(c.axis, l[2]) - b);
+                0.5 * (v0 + v1)
             };
-            let v0 = i0 + c.k[0] * (n0 - b);
-            let v1 = i1 + c.k[1] * (n1 - b);
-            let v = 0.5 * (v0 + v1);
             u.set_at(c.axis, l[0], v);
             c.last = v;
         }

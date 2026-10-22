@@ -486,6 +486,9 @@ pub struct Compiled {
     pub conformal: Option<ConformalPec>,
     /// Not yet mapped model parts.
     pub sources: ModelSources,
+    /// Length \[s\] of the Gaussian excitation (files, for openEMS's Mur
+    /// faces that carry a source, [`MurBoundary::hold_faces`]).
+    pub excitation_duration: Option<f64>,
     /// Diagnostics: csx model and discretisation warnings plus the
     /// approximations made here.
     pub warnings: Vec<String>,
@@ -560,6 +563,12 @@ impl Compiled {
                 .mur
                 .iter()
                 .map(|&(f, _)| f)
+                .chain(
+                    self.pml
+                        .iter()
+                        .filter(|_| self.openems_pml)
+                        .map(|&(f, _)| f),
+                )
                 .filter(|f| f.is_max())
                 .collect();
             upper_face_normal_h(engine, &upper);
@@ -663,6 +672,26 @@ impl Compiled {
             }
             .count_energy(self.openems_pmc)
             .openems_corners(self.openems_pmc);
+            // openEMS holds a Mur face carrying an E excitation while the
+            // excitation runs (`MurBoundary::hold_faces`).
+            let op = match self.excitation_duration.filter(|_| self.openems_pmc) {
+                Some(d) => {
+                    let n = self.grid.nodes();
+                    let mut held = Vec::new();
+                    for (e, axis, node) in self.driven_edges() {
+                        for &(f, _) in &self.mur {
+                            let a = f.axis().index();
+                            let plane = if f.is_max() { n[a] - 1 } else { 0 };
+                            if e && f.axis() != axis && node[a] == plane && !held.contains(&f) {
+                                held.push(f);
+                            }
+                        }
+                    }
+                    let steps = (d / engine.dt()).floor().max(0.0) as u64 + 1;
+                    op.hold_faces(&held, steps + 11)
+                }
+                None => op,
+            };
             h.mur = Some(engine.add_operator(op));
         }
         Ok(())
@@ -878,7 +907,8 @@ fn mur_point_media(
 
 /// openEMS does not update the H component normal to an upper (max) face
 /// in that face's plane: it stays 0 (observed on Mur faces, where the
-/// tangential E of the face is not zero; on PEC faces it is 0 anyway).
+/// tangential E of the face is not zero, and on openEMS's PML faces with a
+/// source on the face plane; on PEC faces it is 0 anyway).
 /// That H feeds no E update (the face's tangential E is set by the
 /// boundary operator), so it only shows in the end-criterion energy and
 /// in probes and dumps on the face; for files ems holds it at 0 too.
@@ -1508,6 +1538,13 @@ pub fn compile(
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,
         conformal,
+        excitation_duration: match fdtd.get_waveform() {
+            Some(
+                w @ (crate::waveform::Waveform::Gaussian { .. }
+                | crate::waveform::Waveform::OpenEmsGaussian { .. }),
+            ) if fdtd.get_openems_run() => w.duration(),
+            _ => None,
+        },
         sources: ModelSources {
             excitations,
             lumped,
