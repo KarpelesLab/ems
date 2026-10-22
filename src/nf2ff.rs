@@ -91,6 +91,32 @@
 //! (e.g. a monopole over ground has twice the directivity of the dipole).
 //! The far fields are meaningful only on the real side of every mirror.
 //!
+//! # Layered ground
+//!
+//! When the box sits over a planar stratified medium that extends to
+//! infinity — a dielectric half-space (soil, a substrate), layers on it,
+//! or a substrate on a ground plane — the box need not (and cannot)
+//! enclose it: [`Nf2ffResult::with_ground`] with a [`Ground`] evaluates the
+//! box currents with the layered-medium Green's function in its far-zone
+//! (stationary-phase) form (design §5.10). Above the ground the
+//! far field is the direct radiation plus its specular reflection with
+//! the TE/TM reflection coefficients of the stack; inside a lossless
+//! bottom half-space it is the transmitted field (with the evanescent part
+//! of the source spectrum, which dominates beyond the critical angle of a
+//! dense half-space), with `η`, `k` of that half-space
+//! ([`radiation_intensity`](Nf2ffResult::radiation_intensity) and the
+//! power integral use them). Surface waves (a grounded slab's TM0 mode)
+//! carry power along the interface that reaches no far-field direction:
+//! the box flux [`radiated_power`](Nf2ffResult::radiated_power) includes
+//! it, the far-field integral does not. The box must lie in the medium on
+//! one side of the interface (all of its faces, a face on the interface is
+//! allowed); combined mirrors must be normal to other axes. Validation
+//! (`tests/nf2ff_ground.rs`, unit tests): PEC/PMC grounds equal the
+//! mirrors; analytic dipoles over a half-space follow the textbook
+//! `R_v`/`R_h` patterns to 3e-3; an FDTD dipole over `ε_r = 4` follows the
+//! vertical-dipole pattern to 6e-4 and balances the box power (75 % into
+//! the ground) to 1 %; over a grounded slab two boxes agree to 6e-3.
+//!
 //! # Usage
 //!
 //! With a [`Simulation`](crate::Simulation) (box corners in drawing units):
@@ -134,7 +160,11 @@
 //! and `x = 0`: the PEC or PMC α boundaries of a half-space model) is
 //! skipped like any face on a mirror plane.
 
+mod ground;
+
 use core::f64::consts::PI;
+
+pub use ground::{Ground, GroundBase, GroundLayer};
 
 use crate::axis::Axis;
 use crate::constants::{C0, Z0};
@@ -399,6 +429,7 @@ impl Nf2ff {
             faces,
             mirrors: Vec::new(),
             medium: self.medium,
+            ground: None,
         }
     }
 }
@@ -915,6 +946,7 @@ pub struct Nf2ffResult {
     faces: Vec<FaceData>,
     mirrors: Vec<Mirror>,
     medium: Medium,
+    ground: Option<Ground>,
 }
 
 /// Unit vectors `(r̂, θ̂, φ̂)`.
@@ -930,6 +962,23 @@ fn basis(theta: f64, phi: f64) -> ([f64; 3], [f64; 3], [f64; 3]) {
 
 fn dot(a: [Complex64; 3], b: [f64; 3]) -> Complex64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Bilinear (unconjugated) product of complex vectors.
+fn cdot(a: [Complex64; 3], b: [Complex64; 3]) -> Complex64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn ccross(a: [Complex64; 3], b: [Complex64; 3]) -> [Complex64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn real(v: [f64; 3]) -> [Complex64; 3] {
+    v.map(Complex64::from)
 }
 
 impl Nf2ffResult {
@@ -1013,13 +1062,75 @@ impl Nf2ffResult {
         Ok(self)
     }
 
+    /// Evaluates the far field over a planar stratified ground (see
+    /// [`Ground`] and the [module docs](self#layered-ground)): on the box
+    /// side the direct field plus its reflection by the layers, inside a
+    /// lossless bottom half-space the transmitted field. The box must lie
+    /// on one side of the interface, in the background medium.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for an invalid ground, a box crossing the
+    /// interface, or a mirror normal to the same axis.
+    pub fn with_ground(mut self, g: Ground) -> Result<Self> {
+        g.validate()?;
+        if self.mirrors.iter().any(|m| m.axis == g.axis) {
+            return Err(Error::Invalid(format!(
+                "NF2FF: a ground and a mirror normal to {} cannot be combined",
+                g.axis
+            )));
+        }
+        let i = g.axis.index();
+        let (lo, hi) = self
+            .faces
+            .iter()
+            .flat_map(|f| f.points.iter().map(move |p| p[i]))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+                (a.min(x), b.max(x))
+            });
+        let tol = 1e-9 * lo.abs().max(hi.abs()).max(1e-30);
+        if g.position > lo + tol && g.position < hi - tol {
+            return Err(Error::Invalid(format!(
+                "NF2FF ground interface {} = {} m cuts the box ({lo} .. {hi} m)",
+                g.axis, g.position
+            )));
+        }
+        self.ground = Some(g);
+        Ok(self)
+    }
+
+    /// The ground, if set.
+    pub fn ground(&self) -> Option<&Ground> {
+        self.ground.as_ref()
+    }
+
+    /// Unit normal of the ground towards the box, and the height of the
+    /// phase centre over the interface.
+    fn ground_normal(&self, g: &Ground) -> ([f64; 3], f64) {
+        let i = g.axis.index();
+        let side = if self.center[i] >= g.position {
+            1.0
+        } else {
+            -1.0
+        };
+        let mut n = [0.0; 3];
+        n[i] = side;
+        (n, (self.center[i] - g.position) * side)
+    }
+
     /// The faces taking part (not on a mirror plane).
     fn active(&self) -> impl Iterator<Item = &FaceData> {
         self.faces.iter().filter(|f| !f.on_mirror(&self.mirrors))
     }
 
-    /// Whether direction `r̂` lies on the real side of every mirror.
+    /// Whether direction `r̂` lies on the real side of every mirror (and
+    /// on the box side of a ground without a far field below).
     fn is_real_side(&self, r: [f64; 3]) -> bool {
+        if let Some(g) = &self.ground {
+            let (nh, _) = self.ground_normal(g);
+            if g.far_base().is_none() && r[0] * nh[0] + r[1] * nh[1] + r[2] * nh[2] < 0.0 {
+                return false;
+            }
+        }
         self.mirrors.iter().all(|m| {
             let i = m.axis.index();
             let side = self.center[i] - m.position;
@@ -1080,11 +1191,168 @@ impl Nf2ffResult {
         (n, l)
     }
 
-    /// The far field towards `(theta, phi)` \[rad\] at frequency index `k`.
+    /// Radiation vectors `(N, L)` for the (possibly complex) wave vector
+    /// `kv` (`e^{+j kv·(r' − c)}`), mirror images included.
+    fn radiation_vectors_c(
+        &self,
+        k: usize,
+        kv: [Complex64; 3],
+    ) -> ([Complex64; 3], [Complex64; 3]) {
+        let c = self.center;
+        let mut n = [Complex64::ZERO; 3];
+        let mut l = [Complex64::ZERO; 3];
+        let nm = self.mirrors.len();
+        for mask in 0..(1usize << nm) {
+            let mut refl = [None::<f64>; 3];
+            let mut sj = [1.0f64; 3];
+            let mut sm = [1.0f64; 3];
+            for (b, m) in self.mirrors.iter().enumerate() {
+                if mask & (1 << b) == 0 {
+                    continue;
+                }
+                let a = m.axis.index();
+                refl[a] = Some(m.position);
+                for t in 0..3 {
+                    let tangential = t != a;
+                    let (fj, fm) = match (m.kind, tangential) {
+                        (MirrorKind::Pec, true) => (-1.0, 1.0),
+                        (MirrorKind::Pec, false) => (1.0, -1.0),
+                        (MirrorKind::Pmc, true) => (1.0, -1.0),
+                        (MirrorKind::Pmc, false) => (-1.0, 1.0),
+                    };
+                    sj[t] *= fj;
+                    sm[t] *= fm;
+                }
+            }
+            for f in self.active() {
+                let (jk, mk) = (&f.j[k], &f.m[k]);
+                for (q, p) in f.points.iter().enumerate() {
+                    let mut ph = Complex64::ZERO;
+                    for a in 0..3 {
+                        let x = match refl[a] {
+                            Some(x0) => 2.0 * x0 - p[a],
+                            None => p[a],
+                        };
+                        ph += kv[a] * (x - c[a]);
+                    }
+                    let e = (Complex64::I * ph).exp() * f.weights[q];
+                    for a in 0..3 {
+                        n[a] += jk[q][a] * (e * sj[a]);
+                        l[a] += mk[q][a] * (e * sm[a]);
+                    }
+                }
+            }
+        }
+        (n, l)
+    }
+
+    /// The free-space far-field vector `r·E·e^{jkr}` of the box currents
+    /// towards the (possibly complex) unit direction `d`:
+    /// `−jk/(4π)·[η(N − (d·N)d) − d × L]`.
+    fn free_field(&self, k: usize, d: [Complex64; 3]) -> [Complex64; 3] {
+        let kw = self.wavenumber(k);
+        let (n, l) = self.radiation_vectors_c(k, d.map(|x| x * kw));
+        let eta = self.wave_impedance();
+        let dn = cdot(d, n);
+        let dl = ccross(d, l);
+        let a = Complex64::new(0.0, -kw / (4.0 * PI));
+        [0, 1, 2].map(|i| a * ((n[i] - d[i] * dn) * eta - dl[i]))
+    }
+
+    /// The far-field vector over the ground `g` towards `r̂` (see
+    /// `ground` module docs).
+    fn ground_field(&self, k: usize, g: &Ground, r: [f64; 3]) -> [Complex64; 3] {
+        let (nh, h) = self.ground_normal(g);
+        let cn = r[0] * nh[0] + r[1] * nh[1] + r[2] * nh[2];
+        let w = 2.0 * PI * self.freqs[k];
+        let k1 = self.wavenumber(k);
+        // TE unit vector n̂ × r̂ (any tangential one at normal incidence).
+        let ex = {
+            let c = [
+                nh[1] * r[2] - nh[2] * r[1],
+                nh[2] * r[0] - nh[0] * r[2],
+                nh[0] * r[1] - nh[1] * r[0],
+            ];
+            let len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+            if len > 1e-12 {
+                c.map(|x| x / len)
+            } else {
+                let mut t = [0.0; 3];
+                t[g.axis.next().index()] = 1.0;
+                t
+            }
+        };
+        let ec = real(ex);
+        let mirror = |v: [Complex64; 3]| {
+            let vn = dot(v, nh);
+            [0, 1, 2].map(|i| v[i] - vn * (2.0 * nh[i]))
+        };
+        if cn >= 0.0 {
+            let rm = [0, 1, 2].map(|i| r[i] - 2.0 * cn * nh[i]);
+            let kt = k1 * (1.0 - cn * cn).max(0.0).sqrt();
+            let [te, tm] = ground::coefficients(g, &self.medium, w, kt);
+            let e0 = self.free_field(k, real(r));
+            let ep = self.free_field(k, real(rm));
+            let ph = Complex64::cis(-2.0 * k1 * cn * h);
+            let pe = cdot(ep, ec);
+            let ptm = [0, 1, 2].map(|i| ep[i] - ec[i] * pe);
+            let mtm = mirror(ptm);
+            return [0, 1, 2].map(|i| e0[i] + ph * (te.gamma * pe * ex[i] + tm.gamma * mtm[i]));
+        }
+        let Some(base) = g.far_base() else {
+            return [Complex64::ZERO; 3];
+        };
+        let kn = ground::wavenumber(&base, w);
+        let rt = [0, 1, 2].map(|i| r[i] - cn * nh[i]);
+        let kt = kn * (1.0 - cn * cn).max(0.0).sqrt();
+        let kz1 = ground::kz1(k1, kt);
+        let kzn = kn * -cn;
+        // Direction in the box medium: (k_t − k_z1 n̂)/k1.
+        let d: [Complex64; 3] = [0, 1, 2].map(|i| (Complex64::from(rt[i] * kn) - kz1 * nh[i]) / k1);
+        let e1 = self.free_field(k, d);
+        let [te, tm] = ground::coefficients(g, &self.medium, w, kt);
+        let ph = (Complex64::I * (-kz1 * h + kzn * (h + g.thickness()))).exp();
+        let p1 = ccross(ec, d);
+        let pn = [
+            ex[1] * r[2] - ex[2] * r[1],
+            ex[2] * r[0] - ex[0] * r[2],
+            ex[0] * r[1] - ex[1] * r[0],
+        ];
+        let ae = Complex64::from(kzn) / kz1 * te.t * ph * cdot(e1, ec);
+        let ap = tm.t * ph * cdot(e1, p1) * (kn / k1);
+        [0, 1, 2].map(|i| ae * ex[i] + ap * pn[i])
+    }
+
+    /// Wave impedance of the medium the direction `r̂` looks into (the
+    /// bottom half-space of a ground below the box, else the background).
+    fn impedance_towards(&self, r: [f64; 3]) -> f64 {
+        if let Some(g) = &self.ground {
+            let (nh, _) = self.ground_normal(g);
+            if r[0] * nh[0] + r[1] * nh[1] + r[2] * nh[2] < 0.0 {
+                return g
+                    .far_base()
+                    .map_or(self.wave_impedance(), |m| m.impedance());
+            }
+        }
+        self.wave_impedance()
+    }
+
+    /// The far field towards `(theta, phi)` \[rad\] at frequency index `k`
+    /// (inside a ground's bottom half-space: `r·E·e^{jk_N r}` there).
     ///
     /// # Panics
     /// If `k` is out of range.
     pub fn far_field(&self, k: usize, theta: f64, phi: f64) -> FarField {
+        if let Some(g) = &self.ground {
+            let (r, t, p) = basis(theta, phi);
+            let e = self.ground_field(k, g, r);
+            return FarField {
+                theta,
+                phi,
+                e_theta: dot(e, t),
+                e_phi: dot(e, p),
+            };
+        }
         let (r, t, p) = basis(theta, phi);
         let (n, l) = self.radiation_vectors(k, r);
         let kw = self.wavenumber(k);
@@ -1115,10 +1383,12 @@ impl Nf2ffResult {
         phis.iter().map(|&p| self.far_field(k, theta, p)).collect()
     }
 
-    /// Radiation intensity `U(θ, φ)` (with the background's `η`).
+    /// Radiation intensity `U(θ, φ)` (with the background's `η`; with a
+    /// [ground](Self::with_ground), that of the bottom half-space below
+    /// the interface).
     pub fn radiation_intensity(&self, k: usize, theta: f64, phi: f64) -> f64 {
         self.far_field(k, theta, phi)
-            .intensity_in(self.wave_impedance())
+            .intensity_in(self.impedance_towards(basis(theta, phi).0))
     }
 
     /// Radiated power: the Poynting flux `½ Re ∮(E × H*)·n̂ dS` out of the
@@ -1307,6 +1577,7 @@ mod tests {
             faces,
             mirrors: Vec::new(),
             medium: Medium::VACUUM,
+            ground: None,
         };
         // P_rad of the dipole: η (kIl)²/(12π).
         let p_exact = Z0 * kw * kw / (12.0 * PI);
@@ -1390,6 +1661,7 @@ mod tests {
             faces,
             mirrors: Vec::new(),
             medium: Medium::VACUUM,
+            ground: None,
         };
         let p_exact = Z0 * kw * kw / (12.0 * PI);
         let p_box = res.radiated_power(0);
@@ -1474,6 +1746,7 @@ mod tests {
             faces,
             mirrors: Vec::new(),
             medium: Medium::VACUUM,
+            ground: None,
         }
         .with_mirror(Mirror::new(Axis::Y, 0.0, MirrorKind::Pec))
         .unwrap();
@@ -1519,5 +1792,192 @@ mod tests {
             res.with_mirror(Mirror::new(Axis::X, 0.0, MirrorKind::Pec))
                 .is_err()
         );
+    }
+
+    /// Currents of a unit Hertzian dipole along `axis` at the origin on a
+    /// 0.4 m cube (λ/30 sampling at 1 GHz).
+    fn dipole_box(axis: usize) -> Nf2ffResult {
+        let f = 1e9;
+        let kw = 2.0 * PI * f / C0;
+        // Fields of a dipole along `axis`: the z-dipole in the cyclically
+        // permuted frame q = (p_{a+1}, p_{a+2}, p_a).
+        let fields = |p: [f64; 3]| {
+            let q = [p[(axis + 1) % 3], p[(axis + 2) % 3], p[axis]];
+            let (eq, hq) = hertzian_fields(kw, q);
+            let back = |v: [Complex64; 3]| {
+                let mut o = [Complex64::ZERO; 3];
+                o[(axis + 1) % 3] = v[0];
+                o[(axis + 2) % 3] = v[1];
+                o[axis] = v[2];
+                o
+            };
+            (back(eq), back(hq))
+        };
+        let n = 41;
+        let xs: Vec<f64> = (0..n)
+            .map(|i| -0.2 + 0.4 * i as f64 / (n - 1) as f64)
+            .collect();
+        let wt = trapezoid(&xs);
+        let mut faces = Vec::new();
+        for face in Face::ALL {
+            let ax = face.axis().index();
+            let x0 = if face.is_max() { 0.2 } else { -0.2 };
+            let (a1, a2) = ((ax + 1) % 3, (ax + 2) % 3);
+            let nn = normal(face);
+            let mut fd = FaceData {
+                points: Vec::new(),
+                weights: Vec::new(),
+                normals: Vec::new(),
+                j: vec![Vec::new()],
+                m: vec![Vec::new()],
+            };
+            for (p, &u) in xs.iter().enumerate() {
+                for (q, &v) in xs.iter().enumerate() {
+                    let mut pt = [0.0; 3];
+                    pt[ax] = x0;
+                    pt[a1] = u;
+                    pt[a2] = v;
+                    let (e, h) = fields(pt);
+                    fd.points.push(pt);
+                    fd.weights.push(wt[p] * wt[q]);
+                    fd.normals.push(nn);
+                    fd.j[0].push(cross(h, nn.map(|x| -x)));
+                    fd.m[0].push(cross(e, nn));
+                }
+            }
+            faces.push(fd);
+        }
+        Nf2ffResult {
+            freqs: vec![f],
+            center: [0.0; 3],
+            faces,
+            mirrors: Vec::new(),
+            medium: Medium::VACUUM,
+            ground: None,
+        }
+    }
+
+    /// A PEC (PMC) ground is image theory: the same far field as the PEC
+    /// (PMC) mirror, for vertical and horizontal dipoles.
+    #[test]
+    fn pec_and_pmc_grounds_are_mirrors() {
+        for axis in [0, 2] {
+            for (base, kind) in [
+                (GroundBase::Pec, MirrorKind::Pec),
+                (GroundBase::Pmc, MirrorKind::Pmc),
+            ] {
+                let g = dipole_box(axis)
+                    .with_ground(Ground::new(Axis::Z, -0.3, base))
+                    .unwrap();
+                let m = dipole_box(axis)
+                    .with_mirror(Mirror::new(Axis::Z, -0.3, kind))
+                    .unwrap();
+                for (t, ph) in [(0.0, 0.0), (0.4, 0.3), (1.0, 2.0), (1.5, 4.0)] {
+                    let (a, b) = (g.far_field(0, t, ph), m.far_field(0, t, ph));
+                    let scale = b.e_theta.norm() + b.e_phi.norm() + 1e-3;
+                    assert!(
+                        (a.e_theta - b.e_theta).norm() + (a.e_phi - b.e_phi).norm() < 1e-9 * scale,
+                        "{axis} {base:?} {t}: {a:?} vs {b:?}"
+                    );
+                }
+                // No far field below a conductor.
+                assert_eq!(g.radiation_intensity(0, 2.5, 1.0), 0.0);
+            }
+        }
+        // The box must not cross the interface.
+        assert!(
+            dipole_box(2)
+                .with_ground(Ground::new(Axis::Z, 0.1, GroundBase::Pec))
+                .is_err()
+        );
+    }
+
+    /// Dipoles 0.3 m over a dielectric half-space: the textbook far fields
+    /// (Balanis, *Antenna Theory*, §4.8) with the Fresnel coefficients
+    /// `R_v = (ε cosθ − √(ε − sin²θ))/(ε cosθ + √(ε − sin²θ))` (vertical
+    /// dipole, `E_θ`) and `R_h = (cosθ − √(ε − sin²θ))/(cosθ + √(ε − sin²θ))`
+    /// (horizontal, `E_φ` in the plane across it); below a vacuum
+    /// "half-space" the free field.
+    #[test]
+    fn dipoles_over_a_dielectric_half_space() {
+        let kw = 2.0 * PI * 1e9 / C0;
+        let a = Complex64::new(0.0, Z0 * kw / (4.0 * PI));
+        let eps = 4.0f64;
+        let h = 0.3;
+        let vert = dipole_box(2)
+            .with_ground(Ground::half_space(Axis::Z, -h, Medium::lossless(eps, 1.0)))
+            .unwrap();
+        let hor = dipole_box(0)
+            .with_ground(Ground::half_space(Axis::Z, -h, Medium::lossless(eps, 1.0)))
+            .unwrap();
+        for t in [0.0f64, 0.3, 0.8, 1.2, 1.5] {
+            let (st, ct) = t.sin_cos();
+            let root = (eps - st * st).sqrt();
+            let ph = Complex64::cis(-2.0 * kw * h * ct);
+            let rv = (eps * ct - root) / (eps * ct + root);
+            let want = a * st * (1.0 + ph * rv);
+            let got = vert.far_field(0, t, 0.4).e_theta;
+            assert!(
+                (got - want).norm() < 3e-3 * a.norm(),
+                "{t}: {got} vs {want}"
+            );
+            let rh = (ct - root) / (ct + root);
+            let want = a * (1.0 + ph * rh);
+            let got = hor.far_field(0, t, PI / 2.0).e_phi;
+            assert!(
+                (got - want).norm() < 3e-3 * a.norm(),
+                "{t}: {got} vs {want}"
+            );
+        }
+        let free = dipole_box(2);
+        let vac = dipole_box(2)
+            .with_ground(
+                Ground::half_space(Axis::Z, -h, Medium::VACUUM).layer(0.05, Medium::VACUUM),
+            )
+            .unwrap();
+        for t in [1.7, 2.2, 3.0] {
+            let (a, b) = (vac.far_field(0, t, 0.5), free.far_field(0, t, 0.5));
+            assert!(
+                (a.e_theta - b.e_theta).norm() < 1e-9 * b.e_theta.norm(),
+                "{t}"
+            );
+        }
+    }
+
+    /// Layer limits: a vanishing slab on PEC is the PEC at the interface,
+    /// a vacuum layer moves the PEC down, and a quarter-wave slab on PEC
+    /// reflects like a PMC at normal incidence.
+    #[test]
+    fn grounded_slab_limits() {
+        let close = |a: &Nf2ffResult, b: &Nf2ffResult, tol: f64| {
+            for (t, ph) in [(0.0, 0.0), (0.5, 1.0), (1.2, 2.5)] {
+                let (x, y) = (a.far_field(0, t, ph), b.far_field(0, t, ph));
+                let d = (x.e_theta - y.e_theta).norm() + (x.e_phi - y.e_phi).norm();
+                let s = y.e_theta.norm() + y.e_phi.norm();
+                assert!(d <= tol * s, "{t}: {x:?} vs {y:?}");
+            }
+        };
+        for axis in [0, 2] {
+            let m = Medium::lossless(2.5, 1.0);
+            let thin = dipole_box(axis)
+                .with_ground(Ground::grounded_slab(Axis::Z, -0.3, 1e-10, m))
+                .unwrap();
+            let pec = dipole_box(axis)
+                .with_ground(Ground::new(Axis::Z, -0.3, GroundBase::Pec))
+                .unwrap();
+            close(&thin, &pec, 1e-5);
+            let vac = dipole_box(axis)
+                .with_ground(Ground::grounded_slab(Axis::Z, -0.3, 0.05, Medium::VACUUM))
+                .unwrap();
+            let deep = dipole_box(axis)
+                .with_ground(Ground::new(Axis::Z, -0.35, GroundBase::Pec))
+                .unwrap();
+            close(&vac, &deep, 1e-9);
+        }
+        // λ_d/4 of ε_r = 4 at 1 GHz on PEC: an open circuit at θ = 0.
+        let quarter = 0.25 * C0 / 1e9 / 2.0;
+        let g = Ground::grounded_slab(Axis::Z, -0.3, quarter, Medium::lossless(4.0, 1.0));
+        let [te, tm] = ground::coefficients(&g, &Medium::VACUUM, 2.0 * PI * 1e9, 0.0);
+        assert!((te.gamma - 1.0).norm() < 1e-9 && (tm.gamma - 1.0).norm() < 1e-9);
     }
 }
