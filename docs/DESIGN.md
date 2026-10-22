@@ -3776,6 +3776,10 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     ×4 on the Mur microstrip filter at 4 threads). The Mur operator is
     registered after the dispersive poles so the order of the slab
     corrections is unchanged.
+  - Fused steps and movable hooks (wave 14, below): large grids update
+    H and E x-plane by x-plane in one pass; read-only `post_h` / `pre_e`
+    hooks (current probes, lumped elements) move out of the mid-step
+    gap.
   - `Operator::energy()` (default 0) reports energy held in operator state
     (lumped L/C branches); `Engine::energy()` adds it, in registration order,
     so lossless LC-loaded cavities conserve the total.
@@ -3786,6 +3790,113 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
 - **`unsafe`**: `forbid` like csx in M1. If a benchmark shows that a
   bounds-check-free kernel is worth it, we relax this to `deny` with a single
   audited `#[allow]` module. That would be a reviewed decision, not a default.
+
+### 6.1 Fused steps (wave 14)
+
+An unfused step streams the fields twice: the H pass reads `u`, `i` and
+writes `i`, the E pass reads them again and writes `u` (72 bytes per
+cell, coefficients pooled). On grids that do not fit the caches that is
+the limit (§10 benchmark: ~61 GB/s of the machine's ~70). A **fused
+step** (`engine::pool`, `Shared::fused_a` / `fused_b`) does both in one
+pass, 48 bytes per cell:
+
+1. each slab updates the H of its *last* x-plane (it needs the next
+   slab's first plane of `u^n`, before that slab overwrites it) and
+   copies those currents to a per-slab halo plane;
+2. once the previous slab has done step 1 (a wait on that neighbour's
+   counter only, no barrier), the slab runs, plane by plane, the H update
+   of plane `g` (from `u^n` of planes `g`, `g+1`, not yet updated) and
+   then the E update of plane `g` (from the final `i^{n+½}` of planes
+   `g`, `g−1`; plane `p0−1` from the halo). One barrier ends the step.
+
+Every value is computed by the same expression from the same inputs as
+in the unfused half-steps (the kernels are split per plane / row, not
+rewritten), so results are bit-identical to master and for any thread
+count. Verified by hashing the complete final field state of all 147
+fixture models (openEMS file path at 1, 3 and 8 threads, native path at
+2, 4 and 5 threads, fused steps forced on) against master `13f8608`, and by
+`tests/fused.rs` (PML, CPML, probes, dispersive, lumped, Mur,
+cylindrical, sheets: fused vs. the old schedule, bit for bit). The H
+kernel of a fused plane goes row by row with all three components per
+row (`h_rows`), which streamed better here than component by component;
+interleaving H and E row by row inside a plane was slower (more
+concurrent streams) and was dropped.
+
+What a step needs to run fused:
+
+- **No serial hook between H and E.** `Operator::movable_hooks` (default
+  none) declares a `post_h` that only reads `i` or a `pre_e` that only
+  reads `u`. At a step where every needed mid-step hook is movable, the
+  engine calls the `pre_e`s after the `pre_h` hooks and the `post_h`s
+  first in the `post_e` gap (both read values that the other half-step
+  does not change), so the step has no `GAP_B`. Movable: current probes,
+  probes and openEMS-timed dumps of H/J (`from_currents`), lumped
+  elements and ports (voltage capture). This also removes one barrier
+  and serial phase per step on unfused steps (the WR-90 iris with its
+  current mode probes: ×1.1–2.5).
+- **Slab hooks that allow it** (`SlabHooks::fusion`): `Fusion::Planes`
+  hooks have plane-wise forms `post_h_planes` / `post_e_planes` (CPML
+  without the cylindrical `ρ_max` layer, openEMS's PML, dispersive
+  poles); `Fusion::Voltages` hooks act on `u` only and run whole-slab
+  before the H update / after the slab's E update (Mur), which requires
+  them to be registered after all plane-wise ones (they are). Anything
+  else (`Fusion::None`, the default) keeps steps unfused.
+- No energy recording in the step (the energy-check step of a run stays
+  unfused, one in ~26 for XML runs), no multigrid.
+- **Big enough slabs** (`FusedSteps::Auto`, `Engine::set_fused_steps`):
+  only when a slab's fields exceed 4 MiB (`FUSE_MIN_BYTES`). Below that
+  they stay in the core's cache share between the half-steps, fusing
+  saves no DRAM traffic, and the fused schedule measured up to 20 %
+  slower at 16–32 threads (100³ and 128³ boxes; not explained, the
+  single-thread kernels are equally fast in cache, the extra halo copy
+  is ~5–10 % of a 4-plane slab's traffic). The small end-to-end models
+  of §5.16.4 therefore keep the unfused passes (forced fusion measured
+  within noise there).
+
+Measured on the Threadripper 9970X **under heavy load from other jobs**
+(load average 37–75 on 64 hardware threads throughout; single numbers
+vary by ±20–30 % and the 32–64-thread columns most), best of 3–5
+interleaved runs, master `13f8608` → this wave, Mcells/s:
+
+| `bench_vacuum` | 1 T | 8 T | 16 T | 32 T | 64 T |
+|---|---|---|---|---|---|
+| 128³ PEC | 323 → 489 | 3485 → 3555 | 5114 → 5702 ¹ | 5145 → 5172 ¹ | 2590 → 1886 ¹ |
+| 200³ PEC | | 536 → 796 | 607 → 848 | 696 → 812 | |
+| 256³ PEC | 323 → 353 | 560 → 726 | 518 → 707 | 690 → 712 | 559 → 584 |
+| 128³ CPML 8 | 145 → 197 | 687 → 660 | 1410 → 1274 ¹ | 1864 → 2591 ¹ | 678 → 659 ¹ |
+| 256³ CPML 8 | 131 → 185 | 366 → 592 | 373 → 635 | 505 → 561 | 517 → 563 |
+
+¹ unfused (slab below 4 MiB): differences are load noise.
+
+XML boxes on the openEMS file path (`N³` cells of 1 mm, soft dipole,
+voltage probe, energy end criterion, openEMS PML_8 layers or PEC),
+`Simulation::run` only:
+
+| box | 1 T | 8 T | 16 T | 32 T |
+|---|---|---|---|---|
+| 200³ PEC | 313 → 409 | 771 → 1051 | 808 → 1010 | 918 → 909 |
+| 200³ PML_8 | 200 → 312 | 435 → 703 | 416 → 648 | 444 → 588 |
+| 100³ PML_8 ¹ | 168 → 254 | 2009 → 1881 | 3416 → 2734 | 2485 → 2563 |
+
+(¹ fused only at 1 T.) The large boxes gain ×1.3–1.6 where they are
+bandwidth bound; with the machine this loaded, the absolute rates stay
+below the idle-machine figures of §10. The end-to-end models (patch,
+microstrip filter, coax, Drude slab) are unchanged within noise except
+the waveguide iris (movable mode probes).
+
+**The 64-thread drop at 128³.** It is not slab granularity or barrier
+latency: a 32³ box (no work to speak of) costs 0.07–0.08 ms per step at
+32–64 threads, while 128³ goes from 0.42 ms per step at 32 threads to
+1.1 ms at 48 and 1.65 ms at 64. With one thread per hardware thread,
+(a) the two SMT siblings of a core share its execution units, L1/L2 and
+bandwidth, so 64 threads do the work of 32 at half speed each, and (b)
+every step needs *all* 64 hardware threads at once: any other runnable
+task (other jobs here, daemons on an idle machine) preempts one of them
+and the whole step waits for it at the barrier, for up to a time slice.
+At 32 threads the scheduler has idle siblings to put the other tasks
+on. Hence the default of one thread per physical core
+(`default_threads`), which stays; explicit requests above the core count
+are honoured but not recommended (`--numThreads` like openEMS).
 
 ## 7. Crate layout and dependencies
 

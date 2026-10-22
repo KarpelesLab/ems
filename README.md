@@ -125,7 +125,7 @@ models (wall time; design §10).
 | antennas | NF2FF (`ems::nf2ff`): patterns, directivity, gain, radiated power; PEC/PMC mirror planes (on cylindrical grids also the α walls of half-space sectors); homogeneous lossless background; a stratified ground under the box (half-space, layers, grounded slab: reflected and transmitted far fields); Cartesian and cylindrical grids; openEMS's `nf2ff` tool (`ems-nf2ff`, feature `hdf5`) | lossy backgrounds around the box |
 | SAR | local, 1 g / 10 g averaged (`ems::post::sar`), from csx SAR dumps, also on cylindrical grids (exact physical cubes over the annular cells); openEMS SAR dump files and in-run averaging (on cylindrical grids with openEMS's cubes in `(ρ, α·u, z)`); openEMS's `sar_calc` tool (`ems-sar-calc`: SIMPLE, IEEE_C95_3, IEEE_62704, cube statistics, `-a` auto range), equal to openEMS to float precision on the oracle fixtures | ties between equal cubes decided by openEMS's rounding |
 | openEMS XML | `Simulation::from_xml`, `<FDTD>` settings, bit-identical round trip; openEMS semantics (signals, timing, time step rules, probe snapping, end criteria) matched to ~1e-6 on the oracle fixtures; openEMS's reading rules (`ems::io::openems::read_model`: boundary spellings, defaults, probe and dump boxes); a 175-model feature sweep (every primitive, transformation, material and probe kind) agrees on 165 models to ≲1e-4 (design §5.16.3); `ems` binary, a drop-in for the `openEMS` executable | surface ties of polyhedra; two conducting sheets meeting on a line |
-| engine | multithreaded, deterministic for any thread count, energy end criteria | GPU |
+| engine | multithreaded, deterministic for any thread count, fused H/E passes on large grids, energy end criteria | GPU |
 
 ## Features
 

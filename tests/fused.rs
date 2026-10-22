@@ -3,8 +3,10 @@
 //! hooks (current probes, lumped-element voltage capture) out of the gap
 //! between the half-steps. Both must leave results unchanged bit for bit.
 //!
-//! Each fixture model runs twice with the same thread count: as is, and
-//! with an extra operator that forces the unfused schedule (a serial
+//! Each fixture model runs twice with the same thread count: with fused
+//! steps forced on ([`FusedSteps::Always`]; the models are too small for
+//! the default to fuse them), and with fused steps off plus an extra
+//! operator that keeps the serial hooks in their original gaps (a serial
 //! `post_h` needed at every step, which no hook can be moved around, and
 //! slab hooks that cannot run fused). The complete final field states
 //! must be identical.
@@ -14,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ems::compile::CompileOptions;
-use ems::engine::{Fields, Hooks, Operator, SlabHooks, SlabPartition, StepContext};
+use ems::engine::{Fields, FusedSteps, Hooks, Operator, SlabHooks, SlabPartition, StepContext};
 use ems::io::openems::read_model;
 use ems::{Axis, Simulation};
 
@@ -49,7 +51,10 @@ fn state(case: &str, threads: usize, openems: bool, unfused: bool) -> (u64, Vec<
     })
     .unwrap();
     if unfused {
+        sim.engine_mut().set_fused_steps(FusedSteps::Never);
         sim.engine_mut().add_operator(Unfuse);
+    } else {
+        sim.engine_mut().set_fused_steps(FusedSteps::Always);
     }
     sim.run().unwrap();
     let e = sim.engine();

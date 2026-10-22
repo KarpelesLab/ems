@@ -331,7 +331,10 @@ pub(crate) fn update_h_plane(
     u: Planes<'_>,
     next: Option<[&[f32]; 2]>,
 ) {
-    h_plane::<false, true, false>(co, n, gi, i, u, next, 1.0);
+    let mut i = i;
+    for j in 0..n[1] {
+        h_rows(co, n, gi, j, &mut i, u, next);
+    }
 }
 
 /// The H update of one x-plane (see [`update_h_plane`]); with `ENERGY`
@@ -454,32 +457,10 @@ pub(crate) fn update_e_plane(
     }
 }
 
-/// [`update_h_plane`] and then [`update_e_plane`] of x-plane `gi`,
-/// interleaved row by row: the H update of row `j` (which reads the
-/// voltages of rows `j` and `j + 1`, not yet updated) is followed by the
-/// E update of row `j` (which reads the currents of rows `j − 1` and `j`,
-/// already updated, and of plane `gi − 1`). Bit-identical to the two
-/// plane updates in sequence, with a working set of a few rows instead
-/// of whole planes.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn update_he_plane(
-    co: &CoeffRows<'_>,
-    n: [usize; 3],
-    gi: usize,
-    mut i: PlanesMut<'_>,
-    mut u: PlanesMut<'_>,
-    next: Option<[&[f32]; 2]>,
-    prev: [&[f32]; 2],
-    zero: &[f32],
-) {
-    for j in 0..n[1] {
-        h_rows(co, n, gi, j, &mut i, [&*u[0], &*u[1], &*u[2]], next);
-        e_rows(co, n, gi, j, &mut u, [&*i[0], &*i[1], &*i[2]], prev, zero);
-    }
-}
-
-/// The H update of the dual edges of row `j` of x-plane `gi` (as
-/// [`h_plane`] without energy).
+/// The H update of the dual edges of row `j` of x-plane `gi` (the same
+/// expressions as [`h_plane`] without energy, row by row: all three
+/// components of a row together, which streams better than one
+/// component of the whole plane after the other).
 #[inline(always)]
 fn h_rows(
     co: &CoeffRows<'_>,

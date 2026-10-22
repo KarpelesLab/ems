@@ -7,8 +7,10 @@
 //! the kernel and for the operators' [slab hooks](super::SlabHooks).
 //! Between the half-steps one barrier separates H from E. Where the
 //! operators allow it, a step runs *fused* instead ([`Shared::fused_a`],
-//! [`Shared::fused_b`]): one barrier after the H update of each slab's
-//! last x-plane, then H and E plane by plane. Only where
+//! [`Shared::fused_b`]): each slab updates the H of its last x-plane,
+//! then (once the previous slab has done the same, a wait on that
+//! neighbour only) H and E plane by plane, with one barrier per step.
+//! Only where
 //! registered operators need serial hooks at a step ([`GAP_A`], from
 //! [`Operator::hooks_at`](super::Operator::hooks_at)) does the caller stop
 //! the workers at an extra barrier and run those hooks while they wait.
@@ -21,7 +23,7 @@ use super::coeffs::Coefficients;
 use super::fields::{Block, FieldStore, read, write};
 use super::kernel::{
     block_planes, block_planes_mut, energy_h_slab, planes_around, update_e_plane, update_e_slab,
-    update_h_plane, update_h_slab, update_he_plane,
+    update_h_plane, update_h_slab,
 };
 use super::rows::KernelCoeffs;
 use super::run::EnergyMeasure;
@@ -95,6 +97,9 @@ pub(crate) struct Shared {
     /// first phase of a fused step for the E update of the next slab
     /// (see [`Shared::fused_a`]).
     halo: Vec<RwLock<Block>>,
+    /// Per slab, the number of first phases of fused steps it has
+    /// completed (the next slab waits for it instead of a barrier).
+    halo_ready: Vec<Flag>,
     /// Slab hooks; written only while the workers are idle.
     pub(crate) slab_ops: RwLock<SlabOps>,
     /// Per-x-plane energy partial sums (`f64` bits) written by an
@@ -115,7 +120,44 @@ pub(crate) struct Shared {
     /// Cartesian grid: the openEMS measure counts the outer dual edges
     /// with full cells (see [`EnergyMeasure::OpenEms`]).
     cartesian: bool,
+    /// Whether steps run fused where the operators allow it
+    /// ([`FusedSteps`]; set while the workers are idle).
+    fuse: AtomicBool,
 }
+
+/// When the engine runs steps fused, i.e. H and E x-plane by x-plane in
+/// one pass over the fields
+/// ([`Engine::set_fused_steps`](super::Engine::set_fused_steps)). Results
+/// are bit-identical either way; this only affects speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FusedSteps {
+    /// Where the operators allow it and the fields of a slab exceed
+    /// [`FUSE_MIN_BYTES`] (the default).
+    #[default]
+    Auto,
+    /// Where the operators allow it, whatever the grid size.
+    Always,
+    /// Never: every step runs its H and E updates as separate passes.
+    Never,
+}
+
+impl FusedSteps {
+    fn resolve(self, n: [usize; 3], slabs: usize) -> bool {
+        match self {
+            Self::Auto => 24 * n.iter().product::<usize>() / slabs.max(1) >= FUSE_MIN_BYTES,
+            Self::Always => true,
+            Self::Never => false,
+        }
+    }
+}
+
+/// [`FusedSteps::Auto`] fuses steps only when the fields of a slab (24
+/// bytes per node) exceed this size. Below it a slab's fields stay in the core's share of
+/// the caches between the half-steps, so fusing saves no memory traffic;
+/// measured on the development machine (design §6), the fused schedule
+/// was then up to 20 % slower at 16–32 threads (100³ and 128³ boxes),
+/// while it is faster from about this size on (×1.3–1.6 at 200³–256³).
+pub const FUSE_MIN_BYTES: usize = 4 << 20;
 
 /// Where the caller stops the workers to run serial hooks, per step of a
 /// [`Plan`]: bit [`GAP_A`] between the E update and the next H update
@@ -168,11 +210,13 @@ impl Shared {
         let zero = vec![0.0; store.layout.plane];
         let plane_energy = (0..store.layout.n[0]).map(|_| AtomicU64::new(0)).collect();
         let kernel = KernelCoeffs::new(&coeffs, threads);
+        let (store_n, slabs) = (store.layout.n, store.layout.slabs());
         let halo = (0..store.layout.slabs())
             .map(|_| RwLock::new(core::array::from_fn(|_| vec![0.0; store.layout.plane])))
             .collect();
         Self {
             halo,
+            halo_ready: (0..store.layout.slabs()).map(|_| Flag::default()).collect(),
             store,
             coeffs: RwLock::new(coeffs),
             kernel: RwLock::new(kernel),
@@ -191,7 +235,14 @@ impl Shared {
             sched: RwLock::new(Vec::new()),
             energy_oe: AtomicBool::new(false),
             cartesian,
+            fuse: AtomicBool::new(FusedSteps::Auto.resolve(store_n, slabs)),
         }
+    }
+
+    /// Sets the fused-step policy.
+    pub(crate) fn set_fused(&self, mode: FusedSteps) {
+        let on = mode.resolve(self.store.layout.n, self.store.layout.slabs());
+        self.fuse.store(on, Ordering::Relaxed);
     }
 
     /// Marks the kernel view stale (call when handing out mutable access
@@ -381,11 +432,17 @@ impl Shared {
             op.post_h_planes(&mut tgt, &src, &ctx, g..p1);
         }
         if s + 1 < st.layout.slabs() {
+            // The E kernel reads the y and z currents; slab hooks may read
+            // all three.
+            let first = if ops.hooks.is_empty() { 1 } else { 0 };
             let mut h = write(&self.halo[s]);
-            for (d, c) in h.iter_mut().zip(block_planes(&iw, l, p)) {
+            for (d, c) in h.iter_mut().zip(block_planes(&iw, l, p)).skip(first) {
                 d.copy_from_slice(c);
             }
         }
+        // Release the next slab (its voltages are no longer read here).
+        drop((un, uo, iw));
+        self.halo_ready[s].0.fetch_add(1, Ordering::Release);
     }
 
     /// Second phase of a fused step on slab `s`: plane by plane, the H
@@ -395,8 +452,7 @@ impl Shared {
     /// then, while the voltages of plane `g` are no longer needed by any H
     /// update. With plane-wise slab hooks each update is followed by the
     /// hooks of its plane ([`SlabHooks::post_h_planes`],
-    /// [`SlabHooks::post_e_planes`]); without, H and E are interleaved row
-    /// by row ([`update_he_plane`]). Every value is computed by the same
+    /// [`SlabHooks::post_e_planes`]). Every value is computed by the same
     /// expression from the same inputs as in the unfused half-steps, so
     /// results are bit-identical; the fields of a plane are read from
     /// memory once per step instead of twice. Voltage-only slab hooks
@@ -409,6 +465,12 @@ impl Shared {
         let n = st.layout.n;
         let p = st.layout.plane;
         let (p0, p1) = st.layout.planes(s);
+        // The previous slab must have finished its first phase: it reads
+        // our first plane of voltages and writes the halo we read.
+        if s > 0 {
+            let own = self.halo_ready[s].0.load(Ordering::Relaxed);
+            wait_until(|| self.halo_ready[s - 1].0.load(Ordering::Acquire) >= own);
+        }
         let mut iw = write(&st.i[s]);
         let mut uw = write(&st.u[s]);
         let hp = s.checked_sub(1).map(|q| read(&self.halo[q]));
@@ -422,7 +484,7 @@ impl Shared {
         let hooks = ops.of(Fusion::Planes).next().is_some();
         for g in p0..p1 {
             let l = g - p0;
-            if hooks && g + 1 < p1 {
+            if g + 1 < p1 {
                 let (_, ucur, unext) = planes_around(&mut uw, l, p);
                 let [x, y, z] = ucur;
                 let unext = unext.map(|[_, y, z]| [y, z]);
@@ -434,19 +496,21 @@ impl Shared {
                     [x, y, z],
                     unext,
                 );
-                let mut tgt = SlabMut {
-                    n,
-                    planes: p0..p1,
-                    block: &mut iw,
-                };
-                let src = SlabRef {
-                    n,
-                    planes: p0..p1,
-                    block: &uw,
-                    neighbour: None,
-                };
-                for op in ops.of(Fusion::Planes) {
-                    op.post_h_planes(&mut tgt, &src, &ctx, g..g + 1);
+                if hooks {
+                    let mut tgt = SlabMut {
+                        n,
+                        planes: p0..p1,
+                        block: &mut iw,
+                    };
+                    let src = SlabRef {
+                        n,
+                        planes: p0..p1,
+                        block: &uw,
+                        neighbour: None,
+                    };
+                    for op in ops.of(Fusion::Planes) {
+                        op.post_h_planes(&mut tgt, &src, &ctx, g..g + 1);
+                    }
                 }
             }
             let (ipl, icur, _) = planes_around(&mut iw, l, p);
@@ -458,16 +522,16 @@ impl Shared {
                     [&h[1][..], &h[2][..]]
                 }
             };
-            let (_, ucur, unext) = planes_around(&mut uw, l, p);
-            match unext {
-                Some([_, y, z]) if !hooks => {
-                    update_he_plane(&rows, n, g, icur, ucur, Some([y, z]), prev, zero)
-                }
-                _ => {
-                    let [x, y, z] = icur;
-                    update_e_plane(&rows, n, g, ucur, [x, y, z], prev, zero);
-                }
-            }
+            let [x, y, z] = icur;
+            update_e_plane(
+                &rows,
+                n,
+                g,
+                block_planes_mut(&mut uw, l, p),
+                [x, y, z],
+                prev,
+                zero,
+            );
             if hooks {
                 let mut tgt = SlabMut {
                     n,
@@ -622,6 +686,25 @@ pub(crate) fn energy(pool: Option<&mut Pool>, sh: &Shared, dt: f64, measure: Ene
     sh.plane_sum(dt, measure)
 }
 
+/// A counter on its own cache lines (spun on by another thread).
+#[derive(Debug, Default)]
+#[repr(align(128))]
+struct Flag(AtomicU64);
+
+/// Spins, then yields, until `ready()` (like [`SpinBarrier::wait`], for
+/// the short waits on a neighbour slab).
+fn wait_until(ready: impl Fn() -> bool) {
+    for _ in 0..SPIN {
+        if ready() {
+            return;
+        }
+        std::hint::spin_loop();
+    }
+    while !ready() {
+        std::thread::yield_now();
+    }
+}
+
 /// Sense-free generation barrier: spins briefly (cheap for the short
 /// phases of small models), then yields its time slice for a while (so a
 /// thread of the same run that was preempted by other load on the machine
@@ -740,9 +823,8 @@ fn worker(sh: Arc<Shared>, s: usize) {
         for t in 0..p.steps {
             let step = p.step0 + t;
             let g = sched[t as usize];
-            if fusable(&ops, g, p.energy_first && t == 0) {
+            if fusable(&sh, &ops, g, p.energy_first && t == 0) {
                 sh.fused_a(s, &ops, step, p.dt);
-                sh.barrier.wait();
                 sh.fused_b(s, &ops, step, p.dt);
                 sh.barrier.wait();
             } else {
@@ -765,8 +847,8 @@ fn worker(sh: Arc<Shared>, s: usize) {
 /// Whether a step with gap bits `g` runs fused ([`Shared::fused_a`],
 /// [`Shared::fused_b`]): no serial hooks between its H and E updates, no
 /// energy recording, and slab hooks that allow it ([`SlabHooks::fusion`]).
-fn fusable(ops: &SlabOps, g: u8, energy: bool) -> bool {
-    g & GAP_B == 0 && !energy && ops.fusable
+fn fusable(sh: &Shared, ops: &SlabOps, g: u8, energy: bool) -> bool {
+    sh.fuse.load(Ordering::Relaxed) && g & GAP_B == 0 && !energy && ops.fusable
 }
 
 /// Runs `plan` on all slabs: slab 0 on the calling thread, the others on
@@ -806,9 +888,8 @@ pub(crate) fn drive(
     for t in 0..plan.steps {
         let step = plan.step0 + t;
         let g = sched[t as usize];
-        if fusable(&ops, g, plan.energy_first && t == 0) {
+        if fusable(sh, &ops, g, plan.energy_first && t == 0) {
             sh.fused_a(0, &ops, step, plan.dt);
-            wait();
             sh.fused_b(0, &ops, step, plan.dt);
             wait();
         } else {
