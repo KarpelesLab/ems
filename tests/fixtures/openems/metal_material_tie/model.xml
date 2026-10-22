@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems core parity fixture "metal_material_tie": a metal block inside a lower-priority eps_r = 9 block, sharing a face with a higher-priority lossy eps/mu box; material samples in metal see the material under it (time step and edge averages)
+     Hand-written for the black-box openEMS oracle (scripts/openems-oracle/gen-core.sh). -->
+<openEMS>
+  <FDTD NumberOfTimesteps="400" endCriteria="1e-30">
+    <Excitation Type="0" f0="2e9" fc="1.5e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="under"><Property Epsilon="9" Mue="3" Kappa="0.02" Sigma="50"/><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="0"/><P2 X="14" Y="14" Z="9"/></Box></Primitives></Material>
+      <Metal Name="block"><Primitives><Box Priority="2"><P1 X="4" Y="4" Z="5"/><P2 X="9.3" Y="8" Z="8"/></Box></Primitives></Metal>
+      <Material Name="over"><Property Epsilon="4" Mue="2" Kappa="0.01" Sigma="100"/><Primitives><Box Priority="3"><P1 X="4" Y="4" Z="3"/><P2 X="9.3" Y="8" Z="5"/></Box></Primitives></Material>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="6" Y="6" Z="1"/><P2 X="6" Y="6" Z="3"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ut1" Type="0"><Primitives><Box Priority="0"><P1 X="7" Y="5" Z="2"/><P2 X="7" Y="5" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="it1" Type="1" NormDir="2"><Primitives><Box Priority="0"><P1 X="3" Y="3" Z="4"/><P2 X="10" Y="9" Z="4"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="et1" Type="2"><Primitives><Box Priority="0"><P1 X="9" Y="6" Z="5"/><P2 X="9" Y="6" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="ht1" Type="3"><Primitives><Box Priority="0"><P1 X="10" Y="6" Z="5"/><P2 X="10" Y="6" Z="5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14</XLines>
+      <YLines>0,1,2,3,4,4.5,5,6,7,8,9,10,11,12,13,14</YLines>
+      <ZLines>0,1,2,3,4,5,5.5,6,7,8,9,10,11,12</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

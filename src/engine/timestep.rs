@@ -26,7 +26,14 @@
 //! (each face couples 4 edges, `ρ ≤ 4·max ω²`). This is a rigorous
 //! stability bound; on a uniform cubic mesh `dt = Δ/(2c)`, a factor
 //! `√3/2` below the Courant limit. Dual lengths at the domain boundary are
-//! half cells.
+//! half cells. openEMS's step by this method is a single-precision value
+//! (the probe files' 12-digit time column, on 27 random graded meshes:
+//! always an exact `f32`). ems evaluates `ω_e²` from the circuit values
+//! `C`, `L` rounded to `f32` and takes `1/√max ω²` in `f32`: openEMS's
+//! value bit for bit on 23 of the 27 meshes, one `f32` step (≤ 1.2e-7)
+//! apart on the others (rounding only the result: 15 of 27; other
+//! placements of the single-precision steps, in lengths, areas or the
+//! sums, also give 23 at best).
 //!
 //! # Method 3 (Rennings, the openEMS default)
 //!
@@ -63,9 +70,17 @@
 //! where the cells grow along the transverse axes and was up to 8 % off
 //! elsewhere.
 //!
+//! The result is a double; openEMS's own value is within 4e-8 of it
+//! (12-digit probe time columns of 14 random graded vacuum meshes; its
+//! single-precision round-off, not reproduced).
+//!
 //! Materials enter through `εr` of the E edges and `μr` of the H dual
 //! edges (positions outside the mesh use the nearest edge's). PEC edges
-//! are treated like their material (openEMS may exclude them).
+//! count like any other edge, with their material: openEMS gives an edge
+//! inside metal the material under the metal (the file path's materials
+//! do the same, `compile::openems`), and with those every random case
+//! with metal boxes, also sharing faces with higher-priority materials,
+//! agrees (DESIGN §5.16.1).
 
 use super::edge_material::EdgeMaterials;
 use super::grid::Grid;
@@ -288,7 +303,7 @@ fn gershgorin(grid: &Grid, m: &EdgeMaterials) -> f64 {
             if n[a] as usize + 1 >= g.n[a] {
                 continue;
             }
-            let ic = tb.c(a, n);
+            let ic = single(tb.c(a, n));
             let mut s = 0.0;
             for t in [(a + 1) % 3, (a + 2) % 3] {
                 let o = 3 - a - t;
@@ -299,13 +314,19 @@ fn gershgorin(grid: &Grid, m: &EdgeMaterials) -> f64 {
                     // Face normal to o spanning a × t-cell ct.
                     let mut f = n;
                     f[t] = ct;
-                    s += tb.l(o, f);
+                    s += single(tb.l(o, f));
                 }
             }
             w2max = w2max.max(ic * s);
         }
     }
-    1.0 / w2max.sqrt()
+    // openEMS's single-precision step (module docs).
+    (1.0 / (w2max as f32).sqrt()) as f64
+}
+
+/// The reciprocal `1/x` of a circuit value `x` stored in single precision.
+fn single(inv: f64) -> f64 {
+    1.0 / ((1.0 / inv) as f32 as f64)
 }
 
 fn rennings(grid: &Grid, m: &EdgeMaterials) -> f64 {
@@ -376,7 +397,8 @@ mod tests {
         let r = dt(&u, TimestepMethod::Rennings);
         assert!((r / (1e-3 / (C0 * 3f64.sqrt())) - 1.0).abs() < 1e-12);
         let c = dt(&u, TimestepMethod::Cfl);
-        assert!((c / (1e-3 / (2.0 * C0)) - 1.0).abs() < 1e-12);
+        assert!((c / (1e-3 / (2.0 * C0)) - 1.0).abs() < 6e-8);
+        assert_eq!(c, c as f32 as f64);
         // openEMS prints 1.92583e-12 and 1.66782e-12.
         assert!((r / 1.92583e-12 - 1.0).abs() < 3e-6);
         assert!((c / 1.66782e-12 - 1.0).abs() < 3e-6);

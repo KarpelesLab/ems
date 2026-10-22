@@ -3041,7 +3041,14 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   flat or solid box, also a thin box that snaps to one line) and a
   current probe whose raw box extends along `NormDir` (or is solid
   without one); ems does too for files, with a warning (fixture
-  `probe_skip`). `ems::port::LumpedPort` writes its current probe as a
+  `probe_skip`). The dual line of an H-field probe and the dual plane of
+  a flat current probe are those of the cell holding the coordinate,
+  closed at its upper end (a coordinate on a line takes the cell below;
+  wave 14, point probes swept through a graded mesh): on uniform meshes
+  that is the nearest dual line with ties down, which ems used; on
+  graded ones a point in a large cell next to a small one is nearer to
+  the small cell's centre (z = 4.9 between cells 4…5 and 5…5.5: openEMS
+  4.5, ems 5.25). Files follow it (`sim::map::snap_cell`). `ems::port::LumpedPort` writes its current probe as a
   flat box on the line above the port's middle dual plane, which both
   codes read as that dual plane. `FD_Samples`: commas only (§8.1).
 - **Time step.** openEMS's time step depends on the materials, with both
@@ -3081,18 +3088,39 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     where cells shrink along a transverse axis), ~240 meshes with
     grid-aligned ε and μ layers and boxes, and 560 runs of the `ems`
     binary against openEMS with grid-aligned and off-grid ε, μ, κ,
-    anisotropic and metal boxes. Full precision (the `time` attribute of
-    HDF5 dumps): bit-identical in 3 of 4 random vacuum meshes, the others
-    1e-7 apart (openEMS single-precision round-off somewhere; not
-    reproduced). The `e2e_patch` and `e2e_msl_filter` fixtures (were 0.5
+    anisotropic and metal boxes. Full precision (wave 14; the probe files'
+    12-digit time column, the HDF5 `time` attribute being an `f32`): the
+    Rennings step is a double within 4e-8 of ems's (14 random graded
+    vacuum meshes; openEMS's single-precision round-off inside the
+    criterion, not reproduced: rounding the circuit values `C`, `L`, the
+    lengths and areas, the mesh deltas or lines to `f32` in eleven
+    combinations never gave its value). The method-1 step is always an
+    exact `f32`: ems now evaluates it from `f32` circuit values with an
+    `f32` square root and division, bit for bit on 23 of 27 vacuum and 18
+    of 20 dielectric random meshes (rounding only the result: 15 of 27),
+    one `f32` step (≤ 1.2e-7) apart on the others. The `e2e_patch` and `e2e_msl_filter` fixtures (were 0.5
     and 2 % off) now run on openEMS's own time step (no `TimeStep`
     attribute; regenerated; filter ports 6e-7…1.1e-6, were 2e-7…5e-7 with
     the same rounded step), and every Cartesian
-    fixture without a fixed step agrees. Not reproduced: a metal box under
-    a higher-priority material sharing its face (3 of 60 random cases,
-    1.4 % and less; the PEC-edge tie, §5.16.3), and cylindrical grids,
-    where openEMS's rule differs (ems applies the Cartesian formula to the
-    coordinate lines; the cylindrical fixtures fix `TimeStep`).
+    fixture without a fixed step agrees. A metal box sharing a face with a
+    higher-priority material (3 of 60 random cases, up to 1.4 %, wave 13)
+    was not the time step but the edge materials: csx leaves material
+    samples in metal out of an edge's average, openEMS takes the material
+    *under* the metal there (the highest-priority non-metal property, or
+    the background; `--debug-material`: face edges `(3·1 + 4)/4 = 1.75`
+    where ems had `(1 + 4)/2`… on vacuum, `7.75` inside an `ε_r = 9`
+    block), and gives every PEC edge inside the metal that material too,
+    which its time step counts like any edge: a metal block inside an
+    `ε_r = 9` block stepped at 2.07e-12 s in ems, 5.73e-12 s in openEMS.
+    Files now discretise the materials with the metal primitives removed
+    (`compile::openems::without_metal`; PEC mask, sheets and sources from
+    the full model): 300 random metal/material face ties (graded meshes,
+    a lower-priority block under the metal, off-grid metal in 30 %) all
+    agree to the printed digits (2 of 100 were 1.3–1.9e-3 off before) and
+    the material dumps are identical; fixture `metal_material_tie` (5e-7…
+    9e-7). Not reproduced: cylindrical grids, where openEMS's rule
+    differs (ems applies the Cartesian formula to the coordinate lines;
+    the cylindrical fixtures fix `TimeStep`).
 - **Dumps of a Dirac or step excitation** record every step (openEMS's
   Nyquist rate is then 1 step whatever `f_max` says; ems used `f_max`
   and wrote every 12th step of `dump_dirac`, wave 13; agreement 5e-7).

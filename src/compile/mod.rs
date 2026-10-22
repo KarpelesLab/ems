@@ -1228,6 +1228,24 @@ pub fn compile(
             .with_snap_tolerance(opts.snap_tolerance),
     )?;
     oblique.renumber_warnings(&mut mg.warnings);
+    // openEMS's material samples see through metal (compile::openems).
+    let material_model = fdtd
+        .get_openems_run()
+        .then(|| openems::without_metal(model))
+        .flatten();
+    if let Some(m) = &material_model {
+        let bare = discretize(
+            m,
+            &DiscretizeOptions::default()
+                .with_subsampling(opts.subsampling)
+                .with_threads(fdtd.resolved_threads())
+                .with_snap_tolerance(opts.snap_tolerance),
+        )?;
+        mg.epsilon = bare.epsilon;
+        mg.kappa = bare.kappa;
+        mg.mue = bare.mue;
+        mg.sigma = bare.sigma;
+    }
     if fdtd.get_openems_run() {
         openems::strict_surfaces(model, mg.dims, &mut mg.pec);
         openems::openems_sigma_m(model, &mut mg);
@@ -1328,7 +1346,11 @@ pub fn compile(
         cellconst::apply(model, &grid, &mut materials, fdtd.get_openems_run())?;
     } else if cyl && fdtd.get_openems_run() && opts.subsampling == 1 {
         // openEMS's radial weights (design §5.15).
-        cylavg::apply(model, &grid, &mut materials);
+        cylavg::apply(
+            material_model.as_ref().unwrap_or(model),
+            &grid,
+            &mut materials,
+        );
     }
     // (Cylindrical grids: solid metal only, see compile::conformal.)
     let conformal = if opts.conformal {

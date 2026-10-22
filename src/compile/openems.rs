@@ -47,11 +47,56 @@
 //! not enter: the samples see the highest-priority material under it
 //! (or the background). [`openems_sigma_m`] rewrites csx's averages
 //! with that rule.
+//!
+//! # Material samples in metal
+//!
+//! csx leaves the material samples that fall into metal out of an edge's
+//! average (and gives an edge whose samples are all metal the
+//! background). openEMS v0.37 does not: a sample in metal sees the
+//! highest-priority material under the metal, or the background, as if
+//! the metal were not there (black box, `--debug-material`: a metal box
+//! sharing a face with a higher-priority dielectric gives the face edges
+//! `(3·1 + 4)/4 = 1.75` on vacuum, `(3·9 + 4)/4 = 7.75` inside an
+//! `ε_r = 9` block below the metal, and every PEC edge inside the metal
+//! the `ε`, `μ`, `κ` of that block; design §5.16.1). The PEC edges do not
+//! need a material, but openEMS's time step evaluates their circuit
+//! values like any other edge's, so their materials matter there.
+//! [`without_metal`] gives the model whose discretisation has those
+//! averages.
 
 use csx::discretize::MaterialGrid;
 use csx::primitives::{Primitive, Shape};
 use csx::properties::{MaterialQuantity, PropertyKind, TypeMask};
 use csx::{ContinuousStructure, CoordSystem, Vec3};
+
+/// The model without its metal primitives, for openEMS's material
+/// averages (see the [module docs](self#material-samples-in-metal)), or
+/// `None` when the metal cannot change them: no metal primitive, or no
+/// material primitive and a vacuum background.
+pub(crate) fn without_metal(model: &ContinuousStructure) -> Option<ContinuousStructure> {
+    let props = model.properties();
+    let metal = props
+        .iter()
+        .any(|p| matches!(p.kind, PropertyKind::Metal) && !p.primitives.is_empty());
+    let bg = &model.background;
+    let material = props
+        .iter()
+        .any(|p| p.kind.material().is_some() && !p.primitives.is_empty())
+        || bg.epsilon.value() != 1.0
+        || bg.mue.value() != 1.0
+        || bg.kappa.value() != 0.0
+        || bg.sigma.value() != 0.0;
+    if !(metal && material) {
+        return None;
+    }
+    let mut m = model.clone();
+    for p in m.properties_mut() {
+        if matches!(p.kind, PropertyKind::Metal) {
+            p.primitives.clear();
+        }
+    }
+    Some(m)
+}
 
 /// Relative tolerance of a surface tie.
 const TIE_TOL: f64 = 1e-9;

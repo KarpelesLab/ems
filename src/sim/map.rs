@@ -898,7 +898,15 @@ pub(crate) fn map_sources(
         };
         // openEMS snapping (ties to the lower line) of the raw corners.
         let prim = |c: [f64; 3]| Axis::ALL.map(|a| snap_lower(grid.lines(a), c[a.index()]));
-        let dual = |c: [f64; 3]| Axis::ALL.map(|a| snap_dual(grid.lines(a), c[a.index()]));
+        // Dual lines: openEMS takes the cell holding the coordinate (closed
+        // at its upper end), ems natively the nearest dual line; the two
+        // differ on graded meshes only.
+        let dual_snap = if fdtd.get_openems_run() {
+            snap_cell
+        } else {
+            snap_dual
+        };
+        let dual = |c: [f64; 3]| Axis::ALL.map(|a| dual_snap(grid.lines(a), c[a.index()]));
         let (start, stop) = (prim(p.corners[0]), prim(p.corners[1]));
         // openEMS prints the α of cylindrical grids (radians) times the
         // drawing unit as well.
@@ -1450,6 +1458,28 @@ pub(crate) fn snap_dual(lines: &[f64], x: f64) -> usize {
     snap_lower(&mid, x)
 }
 
+/// Index `i` of the cell `(l[i], l[i+1]]` holding `x` (a coordinate on a
+/// line, within `1e-9` of the local cell size, belongs to the cell below
+/// it; clamped into the mesh), `0` for a single-line axis. openEMS v0.37
+/// snaps H-field probes and the dual plane of current probes this way
+/// (black box: point probes swept through a graded mesh, the indices in
+/// the file headers; design §5.16.1): on a uniform mesh it is the nearest
+/// dual line with ties down ([`snap_dual`]), on a graded one a point in a
+/// cell next to a smaller one can be nearer to that cell's centre.
+pub(crate) fn snap_cell(lines: &[f64], x: f64) -> usize {
+    if lines.len() < 2 {
+        return 0;
+    }
+    let mut i = 0;
+    for k in 1..lines.len() - 1 {
+        let tol = 1e-9 * (lines[k + 1] - lines[k - 1]).abs();
+        if lines[k] < x - tol {
+            i = k;
+        }
+    }
+    i
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1491,6 +1521,26 @@ mod tests {
         assert_eq!(snap_dual(&l, 1.2), 1);
         assert_eq!(snap_dual(&l, 3.5), 2);
         assert_eq!(snap_dual(&[1.0], 3.0), 0);
+        // openEMS's cell rule (graded z mesh of the black-box sweep).
+        let z = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0, 7.0, 8.0, 10.0, 12.0];
+        for (x, i) in [
+            (0.0, 0),
+            (0.3, 0),
+            (4.85, 4),
+            (4.9, 4),
+            (5.0, 4),
+            (5.01, 5),
+            (5.5, 5),
+            (5.55, 6),
+            (6.05, 7),
+            (8.1, 9),
+            (12.0, 10),
+            (13.0, 10),
+        ] {
+            assert_eq!(snap_cell(&z, x), i, "{x}");
+        }
+        assert_eq!(snap_dual(&z, 4.9), 5);
+        assert_eq!(snap_cell(&[1.0], 3.0), 0);
     }
 
     #[test]

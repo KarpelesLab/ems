@@ -288,7 +288,33 @@ fn nonuniform_materials() {
 
 #[test]
 fn cfl_method() {
-    Check::new("cfl_method").check();
+    let res = Check::new("cfl_method").check();
+    // openEMS's step by this method is an f32 value (times the
+    // TimeStepFactor 0.8; probe time column, 12 digits): ems gives it to
+    // the printed digits here.
+    let text = std::fs::read_to_string(fixture("cfl_method").join("ut1")).unwrap();
+    let t: Vec<f64> = text
+        .lines()
+        .filter(|l| !l.starts_with('%'))
+        .map(|l| l.split_whitespace().next().unwrap().parse().unwrap())
+        .collect();
+    let last = t[t.len() - 1];
+    let dt_oe = last / (last / res.dt()).round();
+    assert!(
+        (res.dt() / dt_oe - 1.0).abs() < 1e-10,
+        "{:e} vs {dt_oe:e}",
+        res.dt()
+    );
+}
+
+#[test]
+fn metal_material_tie() {
+    // Material samples in metal see the material under the metal (time
+    // step 5.7e-12 s from the eps_r = 9 block, edge averages on the shared
+    // face); with csx's averages (metal left out) dt was 2.0e-12 s. ht1
+    // lies on a z line between a 1 mm and a 0.5 mm cell: openEMS takes the
+    // dual line of the cell below, not the nearest one.
+    Check::new("metal_material_tie").check();
 }
 
 #[test]
