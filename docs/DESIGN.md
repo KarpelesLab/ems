@@ -4688,7 +4688,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-23, after wave 14)
+### Status (2026-10-24, after wave 14 and the be30220 oracle)
 
 | Step | State |
 |---|---|
@@ -4827,9 +4827,12 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: polyhedron/STL surface ties (position dependent
-  in openEMS), tie round-off (csx tolerance, §8.1 item 17); openEMS's
-  Rennings step below 4e-8.
+- From the feature sweep: `tie_cyl_metal` (1.1e-2), `tie_cylshell_metal`
+  (8.6e-3, identical edge and material dumps), `prim_sphshell_metal`
+  (1.5e-3); openEMS's Rennings step below 4e-8. (Polyhedron/STL surface
+  ties and tie round-off were resolved by following openEMS-Project
+  be30220, whose inside tests are closed with a mesh-relative tolerance,
+  §5.16.5.)
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
