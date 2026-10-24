@@ -2585,8 +2585,8 @@ extra line is all background), updates the seam's ρ and z edges on the
 leaves the axis z edge out of its dumped operator (0), and its `iv` of H
 dual edges crossing an outer face uses the whole dual length (twice
 ems's half inside the domain; these H components are fixed by the face
-condition). An empty PEC dump carries openEMS's range `1e+299` /
-`-1e+299`.
+condition). (An empty PEC dump carried VTK's range `1e+299` /
+`-1e+299` before openEMS be30220, whose own writer has no ranges.)
 
 **Boundaries.** CPML and Mur work on the z faces as on Cartesian grids
 (coax TEM reflection −86 dB with CPML(8)). On the α faces of a sector the
@@ -2968,7 +2968,9 @@ contains the grazing incidence on the Cartesian z layers.
 ### 5.16 openEMS parity (black-box fixtures)
 
 What openEMS v0.37 does was established by running the compiled oracle
-(`scripts/openems-oracle`, no openEMS source consulted) on hand-written
+(`scripts/openems-oracle`, no openEMS source consulted; since wave 14
+openEMS-Project be30220, openEMS v0.37.0-32, CSXCAD v0.7.0-8, §5.16.5)
+on hand-written
 models and comparing its output files with ems, as a black box. The
 fixtures live in `tests/fixtures/openems/`, each set with its own
 regeneration script and test file:
@@ -3810,15 +3812,16 @@ formulations agree. 60 of the models are fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
 Matrix (175 models; 165 agree to ≲ 1e-4, 7 differ, 3 are rejected by
-openEMS; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
+openEMS — with openEMS be30220 the six polyhedron and rotated-cylinder
+ties below agree too, 171 agree, §5.16.5; plus 30 boundary spellings and 30 odd `<FDTD>` attributes checked
 on the set-up; wave 13 added the σ_m, sheet and LinPoly-vertex models and
 closed their differences; wave 14 replaced the polygon sheet model by two
 committed triangles, `sweep_sheet_triangle{,_r}`, and closed it):
 
 | area | models | agree | differ (magnitude) |
 |---|---|---|---|
-| primitives: Box (on/off grid, reversed, metal volume/sheet/line), MultiBox, Sphere, SphericalShell, Cylinder (axis, oblique, thin), CylindricalShell, Polygon (z, x), LinPoly (z, y), RotPoly (full, half), Polyhedron, PolyhedronReader (STL, PLY), Curve, Wire, Point, UserDefined, Box in cylindrical coordinates; surfaces through edge midpoints and sample points (`tie_*`) | 47 | 40 | Polyhedron surfaces on sample points 0.5 % (material) – 2 % (metal; 34 % for a metal cube whose faces lie on mesh lines); UserDefined rejected by openEMS |
-| transformations: Translate, Rotate_X/Y/Z, Rotate_Origin, Scale, Scale3, Matrix, order, on spheres, cylinders and sheets | 12 | 11 | a rotated cylinder with sample points within 1e-13 of its radius: 4.6 % |
+| primitives: Box (on/off grid, reversed, metal volume/sheet/line), MultiBox, Sphere, SphericalShell, Cylinder (axis, oblique, thin), CylindricalShell, Polygon (z, x), LinPoly (z, y), RotPoly (full, half), Polyhedron, PolyhedronReader (STL, PLY), Curve, Wire, Point, UserDefined, Box in cylindrical coordinates; surfaces through edge midpoints and sample points (`tie_*`) | 47 | 40 (45 with be30220) | Polyhedron surfaces on sample points 0.5 % (material) – 2 % (metal; 34 % for a metal cube whose faces lie on mesh lines), with openEMS e89286f; UserDefined rejected by openEMS |
+| transformations: Translate, Rotate_X/Y/Z, Rotate_Origin, Scale, Scale3, Matrix, order, on spheres, cylinders and sheets | 12 | 11 (12 with be30220) | a rotated cylinder with sample points within 1e-13 of its radius: 4.6 % with e89286f, 4.7e-5 with be30220 |
 | priorities: overlaps, reversed, metal in material and under it, two metals | 6 | 6 | |
 | materials: ε, κ, μ, σ, `Isotropy` with 1/2/3 values and weights, weights of x, y, z, ρ and per axis, Density, background, Lorentz/Drude/Debye (with weights, with κ), σ on a graded mesh with weights and anisotropy | 20 | 20 | |
 | parameters, mesh: ParameterSet (Const, Linear) in coordinates, values and weights, `term:`, unsorted/duplicate lines, DeltaUnit 1, graded | 9 | 7 | `term:` prefixes and expressions in mesh lines rejected by openEMS (ems reads them) |
@@ -3859,11 +3862,13 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
     rejected); `TimeStepFactor` outside (0, 1] is ignored; a negative
     `endCriteria` runs every step (`Fdtd::from_csx`);
   - a run of 0 steps writes the t = 0 row of the E-type probe files.
-- **Metal surfaces** (`compile::openems`, files only): openEMS's metal
-  Sphere, SphericalShell and Wire are open (an edge whose midpoint lies
-  on the surface is not PEC), Box, Cylinder and CylindricalShell closed,
-  as csx is everywhere; ems now clears those edges (identical
-  `--debug-PEC` dumps on every metal case of the sweep).
+- **Metal surfaces** (`compile::openems`, files only): openEMS
+  e89286f's metal Sphere, SphericalShell and Wire were open (an edge
+  whose midpoint lies on the surface is not PEC), Box, Cylinder and
+  CylindricalShell closed, as csx is everywhere; ems cleared those edges
+  (identical `--debug-PEC` dumps on every metal case of the sweep).
+  openEMS be30220 is closed for every primitive, with a tolerance
+  (§5.16.5); ems dropped the rule.
 - **AbsorbingBC**: `NormalSignPositive="1"` absorbs waves travelling
   along `−a` (the normal points into the terminated region); ems had the
   opposite sign. Now 1e-6 on a terminated TEM line; MUR_1ST_SA gives
@@ -3884,8 +3889,8 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
   9e-2 → 8.8e-5.
 - **Conducting sheets** (files, Cartesian grids): openEMS's model
   (§5.16.2); the sweep sheets 0.9–1.9 → 3e-6…7e-5.
-- **Polygon vertices** (`compile::openems`, metal, files only): the
-  sides of a Polygon or LinPoly are closed, a point on a vertex gets a
+- **Polygon vertices** (`compile::openems`, metal, files only; openEMS
+  e89286f, dropped with be30220, §5.16.5): the sides of a Polygon or LinPoly are closed, a point on a vertex gets a
   winding-number test with half-open rules (upward edge `a → b`: `+1`
   for `a_v < q_v ≤ b_v` with `q` on or left of it; downward: `−1` for
   `b_v < q_v ≤ a_v` with `q` strictly right of it; outside if the sum is
@@ -3977,7 +3982,8 @@ ems's `--debug-PEC` dump does not list lumped caps (openEMS's does).
 
 Not reproduced (documented differences):
 
-- **Polyhedron surfaces.** A point exactly on a face of a Polyhedron or
+- **Polyhedron surfaces** (openEMS e89286f; be30220 is closed and
+  symmetric, §5.16.5). A point exactly on a face of a Polyhedron or
   STL mesh is inside or outside depending on the face *and on where the
   polyhedron is*, like a ray-casting test whose ray depends on the
   primitive: a cube's faces on mesh lines are inside on +x/+y/+z and
@@ -3991,7 +3997,8 @@ Not reproduced (documented differences):
   target point explains it; the points along a cube's edges are mixed
   even within one row. Not emulated (csx's test is closed:
   `sweep_prim_stl` 5e-3).
-- **Round-off at ties.** openEMS compares without tolerance; csx's
+- **Round-off at ties** (openEMS e89286f; be30220 has a tolerance of
+  `1e-3·h_min`, emulated, §5.16.5). openEMS compared without tolerance; csx's
   inside tests accept points within ~1e-9 of the size outside, and its
   transformations round differently from openEMS's (a rotated cylinder
   through sample points: 4.6 %; the points lie within 1e-13 of the
@@ -4031,6 +4038,98 @@ scaling, the Rennings time step on layered doubly graded meshes
 (§5.16.1), and the open items above (α current loops). The patch fixture
 fixes a step count (the PML end-criterion energies then differed; they
 agree since wave 13, `pml_end`).
+
+#### 5.16.5 openEMS versions: e89286f → be30220
+
+The fixtures were made with openEMS-Project e89286f (2026-10-18; openEMS
+v0.37.0-19-gc3a956b, CSXCAD v0.7.0-1) until wave 14, and since then with
+be30220 (2026-10-21; openEMS v0.37.0-32-gec4d2db, CSXCAD v0.7.0-8; commit
+titles "dependencies: no CGAL, VTK only for AppCSXCAD, zlib", "update
+submodules", "Windows package: both GPU plugins"). Both were built side by
+side and run on every fixture model, the 169 feature-sweep models of the
+scratch generator and the 230 models of the randomized sweep (seeds
+0…229), all single-threaded `--engine=basic`; the outputs were compared
+file by file (black box only: `--help`, console, files).
+
+| | e89286f | be30220 |
+|---|---|---|
+| probe files, HDF5 dumps, `et`/`ht`, nf2ff, `sar_calc` | | bit-identical (all fixtures but 8 sweep models with metal or transformed primitives, below; all 230 random models; headers differ in the version string only) |
+| time steps, end criteria, PML, Mur, lumped elements, dispersive media, cylindrical grids | | identical |
+| VTK XML (`.vtr`, `.vts`, `.vtp`) | VTK library writer: `RangeMin`/`RangeMax` on every array, an `L2_NORM_RANGE` information key on vectors, coordinate arrays named after their address (`Array 0x5555…`); `PEC_dump.vtp` in the appended layout (`offset` attributes, padded `Piece` attributes, empty `Verts`/`Strips`/`Polys`) | own writer: none of these attributes, unnamed coordinate arrays, `PEC_dump.vtp` inline (points and `Lines` only); the encoded payloads (zlib blocks, base64) are byte-identical in all 43 VTK fixtures |
+| legacy `.vtk` box dumps | | identical |
+| `--help` | | lists `--gpu-device arg (=-1)`; the banner lists zlib instead of VTK |
+| command-line errors (unknown, ambiguous option, invalid or missing value, value for a flag) | uncaught exception, `SIGABRT`, status 134 | `openEMS: Error: …` on stderr, status 1 |
+| engines | | `gpu` needs a GPU plugin (status 2 without one), `gpu-reference` runs on the CPU and gives the `basic` engine's probe files bit for bit |
+| inside tests | exact comparisons; Sphere, SphericalShell, Wire surfaces open; polygon vertices half-open; polyhedron faces inside or outside depending on the primitive's position (§5.16.3) | closed for every primitive, and a point within `t = 1e-3·h_min` of a primitive is inside |
+
+The tolerance was measured by bisection of the face position of metal
+primitives (`--debug-PEC`), material primitives (`--debug-material`),
+excitations and conducting sheets (`--debug-operator`): `t` is
+`1e-3 ×` the smallest cell width of the whole mesh over all three axes,
+in drawing units (1 mm cells: 0.000995…0.001002; 0.5 mm cells anywhere
+in any axis, even far from the primitive: 5e-4; independent of
+`DeltaUnit`, the coordinate offset, the box size; on cylindrical grids
+the α widths count in radians, and an α face of a box is `t/ρ` away), a
+Euclidean distance for spheres, cylinders, shells and wires in every
+direction tried (axis, diagonal, 3-4-5), per face for boxes (also at
+box edges and corners: Chebyshev), polygon and extruded-polygon sides
+and ends, polyhedron faces; for a `Scale3` it is `t/σ_min` in the
+primitive's own coordinates (`4,1,1` and `4,2,1`: `t`; `4,2,2`, `2,2,2`:
+`t/2`). Lumped elements, probes and dumps snap to the mesh and do not
+change.
+
+Which is more accurate. Everything numeric is bit-identical, so the
+comparison is about geometry only:
+
+- **Polyhedra.** e89286f's faces depended on where the polyhedron is: a
+  metal cube `[a, b]³` with faces on mesh lines got 659, 669, 360 and 28
+  of its closed 882, 882, 882 and 54 edges for `[3, 9]³`, `[−3, 3]³`,
+  `[−9, −3]³`, `[−7, −5]³`, with different counts on opposite faces
+  (`x+` 64 vs `x−` 13 edges for `[3, 9]³`); be30220 gives the closed,
+  mirror-symmetric set (84 edges on each face) at every position — the
+  discretisation of a symmetric object is symmetric again, and equals
+  csx's (ems's native) closed test. Sweep: `prim_polyhedron_metal`,
+  `prim_polyhedron_tet`, `prim_stl`, `prim_ply`, `tie_box_metal_cube`
+  (2e-2…0.34 between the versions) now agree with ems to 5e-5…2.6e-4
+  (were 5e-3…0.31).
+- **Round-off at ties.** The tolerance makes ties robust to the
+  arithmetic of transformations: the rotated cylinder whose sample points
+  lie within 1e-13 of its radius (`tr_cylinder`, 4.6 % between ems and
+  e89286f) agrees to 4.7e-5. A geometry shift of at most 1e-3 of the
+  smallest cell is far below the discretisation error of any FDTD model.
+- **Curved metal surfaces and polygon vertices.** Open spheres and wires
+  and the orientation-dependent vertex rule (a clockwise rectangle open
+  at all four corners, a counter-clockwise polygon at its lowest
+  vertices) made the result depend on the primitive type and the vertex
+  order; be30220 treats every primitive alike (closed), as csx does.
+  ems's emulation of the old rule (`sweep_prim_sphshell_metal`,
+  `prim_wire_thick`, `tie_sphere_metal`, `tie_wire_z`,
+  `tie_linpoly_metal`, `tie_polygon_vertex`) was dropped: the PEC edge
+  sets of all these models are now identical to be30220's.
+- **Nothing is less accurate** in be30220 on any model tried; the
+  random-sweep models, the e2e, PML, cylindrical, SAR, NF2FF and core
+  fixtures do not change at all.
+
+Decision: the fixtures follow be30220 (`REVISION_PIN`). ems's `ems`
+binary and openEMS writers produce the new layouts (the old VTK
+attributes are not kept: every VTK reader reads both, and the old
+layout carried no data), accept and report `--gpu-device` (ems has no
+GPU engine; `gpu` and `gpu-reference` run the CPU engine), exit with
+status 1 on command-line errors, and on the file path grow the volume
+primitives of metal, materials, excitations and conducting sheets by
+`t` (`compile::openems::dilated`; boxes, multi-boxes, spheres,
+cylinders, their shells, wires of at least half the smallest cell and
+extruded polygons; not polyhedra, rotational polygons, thin wires,
+sheets and lines, whose exact ties are closed in both codes, §8.1 item
+17). The open-surface and polygon-vertex rules of e89286f are gone.
+Feature sweep with be30220 (169 models): every discretisation that
+differed between the versions is identical (`--debug-PEC`,
+`--debug-material`); `tr_sphere` 4.7e-2 → 4.0e-5 and
+`tr_rotate_origin` 4.3e-3 → 2.9e-5 with the tolerance; unchanged
+differences: `tie_cyl_metal` 1.1e-2, `tie_cylshell_metal` 8.6e-3 (the
+same in both versions, identical PEC and material dumps),
+`prim_sphshell_metal` 1.5e-3 (weak field inside the shell). Fixture
+size: 8.71 → 8.68 MB (VTK files 146 → 114 kB).
 
 ## 6. Engine architecture
 
@@ -4323,7 +4422,8 @@ The module docs hold the full description.
 
 `src/bin/ems/` (binary `ems`, feature `xml`; HDF5 dumps with `hdf5`)
 replaces the `openEMS` executable: `ems <FDTD_XML_FILE> [<options>...]`
-with the options of `openEMS --help` (v0.37) and its syntaxes
+with the options of `openEMS --help` (v0.37.0-32, openEMS-Project
+be30220, §5.16.5) and its syntaxes
 (`--opt=value`, `--opt value`, unique prefixes such as `--no-sim`, `-v`,
 `-vv`, `-vvv`, `-v2`, `--verbose[=N]`), writing openEMS's files to the
 current directory. Everything below was observed on the black-box oracle
@@ -4336,10 +4436,11 @@ current directory. Everything below was observed on the black-box oracle
 | `--disable-dumps` | no field dumps (SAR too); their boxes still reported; v0.37 then fails at the end with an internal error (status 1) | dumps not compiled, boxes still reported, status 0 |
 | `--debug-material` | `material_dump.vtr`: `epsilon`, `mue`, `kappa`, `sigma` per edge; cylindrical grids `material_dump.vts` | same layout, ems's averaged edge materials (`io::openems::debug`; for files openEMS's `σ_m` rule and the medium under conducting sheets, as openEMS) |
 | `--debug-operator` | `operator_dump.vtr`: `exc_volt`, `vv`, `vi`, `iv`, `ii`; cylindrical grids `operator_dump.vts` | same arrays, ems's coefficients (lumped elements and boundaries other than PEC are separate operators in ems) |
-| `--debug-PEC` | `PEC_dump.vtp`: one line per PEC edge | identical points and lines (also cylindrical) |
+| `--debug-PEC` | `PEC_dump.vtp`: one line per PEC edge (inline binary points and `Lines`) | identical points and lines (also cylindrical) |
 | `--debug-boxes` | `box_dump_<dump>.vtk`; current and waveguide probes all as `box_dump_.vtk` | identical files |
 | `--debug-CSX` | `debugCSX.xml` (`<ContinuousStructure>`) | csx's XML writer |
-| `--engine=…` | `fastest`, `basic`, `sse`, `sse-compressed`, `multithreaded`, `gpu`, `gpu-reference`; unknown names ignored | accepted; one engine: `basic`/`sse`/`sse-compressed` on one thread |
+| `--engine=…` | `fastest`, `basic`, `sse`, `sse-compressed`, `multithreaded`, `gpu` (status 2 without a GPU plugin), `gpu-reference` (CPU, `basic`'s results bit for bit); unknown names ignored | accepted; one engine: `basic`/`sse`/`sse-compressed` on one thread |
+| `--gpu-device=N` | GPU device of `--engine=gpu` (default −1: the best); an integer, otherwise a command-line error | accepted and reported, no effect |
 | `--numThreads=N` | engine threads | same (0: automatic) |
 | `--no-simulation` | set-up only (`et`/`ht`, debug files), status 1 | same |
 | `--dump-statistics` | `openEMS_run_stats.txt` (row per progress report), `openEMS_stats.txt` | same layout (`io::openems::stats`) |
@@ -4350,9 +4451,13 @@ current directory. Everything below was observed on the black-box oracle
 
 - **Exit status:** 0 after a run; 1 for a model that cannot be read or set
   up and with `--no-simulation`; 255 without arguments; 0 for `--help`;
-  134 for command-line errors (unknown or ambiguous option, invalid or
-  missing value, value for a flag), where openEMS aborts on an uncaught
-  exception (`SIGABRT`). ems takes the first non-option argument as the
+  1 for command-line errors (unknown or ambiguous option, invalid or
+  missing value, value for a flag), reported on stderr (openEMS
+  e89286f aborted there on an uncaught exception, `SIGABRT`, status 134).
+- **VTK files** (dumps, SAR, debug dumps): openEMS be30220's own writer's
+  layout — no `RangeMin`/`RangeMax`, no information keys, unnamed
+  coordinate arrays, inline binary arrays everywhere (§5.16.5); the
+  layout of the earlier VTK-library writer is not written any more. ems takes the first non-option argument as the
   model; openEMS takes the first argument, whatever it is.
 - **Console:** the key lines keep openEMS's form (`FDTD simulation size:
   11x7x13 --> 1001 FDTD cells` — openEMS counts mesh nodes as cells, also
@@ -4480,17 +4585,18 @@ These are reported here, not fixed in csx from this repo.
     is wrong here) and warns for models read from files; csx needs no
     change for this, beyond item 14.
 
-17. **Inside tolerance and open surfaces.** csx's inside tests accept
-    points up to ~1e-9 (relative) outside a primitive; openEMS compares
-    exactly. On exact ties openEMS is closed for Box, Cylinder and
-    CylindricalShell but open for Sphere, SphericalShell and Wire (an
-    edge midpoint on the surface is not metal), polygons are closed on
-    their sides with a half-open winding test at the vertices, and its
-    Polyhedron test depends on the face and on the primitive's position
-    (§5.16.3). ems emulates the open spheres and wires and the polygon
-    vertices for metal (`compile::openems`), not the material sampling or
-    the polyhedra. csx could offer an openEMS-compatible tie mode
-    (exact comparisons, the vertex rule) for the material samples too.
+17. **Inside tolerance.** csx's inside tests accept points up to
+    1e-12 (relative) outside a primitive. openEMS since be30220 accepts
+    points within `t = 1e-3·h_min` (the smallest cell of the mesh, in
+    drawing units; `t/σ_min` in the coordinates of a transformed
+    primitive), closed for every primitive (§5.16.5; openEMS e89286f
+    compared exactly, had open spheres and wires, a vertex rule for
+    polygons and position-dependent polyhedron faces). ems grows the
+    volume primitives of a file model by `t` before csx discretises it
+    (`compile::openems::dilated`), which cannot be done for polyhedra,
+    rotational polygons and thin wires. An absolute inside tolerance
+    option in `DiscretizeOptions` (distance from the closed primitive)
+    would make that exact for every shape.
 18. **Short anisotropic lists.** With `Isotropy="0"`, openEMS keeps the
     default for the components a short list leaves out (`Epsilon="3"` is
     `3,1,1`, weights default to 1); csx copies a single value to all
