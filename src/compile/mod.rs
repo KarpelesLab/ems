@@ -1281,6 +1281,12 @@ pub fn compile(
         model
     };
     let mut warnings: Vec<String> = model.validate().iter().map(ToString::to_string).collect();
+    // openEMS's inside tolerance (files only, compile::openems).
+    let dilated = fdtd
+        .get_openems_run()
+        .then(|| openems::dilated(model))
+        .flatten();
+    let model = dilated.as_ref().unwrap_or(model);
     let grid = cylindrical::multigrid(grid, &model.grid, fdtd.get_multigrid(), &mut warnings)?;
     // Oblique thin wires are not discretised by csx (see compile/wire.rs).
     let (oblique, stripped) = wire::oblique_wires(model, &grid, &mut warnings);
@@ -1313,7 +1319,6 @@ pub fn compile(
         mg.sigma = bare.sigma;
     }
     if fdtd.get_openems_run() {
-        openems::strict_surfaces(model, mg.dims, &mut mg.pec);
         openems::thin_metal_priority(model, mg.dims, &mut mg.pec);
         openems::openems_sigma_m(model, &mut mg);
     }

@@ -182,8 +182,7 @@ fn console_line<'a>(text: &'a str, key: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-/// The VTK XML structure with payloads, ranges, offsets, array pointer
-/// names and padding masked.
+/// The VTK XML structure with the payloads and padding removed.
 fn vtk_skeleton(text: &str) -> Vec<String> {
     text.lines()
         .filter(|l| {
@@ -194,17 +193,7 @@ fn vtk_skeleton(text: &str) -> Vec<String> {
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || "+/=_".contains(c)))
         })
-        .filter(|l| l.trim().parse::<f64>().is_err())
-        .map(|l| {
-            let mut s = l.to_string();
-            for key in ["RangeMin=\"", "RangeMax=\"", "offset=\"", "Name=\"Array 0x"] {
-                if let Some(i) = s.find(key) {
-                    let j = s[i + key.len()..].find('"').unwrap() + i + key.len();
-                    s.replace_range(i + key.len()..j, "*");
-                }
-            }
-            s.split_whitespace().collect::<Vec<_>>().join(" ")
-        })
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect()
 }
 
@@ -262,28 +251,38 @@ mod payload {
         (raw, hb + db)
     }
 
-    /// The named inline arrays of a VTK XML file, as f64.
-    pub fn inline(text: &str) -> Vec<(String, Vec<f64>)> {
+    /// The inline arrays of a VTK XML file: (name, `""` for the unnamed
+    /// coordinate arrays; type; raw bytes).
+    pub fn raw(text: &str) -> Vec<(String, String, Vec<u8>)> {
         let mut out = Vec::new();
-        let mut cur: Option<(String, bool)> = None;
+        let mut cur: Option<(String, String)> = None;
+        let attr = |t: &str, key: &str| -> String {
+            t.split(key)
+                .nth(1)
+                .map(|v| v.split('"').next().unwrap().to_string())
+                .unwrap_or_default()
+        };
         for l in text.lines() {
             let t = l.trim();
             if t.starts_with("<DataArray") {
-                let name = t
-                    .split("Name=\"")
-                    .nth(1)
-                    .unwrap()
-                    .split('"')
-                    .next()
-                    .unwrap();
-                cur = Some((name.to_string(), t.contains("Float64")));
+                cur = Some((attr(t, "Name=\""), attr(t, "type=\"")));
                 continue;
             }
-            if let Some((name, f64s)) = cur.take()
+            if let Some((name, ty)) = cur.take()
                 && !t.starts_with('<')
             {
-                let (raw, _) = array(t);
-                let v = if f64s {
+                out.push((name, ty, array(t).0));
+            }
+        }
+        out
+    }
+
+    /// The inline floating-point arrays of a VTK XML file, as f64.
+    pub fn inline(text: &str) -> Vec<(String, Vec<f64>)> {
+        raw(text)
+            .into_iter()
+            .map(|(name, ty, raw)| {
+                let v = if ty == "Float64" {
                     raw.chunks(8)
                         .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
                         .collect()
@@ -292,40 +291,7 @@ mod payload {
                         .map(|c| f64::from(f32::from_le_bytes(c.try_into().unwrap())))
                         .collect()
                 };
-                out.push((name, v));
-            }
-        }
-        out
-    }
-
-    /// The appended arrays of a VTK XML PolyData file: (name, raw bytes).
-    pub fn appended(text: &str) -> Vec<(String, Vec<u8>)> {
-        let data = text
-            .split("<AppendedData encoding=\"base64\">")
-            .nth(1)
-            .unwrap();
-        let data = data.trim_start().strip_prefix('_').unwrap();
-        let data = data.split('<').next().unwrap().trim_end();
-        text.lines()
-            .filter(|l| l.trim().starts_with("<DataArray"))
-            .map(|l| {
-                let name = l
-                    .split("Name=\"")
-                    .nth(1)
-                    .unwrap()
-                    .split('"')
-                    .next()
-                    .unwrap();
-                let off: usize = l
-                    .split("offset=\"")
-                    .nth(1)
-                    .unwrap()
-                    .split('"')
-                    .next()
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                (name.to_string(), array(&data[off..]).0)
+                (name, v)
             })
             .collect()
     }
@@ -495,7 +461,7 @@ fn debug_files() {
         let b = std::fs::read_to_string(r.dir.join(f)).unwrap();
         assert_eq!(vtk_skeleton(&a), vtk_skeleton(&b), "{case}/{f}: structure");
     }
-    // The PEC dump's piece line, padding included.
+    // The PEC dump's piece line.
     let piece = |t: &str| t.lines().find(|l| l.contains("<Piece")).map(str::to_string);
     let read = |d: &Path, f: &str| std::fs::read_to_string(d.join(f)).unwrap();
     assert_eq!(
@@ -504,16 +470,14 @@ fn debug_files() {
     );
     #[cfg(feature = "hdf5-deflate")]
     {
-        let a = payload::appended(&read(&fixture(case), "PEC_dump.vtp"));
-        let b = payload::appended(&read(&r.dir, "PEC_dump.vtp"));
+        let a = payload::raw(&read(&fixture(case), "PEC_dump.vtp"));
+        let b = payload::raw(&read(&r.dir, "PEC_dump.vtp"));
         assert_eq!(a, b, "{case}: PEC points and lines");
         let a = payload::inline(&read(&fixture(case), "material_dump.vtr"));
         let b = payload::inline(&read(&r.dir, "material_dump.vtr"));
+        assert_eq!(a.len(), b.len());
         for ((na, va), (nb, vb)) in a.iter().zip(&b) {
-            assert_eq!(na.starts_with("Array"), nb.starts_with("Array"));
-            if !na.starts_with("Array") {
-                assert_eq!(na, nb);
-            }
+            assert_eq!(na, nb);
             let e = va
                 .iter()
                 .zip(vb)
@@ -598,8 +562,8 @@ fn debug_files_cylindrical() {
         );
         #[cfg(feature = "hdf5-deflate")]
         {
-            let a = payload::appended(&read(&fixture(case), "PEC_dump.vtp"));
-            let b = payload::appended(&read(&r.dir, "PEC_dump.vtp"));
+            let a = payload::raw(&read(&fixture(case), "PEC_dump.vtp"));
+            let b = payload::raw(&read(&r.dir, "PEC_dump.vtp"));
             assert_eq!(a, b, "{case}: PEC points and lines");
             let ext = read(&fixture(case), "material_dump.vts");
             let ext: Vec<usize> = ext

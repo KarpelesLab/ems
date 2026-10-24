@@ -3,28 +3,20 @@
   <RectilinearGrid WholeExtent="0 6 0 4 0 4">
   <Piece Extent="0 6 0 4 0 4">
     <PointData>
-      <DataArray type="Float32" Name="H-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.0016431695808165497">
+      <DataArray type="Float32" Name="H-Field" NumberOfComponents="3" format="binary">
         AQAAAACAAAA0CAAABQQAAA==eJztk21QVFUYx5eWMdfBREsgx7YFxZSIl937wrnIgLw1gUhJC8NSAmJANgu7yBAKCKaApKKY4Eq5sgKjxCSL3Lez4UYwFoyBErtqSJObQEgm24KDwwzVcGaoGVa+2af6f7m/eT785jz3f45A8E/MPXfgPKd0bDLM8+mpsr/n3rbd3Dxb9EZasEjW14ioue/hwD6ecM4FcwyPzcBx0VHk6h8CMLHdB3GOxzC3YYk38rZEGZkR2+0netXF65DzTo8IUP1OiI/4jICP4seQ5/FoLNgfV4A4uOMWKVaakTPD6wIeY7YwT3KSxVZ0NqG4Dly3qhBvLHSgsPyTyLOi2hfs6hchnk11ImtCptk5lkQoMOlz1Yvu/28kbucS5pHzADrLd1P+bEhlJOpoVBnJqfRn0Hz0w0RuuvMq2nsoD2NU0/lob9/q3ssLfXi3kLJuuEbLjVkwvIcHoR5rmR2ZLYalr0N4e6knO+StgmcS0mGjy1vcYLMbn13UwMFH3UxDgpQdlp9j4hPvti105mQGU06O41h3YRZQ1Z6nTE1leKlSQ4W/dtSgXZFJKF8uAst20lCvSSInEl4IONmJ82FWA/4T5U74vXSINfFdsoVOcvI+yEpvwKpf/Aw8VtSByA8e4K9Gr6Si4i/BbYecSfXbMUDUC6BaKyKVwTkk8buaG6gwY3LtSjzu42RGrtgtfbpNLB6ioLPNMsWhLn6ThTMwSIo62rargN30gxbNief9WEHvIOpo1cW2NjdhBerobOWYfqHv2doRIL0pob/fmAtnfm0CzT7FtNW93dDqcRbKjFdwh8A0mBG+B6bYwtnS1ev55WqGc2Iq6fHzEWzamkuMThBt1/sXOl+qu0OMZbyyA7TLLlJawTXMVVlHXb183PDtcgEz4ZkDiIYvIe+5lUijJAHKwUheKSjBDtZIif2xVayb0Nvuf6ZNmIDmfrJMI64EeTEnwKoxGyYVOFLl+2qg+IE30ayOB0xtBOzqu4UPO5eRs6pSzugbK9vsKsHz/9jDeBkO+D3dJhbP5A1X3CesGHXRKq4k6uv7EM+YLWRupgPiUzNVpIS+gt76lgR//A3TMvTWXdwu2O0e3HMO9Jem4VV7y/ljnDvIHkoiAtl34eg3W2Du9vfJ1s9v8DIXHd+Y3kV+EhXNFf1ZzsapJnHn7auZg+5r6QHbgN2dL5z8GiRpU5kQ/68Cxk4fBwIyj01tTAGie3thedUR7t7szwHRigneENXJPfwliGxx9Od0635kLO89g9/VezF9o6zd23S5WQpoBU03EVIgf7gGFIVKWbxEA0r0m6GpqZqr1zUGHMjex0cIMS4uLJVIfieUPfHpdfpNlVYGps1ttoogu7v0f/57+Qta9rOd
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            0.0016431695808
-          </Value>
-        </InformationKey>
       </DataArray>
     </PointData>
     <CellData>
     </CellData>
     <Coordinates>
-      <DataArray type="Float64" Name="Array 0x555561e1aa00" format="binary" RangeMin="0.002" RangeMax="0.032">
+      <DataArray type="Float64" format="binary">
         AQAAAACAAAA4AAAAPwAAAA==eJz7s/LjJd+kBHurLSfK9s2vsv9Vl7WnZHKH/ZvAHXKtryfaR6VY3/fvnW5f+VLNkGPNHPs/YPUL7AFmmB2A
       </DataArray>
-      <DataArray type="Float64" Name="Array 0x555561e1ac70" format="binary" RangeMin="0.0025" RangeMax="0.023">
+      <DataArray type="Float64" format="binary">
         AQAAAACAAAAoAAAALAAAAA==eJyrFlnn/rAqxb7ypZohx5oa+6gU6/v+ve32c44obCjKmAjlT7cHAGO1EYk=
       </DataArray>
-      <DataArray type="Float64" Name="Array 0x555561e1aee0" format="binary" RangeMin="0.0015" RangeMax="0.021">
+      <DataArray type="Float64" format="binary">
         AQAAAACAAAAoAAAALwAAAA==eJz7VZe1p2RyhH21yDr3h1Ul9rd/ggSa7XfItb4O3NFnL61/V4Wtcao9AKVQEz8=
       </DataArray>
     </Coordinates>

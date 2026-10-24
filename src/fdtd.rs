@@ -622,7 +622,10 @@ impl Fdtd {
     ///   unless that would be unstable); an excitation over any element is
     ///   a plain soft source, and the element's branch is driven by the
     ///   edge voltage without it (see [`Simulation`](crate::Simulation),
-    ///   lumped elements and excitations).
+    ///   lumped elements and excitations);
+    /// * a point within `1e-3` of the smallest cell of a volume primitive
+    ///   of metal, a material or an excitation is inside it (openEMS's
+    ///   inside tolerance, openEMS-Project be30220; `compile/openems.rs`).
     pub fn openems_run(mut self, on: bool) -> Self {
         self.openems_run = on;
         self

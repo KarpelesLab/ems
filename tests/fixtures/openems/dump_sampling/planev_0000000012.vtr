@@ -3,28 +3,20 @@
   <RectilinearGrid WholeExtent="0 6 0 4 0 0">
   <Piece Extent="0 6 0 4 0 0">
     <PointData>
-      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="1.4590794849011395">
+      <DataArray type="Float32" Name="E-Field" NumberOfComponents="3" format="binary">
         AQAAAACAAACkAQAAJwEAAA==eJxjYEAFeR8O28DYB34Lw9lOTK3WMPbJ6Yd3wdipq3h3ohnB4G/zC67P5ZubTZ3WdauHFma2GeF3d20J49vbXrXY7k/aFutZG7ytvHp32DrxX7FqPjRpl2pas+3y4D2Wm7l0dn68K27zZO5uC5g5GQsL4WaaFTXu2V6bu3tyV7jd/o97dxcJ6+8pPbjLXs3ugc3cvtm7priH2M23nGg9yd50x63sBbZrL3lYXdHfvv2EZpTNjn1lljBzvjx8BzfTSCDfZupUnt332f/afFB+tmtj0XMbA4UaO6nXS6xWfGnf9U38ra2i9mqrw4J1VpNn5dueSui3FKgStOy4+9n6LEcH3J3owDF47h4Y+/WheDjbpP8TPAxXWbVawditO9ZhmAUAvQV3HQ==
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            1.4590794849
-          </Value>
-        </InformationKey>
       </DataArray>
     </PointData>
     <CellData>
     </CellData>
     <Coordinates>
-      <DataArray type="Float64" Name="Array 0x555593bd6230" format="binary" RangeMin="0" RangeMax="0.03">
+      <DataArray type="Float64" format="binary">
         AQAAAACAAAA4AAAAOAAAAA==eJxjYICAPys/XvJNKrC3ue/fOz2vyX6HXOvrwB199tUi69wfVk2xt9pyomzf/FlQ8Xn2AG1dGOA=
       </DataArray>
-      <DataArray type="Float64" Name="Array 0x555593bd6470" format="binary" RangeMin="0" RangeMax="0.02">
+      <DataArray type="Float64" format="binary">
         AQAAAACAAAAoAAAAKAAAAA==eJxjYICAapF17g+rSuxt7vv3Ts9rsq98qWbIsabHHiI+xR4A7IgOOg==
       </DataArray>
-      <DataArray type="Float64" Name="Array 0x555593bd66b0" format="binary" RangeMin="0.007" RangeMax="0.007">
+      <DataArray type="Float64" format="binary">
         AQAAAACAAAAIAAAAEAAAAA==eJyrfKlmyLGmxh4AD2MDKQ==
       </DataArray>
     </Coordinates>

@@ -1,9 +1,9 @@
 # openEMS reference outputs for tests/openems_e2e.rs; regenerate with
 # scripts/openems-oracle/gen-e2e.sh e2e_coax_monopole
 oracle revision:
-  openEMS-Project e89286f (2026-10-18)
-   openEMS c3a956b (v0.37.0-19)
-   CSXCAD f90b407 (v0.7.0-1)
+  openEMS-Project be30220 (2026-10-21)
+   openEMS ec4d2db (v0.37.0-32)
+   CSXCAD 626b99f (v0.7.0-8)
    fparser 4b9c845
 command: openEMS model.xml --numThreads=1 --engine=basic 
 dt: 4.27166e-13

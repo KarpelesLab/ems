@@ -130,9 +130,12 @@
 //! coordinates in metres, or for cylindrical grids a `StructuredGrid`
 //! (`.vts`) with Cartesian `f32` points and Cartesian field components
 //! (native `(ρ, α, z)` with [`DumpFileOptions::native_field_dumps`]). One
-//! `f32` 3-vector point array named after the quantity, with
-//! `RangeMin`/`RangeMax` and an `L2_NORM_RANGE` information key (the
-//! range of the vector norms). Files:
+//! `f32` 3-vector point array named after the quantity; the coordinate
+//! arrays have no name. This is the layout of openEMS since its own VTK
+//! writer (openEMS-Project be30220, 2026-10-21); the VTK-library writer
+//! of earlier versions added `RangeMin`/`RangeMax` attributes, an
+//! `L2_NORM_RANGE` information key and array names, with identical
+//! payloads (design §7.2). Files:
 //!
 //! * time domain: `<name>_%010d.vtr` per step;
 //! * frequency domain, per frequency `f`: `<name>_f=<f>_abs.vtr` (`|F|`
@@ -378,54 +381,6 @@ fn phase_steps() -> impl Iterator<Item = (u32, f64)> {
 }
 
 // ---------------------------------------------------------------------
-// Number formatting.
-
-/// A double as VTK writes `RangeMin`/`RangeMax`: the shortest
-/// round-trip digits, positional for `1e-6 ≤ |v| < 1e21`, exponential
-/// (`1.5e-9`, `1e+21`) otherwise.
-pub(crate) fn vtk_range(v: f64) -> String {
-    let a = v.abs();
-    if v == 0.0 {
-        "0".into()
-    } else if (1e-6..1e21).contains(&a) {
-        format!("{v}")
-    } else {
-        let s = format!("{v:e}");
-        match s.split_once('e') {
-            Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
-            _ => s,
-        }
-    }
-}
-
-/// `printf("%.11g", v)`, as VTK writes information key values.
-pub(crate) fn printf_g11(v: f64) -> String {
-    const P: i32 = 11;
-    if v == 0.0 {
-        return "0".into();
-    }
-    if !v.is_finite() {
-        return format!("{v}");
-    }
-    let e = format!("{:.*e}", (P - 1) as usize, v);
-    let (mant, exp) = e.split_once('e').expect("exponential format");
-    let x: i32 = exp.parse().expect("exponent");
-    let trim = |s: &str| -> String {
-        if s.contains('.') {
-            s.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            s.to_string()
-        }
-    };
-    if !(-4..P).contains(&x) {
-        let sign = if x < 0 { '-' } else { '+' };
-        format!("{}e{sign}{:02}", trim(mant), x.abs())
-    } else {
-        trim(&format!("{:.*}", (P - 1 - x) as usize, v))
-    }
-}
-
-// ---------------------------------------------------------------------
 // VTK writer.
 
 /// zlib (RFC 1950) stream of `data`: deflate-compressed with the
@@ -475,8 +430,10 @@ pub(crate) fn vtk_binary(raw: &[u8]) -> String {
     s
 }
 
-/// One `<DataArray>` element.
-fn data_array(out: &mut String, ty: &str, name: &str, comps: usize, raw: &[u8], range: (f64, f64)) {
+/// One `<DataArray>` element (`name` `None`: an unnamed coordinate
+/// array).
+fn data_array(out: &mut String, ty: &str, name: Option<&str>, comps: usize, raw: &[u8]) {
+    let name = name.map(|n| format!(" Name=\"{n}\"")).unwrap_or_default();
     let nc = if comps > 1 {
         format!(" NumberOfComponents=\"{comps}\"")
     } else {
@@ -484,39 +441,37 @@ fn data_array(out: &mut String, ty: &str, name: &str, comps: usize, raw: &[u8], 
     };
     let _ = writeln!(
         out,
-        "      <DataArray type=\"{ty}\" Name=\"{name}\"{nc} format=\"binary\" RangeMin=\"{}\" RangeMax=\"{}\">",
-        vtk_range(range.0),
-        vtk_range(range.1)
+        "      <DataArray type=\"{ty}\"{name}{nc} format=\"binary\">"
     );
     let _ = writeln!(out, "        {}", vtk_binary(raw));
-    if comps > 1 {
-        out.push_str(
-            "        <InformationKey name=\"L2_NORM_RANGE\" location=\"vtkDataArray\" length=\"2\">\n",
-        );
-        for (i, v) in [range.0, range.1].into_iter().enumerate() {
-            let _ = write!(
-                out,
-                "          <Value index=\"{i}\">\n            {}\n          </Value>\n",
-                printf_g11(v)
-            );
-        }
-        out.push_str("        </InformationKey>\n");
-    }
     out.push_str("      </DataArray>\n");
 }
 
-/// Range of the norms of 3-vectors (f32 components, computed in f64).
-pub(crate) fn norm_range(v: &[[f32; 3]]) -> (f64, f64) {
-    let mut r = (f64::INFINITY, f64::NEG_INFINITY);
-    for x in v {
-        let n = x
-            .iter()
-            .map(|&c| f64::from(c) * f64::from(c))
-            .sum::<f64>()
-            .sqrt();
-        r = (r.0.min(n), r.1.max(n));
+/// The coordinate arrays of a `RectilinearGrid` (`f64`, unnamed).
+fn coordinates(out: &mut String, coords: &[&[f64]]) {
+    out.push_str("    <Coordinates>\n");
+    for c in coords {
+        let raw: Vec<u8> = c.iter().flat_map(|x| x.to_le_bytes()).collect();
+        data_array(out, "Float64", None, 1, &raw);
     }
-    if v.is_empty() { (0.0, 0.0) } else { r }
+    out.push_str("    </Coordinates>\n");
+}
+
+/// The Cartesian `f32` points of the `(ρ, α, z)` lines `coords` (VTK
+/// point order), as a `<Points>` element.
+fn cyl_points(out: &mut String, coords: [&[f64]; 3]) {
+    let mut pts = Vec::with_capacity(coords.iter().map(|c| c.len()).product());
+    for &z in coords[2] {
+        for &a in coords[1] {
+            for &r in coords[0] {
+                let (sn, cs) = a.sin_cos();
+                pts.push([(r * cs) as f32, (r * sn) as f32, z as f32]);
+            }
+        }
+    }
+    out.push_str("    <Points>\n");
+    data_array(out, "Float32", Some("Points"), 3, &f32_bytes(&pts));
+    out.push_str("    </Points>\n");
 }
 
 pub(crate) fn f32_bytes(v: &[[f32; 3]]) -> Vec<u8> {
@@ -581,47 +536,13 @@ impl VtkGrid<'_> {
         let _ = writeln!(s, "  <Piece Extent=\"{ext}\">");
         s.push_str("    <PointData>\n");
         for &(name, data) in arrays {
-            data_array(
-                &mut s,
-                "Float32",
-                name,
-                3,
-                &f32_bytes(data),
-                norm_range(data),
-            );
+            data_array(&mut s, "Float32", Some(name), 3, &f32_bytes(data));
         }
         s.push_str("    </PointData>\n    <CellData>\n    </CellData>\n");
         if self.cylindrical {
-            let mut pts = Vec::with_capacity(nx * ny * nz);
-            for &z in self.coords[2] {
-                for &a in self.coords[1] {
-                    for &r in self.coords[0] {
-                        let (sn, cs) = a.sin_cos();
-                        pts.push([(r * cs) as f32, (r * sn) as f32, z as f32]);
-                    }
-                }
-            }
-            s.push_str("    <Points>\n");
-            data_array(
-                &mut s,
-                "Float32",
-                "Points",
-                3,
-                &f32_bytes(&pts),
-                norm_range(&pts),
-            );
-            s.push_str("    </Points>\n");
+            cyl_points(&mut s, self.coords);
         } else {
-            s.push_str("    <Coordinates>\n");
-            for (a, c) in self.coords.iter().enumerate() {
-                let raw: Vec<u8> = c.iter().flat_map(|x| x.to_le_bytes()).collect();
-                let lo = c.iter().copied().fold(f64::INFINITY, f64::min);
-                let hi = c.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                // openEMS writes the (meaningless) address of the array.
-                let name = format!("Array 0x{:x}", 0x5555_5555_0000_u64 + 0x240 * a as u64);
-                data_array(&mut s, "Float64", &name, 1, &raw, (lo, hi));
-            }
-            s.push_str("    </Coordinates>\n");
+            coordinates(&mut s, &self.coords);
         }
         s.push_str("  </Piece>\n");
         let _ = writeln!(s, "  </{ty}>");
@@ -1127,50 +1048,14 @@ pub fn write_sar_vtk(dir: &Path, sar: &SarResult) -> Result<Vec<PathBuf>> {
         let _ = writeln!(t, "  <Piece Extent=\"{ext}\">");
         t.push_str("    <PointData>\n");
         let raw: Vec<u8> = data.iter().flat_map(|x| x.to_le_bytes()).collect();
-        let lo = data.iter().copied().fold(f32::INFINITY, f32::min);
-        let hi = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        data_array(
-            &mut t,
-            "Float32",
-            &sar_name(sar.kind()),
-            1,
-            &raw,
-            (f64::from(lo), f64::from(hi)),
-        );
+        data_array(&mut t, "Float32", Some(&sar_name(sar.kind())), 1, &raw);
         t.push_str("    </PointData>\n    <CellData>\n    </CellData>\n");
         if cyl {
-            let mut pts = Vec::with_capacity(nx * ny * nz);
-            for &z in coords[2] {
-                for &a in coords[1] {
-                    for &r in coords[0] {
-                        let (sn, cs) = a.sin_cos();
-                        pts.push([(r * cs) as f32, (r * sn) as f32, z as f32]);
-                    }
-                }
-            }
-            t.push_str("    <Points>\n");
-            data_array(
-                &mut t,
-                "Float32",
-                "Points",
-                3,
-                &f32_bytes(&pts),
-                norm_range(&pts),
-            );
-            let _ = writeln!(t, "    </Points>\n  </Piece>\n  </{ty}>\n</VTKFile>");
-            write_file(&p, &t)?;
-            out.push(p);
-            continue;
+            cyl_points(&mut t, coords);
+        } else {
+            coordinates(&mut t, &coords);
         }
-        t.push_str("    <Coordinates>\n");
-        for (a, c) in coords.iter().enumerate() {
-            let raw: Vec<u8> = c.iter().flat_map(|x| x.to_le_bytes()).collect();
-            let lo = c.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = c.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let name = format!("Array 0x{:x}", 0x5555_5555_0000_u64 + 0x300 * a as u64);
-            data_array(&mut t, "Float64", &name, 1, &raw, (lo, hi));
-        }
-        t.push_str("    </Coordinates>\n  </Piece>\n  </RectilinearGrid>\n</VTKFile>\n");
+        let _ = writeln!(t, "  </Piece>\n  </{ty}>\n</VTKFile>");
         write_file(&p, &t)?;
         out.push(p);
     }
@@ -1597,20 +1482,6 @@ pub fn write_dump(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn number_formats() {
-        assert_eq!(vtk_range(0.0), "0");
-        assert_eq!(vtk_range(0.03), "0.03");
-        assert_eq!(vtk_range(0.018000000000000002), "0.018000000000000002");
-        assert_eq!(vtk_range(1.6611293451873621e-9), "1.6611293451873621e-9");
-        assert_eq!(vtk_range(3.376882650747664e-6), "0.000003376882650747664");
-        assert_eq!(printf_g11(0.5335787534713745), "0.53357875347");
-        assert_eq!(printf_g11(1.0347103761906146e-14), "1.0347103762e-14");
-        assert_eq!(printf_g11(7.704954341529852e-7), "7.7049543415e-07");
-        assert_eq!(printf_g11(0.0011686112266033888), "0.0011686112266");
-        assert_eq!(printf_g11(0.0), "0");
-    }
 
     #[test]
     fn phase_labels() {

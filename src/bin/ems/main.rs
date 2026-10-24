@@ -4,7 +4,8 @@
 //! ems <FDTD_XML_FILE> [<options>...]
 //! ```
 //!
-//! A drop-in replacement for openEMS v0.37's command-line program (design
+//! A drop-in replacement for openEMS v0.37's command-line program
+//! (v0.37.0-32, openEMS-Project be30220; design
 //! §7.2): the same options (`ems --help`), the same files written to the
 //! current directory, the same exit codes.
 //!
@@ -29,6 +30,11 @@
 //!     single-threaded openEMS engines) run it on one thread unless
 //!     `--numThreads` is given, the others with the automatic thread
 //!     count. Unknown names are ignored, as openEMS does;
+//!   * `--gpu-device=N`: accepted (an integer, −1 the default) and
+//!     reported; ems has no GPU engine, `gpu` and `gpu-reference` run the
+//!     CPU engine (openEMS's `gpu-reference` gives the `basic` engine's
+//!     probe files bit for bit; its `gpu` fails with status 2 without a
+//!     GPU plugin);
 //!   * `--numThreads=N`: engine threads (0: automatic);
 //!   * `--no-simulation`: set up, write the debug and signal files, stop
 //!     (exit status 1, as openEMS);
@@ -49,8 +55,8 @@
 //!   parse the same; compile warnings go to stderr.
 //! * **Exit status.** 0 after a run; 1 if the model cannot be read or set
 //!   up, a file cannot be written, or with `--no-simulation`; 255 without
-//!   a model file (usage printed); 134 for a command-line error (openEMS
-//!   aborts there).
+//!   a model file (usage printed); 1 for a command-line error (reported
+//!   on stderr; openEMS before be30220 aborted there, status 134).
 //!
 //! Differences: the model file is the first argument that is not an
 //! option (openEMS takes the first argument, whatever it is); the probe
@@ -75,8 +81,8 @@ use ems::io::openems::dump::DumpFileOptions;
 use ems::io::openems::{ExcitationSignal, RunStats, RunStatsLog, SignalSpan};
 use ems::{CompileOptions, Simulation};
 
-/// Exit status of a command-line error (openEMS aborts: `SIGABRT`).
-const EXIT_USAGE_ERROR: u8 = 134;
+/// Exit status of a command-line error (openEMS reports it and returns 1).
+const EXIT_USAGE_ERROR: u8 = 1;
 /// Exit status without a model file (openEMS returns −1).
 const EXIT_NO_FILE: u8 = 255;
 /// Seconds between progress reports (as openEMS).
@@ -201,6 +207,12 @@ fn announce(opts: &Options) {
             }
         )),
         Some(e) => say(&format!("unknown engine '{e}' ignored")),
+    }
+    if opts.gpu_device != -1 {
+        say(&format!(
+            "GPU device {} requested: ems has no GPU engine, ignored",
+            opts.gpu_device
+        ));
     }
     if opts.no_simulation {
         say("preprocessing only, no simulation");

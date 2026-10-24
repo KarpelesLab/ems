@@ -3,64 +3,24 @@
   <StructuredGrid WholeExtent="0 6 0 9 0 4">
   <Piece Extent="0 6 0 9 0 4">
     <PointData>
-      <DataArray type="Float32" Name="epsilon" NumberOfComponents="3" format="binary" RangeMin="1.7320508075688772" RangeMax="6.928203230275509">
+      <DataArray type="Float32" Name="epsilon" NumberOfComponents="3" format="binary">
         AQAAAACAAABoEAAAbgAAAA==eJxjYGiwZxjFo3gU0xA/QGIrOJDGxoZB8iAzLRwgbLB6Itn0NBPm7x9IbJg9hNgDHWejePBhlHRBKhsbhqZhC1g6JgXT0UyYv38gseH5jwB7oONsFA8+PJqPRvPRKKYcj+aj0Xw0ionBAIii+40=
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            1.7320508076
-          </Value>
-          <Value index="1">
-            6.9282032303
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="mue" NumberOfComponents="3" format="binary" RangeMin="1.7320508075688772" RangeMax="3.4641016151377544">
+      <DataArray type="Float32" Name="mue" NumberOfComponents="3" format="binary">
         AQAAAACAAABoEAAAWgAAAA==eJzt0zEKwCAQRNG5mR7N85hLpgiLmkIyCdnqFw+3WAYWHKkVAfjF0fv0qnrzLlN17DtzXub9DncGwvgX17/z5l1m7LryMtf76RHeo0f0CN/RI3qE505SYBPq
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            1.7320508076
-          </Value>
-          <Value index="1">
-            3.4641016151
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="kappa" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.8660254037844386">
+      <DataArray type="Float32" Name="kappa" NumberOfComponents="3" format="binary">
         AQAAAACAAABoEAAAYwAAAA==eJzt09sJACEMRFFL2UpiaynFUhV3xQd+JMj6dQ8ERgRByIQA4GfSozrzTr0vk+TN9Rxt+eab7d+P9KzWDCymvYjOvPPtcWp77JmLb+rQIx06YsnAih7RI5yjR/QIFhm2+VB7
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            0.86602540378
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="sigma" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0">
+      <DataArray type="Float32" Name="sigma" NumberOfComponents="3" format="binary">
         AQAAAACAAABoEAAAGwAAAA==eJztwTEBAAAAwqD1T20JT6AAAAAAPgYQaAAB
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            0
-          </Value>
-        </InformationKey>
       </DataArray>
     </PointData>
     <CellData>
     </CellData>
     <Points>
-      <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.005656854518178539">
+      <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary">
         AQAAAACAAABoEAAA4wMAAA==eJy1liFvlEEQho98EBIwhASHaU8VSRDcriL0R2BQKBDwFy4ZCQKBQ3DXJuAQBHO7igTfOqhC4tBIbnZmdp9eKuklX/Jmmcw97DdP52az8Xl1e0ojS88f33/v+caPeR7nhxn1PfOz/3Sz0MfyIumj+eza66SP5hdffyd97Pxm1sfrsz7eahk9757OjoL17unyKFjvPfx2FKzzq3vHwXrv4aPjYN3WH4O199wybsBZwFnAWcBZwVkv4twyljfP/+z5/Wzzy32/z3Jw8mXf77P+vXJn7vdZD07uz72+buvn6LkE5wacBZwFnAWcFZx1t+fVXz8/KKvlJytl1fz409FKWTU/e319rax2vr9WVq9fKyteeXAuwJnAmcCZwJnBmcHZe+o7//zu1srvZ5vfrvw+0/b/sPL7zGebB2u/z6x8Xp+39evZzuc/zucsuGI2LUvPMZuaYzbt/DCjvmf2DE7Lxqk5ODUHp50bp9c3Tu+5jJ7hkWXzSJ/wSHN4ZOfmkdc3j3Z7hkf+vQWcBZwFnBWc9SLO8Mj5mkd+n80jv8/mkd9n88jrm0fouQTnBpwFnAWcBZwVnHW3Z3hk2TzSHB5pDo/s3Dzy+uYR3ntwLsCZwJnAmcCZwZnB2XuGR/G+1aOYT/Uo5lM9ivl0vhQeXeJ8es8pD4+m/m+ah0dTHh7p+WFGfc/sOTg1B+eUB+eUB+eUB2erd87WM/4m5eGR5vBoysOjKQ+P9Dw8avXu0fmew6P2vQWcBZwFnBWc9SLO4VG7H/eo3ad71O7TPWr36R61eveo91yCcwPOAs4CzgLOCs6623N4pDk8mvLwaMrDIz0Pj6Y8POrvPTgX4EzgTOBM4MzgzODsPYdHNp/mkc2neWTzaR7ZfBqfzad5dGnz2T4+Z2lk6Tk80hwe2flhRn3P7Bmclo1Tc3BqDk47N06vb4/3XEbP8MiyeaQ5PNIcHtm5eeT1zaPdnuGRf28BZwFnAWcFZ72IMzzy+2ke+X02j/w+m0fO1zzy+uYRei7BuQFnAWcBZwFnBWfd7Rke+dw1jzSHR5rDIzs3j/D3PnrOwLkAZwJnAmcCZwZnBmfvGR7FfKpHMZ/qUcynehTvW/liPtWjS5zP2HHYR/13z8xmrv+uwz4S7CPBPpJzPbE34bvAd4HvAt8Fvgv+zgv2kWAfCfaRYB8J9pFgH53vid912EeCfSTYR4J9JNhH53vidx32kWAfCfaRYB8J9pFgd3TODTgLOAs4CzgrOOtuT/yuwz4S7CPBPhLsI8E+EuyO/t6DM4EzgTOBM4Mzg7P3xO867CPBPhLsI8E+Euyjy5nPf46sHyg=
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            0.0056568545182
-          </Value>
-        </InformationKey>
       </DataArray>
     </Points>
   </Piece>

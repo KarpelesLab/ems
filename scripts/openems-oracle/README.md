@@ -51,9 +51,22 @@ pushes and pull requests (so a regenerated fixture set must reproduce the
 committed one), and upstream HEAD on its weekly run or a manual run with
 `upstream` set; that run only reports drift (it may fail without
 blocking). When the fixtures are regenerated with a newer oracle, update
-`REVISION_PIN` with them. Upstream after the pin (2026-10-21, be30220)
-writes VTK XML files in appended format, lists GPU options in `--help` and
-otherwise reproduces every numeric fixture.
+`REVISION_PIN` with them. The fixtures moved from e89286f (2026-10-18)
+to be30220 (2026-10-21) in wave 14: be30220 writes VTK XML without the
+range attributes and array names of the VTK library (`PEC_dump.vtp`
+inline instead of appended), lists `--gpu-device` in `--help`, exits
+with status 1 instead of aborting on command-line errors, and has a
+closed inside test with a `1e-3·h_min` tolerance for every primitive;
+everything else is bit-identical (design §5.16.5).
+
+`setup.sh` and `build-native.sh` take `OPENEMS_REV` and a target
+directory, so a second revision can be built next to the oracle (e.g.
+`OPENEMS_REV=<rev> setup.sh ~/.cache/ems-openems-<rev>`); every
+`gen-*.sh` script then runs against it with
+`OPENEMS=~/.cache/ems-openems-<rev>/openems`. `setup.sh` records the
+submodule revisions in `root/opt/REVISION`; the scripts read the short
+form in `REVISION` next to the `openems` wrapper (write it by hand
+for a setup.sh build).
 
 The `gen-*.sh` scripts regenerate the fixture sets; run them from the
 repository root (`OPENEMS` overrides the oracle path, `OEPY` its python).

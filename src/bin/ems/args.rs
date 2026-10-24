@@ -1,4 +1,5 @@
-//! Command-line parsing: the options of `openEMS --help` (v0.37), with the
+//! Command-line parsing: the options of `openEMS --help` (v0.37.0-32,
+//! openEMS-Project be30220, which added `--gpu-device`), with the
 //! syntaxes openEMS accepts (`--opt=value`, `--opt value`, unique
 //! prefixes of long options, `-v`/`-vv`/`-vvv`/`-v2`).
 
@@ -14,7 +15,7 @@ pub const ENGINES: [&str; 7] = [
 ];
 
 /// Parsed options.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// The model file (the first argument that is not an option).
     pub file: Option<String>,
@@ -27,6 +28,9 @@ pub struct Options {
     pub debug_csx: bool,
     /// `--engine` as given (`None`: `fastest`).
     pub engine: Option<String>,
+    /// `--gpu-device` (−1: the best device). Accepted and reported; ems
+    /// has no GPU engine.
+    pub gpu_device: i64,
     /// `--numThreads` (0: automatic).
     pub num_threads: usize,
     pub no_simulation: bool,
@@ -37,6 +41,31 @@ pub struct Options {
     pub legacy_hdf5_dumps: bool,
     /// Verbose level 0–3.
     pub verbose: u32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            file: None,
+            help: false,
+            disable_dumps: false,
+            debug_material: false,
+            debug_pec: false,
+            debug_operator: false,
+            debug_boxes: false,
+            debug_csx: false,
+            engine: None,
+            gpu_device: -1,
+            num_threads: 0,
+            no_simulation: false,
+            dump_statistics: false,
+            exact_endcriteria: false,
+            show_probe_discretization: false,
+            native_field_dumps: false,
+            legacy_hdf5_dumps: false,
+            verbose: 0,
+        }
+    }
 }
 
 /// What an option takes.
@@ -51,7 +80,7 @@ enum Arg {
 }
 
 /// The long options: name, argument.
-const LONG: [(&str, Arg); 16] = [
+const LONG: [(&str, Arg); 17] = [
     ("help", Arg::None),
     ("disable-dumps", Arg::None),
     ("debug-material", Arg::None),
@@ -60,6 +89,7 @@ const LONG: [(&str, Arg); 16] = [
     ("debug-boxes", Arg::None),
     ("debug-CSX", Arg::None),
     ("engine", Arg::Required),
+    ("gpu-device", Arg::Required),
     ("numThreads", Arg::Required),
     ("no-simulation", Arg::None),
     ("dump-statistics", Arg::None),
@@ -70,7 +100,8 @@ const LONG: [(&str, Arg); 16] = [
     ("verbose", Arg::Optional),
 ];
 
-/// A command-line error (openEMS aborts on these; see `main`).
+/// A command-line error (openEMS reports it and exits with status 1;
+/// see `main`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArgError(pub String);
 
@@ -218,6 +249,14 @@ impl Options {
             "debug-boxes" => self.debug_boxes = true,
             "debug-CSX" => self.debug_csx = true,
             "engine" => self.engine = value,
+            "gpu-device" => {
+                let v = value.unwrap_or_default();
+                self.gpu_device = v.trim().parse().map_err(|_| {
+                    ArgError(format!(
+                        "the argument ('{v}') for option '--gpu-device' is invalid"
+                    ))
+                })?;
+            }
             "numThreads" => {
                 let v = value.unwrap_or_default();
                 self.num_threads = v.trim().parse().map_err(|_| {
@@ -264,6 +303,8 @@ pub fn usage() -> String {
         "                                  multithreaded, gpu, gpu-reference; ems has one",
         "                                  (multithreaded) engine: basic, sse and",
         "                                  sse-compressed run it on one thread",
+        "  --gpu-device arg (=-1)          GPU device of --engine=gpu; accepted, ems has no",
+        "                                  GPU engine",
         "  --numThreads arg (=0)           number of engine threads (0: automatic)",
         "  --no-simulation                 set up only (write the debug and signal files),",
         "                                  do not run",
@@ -306,6 +347,10 @@ mod tests {
         assert!(p(&["m.xml", "--disable-dumps=1"]).is_err());
         assert!(p(&["m.xml", "--engine"]).is_err());
         assert!(p(&["-h"]).unwrap().help);
+        assert_eq!(p(&["m.xml"]).unwrap().gpu_device, -1);
+        assert_eq!(p(&["m.xml", "--gpu", "2"]).unwrap().gpu_device, 2);
+        assert_eq!(p(&["m.xml", "--gpu-device=-5"]).unwrap().gpu_device, -5);
+        assert!(p(&["m.xml", "--gpu-device=abc"]).is_err());
         let o = p(&[
             "m.xml",
             "--debug-PEC",

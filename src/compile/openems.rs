@@ -1,33 +1,39 @@
-//! openEMS's metal surface rule for curved primitives and polygons and its
-//! magnetic conductivity average (files only,
+//! openEMS's inside tolerance of primitives and its magnetic conductivity
+//! average (files only,
 //! [`Fdtd::openems_run`](crate::Fdtd::openems_run)).
 //!
-//! # Metal surfaces
+//! # Inside tolerance
 //!
-//! csx marks an edge as PEC when its midpoint lies in a metal primitive,
-//! with closed bounds (a small tolerance). openEMS v0.37 agrees for boxes,
-//! cylinders and cylindrical shells, but for spheres, spherical shells and
-//! wires an edge whose midpoint lies exactly *on* the surface is not metal
-//! (black box, `--debug-PEC` dumps of the fixtures
-//! `tests/fixtures/openems/sweep_tie_*`: a sphere of radius 4.5 mm on a
-//! 1 mm mesh loses the 102 edges with `|m − c| = 4.5`, a wire of radius
-//! 3 mm the 40 edges at distance 3; every other edge is identical, design
-//! §5.16.3). Polygons and extruded polygons (`Polygon`, `LinPoly`) are
-//! closed on their sides, but a point on a vertex gets a winding-number
-//! test with half-open rules ([`vertex_outside`]; in the polygon's
-//! `(X1, X2)` coordinates of [`csx::primitives::plane_axes`]): with
-//! vertices on mesh nodes, the edges along the extrusion through the
-//! vertices of minimal `X2` of a counter-clockwise polygon are not metal,
-//! through all four corners of a clockwise rectangle (measured on 10
-//! polygons, convex and concave, both orientations, `NormDir` 1 and 2;
-//! 33 vertices). [`strict_surfaces`]
-//! removes those edges from the PEC mask unless another metal primitive
-//! of the stack claims them.
+//! csx's inside tests are closed with a tiny relative tolerance
+//! (`1e-12`). openEMS since openEMS-Project be30220 (2026-10-21; CSXCAD
+//! v0.7.0-8) is closed too, for every primitive, and accepts every point
+//! within a distance `t = 1e-3 · h_min` of the primitive, `h_min` the
+//! smallest cell width of the mesh over all three axes in drawing units
+//! (on cylindrical grids the α widths count in radians); for a
+//! transformed primitive the tolerance is `t / σ_min` in the primitive's
+//! own coordinates, `σ_min` the smallest singular value of the
+//! transformation (black box, bisection of `--debug-PEC`,
+//! `--debug-material` and `--debug-operator` dumps: box faces, edges and
+//! corners, sphere, cylinder and shell surfaces in several directions,
+//! wire, polygon and extruded-polygon sides and ends, polyhedron faces,
+//! uniform and graded meshes, `DeltaUnit` 1 and 1e-6, offsets, `Scale3`
+//! of spheres and boxes; metal, materials, excitations and conducting
+//! sheets; lumped elements, probes and dumps snap to the mesh and are not
+//! affected; design §5.16.3). [`dilated`] gives the model whose csx
+//! inside tests have that tolerance: volume boxes, spheres, cylinders,
+//! their shells, wires and extruded polygons grown by it (boxes in
+//! cylindrical coordinates by `t/ρ_max` in α). Not grown: rotational
+//! polygons, polyhedra, thin wires (their radius sets the in-cell
+//! correction), and sheets and lines (csx selects their edges by overlap
+//! and snapping, `snap_tolerance` of the cell, not by inside tests);
+//! exact ties are closed in both codes, only points `0 < d ≤ t` outside
+//! them differ.
 //!
-//! Only primitives without a transformation and in Cartesian coordinates
-//! are handled: an exact tie needs exact coordinates, which transformed
-//! primitives do not have (openEMS's and csx's rounding differ there
-//! anyway).
+//! openEMS-Project e89286f (2026-10-18) had no tolerance, left the
+//! surface of spheres, spherical shells and wires and some polygon
+//! vertices open, and decided points on polyhedron faces by the
+//! primitive's position (design §5.16.3); ems emulated the first two
+//! until the fixtures moved to be30220.
 //!
 //! # Magnetic conductivity
 //!
@@ -79,8 +85,9 @@
 //! averages.
 
 use csx::discretize::MaterialGrid;
-use csx::primitives::{Primitive, Shape};
-use csx::properties::{MaterialQuantity, PropertyKind, TypeMask};
+use csx::param::ScalarPoint;
+use csx::primitives::{PolyVertices, Primitive, Shape};
+use csx::properties::{ExcitationType, MaterialQuantity, PropertyKind, TypeMask};
 use csx::{ContinuousStructure, CoordSystem, Vec3};
 
 /// Clears the PEC flag (csx node layout) of the edges of thin metal
@@ -189,231 +196,234 @@ pub(crate) fn without_metal(model: &ContinuousStructure) -> Option<ContinuousStr
     Some(m)
 }
 
-/// Relative tolerance of a surface tie.
-const TIE_TOL: f64 = 1e-9;
-
-fn point(p: &csx::param::ScalarPoint) -> Vec3 {
-    p.value()
+/// openEMS's inside tolerance `1e-3 · h_min` in drawing units (see the
+/// [module docs](self#inside-tolerance)); 0 without cells.
+pub(crate) fn inside_tolerance(model: &ContinuousStructure) -> f64 {
+    let h = (0..3)
+        .flat_map(|a| model.grid.lines(a).windows(2).map(|w| (w[1] - w[0]).abs()))
+        .filter(|d| *d > 0.0)
+        .fold(f64::INFINITY, f64::min);
+    if h.is_finite() { 1e-3 * h } else { 0.0 }
 }
 
-fn dist(a: Vec3, b: Vec3) -> f64 {
+/// Smallest singular value of the linear part of `m`: the square root
+/// of the smallest eigenvalue of `AᵀA` (cyclic Jacobi rotations).
+fn sigma_min(m: &csx::Mat4) -> f64 {
+    let mut s = [[0.0f64; 3]; 3];
+    for (i, row) in s.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| m.0[k][i] * m.0[k][j]).sum();
+        }
+    }
+    for _ in 0..32 {
+        let off = s[0][1].abs() + s[0][2].abs() + s[1][2].abs();
+        if off <= 1e-30 * (s[0][0].abs() + s[1][1].abs() + s[2][2].abs()) {
+            break;
+        }
+        for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+            if s[p][q] == 0.0 {
+                continue;
+            }
+            let th = (s[q][q] - s[p][p]) / (2.0 * s[p][q]);
+            let t = if th == 0.0 {
+                1.0
+            } else {
+                th.signum() / (th.abs() + (th * th + 1.0).sqrt())
+            };
+            let c = 1.0 / (t * t + 1.0).sqrt();
+            let sn = t * c;
+            for row in &mut s {
+                let (kp, kq) = (row[p], row[q]);
+                row[p] = c * kp - sn * kq;
+                row[q] = sn * kp + c * kq;
+            }
+            let (rp, rq) = (s[p], s[q]);
+            for k in 0..3 {
+                s[p][k] = c * rp[k] - sn * rq[k];
+                s[q][k] = sn * rp[k] + c * rq[k];
+            }
+        }
+    }
     (0..3)
-        .map(|i| (a.0[i] - b.0[i]).powi(2))
-        .sum::<f64>()
+        .map(|i| s[i][i])
+        .fold(f64::INFINITY, f64::min)
+        .max(0.0)
         .sqrt()
 }
 
-/// Distance from `p` to the segment `a`–`b`.
-fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f64 {
-    let d: [f64; 3] = core::array::from_fn(|i| b.0[i] - a.0[i]);
-    let l2: f64 = d.iter().map(|x| x * x).sum();
-    let t = if l2 > 0.0 {
-        ((0..3).map(|i| (p.0[i] - a.0[i]) * d[i]).sum::<f64>() / l2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    dist(p, Vec3(core::array::from_fn(|i| a.0[i] + t * d[i])))
-}
-
-/// True if `p` lies on the surface of a sphere, spherical shell or wire
-/// (within [`TIE_TOL`] of the size) or on an open vertex of a polygon or
-/// extruded polygon ([`open_vertex`]), `None` for other shapes.
-fn on_surface(shape: &Shape, p: Vec3) -> Option<bool> {
-    let tie = |d: f64, scale: f64| d.abs() <= TIE_TOL * scale.abs().max(f64::MIN_POSITIVE);
-    match shape {
-        Shape::Sphere(s) => {
-            let r = s.radius.value();
-            Some(tie(dist(p, point(&s.center)) - r, r))
-        }
-        Shape::SphericalShell(s) => {
-            let (r, w) = (s.radius.value(), s.shell_width.value());
-            let d = dist(p, point(&s.center));
-            Some(tie((d - r).abs() - 0.5 * w, r + w))
-        }
-        Shape::Wire(w) => {
-            let r = w.radius.value();
-            let pts: Vec<Vec3> = w.points.iter().map(point).collect();
-            let d = pts
-                .windows(2)
-                .map(|s| seg_dist(p, s[0], s[1]))
-                .fold(f64::INFINITY, f64::min);
-            let d = if pts.len() == 1 { dist(p, pts[0]) } else { d };
-            Some(r > 0.0 && d.is_finite() && tie(d - r, r))
-        }
-        Shape::Polygon(g) => Some(open_vertex(
-            g.norm_dir,
-            g.vertices.values(),
-            p,
-            (g.elevation.value(), g.elevation.value()),
-        )),
-        Shape::LinPoly(g) => {
-            let (e, l) = (g.elevation.value(), g.length.value());
-            Some(open_vertex(
-                g.norm_dir,
-                g.vertices.values(),
-                p,
-                (e.min(e + l), e.max(e + l)),
-            ))
-        }
-        _ => None,
-    }
-}
-
-/// True if `p` coincides (in the polygon plane, within [`TIE_TOL`] of the
-/// polygon's size) with a vertex of the polygon with normal `n` that
-/// openEMS counts as outside ([`vertex_outside`]), and lies in the range
-/// `along` of the normal coordinate.
-fn open_vertex(n: usize, verts: &[(f64, f64)], p: Vec3, along: (f64, f64)) -> bool {
-    if n > 2 || verts.len() < 3 {
-        return false;
-    }
-    let (ua, va) = csx::primitives::plane_axes(n);
-    let size = verts
-        .iter()
-        .map(|&(u, v)| u.abs().max(v.abs()))
-        .fold(0.0f64, f64::max)
-        .max(f64::MIN_POSITIVE);
-    let tol = TIE_TOL * size;
-    let pn = p.0[n];
-    if pn < along.0 - tol * along.0.abs().max(1.0) || pn > along.1 + tol * along.1.abs().max(1.0) {
-        return false;
-    }
-    verts.iter().any(|&q| {
-        (p.0[ua] - q.0).abs() <= tol && (p.0[va] - q.1).abs() <= tol && vertex_outside(verts, q)
-    })
-}
-
-/// openEMS's inside decision at a polygon vertex `q` (black box, design
-/// §5.16.3): the winding number of `q` with an upward edge `a → b`
-/// counting `+1` for `a_v < q_v ≤ b_v` and `q` on or left of it, a
-/// downward edge `−1` for `b_v < q_v ≤ a_v` and `q` strictly right of
-/// it; the vertex is outside when the sum is 0. (Points strictly inside a
-/// side are inside, as in csx.) For a counter-clockwise polygon this
-/// opens the vertices of minimal `v`; a clockwise rectangle is open at
-/// all four corners.
-fn vertex_outside(verts: &[(f64, f64)], q: (f64, f64)) -> bool {
-    let n = verts.len();
-    let mut wn = 0i32;
-    for i in 0..n {
-        let (a, b) = (verts[i], verts[(i + 1) % n]);
-        let left = (b.0 - a.0) * (q.1 - a.1) - (q.0 - a.0) * (b.1 - a.1);
-        if a.1 < q.1 && q.1 <= b.1 && left >= 0.0 {
-            wn += 1;
-        } else if b.1 < q.1 && q.1 <= a.1 && left < 0.0 {
-            wn -= 1;
-        }
-    }
-    wn == 0
-}
-
-fn applies(p: &Primitive, default_cs: CoordSystem) -> bool {
-    p.transform.is_empty()
-        && p.effective_cs(default_cs) == CoordSystem::Cartesian
-        && matches!(
-            p.shape,
-            Shape::Sphere(_)
-                | Shape::SphericalShell(_)
-                | Shape::Wire(_)
-                | Shape::Polygon(_)
-                | Shape::LinPoly(_)
-        )
-}
-
-/// Clears the PEC flag (csx node layout, `pec[a][mg_index(node)]`) of the
-/// edges whose midpoint lies on the surface of the winning metal sphere,
-/// spherical shell or wire, unless a metal primitive below it in the
-/// stack contains the midpoint strictly. Returns the number of edges
-/// cleared.
-pub(crate) fn strict_surfaces(
-    model: &ContinuousStructure,
-    dims: [usize; 3],
-    pec: &mut [Vec<bool>; 3],
-) -> usize {
-    if model.grid.coord_system != CoordSystem::Cartesian {
-        return 0;
-    }
-    let cs = model.coord_system;
-    let any = model.properties().iter().any(|p| {
-        matches!(p.kind, PropertyKind::Metal) && p.primitives.iter().any(|q| applies(q, cs))
-    });
-    if !any {
-        return 0;
-    }
-    let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
-    let index = |n: [usize; 3]| n[0] + dims[0] * (n[1] + dims[1] * n[2]);
-    let mut cleared = 0;
-    for prop in model.properties() {
-        if !matches!(prop.kind, PropertyKind::Metal) {
+/// Grows the box with corners `start`, `stop` (any order) by `t[a]` on
+/// every axis `a` where it has an extent.
+fn grow_box(start: &mut ScalarPoint, stop: &mut ScalarPoint, t: [f64; 3]) {
+    for (a, &ta) in t.iter().enumerate() {
+        let (x0, x1) = (start.0[a].value(), stop.0[a].value());
+        if x0 == x1 {
             continue;
         }
-        for prim in prop.primitives.iter().filter(|q| applies(q, cs)) {
-            let bb = prim.bounding_box(cs);
-            if bb.is_empty() {
-                continue;
-            }
-            let range = |a: usize| {
-                let l = lines[a];
-                let lo = l.partition_point(|&x| x < bb.min.0[a] - 1e-9 * (1.0 + bb.min.0[a].abs()));
-                let hi =
-                    l.partition_point(|&x| x <= bb.max.0[a] + 1e-9 * (1.0 + bb.max.0[a].abs()));
-                (lo.saturating_sub(1), hi.min(l.len()))
-            };
-            let r = [range(0), range(1), range(2)];
-            for (a, pec_a) in pec.iter_mut().enumerate() {
-                for i in r[0].0..r[0].1 {
-                    for j in r[1].0..r[1].1 {
-                        for k in r[2].0..r[2].1 {
-                            let n = [i, j, k];
-                            if n[a] + 1 >= dims[a] || !pec_a[index(n)] {
-                                continue;
-                            }
-                            let m = Vec3(core::array::from_fn(|b| {
-                                if b == a {
-                                    0.5 * (lines[b][n[b]] + lines[b][n[b] + 1])
-                                } else {
-                                    lines[b][n[b]]
-                                }
-                            }));
-                            if on_surface(&prim.shape, m) != Some(true) {
-                                continue;
-                            }
-                            // The stack at the midpoint: this primitive must
-                            // win, and nothing metal below it may contain
-                            // the point strictly.
-                            let hits =
-                                model.properties_at(m, CoordSystem::Cartesian, TypeMask::PHYSICAL);
-                            let mut it = hits.iter().filter(|h| {
-                                matches!(
-                                    h.property.kind,
-                                    PropertyKind::Metal
-                                        | PropertyKind::Material(_)
-                                        | PropertyKind::LorentzMaterial(_)
-                                        | PropertyKind::DebyeMaterial(_)
-                                        | PropertyKind::DiscMaterial(_)
-                                )
-                            });
-                            let Some(top) = it.next() else { continue };
-                            if !core::ptr::eq(top.primitive, prim) {
-                                continue;
-                            }
-                            let below_metal = it.find(|h| {
-                                !(applies(h.primitive, cs)
-                                    && on_surface(&h.primitive.shape, m) == Some(true))
-                            });
-                            if below_metal
-                                .is_some_and(|h| matches!(h.property.kind, PropertyKind::Metal))
-                            {
-                                continue;
-                            }
-                            pec_a[index(n)] = false;
-                            cleared += 1;
-                        }
+        let d = if x0 < x1 { ta } else { -ta };
+        start.0[a].set(x0 - d);
+        stop.0[a].set(x1 + d);
+    }
+}
+
+/// Moves the end points `a`, `b` of an axis apart by `t` each.
+fn extend_axis(a: &mut ScalarPoint, b: &mut ScalarPoint, t: f64) {
+    let (pa, pb) = (a.value(), b.value());
+    let d: [f64; 3] = core::array::from_fn(|i| pb.0[i] - pa.0[i]);
+    let l = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if l > 0.0 {
+        for (i, di) in d.iter().enumerate() {
+            a.0[i].set(pa.0[i] - t * di / l);
+            b.0[i].set(pb.0[i] + t * di / l);
+        }
+    }
+}
+
+/// The vertices of the polygon `v` offset outwards by `t` (each side
+/// moved by `t` along its outward normal, consecutive sides intersected).
+fn grow_polygon(v: &[(f64, f64)], t: f64) -> Vec<(f64, f64)> {
+    let n = v.len();
+    let area: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (v[i], v[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    // Outward normal of the side i → i+1 (counter-clockwise: its right).
+    let sign = if area >= 0.0 { 1.0 } else { -1.0 };
+    let normal = |i: usize| -> Option<(f64, f64)> {
+        let (a, b) = (v[i], v[(i + 1) % n]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = dx.hypot(dy);
+        (l > 0.0).then(|| (sign * dy / l, -sign * dx / l))
+    };
+    (0..n)
+        .map(|i| {
+            let prev = (1..n).map(|k| (i + n - k) % n).find_map(normal);
+            let m = match (prev, normal(i)) {
+                (Some(p), Some(q)) => {
+                    let d = 1.0 + p.0 * q.0 + p.1 * q.1;
+                    if d > 1e-6 {
+                        ((p.0 + q.0) / d, (p.1 + q.1) / d)
+                    } else {
+                        q
                     }
                 }
+                (Some(p), None) => p,
+                (None, Some(q)) => q,
+                (None, None) => (0.0, 0.0),
+            };
+            (v[i].0 + t * m.0, v[i].1 + t * m.1)
+        })
+        .collect()
+}
+
+fn grow_vertices(v: &PolyVertices, t: f64) -> PolyVertices {
+    let mut out = PolyVertices::new();
+    for (u, w) in grow_polygon(v.values(), t) {
+        out.push(u, w);
+    }
+    out
+}
+
+/// Grows `prim` by the tolerance `t` (drawing units, see the
+/// [module docs](self#inside-tolerance)); false if its shape is not
+/// handled (left as it is). Wires thinner than half the smallest cell
+/// are not grown.
+fn grow(prim: &mut Primitive, t: f64, default_cs: CoordSystem) -> bool {
+    let t = if prim.transform.is_empty() {
+        t
+    } else {
+        let s = sigma_min(prim.transform.matrix());
+        if s > 0.0 {
+            t / s
+        } else {
+            return false;
+        }
+    };
+    let cyl = prim.effective_cs(default_cs) == CoordSystem::Cylindrical;
+    match &mut prim.shape {
+        Shape::Box(b) => {
+            let ta = if cyl {
+                let r = b.start.0[0].value().abs().max(b.stop.0[0].value().abs());
+                if r > 0.0 { t / r } else { 0.0 }
+            } else {
+                t
+            };
+            grow_box(&mut b.start, &mut b.stop, [t, ta, t]);
+        }
+        Shape::MultiBox(m) if !cyl => {
+            for (a, b) in &mut m.boxes {
+                grow_box(a, b, [t; 3]);
+            }
+        }
+        Shape::Sphere(s) => {
+            let r = s.radius.value();
+            s.radius.set(r + t);
+        }
+        Shape::SphericalShell(s) => {
+            let w = s.shell_width.value();
+            s.shell_width.set(w + 2.0 * t);
+        }
+        Shape::Cylinder(c) if !cyl => {
+            let r = c.radius.value();
+            c.radius.set(r + t);
+            extend_axis(&mut c.start, &mut c.stop, t);
+        }
+        Shape::CylindricalShell(c) if !cyl => {
+            let w = c.shell_width.value();
+            c.shell_width.set(w + 2.0 * t);
+            extend_axis(&mut c.start, &mut c.stop, t);
+        }
+        // Thin wires (below half the smallest cell) keep their radius: it
+        // sets their in-cell correction (compile::wire).
+        Shape::Wire(w) if !cyl && w.radius.value() >= 500.0 * t => {
+            let r = w.radius.value();
+            w.radius.set(r + t);
+        }
+        Shape::LinPoly(g) if !cyl => {
+            g.vertices = grow_vertices(&g.vertices, t);
+            let (e, l) = (g.elevation.value(), g.length.value());
+            if l != 0.0 {
+                g.elevation.set(e - t * l.signum());
+                g.length.set(l + 2.0 * t * l.signum());
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// The model with openEMS's inside tolerance applied to the volume
+/// primitives of metal, materials, excitations (not plane waves) and
+/// conducting sheets (see the [module docs](self#inside-tolerance)), or
+/// `None` if there is nothing to grow.
+pub(crate) fn dilated(model: &ContinuousStructure) -> Option<ContinuousStructure> {
+    let t = inside_tolerance(model);
+    let applies = |k: &PropertyKind| match k {
+        PropertyKind::Metal | PropertyKind::ConductingSheet(_) => true,
+        PropertyKind::Excitation(e) => e.excitation_type != ExcitationType::PlaneWave,
+        k => k.material().is_some(),
+    };
+    if t <= 0.0
+        || !model
+            .properties()
+            .iter()
+            .any(|p| applies(&p.kind) && !p.primitives.is_empty())
+    {
+        return None;
+    }
+    let cs = model.coord_system;
+    let mut m = model.clone();
+    for p in m.properties_mut() {
+        if applies(&p.kind) {
+            // Sheets and lines: csx selects their edges by overlap and
+            // snapping, not by inside tests.
+            for q in p.primitives.iter_mut().filter(|q| q.dimension() == 3) {
+                grow(q, t, cs);
             }
         }
     }
-    cleared
+    Some(m)
 }
 
 /// openEMS's dual-edge average of two half-edge magnetic conductivities
@@ -512,10 +522,6 @@ mod tests {
         s
     }
 
-    fn count(pec: &[Vec<bool>; 3]) -> usize {
-        pec.iter().map(|p| p.iter().filter(|&&b| b).count()).sum()
-    }
-
     #[test]
     fn sigma_m_rule() {
         // Measured with openEMS's --debug-material (design §5.16.3).
@@ -534,89 +540,53 @@ mod tests {
     }
 
     #[test]
-    fn sphere_ties() {
+    fn tolerance_and_growth() {
         let s = model(Sphere::new([5.0, 5.0, 5.0], 2.5));
-        let n = 11 * 11 * 11;
-        // The x edge from (2, 5, 5) to (3, 5, 5): midpoint at r = 2.5.
-        let mut pec: [Vec<bool>; 3] = core::array::from_fn(|_| vec![false; n]);
-        let idx = |i: usize, j: usize, k: usize| i + 11 * (j + 11 * k);
-        pec[0][idx(2, 5, 5)] = true;
-        pec[0][idx(3, 5, 5)] = true; // r = 1.5: inside, kept
-        assert_eq!(strict_surfaces(&s, [11; 3], &mut pec), 1);
-        assert!(!pec[0][idx(2, 5, 5)] && pec[0][idx(3, 5, 5)]);
-        assert_eq!(count(&pec), 1);
-    }
-
-    #[test]
-    fn linpoly_lowest_vertices() {
-        use csx::primitives::LinPoly;
-        // A pentagon in the xy plane (v = y): the two vertices at y = 2
-        // are open, the one at y = 3 (a vertex, not the lowest) is closed.
-        let s = model(LinPoly::new(
-            2,
-            3.0,
-            4.0,
-            vec![(2.0, 3.0), (5.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)],
-        ));
-        let n = 11 * 11 * 11;
-        let idx = |i: usize, j: usize, k: usize| i + 11 * (j + 11 * k);
-        let mut pec: [Vec<bool>; 3] = core::array::from_fn(|_| vec![false; n]);
-        for (i, j) in [(5, 2), (8, 2), (2, 3), (6, 2), (8, 8)] {
-            pec[2][idx(i, j, 4)] = true;
-        }
-        assert_eq!(strict_surfaces(&s, [11; 3], &mut pec), 2);
-        assert!(!pec[2][idx(5, 2, 4)] && !pec[2][idx(8, 2, 4)]);
-        assert!(pec[2][idx(2, 3, 4)] && pec[2][idx(6, 2, 4)] && pec[2][idx(8, 8, 4)]);
-    }
-
-    #[test]
-    fn polygon_vertex_rule() {
-        // (vertices, openEMS's PEC status of each vertex), measured.
-        type Case<'a> = (&'a [(f64, f64)], &'a [bool]);
-        let cases: [Case; 8] = [
-            (
-                &[(3., 3.), (9., 3.), (9., 8.), (3., 8.)],
-                &[false, false, true, true],
-            ),
-            (&[(3., 3.), (3., 8.), (9., 8.), (9., 3.)], &[false; 4]),
-            (
-                &[(6., 2.), (10., 6.), (6., 10.), (2., 6.)],
-                &[false, true, true, true],
-            ),
-            (
-                &[(6., 2.), (2., 6.), (6., 10.), (10., 6.)],
-                &[false, false, true, false],
-            ),
-            (&[(3., 3.), (9., 8.), (3., 8.)], &[false, true, true]),
-            (
-                &[(3., 3.), (6., 3.), (9., 3.), (9., 8.), (3., 8.)],
-                &[false, false, false, true, true],
-            ),
-            (
-                &[(3., 3.), (9., 2.), (9., 8.), (2., 8.)],
-                &[true, false, true, true],
-            ),
-            (
-                &[(2., 4.), (6., 2.), (10., 5.), (8., 10.), (5., 7.), (3., 9.)],
-                &[true, false, true, true, true, true],
-            ),
-        ];
-        for (verts, want) in cases {
-            for (&q, &w) in verts.iter().zip(want) {
-                assert_eq!(!vertex_outside(verts, q), w, "{verts:?} at {q:?}");
-            }
+        assert_eq!(inside_tolerance(&s), 1e-3);
+        let d = dilated(&s).unwrap();
+        let Shape::Sphere(g) = &d.properties()[0].primitives[0].shape else {
+            panic!("a sphere")
+        };
+        assert_eq!(g.radius.value(), 2.501);
+        // Scale3 (4, 2, 2): the local tolerance is t / 2; rotations keep t.
+        let mut t = csx::Transform::new();
+        t.push(csx::transform::TransformOp::Scale3([
+            4.0.into(),
+            2.0.into(),
+            2.0.into(),
+        ]));
+        assert!((sigma_min(t.matrix()) - 2.0).abs() < 1e-12);
+        let mut r = csx::Transform::new();
+        r.rotate(Vec3::new(1.0, 1.0, 0.0), 0.6);
+        assert!((sigma_min(r.matrix()) - 1.0).abs() < 1e-12);
+        // A wire of radius 0 is a line, a thin wire keeps its radius.
+        for r in [0.0, 0.2] {
+            let mut w = Primitive::new(Wire::new([[5.0, 5.0, 1.0], [5.0, 5.0, 9.0]], r));
+            assert!(!grow(&mut w, 1e-3, CoordSystem::Cartesian));
         }
     }
 
     #[test]
-    fn wire_ties() {
-        let s = model(Wire::new([[5.0, 5.0, 1.0], [5.0, 5.0, 9.0]], 2.0));
-        let n = 11 * 11 * 11;
-        let idx = |i: usize, j: usize, k: usize| i + 11 * (j + 11 * k);
-        let mut pec: [Vec<bool>; 3] = core::array::from_fn(|_| vec![false; n]);
-        pec[2][idx(3, 5, 4)] = true; // z edge at distance 2: on the surface
-        pec[2][idx(4, 5, 4)] = true; // distance 1: inside
-        assert_eq!(strict_surfaces(&s, [11; 3], &mut pec), 1);
-        assert!(!pec[2][idx(3, 5, 4)] && pec[2][idx(4, 5, 4)]);
+    fn polygon_growth() {
+        for v in [
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+            vec![(0.0, 0.0), (0.0, 1.0), (2.0, 1.0), (2.0, 0.0)],
+        ] {
+            let g = grow_polygon(&v, 0.1);
+            let lo = g
+                .iter()
+                .fold((f64::MAX, f64::MAX), |m, p| (m.0.min(p.0), m.1.min(p.1)));
+            let hi = g
+                .iter()
+                .fold((f64::MIN, f64::MIN), |m, p| (m.0.max(p.0), m.1.max(p.1)));
+            assert!(
+                (lo.0 + 0.1).abs() < 1e-12 && (lo.1 + 0.1).abs() < 1e-12,
+                "{g:?}"
+            );
+            assert!(
+                (hi.0 - 2.1).abs() < 1e-12 && (hi.1 - 1.1).abs() < 1e-12,
+                "{g:?}"
+            );
+        }
     }
 }

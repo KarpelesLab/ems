@@ -47,8 +47,7 @@ fn run_ems(case: &str, variant: &str, opts: &DumpFileOptions) -> PathBuf {
 // ---------------------------------------------------------------------
 // VTK comparison.
 
-/// The XML structure of a VTK file with the binary payloads, the array
-/// pointer names and the range values masked.
+/// The XML structure of a VTK file without the binary payloads.
 fn vtk_skeleton(text: &str) -> Vec<String> {
     text.lines()
         .filter(|l| {
@@ -58,17 +57,7 @@ fn vtk_skeleton(text: &str) -> Vec<String> {
                     && t.chars()
                         .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c))))
         })
-        .filter(|l| l.trim().parse::<f64>().is_err())
-        .map(|l| {
-            let mut s = l.to_string();
-            for key in ["RangeMin=\"", "RangeMax=\"", "Name=\"Array 0x"] {
-                if let Some(i) = s.find(key) {
-                    let j = s[i + key.len()..].find('"').unwrap() + i + key.len();
-                    s.replace_range(i + key.len()..j, "*");
-                }
-            }
-            s
-        })
+        .map(str::to_string)
         .collect()
 }
 

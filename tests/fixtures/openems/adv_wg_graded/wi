@@ -1,4 +1,4 @@
-% time-domain current mode matching by openEMS v0.37.0-19-gc3a956b @Tue Oct 20 10:05:48 2026
+% time-domain current mode matching by openEMS v0.37.0-32-gec4d2db @Sat Oct 24 08:24:50 2026
 % start-coordinates: (0.001,0.001,0.03) m -> [1,1,30]
 % stop-coordinates: (0.019,0.009,0.03) m -> [20,9,30]
 % t/s	current	mode_purity

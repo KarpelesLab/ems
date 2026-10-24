@@ -68,14 +68,15 @@
 //!   is drawn once, on the `2π` line; axis z edges are not drawn (openEMS
 //!   draws none for a metal rod on the axis).
 //!
-//! An empty PEC dump has openEMS's range `1e+299` / `-1e+299`.
+//! `PEC_dump.vtp` holds the points and the `Lines` cell arrays only, as
+//! inline binary arrays (openEMS since openEMS-Project be30220; earlier
+//! versions wrote VTK's appended layout with empty `Verts`, `Strips`,
+//! `Polys` sections and the same payloads, design §7.2).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::dump::{
-    f32_bytes, norm_range, printf_g11, vtk_binary, vtk_rectilinear, vtk_structured_cyl,
-};
+use super::dump::{f32_bytes, vtk_binary, vtk_rectilinear, vtk_structured_cyl};
 use crate::engine::cylindrical::e_edge_copies;
 use crate::engine::{Coefficients, EdgeMaterials, Grid};
 use crate::{Axis, Error, Result};
@@ -325,15 +326,6 @@ pub fn operator_dump(
     ]))
 }
 
-/// `name="value"` padded like VTK's appended-format headers (value and
-/// closing quote in 21 columns).
-fn attr(name: &str, value: &str) -> String {
-    format!(
-        "{name}=\"{value}\"{}",
-        " ".repeat(20usize.saturating_sub(value.len()))
-    )
-}
-
 /// The text of `PEC_dump.vtp` (see the [module docs](self)).
 ///
 /// # Errors
@@ -411,69 +403,36 @@ pub fn pec_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
     }
     let offsets: Vec<i64> = (1..=conn.len() as i64 / 2).map(|l| 2 * l).collect();
     let i64_bytes = |v: &[i64]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-    let mut data = String::new();
-    let mut put = |raw: &[u8]| -> usize {
-        let off = data.len();
-        data.push_str(&vtk_binary(raw));
-        off
-    };
-    let pts_off = put(&f32_bytes(&points));
-    let empty = i64_bytes(&[]);
-    let verts = [put(&empty), put(&empty)];
-    let lines = [put(&i64_bytes(&conn)), put(&i64_bytes(&offsets))];
-    let strips = [put(&empty), put(&empty)];
-    let polys = [put(&empty), put(&empty)];
-    let range = norm_range(&points);
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\"?>\n");
     s.push_str("<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt32\" compressor=\"vtkZLibDataCompressor\">\n");
     s.push_str("  <PolyData>\n");
     let _ = writeln!(
         s,
-        "    <Piece {} {} {} {} {}>",
-        attr("NumberOfPoints", &points.len().to_string()),
-        attr("NumberOfVerts", "0"),
-        attr("NumberOfLines", &offsets.len().to_string()),
-        attr("NumberOfStrips", "0"),
-        attr("NumberOfPolys", "0"),
+        "    <Piece NumberOfPoints=\"{}\" NumberOfVerts=\"0\" NumberOfLines=\"{}\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">",
+        points.len(),
+        offsets.len()
     );
     s.push_str("      <PointData>\n      </PointData>\n      <CellData>\n      </CellData>\n");
-    s.push_str("      <Points>\n");
-    let (lo, hi) = if points.is_empty() {
-        // openEMS: VTK's initial range of an empty array.
-        ("1e+299".to_string(), "-1e+299".to_string())
-    } else {
-        (printf_g11(range.0), printf_g11(range.1))
+    let array = |s: &mut String, ty: &str, name: &str, nc: &str, raw: &[u8]| {
+        let _ = writeln!(
+            s,
+            "        <DataArray type=\"{ty}\" Name=\"{name}\"{nc} format=\"binary\">\n          {}\n        </DataArray>",
+            vtk_binary(raw)
+        );
     };
-    let _ = writeln!(
-        s,
-        "        <DataArray type=\"Float32\" Name=\"Points\" NumberOfComponents=\"3\" format=\"appended\" {} {} {}/>",
-        attr("RangeMin", &lo),
-        attr("RangeMax", &hi),
-        attr("offset", &pts_off.to_string())
+    s.push_str("      <Points>\n");
+    array(
+        &mut s,
+        "Float32",
+        "Points",
+        " NumberOfComponents=\"3\"",
+        &f32_bytes(&points),
     );
-    s.push_str("      </Points>\n");
-    for (tag, offs) in [
-        ("Verts", verts),
-        ("Lines", lines),
-        ("Strips", strips),
-        ("Polys", polys),
-    ] {
-        let _ = writeln!(s, "      <{tag}>");
-        for (name, off) in [("connectivity", offs[0]), ("offsets", offs[1])] {
-            let _ = writeln!(
-                s,
-                "        <DataArray type=\"Int64\" Name=\"{name}\" format=\"appended\" {} {} {}/>",
-                attr("RangeMin", ""),
-                attr("RangeMax", ""),
-                attr("offset", &off.to_string())
-            );
-        }
-        let _ = writeln!(s, "      </{tag}>");
-    }
-    s.push_str("    </Piece>\n  </PolyData>\n  <AppendedData encoding=\"base64\">\n   _");
-    s.push_str(&data);
-    s.push_str("\n  </AppendedData>\n</VTKFile>\n");
+    s.push_str("      </Points>\n      <Lines>\n");
+    array(&mut s, "Int64", "connectivity", "", &i64_bytes(&conn));
+    array(&mut s, "Int64", "offsets", "", &i64_bytes(&offsets));
+    s.push_str("      </Lines>\n    </Piece>\n  </PolyData>\n</VTKFile>\n");
     Ok(s)
 }
 
@@ -591,20 +550,20 @@ POLYGONS 6 30\n4 0 1 2 3\n4 4 5 6 7\n4 7 6 2 3\n4 4 5 1 0\n4 0 4 7 3\n4 5 6 2 1\
     }
 
     #[test]
-    fn pec_lines_and_padding() {
+    fn pec_lines() {
         let g = grid();
         let mut m = EdgeMaterials::new(&g, Material::VACUUM);
         m.set_pec_edge(Axis::X, [1, 1, 1]);
         m.set_pec_edge(Axis::Y, [1, 1, 1]);
         let t = pec_dump(&g, &m).unwrap();
         assert!(t.contains(
-            "<Piece NumberOfPoints=\"3\"                    NumberOfVerts=\"0\"                    NumberOfLines=\"2\"                    NumberOfStrips=\"0\"                    NumberOfPolys=\"0\"                   >"
+            "<Piece NumberOfPoints=\"3\" NumberOfVerts=\"0\" NumberOfLines=\"2\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">"
         ));
-        assert!(t.contains(
-            "RangeMin=\"\"                     RangeMax=\"\"                     offset=\""
-        ));
-        // Empty arrays: the 12-byte block header (0 blocks) only.
-        assert!(t.contains("AAAAAACAAAAAAAAA"));
+        assert!(t.contains("<DataArray type=\"Int64\" Name=\"offsets\" format=\"binary\">"));
+        assert!(!t.contains("<Verts>") && !t.contains("Range"));
+        // An empty dump: the 12-byte block header (0 blocks) only.
+        let t = pec_dump(&g, &EdgeMaterials::new(&g, Material::VACUUM)).unwrap();
+        assert_eq!(t.matches("AAAAAACAAAAAAAAA").count(), 3);
     }
 
     #[test]
@@ -618,7 +577,7 @@ POLYGONS 6 30\n4 0 1 2 3\n4 4 5 6 7\n4 7 6 2 3\n4 4 5 1 0\n4 0 4 7 3\n4 5 6 2 1\
                 "{a}"
             );
         }
-        assert!(t.contains("RangeMin=\"3.4641016151377544\""));
+        assert!(!t.contains("RangeMin") && !t.contains("InformationKey"));
         let c = Coefficients::from_edges(&g, &m, &FaceConditions::default(), 1e-12).unwrap();
         let t = operator_dump(&g, &c, &[(Axis::Z, [1, 1, 0], 1e-3)]).unwrap();
         for a in ["exc_volt", "vv", "vi", "iv", "ii"] {
@@ -627,6 +586,6 @@ POLYGONS 6 30\n4 0 1 2 3\n4 4 5 6 7\n4 7 6 2 3\n4 4 5 1 0\n4 0 4 7 3\n4 5 6 2 1\
                 "{a}"
             );
         }
-        assert!(t.contains("Name=\"exc_volt\" NumberOfComponents=\"3\" format=\"binary\" RangeMin=\"0\" RangeMax=\"0.0010000000474974513\""));
+        assert!(t.contains("Name=\"exc_volt\" NumberOfComponents=\"3\" format=\"binary\">"));
     }
 }

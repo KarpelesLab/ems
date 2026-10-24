@@ -3,75 +3,27 @@
   <StructuredGrid WholeExtent="0 8 0 5 0 5">
   <Piece Extent="0 8 0 5 0 5">
     <PointData>
-      <DataArray type="Float32" Name="exc_volt" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.0010000000474974513">
+      <DataArray type="Float32" Name="exc_volt" NumberOfComponents="3" format="binary">
         AQAAAACAAAAwDwAAJgAAAA==eJztzjEBAAAEADAZxFFKCMUFEMCzJVgEAFydU98HAIBPC0/vAT8=
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            0.0010000000475
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="vv" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="1.7320508075688772">
+      <DataArray type="Float32" Name="vv" NumberOfComponents="3" format="binary">
         AQAAAACAAAAwDwAAzgAAAA==eJxjYBho0GBPffaoXbSzi16Aln5Cl4fguzr19juj6+0lXevB7Jk36sAYmQ1St4+z3r5ItN4eWS8qJmwXyCyQXVof6+Bmf+1DZcPsyj5UR5FdIPeDaJi/YPYjs2FqKfUX9fBgAfRPh6D4AMU7KL6wpQtYfN3ZXkdxfIHMA9kFSocgNjYMs4vSdAhzN8xfMDFk9mg6xAVG0+FoOhwMgP7pEFYvw9iw+EFmgzAo/RAfhrjTBswu9DRBbbtg9S8+NulpY6Skw1EwCugPAPKcrkQ=
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            1.7320508076
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="vi" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="136.0366777052882">
+      <DataArray type="Float32" Name="vi" NumberOfComponents="3" format="binary">
         AQAAAACAAAAwDwAAjgEAAA==eJxjYBhYkOk6xQnG3vnUC87eaiwFZzcfSXKEsRPmqMPZJ9+xwNn3Pe84jNpFe7voBWZsMYG7vX7aNCeE+BY4+/SHAqziGy9dgrOL2tmd0c2umiCApM/ECYRBYZj3RdTRtsPDKb/5t+OaJdmOQrYCTie1yhxdPy9xzA084BjBuNVBLiPOcV2siZOR+3oHoJ2OILtAYeitI+EIsgs9DHHZZXD2ogPIri9W2xxFbqiA7ZpwRNJR5kQa2C5+xSS4XcuCcimyC+QvUBjC/AUKK5i/QGEI8xdInFJ/CeU0g+0CpUPH1nNgM0HpEKQeZBcoHcLsAqVDYuwaSDAQ6RCUNgT9xMDxBUobEUZbHEHxBUobCs4F8HSYEPbBkdL4iuBtBtsFSodpH846gOwCpUN3DQGwXbB0CLKL0nQI8hcsHYL8BUuHIH+NpkP8YDQdjqbDwQAGsl4GhSGsXgaFIaxehoUhqK4kNgwJ1csgu2D1MsguWL1MTbtg9TLMX7C0AauXyUkbIyUdjoJRMBAAAKSowDM=
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            136.03667771
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="iv" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="0.0015171709598075572">
+      <DataArray type="Float32" Name="iv" NumberOfComponents="3" format="binary">
         AQAAAACAAAAwDwAA8QAAAA==eJy7+miZZdfsC5bOTa1WV4FsGE519rB8Up5q5bPvE5CvZlnFJmQlvsvO0j6kCqbeAiTuM6Pd6lPqWYuJ3PwgdUAz1CyONd+ziNE9ZiXX2WPBgASujto1pOyiJxgMYQgy57WkjtVOvm0gvsU2ztuWIPPsQ35ZLC+ZA3IL2Exq2fWk/KklzK4qtklwu7pmB1DVLlAYgvwFC0OQv2BhCPLXaDocGH8RSoc++4rg6VB81z4LWDp0bmKlejqE2QVKhzC7QOmQmnaNpkPiwWg6HE2Ho+kQ1S5IXQmxC1JXQuwC1ZVD2a7R9uEoGAVDAwAADARt6Q==
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            0.0015171709598
-          </Value>
-        </InformationKey>
       </DataArray>
-      <DataArray type="Float32" Name="ii" NumberOfComponents="3" format="binary" RangeMin="0" RangeMax="1.7320508075688772">
+      <DataArray type="Float32" Name="ii" NumberOfComponents="3" format="binary">
         AQAAAACAAAAwDwAAPQAAAA==eJxjYGiwZ6ApRgajdg0tu+gJhmsYjto1mg4HQxiO2jWaDgdDGI7aNZoOB0MYjto1tNLhKBgFAw8ASdG/uA==
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0
-          </Value>
-          <Value index="1">
-            1.7320508076
-          </Value>
-        </InformationKey>
       </DataArray>
     </PointData>
     <CellData>
     </CellData>
     <Points>
-      <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary" RangeMin="0.0009999999804492887" RangeMax="0.011180339981765623">
+      <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="binary">
         AQAAAACAAAAwDwAAvwQAAA==eJxN1U+IlWUUBvDkhSBDIpUgcoQaioRmFq2c71xayCWCVsVAgVMkhQVDOouRFi4Ej4IFCUq0KREcqo2L/kDRvUMRDZELoYUwIWj0DwKL2WZu+s7zPs/3ntnMw+GZc7/78ePM0Z3e3cWfjz/YGPL2zVlr8/GQj+70NN8Y8oFX/hzy+uquUdoz5PM7DndvHLyzEHnuncvd2VMjfN7xH++zhx+80NX5E3b21HrHvvV9zi/38xE+45dnr9idrYPIl17fNlp+9V3jnlG/B3nX2o5u3/tL+NsPVxe7iysfIf9872fd9Rv3WJ1f6+ePqm99n/NF6/vIh268Za+V75CPvXDRth7/17jH+j34bt+++N7+Q9+cxP69p2/uPzdT3+PWkYWF22/W97j39MsL52bqe+z7C32f85v9vL7HT65u6/Zd/QN58/fHurkH6nvs93T9HuRn5q9/feulI9j/5aXZycoPnyP/s3Rm8sV/u63O1/r5k8b+pO9zPjvt+8gn/npqOnf+J+T7V49Nr+2+e8Q9034P8mZ5fnLltz3Y/+vJC5P5xWXkwwfK9PhDG5zPTOcXb3XsT/u+sd/Pl5GXvv9quvL028jPjf+ePnLiU+Oe9X6P0VWn33IYWQ7rfDxkOWR/yHIYWQ65Z8hyGFkOI8thnVeH7MMh+3AYWQ4jyyH3wGFkOYwsh5HlsM6rQ/bhkH04jCyHkeWQe+AwshxGlsPIcljn1SH7cMg+HEaWw8hyyD1wGFkOI8thZDms8+qQfThkHw4jy2FkOeQeOMQz0GFkOYwsh3VeHbIPh+zDYWQ5jCyH3AOHdEV7xZrDYs1hzMdDbg7RH3JzWKw5xJ4hN4fFmsNizWHM5RB9OkSfDos1h8WaQ+yhw2LNYbHmsFhzGHM5RJ8O0afDYs1hseYQe+iwWHNYrDks1hzGXA7Rp0P06bBYc1isOcQeOizWHBZrDos1hzGXQ/TpEH06LNYcFmsOsYcO+2cYHBZrDos1hzGXQ/TpEH06LNYcFmsOsYcO4Qr2wpocRpbDOh8PWQ7ZH7IcRpZD7hmyHEaWw8hyWOfVIftwyD4cRpbDyHLIPXAYWQ4jy2FkOazz6pB9OGQfDiPLYWQ55B44jCyHkeUwshzWeXXIPhyyD4eR5TCyHHIPHEaWw8hyGFkO67w6ZB8O2YfDyHIYWQ65Bw7xDHQYWQ4jy2GdV4fswyH7cBhZDiPLIffAIV3pf3G6h57uoad76OkeerqHnu6hp3vo6R56uoee7qGne+jpHnq6h57uoad76OkeerqHnu6hp3vo6R56uoee7qGne+jpHnq6h57uoad76OkeerqHnu6hp3vo6R56uoee7qGne+jpHnq6h57uoad76OkeerqHnu6hp3vo6R56uoee7qGne+jpHnq6h57uoad76OkeerqHPjjcvrk2OIwsh3U+HrIcsj9kOYwsh9wzZDmMLIeR5bDOq0P24ZB9OIwsh5HlkHvgMLIcRpbDyHJY59Uh+3DIPhxGlsPIcsg9cBhZDiPLYWQ5rPPqkH04ZB8OI8thZDnkHjiMLIeR5TCyHNZ5dcg+HLIPh5HlMLIccg8c4hnoMLIcRpbDOq8O2YdD9uEwshxGlkPugcPI/wNwM38c
-        <InformationKey name="L2_NORM_RANGE" location="vtkDataArray" length="2">
-          <Value index="0">
-            0.00099999998045
-          </Value>
-          <Value index="1">
-            0.011180339982
-          </Value>
-        </InformationKey>
       </DataArray>
     </Points>
   </Piece>
