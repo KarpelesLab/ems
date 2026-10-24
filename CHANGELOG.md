@@ -7,6 +7,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/KarpelesLab/ems/compare/v0.0.2...v0.0.3) - 2026-10-24
+
+### Other
+
+- Design status: oracle at openEMS-Project be30220
+- DESIGN, README: openEMS e89286f -> be30220, measured (5.16.5, 7.2, 8.1 item 17)
+- Follow openEMS-Project be30220: VTK layout, --gpu-device, exit status, inside tolerance
+- Oracle workflow: time out hung package installs
+- Oracle workflow: pinned openEMS revision on pushes, upstream HEAD weekly as a drift report
+- status after wave 14
+- timestep_cyl tests: clippy
+- openEMS multigrid structure as measured; README: cyl_current_seam
+- Current boxes touching the alpha seam of closed cylindrical grids loop like openEMS (files)
+- Cylindrical fixtures run on openEMS's own time step; dumps sample the last step on closed and axis grids
+- openEMS time step on cylindrical grids (files)
+- Random differential sweep fixtures rs_* and DESIGN 5.16: sweep results, Mur and lumped rules
+- openEMS holds a Mur face carrying an E excitation while it runs; upper PML face normal H stays 0
+- fixes from a randomized differential sweep against openEMS
+- lumped elements act only outside openEMS's PML layers
+- openEMS energy measure: leave out the E on the three upper faces, not on both x faces
+- material samples in metal see the material under it; f32 CFL step; openEMS's H-probe cell rule
+- DESIGN 5.13: sheet deviation currents, sheets in absorbing layers, PML look-ahead, junctions
+- Conformal sheets: junctions of several sheets and sheets touching solid metal
+- Conformal sheets: deviation currents on merged regions, stretch in absorbing layers, PML in the energy look-ahead
+- fuse steps only on large slabs, neighbour wait instead of mid barrier
+- fused H/E steps plane by plane, movable read-only hooks
+- Design and README: layered/dispersive plane waves and NF2FF ground (wave 14 C)
+- NF2FF over a stratified ground: reflected and transmitted far fields
+- Plane waves in layered and dispersive backgrounds: exact spectral incident field
+- Sectoral waveguide port with fractional-order Bessel modes; DESIGN for the cylindrical ports
+- CPW and stripline ports on cylindrical grids along z or alpha
+- openEMS sheet model: interior/border width rule, cylindrical grids
+- Triangle sheet tests run the 45-degree plate rotated exactly and by rotate_axis
+- Conformal sheets: exact hits of nodes and edge midpoints do not depend on rounding
+- Design and README: status after wave 13
+- DESIGN 5.13: sheet interpolation, deviation currents, cylindrical PML on merged faces
+- Conformal PEC: deviation currents, soft merging, cylindrical PML on merged faces
+- Conformal sheets: interpolate small regions from their own side of the sheet
+- Dumps of Dirac and step excitations record every step, as openEMS does
+- openEMS end-criterion energy: full-cell outer duals, x-face rule, half-length check
+- Current probes: half-way corners snap inwards, zero-length cylinders are points
+- Rennings time step reproduced on doubly graded meshes and layered media
+- Sweep test: no recorded differences left
+- sigma_m rule, openEMS sheet model, polygon and polyhedron ties
+- openEMS files: polygon vertex ties of metal Polygon and LinPoly
+- openEMS files: emulate openEMS's ConductingSheet model
+- openEMS files: dual-edge magnetic conductivity rule
+- Field dumps on closed cylindrical grids as openEMS writes them
+- openEMS's axis E_z update on closed cylindrical grids (file path)
+- Microstrip port on cylindrical grids along z or alpha; sector CPML grading
+- openEMS PMC faces: no update of the face's tangential E, skip the axis
+- Radial-line port on cylindrical grids
+- Debug material, operator and PEC dumps on cylindrical grids
+- openEMS's radial material weights on cylindrical grids (file path)
+- Lumped elements: openEMS's capacitance limit for parallel R/L without C
+- SAR averaging: keep a half-size start within the tolerance
+- SAR averaging: openEMS's weights, solver safeguards and validity on edge cases
+- Design and README: openEMS PML emulation (wave 13 A)
+- PML fixtures against openEMS; tighter PML tolerances
+- openEMS's PML for the PML_n faces of openEMS files
+- Slab-hook corrections to openEMS's energy and the look-ahead H
+- DESIGN status after wave 12: conformal accuracy
+- Design and README: end-to-end parity, openEMS benchmark, wave 12 status
+- Probes read precomputed field locations
+- Serial Mur faces read and write precomputed field locations
+- Periodic face merge from a precomputed table
+- a clone of a registered operator takes its edges back
+- Default thread count: at most one thread per five x-planes
+- Write the VTK files of time-domain dumps on several threads
+- openEMS time-step criteria from precomputed edge tables
+- Serial gaps only at the steps that need them
+- End-to-end openEMS parity fixtures on realistic models
+- Mur faces run as slab hooks
+- Probe file headers scale the cylindrical alpha by the drawing unit
+- Mur faces of XML runs follow openEMS at interfaces and corners
+- End criterion of XML runs uses openEMS's energy measure
+- DESIGN 5.13: interpolated small faces, absorbing layers, convergence tables
+- Conformal PEC: TE/TM/TEM convergence tests and the CPML guide regression
+- Conformal PEC: interpolate small cut faces; fix conformal walls in CPML
+- Cylindrical SAR files: openEMS's exact averaging on the warped cells (sar_calc within 5e-8)
+- refuse a cylindrical-grid x/y mirror that cuts the box at build time
+- DESIGN 5.15 and README: cylindrical gaps closed (wave 12)
+- Oblique thin wires on cylindrical grids
+- Thin conformal PEC sheets on cylindrical grids
+- Port helpers on cylindrical sector grids
+- mirrors normal to x and y on cylindrical grids
+- Cylindrical grids: periodic selection of sources and lumped elements; alpha conventions of openEMS
+- CellConstantMaterial on cylindrical grids
+- Mass-averaged SAR on cylindrical grids
+- openEMS SAR averaging rules (DESIGN 5.12, 5.16, 7.1), README status
+- openEMS averaging, face-cube types, -a auto range
+- :sar: openEMS-compatible mass averaging (sar_calc methods)
+- 0-step runs write the t = 0 row of E-type probe files, as openEMS
+- DESIGN 5.16.3: XML feature-coverage matrix; csx feedback 17-21
+- Lumped elements on non-Box primitives are skipped, as in openEMS
+- XML feature-coverage sweep: 52 openEMS oracle fixtures and tests
+- FDTD settings openEMS runs: odd TimeStepFactor, endCriteria, OverSampling
+- NormalSignPositive is the inward normal, as in openEMS
+- Dump sampling: OptResolution round-off, raw H/B boxes on dual lines
+- Metal spheres, spherical shells and wires: open surface for files
+- Read openEMS files with openEMS's reading rules
+- Update README and design status after wave 11 (CLI, nf2ff/sar_calc tools, cylindrical gaps)
+- require openEMS's row count for H probe files too
+- DESIGN 5.16: numeric parity findings; tighten the PML parity test
+- openEMS ignores it too
+- End criterion of XML runs counts the Mur face edges like openEMS
+- XML runs skip the probe boxes openEMS skips
+- Lumped elements: openEMS update and spreading for XML models
+- byte-exact fixtures on Windows, gen scripts under bash; per-dataset HDF5 dump comparison
+- nf2ff tool, openEMS SAR methods and sar_calc (design 5.10, 5.12, 5.16, 7.1)
+- openEMS averaging methods, in-run SIMPLE, sar_calc tool (ems-sar-calc)
+- :openems::nf2ff: the openEMS nf2ff tool (ems-nf2ff)
+- DESIGN 5.11: plane waves are Cartesian only (openEMS ignores them on cylindrical grids)
+- Record that openEMS ignores plane waves on cylindrical grids
+- Conformal PEC (solid metal) on cylindrical grids
+- NF2FF on cylindrical grids
+- SAR dumps on cylindrical grids; cylindrical oracle fixtures
+- Conducting sheets on cylindrical grids
+- Waveguide probes: mode purity, openEMS mode-matching files, final H sample
+- :openems: excitation signal, statistics and debug files
+- ems binary: a drop-in replacement for the openEMS executable
+- Update README and design status after wave 10 (openEMS parity, M2 done)
+- Optimise test builds (opt-level 2): the suite runs full simulations
+- Reconcile core parity with dump and advanced-physics work
+- :openems: gate the write_probes doctest on the xml feature
+- openEMS core parity fixtures and tests
+- :openems: openEMS probe text files (writer and reader)
+- Follow openEMS semantics for XML models (black-box parity)
+- Revert "Sample soft E/H sources at the start of their update (openEMS timing)"
+- Fix a private intra-doc link in compile::planewave
+- Oracle README: describe gen-adv.sh
+- openEMS fixtures: graded microstrip; gate the parity tests on xml
+- Mur faces tuned to the local medium; record the PML gap
+- Cylindrical grids: openEMS fixtures, dispersive poles, CylinderCoords
+- Waveguide mode probes: openEMS sampling and normalisation
+- Plane waves: openEMS phase reference; record the ConductingSheet model gap
+- Dispersive materials: openEMS pole assignment and leapfrog ADE
+- Sample soft E/H sources at the start of their update (openEMS timing)
+- openEMS dump fixtures and comparison tests
+- openEMS-compatible field dump and SAR files (io::openems::dump)
+- Dump quantities J, rot H, D, B; raw (native) samples; openEMS dump timing
+- Add the new port helpers to the prelude
+- Validate the circular waveguide port (cylindrical and Cartesian grids)
+- widen the port boxes to the enclosing mesh lines
+- Circular waveguide port (CircWaveguidePort, TE_nm/TM_nm)
+- coaxial-line port on Cartesian and cylindrical grids
+- coplanar-waveguide port with Wen/Simons quasi-static reference
+- symmetric strip-line port with Cohn's exact impedance
+- a lumped port joined to its far terminal by a PEC polyline
+- Waveguide mode probes on cylindrical grids (z-normal planes)
+- Share the transmission-line port extraction (port::line, LinePortResult)
+- openEMS oracle workflow (rebuild, regenerate fixtures, test)
+- Add the black-box openEMS oracle recipe for reference fixtures
+
 ## [0.0.2](https://github.com/KarpelesLab/ems/compare/v0.0.1...v0.0.2) - 2026-10-19
 
 ### Other
