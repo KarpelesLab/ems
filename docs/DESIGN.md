@@ -4971,11 +4971,12 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: dielectric models at 2e-5…1.5e-4, where
-  openEMS's `vi` (and at some time steps `iv`) coefficients are one f32
-  step off a correctly rounded formula (§5.16.6); openEMS's summation
-  order on cylindrical grids (not fitted); openEMS's Rennings step below
-  4e-8.
+- From the feature sweep: openEMS's computed time step (3.5e-9…4.9e-9
+  relative below ems's on graded meshes, `fdtd_odd`, `fdtd_tsm3_graded`);
+  conducting-sheet and lumped-resistor coefficients (1–3 f32 steps);
+  PML-layer coefficients; openEMS's summation order on cylindrical grids;
+  `probe_i_dirs` (8.4e-3, a current column of pure round-off); openEMS's
+  Rennings step below 4e-8 (§5.16.6, §5.16.7).
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
