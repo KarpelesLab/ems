@@ -3808,7 +3808,9 @@ PEC box of 1 mm cells, a soft Gaussian line source, five E/H/voltage
 probes and the feature under test in the middle, 600 steps of 1.5 ps;
 "agreement" is the relative L2 difference over all probe columns, ~1e-5
 (`f32` round-off over the ring-down of a closed box) where the
-formulations agree. 60 of the models are fixtures (`sweep_*`,
+formulations agree; since wave 15 vacuum and metal models agree bit for
+bit and dielectric ones to 2e-5…1.5e-4 (§5.16.6). 62 of the models are
+fixtures (`sweep_*`,
 `scripts/openems-oracle/gen-sweep.sh`, `tests/openems_sweep.rs`, 0.4 s).
 
 Matrix (175 models; 165 agree to ≲ 1e-4, 7 differ, 3 are rejected by
@@ -4129,7 +4131,77 @@ differed between the versions is identical (`--debug-PEC`,
 differences: `tie_cyl_metal` 1.1e-2, `tie_cylshell_metal` 8.6e-3 (the
 same in both versions, identical PEC and material dumps),
 `prim_sphshell_metal` 1.5e-3 (weak field inside the shell). Fixture
-size: 8.71 → 8.68 MB (VTK files 146 → 114 kB).
+size: 8.71 → 8.68 MB (VTK files 146 → 114 kB). (Wave 15: these three
+were `f32` round-off, closed by openEMS's summation order, §5.16.6.)
+
+#### 5.16.6 Round-off: summation order of the curl
+
+`tie_cyl_metal` (1.1e-2) and `tie_cylshell_metal` (8.6e-3) had identical
+`--debug-PEC`, `--debug-material` and `--debug-operator` dumps (every
+interior coefficient bit for bit) and full-domain field dumps that agreed
+to 1e-6 of their norm; the probes that differed (`e1`, `u1`, the H probe
+in the hollow of the shell) lie in the shadow of the metal, where the
+field is ~1e-4 of the source region's (largely the static charge of the
+Gaussian's DC content). openEMS's own result there is round-off: the
+same model mirrored in x gives `e1` 6.3e-3 and `u1` 3.4e-3 away from the
+unmirrored one in openEMS, the size of the ems difference, and openEMS's
+fields of the z-symmetric model are not z-symmetric (components that
+vanish by symmetry reach ~1e-7 of the field near the source after 10
+steps), while ems's are mirror-exact. The difference was the `f32`
+rounding of the update, which accumulates over the ring-down of the
+closed box and dominates where the signal is weak.
+
+The rule was fitted from per-step `Et`/`Ht` dumps (`OverSampling="100"`)
+of a vacuum box with 1 m cells (`DeltaUnit 1`: the dumped E and H are the
+engine's voltages and currents exactly) and `--debug-operator` (the
+`f32` coefficients): of 14 candidate forms for E and 48 for H, one
+each reproduces every one of 47 160 E and 34 875 H updates bit for bit
+(the second best 91 % and 80 %):
+
+- E: `u' = vv·u + vi·(((a − b) − c) + d)`,
+- H: `i' = ii·i − iv·(((a − b) + d) − c)`,
+
+with ems's circulation `(a − b) − (c − d)` (for `E_x`: `a, b` the `H_z`
+at `j`, `j − 1`, `c, d` the `H_y` at `k`, `k − 1`; for `H_x`: `a, b` the
+`E_z` at `j + 1`, `j`, `c, d` the `E_y` at `k + 1`, `k`; cyclic), no
+fused multiply-add, and the products and sums of a soft source after the
+update as ems does. The second difference was ems's subnormal flush:
+`(x + 2⁻¹⁰²) − 2⁻¹⁰²` also rounded the last bits of normal values below
+~2⁻⁷⁷ (the leading tail of a wave front); openEMS keeps them. The flush
+is now a select (`|x| < 2⁻¹²⁶ → 0`, every normal value unchanged), for
+the native path too (strictly more accurate; `bench_vacuum` unchanged
+within the noise of a loaded machine, 1 and 8 threads). With both, the
+1 m vacuum box (40 steps) and `tie_cyl_metal` scaled to 1 m cells (200
+steps) give openEMS's dumps bit for bit at every step, including the
+last H dump (the
+look-ahead H of `engine::dump` uses the same order).
+
+ems keeps its mirror-symmetric order natively (`CurlOrder::Paired`) and
+uses openEMS's (`CurlOrder::OpenEms`, `Engine::set_curl_order`,
+`Compiled::curl_order`) for openEMS files on Cartesian grids. Only the
+main kernel follows it; CPML/UPML, conformal, multigrid and the
+cylindrical operators keep their expressions (on cylindrical grids
+openEMS's order made `dump_cyl` worse, 9.7e-6 → 1.5e-5: openEMS's
+cylindrical engine sums differently, not fitted). Thread counts stay
+bit-identical (both orders are per-edge expressions).
+
+Feature sweep (169 models, openEMS be30220, before → after): 9 → 83
+models agree to the printed digits (≤ 1e-8), 136 → 73 to ≤ 1e-4, 24 → 13
+above (2 of them rejected by openEMS); `tie_cyl_metal` 1.1e-2 → 0,
+`tie_cylshell_metal` 8.6e-3 → 0, `prim_sphshell_metal` 1.5e-3 → 0,
+`tie_wire_z` 6.5e-4 → 0, `prim_box_metal` 2.4e-4 → 9e-14, the vacuum
+and metal models 6.5e-5 → 9e-10, `probe_i_dirs` 1.0 → 8.4e-3 (an
+all-round-off current column). The models with dielectrics stay at
+2e-5…1.5e-4 (`prim_box_mat` 8.4e-5 → 1.0e-4, the same noise in another
+pattern): there openEMS's `vi` differs by one `f32` ulp on the edges of
+the material boundary (72 edges of `prim_box_mat`, e.g. 96.806496 vs
+96.806488 at the box corners, ε averaged 1.75), a value the correctly
+rounded `f64` formula cannot give (it lies 4e-9 below the rounding
+midpoint), so openEMS computes some of its operator in `f32` or in
+another way — not fitted yet; the same happens for some time steps on
+1 m cells (`dt` 1.3 ns, 1.0 ns: all `vi`; 1.5 ns: all `iv`). Fixtures:
+`sweep_tie_cyl_metal`, `sweep_tie_cylshell_metal` (exact to the printed
+digits, tolerance 1e-6; 40 kB).
 
 ## 6. Engine architecture
 
@@ -4172,7 +4244,9 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     thread every check interval, which at 16 threads and a 26-step
     Nyquist interval cost as much as the steps themselves (×2–2.5 on the
     XML vacuum boxes of §10).
-  - Subnormals are flushed in the kernel arithmetic (`+ 2⁻¹⁰² − 2⁻¹⁰²`).
+  - Subnormals are flushed in the kernel arithmetic (a select,
+    `|x| < 2⁻¹²⁶ → 0`, normal values unchanged; it was `+ 2⁻¹⁰² − 2⁻¹⁰²`
+    until wave 15, which also rounded small normal values, §5.16.6).
     Hardware flush-to-zero would need `unsafe`, and this way is still
     deterministic.
   - Thread count is configurable and defaults to one thread per physical

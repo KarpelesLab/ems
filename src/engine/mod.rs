@@ -208,6 +208,7 @@ use crate::fdtd::Face;
 use crate::{Error, Result};
 use boundary::periodic::Periodic;
 use fields::{FieldStore, Layout, read, write};
+pub use kernel::CurlOrder;
 pub use pool::{FUSE_MIN_BYTES, FusedSteps};
 use pool::{GAP_A, GAP_B, GAP_M, Gap, Plan, Pool, Shared};
 
@@ -562,6 +563,22 @@ impl Engine {
     /// bit-identical results.
     pub fn set_fused_steps(&mut self, mode: FusedSteps) {
         self.shared.set_fused(mode);
+    }
+
+    /// Sets the summation order of the circulations in the Cartesian
+    /// kernels (default [`CurlOrder::Paired`]; openEMS files use
+    /// [`CurlOrder::OpenEms`]). It only changes the rounding.
+    pub fn set_curl_order(&mut self, order: CurlOrder) {
+        self.shared.set_curl_order(order);
+    }
+
+    /// The summation order of [`set_curl_order`](Self::set_curl_order).
+    pub fn curl_order(&self) -> CurlOrder {
+        if self.shared.oe_curl() {
+            CurlOrder::OpenEms
+        } else {
+            CurlOrder::Paired
+        }
     }
 
     /// Exclusive access to all field values (e.g. to set initial

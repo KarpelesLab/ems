@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 
 use super::coeffs::Coefficients;
 use super::fields::{Block, FieldStore, read, write};
+use super::kernel::CurlOrder;
 use super::kernel::{
     block_planes, block_planes_mut, energy_h_slab, planes_around, update_e_plane, update_e_slab,
     update_h_plane, update_h_slab,
@@ -123,6 +124,9 @@ pub(crate) struct Shared {
     /// Whether steps run fused where the operators allow it
     /// ([`FusedSteps`]; set while the workers are idle).
     fuse: AtomicBool,
+    /// The kernels sum the circulations in openEMS's order
+    /// ([`CurlOrder::OpenEms`]; set while the workers are idle).
+    oe_curl: AtomicBool,
 }
 
 /// When the engine runs steps fused, i.e. H and E x-plane by x-plane in
@@ -236,6 +240,7 @@ impl Shared {
             energy_oe: AtomicBool::new(false),
             cartesian,
             fuse: AtomicBool::new(FusedSteps::Auto.resolve(store_n, slabs)),
+            oe_curl: AtomicBool::new(false),
         }
     }
 
@@ -243,6 +248,17 @@ impl Shared {
     pub(crate) fn set_fused(&self, mode: FusedSteps) {
         let on = mode.resolve(self.store.layout.n, self.store.layout.slabs());
         self.fuse.store(on, Ordering::Relaxed);
+    }
+
+    /// Sets the summation order of the circulations.
+    pub(crate) fn set_curl_order(&self, order: CurlOrder) {
+        self.oe_curl
+            .store(order == CurlOrder::OpenEms, Ordering::Relaxed);
+    }
+
+    /// Whether the kernels use openEMS's summation order.
+    pub(crate) fn oe_curl(&self) -> bool {
+        self.oe_curl.load(Ordering::Relaxed)
     }
 
     /// Marks the kernel view stale (call when handing out mutable access
@@ -292,7 +308,7 @@ impl Shared {
     fn h(&self, s: usize, energy: bool, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
-        let rows = kc.view(&co);
+        let rows = kc.view(&co, self.oe_curl());
         if energy {
             energy_h_slab::<true>(
                 &self.store,
@@ -340,7 +356,12 @@ impl Shared {
     /// E half-step of slab `s` (kernel, then the slab hooks).
     fn e(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
-        update_e_slab(&self.store, &read(&self.kernel).view(&co), &self.zero, s);
+        update_e_slab(
+            &self.store,
+            &read(&self.kernel).view(&co, self.oe_curl()),
+            &self.zero,
+            s,
+        );
         if ops.hooks.is_empty() {
             return;
         }
@@ -383,7 +404,7 @@ impl Shared {
     fn fused_a(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
-        let rows = kc.view(&co);
+        let rows = kc.view(&co, self.oe_curl());
         let st = &self.store;
         let n = st.layout.n;
         let p = st.layout.plane;
@@ -460,7 +481,7 @@ impl Shared {
     fn fused_b(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
-        let rows = kc.view(&co);
+        let rows = kc.view(&co, self.oe_curl());
         let st = &self.store;
         let n = st.layout.n;
         let p = st.layout.plane;
@@ -580,7 +601,7 @@ impl Shared {
         self.refresh_kernel();
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
-        let rows = kc.view(&co);
+        let rows = kc.view(&co, self.oe_curl());
         let mut planes = vec![0.0f64; self.store.layout.n[0]];
         for s in 0..self.store.layout.slabs() {
             energy_h_slab::<false>(
@@ -625,7 +646,7 @@ impl Shared {
     fn energy_slab(&self, s: usize, measure: EnergyMeasure) {
         let co = read(&self.coeffs);
         let kc = read(&self.kernel);
-        let rows = kc.view(&co);
+        let rows = kc.view(&co, self.oe_curl());
         let (p0, p1) = self.store.layout.planes(s);
         let mut planes = vec![0.0f64; p1 - p0];
         energy_h_slab::<false>(

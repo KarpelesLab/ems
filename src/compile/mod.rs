@@ -166,6 +166,7 @@ pub(crate) use mode::SAMPLING_ATTR as MODE_SAMPLING_ATTR;
 pub use planewave::PlaneWaveSource;
 
 use crate::axis::Axis;
+use crate::engine::CurlOrder;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::{MurBoundary, MurMedia};
@@ -440,6 +441,10 @@ pub struct Compiled {
     /// PML faces run openEMS's own layer ([`OpenEmsPml`], `Cpml::cells`
     /// cells, the other parameters ignored) instead of the CPML.
     pub openems_pml: bool,
+    /// The summation order of the kernels' circulations: openEMS's
+    /// ([`CurlOrder::OpenEms`]) for openEMS files ([`Fdtd::openems_run`]),
+    /// else the default. Set on the engine by [`build`](Self::build).
+    pub curl_order: CurlOrder,
     /// Time step choice.
     pub timestep: TimeStep,
     /// Engine threads (`0`: available parallelism).
@@ -536,6 +541,7 @@ impl Compiled {
     /// (e.g. a PML thicker than the mesh).
     pub fn build(&self) -> Result<(Engine, BoundaryHandles)> {
         let mut engine = self.builder().build()?;
+        engine.set_curl_order(self.curl_order);
         let h = self.add_boundary_operators(&mut engine)?;
         Ok((engine, h))
     }
@@ -1530,6 +1536,11 @@ pub fn compile(
         mur_media,
         mur,
         openems_pml: fdtd.get_openems_run() && conformal.is_none(),
+        curl_order: if fdtd.get_openems_run() && !cyl {
+            CurlOrder::OpenEms
+        } else {
+            CurlOrder::Paired
+        },
         pml,
         timestep,
         threads: fdtd.get_threads().unwrap_or(0),

@@ -20,9 +20,13 @@
 //!   (largest difference relative to the largest value of each dataset).
 //!
 //! Most models are a 20³-cell PEC box of 1 mm cells with a soft Gaussian
-//! line source, 600 steps of 1.5 ps; the measured agreement is ~1e-5
-//! (`f32` round-off accumulating over the ring-down) and the tolerances
-//! are a few times that.
+//! line source, 600 steps of 1.5 ps. With openEMS's summation order of the
+//! curl (`CurlOrder::OpenEms`) models in vacuum and metal give the same
+//! fields bit for bit (agreement to the printed digits); models with
+//! dielectrics agree to ~3e-5, where the update coefficients of the edges
+//! on a material boundary differ from openEMS's by an `f32` ulp and the
+//! round-off accumulates over the ring-down. The tolerances are a few
+//! times the measured agreement.
 #![cfg(feature = "xml")]
 
 use std::collections::BTreeSet;
@@ -188,6 +192,11 @@ cases! {
     prim_wire_thick: 1e-4;          // (5.6e-5; closed surface since openEMS be30220)
     prim_cs_cyl_box: 1e-4;
     tie_sphere_metal: 1e-4;
+    // Probes in the shadow of a metal cylinder (field ~1e-4 of the source's):
+    // bit-identical fields with openEMS's summation order of the curl
+    // (`CurlOrder::OpenEms`; 1.1e-2 and 8.6e-3 with the native order).
+    tie_cyl_metal: 1e-6;            // (exact to the printed digits)
+    tie_cylshell_metal: 1e-6;       // (exact to the printed digits)
     tie_wire_z: 1e-3;               // (1.5e-4)
     tie_linpoly_metal: 1e-4;
     // Transformations.
@@ -212,7 +221,7 @@ cases! {
     // Parameters, mesh.
     param_set: 1e-4;
     grid_unsorted: 1e-4;
-    grid_deltaunit_m: 1e-4;
+    grid_deltaunit_m: 3e-4;         // (1.0e-4; an ulp on the material-boundary coefficients)
     // Excitations.
     exc_weight: 1e-4;
     exc_sphere: 1e-4;

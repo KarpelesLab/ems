@@ -32,15 +32,56 @@ pub(crate) fn flush(x: f32) -> f32 {
     if x.abs() < f32::MIN_POSITIVE { 0.0 } else { x }
 }
 
-/// `h = da·h − db·((a − b) − (c − d))` over equal-length slices.
+/// `h = da·h − db·((a − b) − (c − d))` over equal-length slices, or with
+/// `oe` (openEMS's order, see [`CurlOrder`]) `h = da·h − db·(((a − b) +
+/// d) − c)`.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)] // index form vectorises reliably
-fn h_row(h: &mut [f32], da: &[f32], db: &[f32], a: &[f32], b: &[f32], c: &[f32], d: &[f32]) {
+#[allow(clippy::too_many_arguments)]
+fn h_row(
+    oe: bool,
+    h: &mut [f32],
+    da: &[f32],
+    db: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    d: &[f32],
+) {
     let n = h.len();
     let (da, db, a, b, c, d) = (&da[..n], &db[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
-    for k in 0..n {
-        h[k] = flush(da[k] * h[k] - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
+    if oe {
+        for k in 0..n {
+            h[k] = flush(da[k] * h[k] - db[k] * (((a[k] - b[k]) + d[k]) - c[k]));
+        }
+    } else {
+        for k in 0..n {
+            h[k] = flush(da[k] * h[k] - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
+        }
     }
+}
+
+/// The order in which the kernels sum the four terms of an edge's
+/// circulation `(a − b) − (c − d)` (in `f32`, so the rounding differs).
+///
+/// Both orders are equally accurate. [`Paired`](Self::Paired) (the
+/// default) is mirror-symmetric: a model symmetric about a mesh plane
+/// gives bit-for-bit mirrored fields (field components that vanish by
+/// symmetry stay exactly zero). [`OpenEms`](Self::OpenEms) sums the terms
+/// as openEMS's engines do, `((a − b) − c) + d` in the E update and
+/// `((a − b) + d) − c` in the H update; with it, a Cartesian model
+/// without PML, dispersive media or other extra operators gives the same
+/// fields as openEMS bit for bit when the update coefficients are equal
+/// (design §5.16.6). openEMS files ([`Fdtd::openems_run`](crate::Fdtd::openems_run))
+/// use it. Only the Cartesian main kernel follows the setting; boundary
+/// and other operators keep their own expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CurlOrder {
+    /// `(a − b) − (c − d)` (default).
+    #[default]
+    Paired,
+    /// openEMS's order.
+    OpenEms,
 }
 
 /// `(1 + a)·p/b`, or 0 where `b = 0` (PEC and padding edges).
@@ -67,6 +108,7 @@ fn weight(a: f32, p: f64, b: f32) -> f64 {
 #[allow(clippy::needless_range_loop)]
 #[allow(clippy::too_many_arguments)]
 fn h_row_energy<const COMMIT: bool, const OE: bool>(
+    oe_order: bool,
     h: &mut [f32],
     da: &[f32],
     db: &[f32],
@@ -81,7 +123,12 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
     let mut acc = [0.0f64; 4];
     let mut one = |k: usize, acc: &mut f64| {
         let old = h[k];
-        let new = flush(da[k] * old - db[k] * ((a[k] - b[k]) - (c[k] - d[k])));
+        let curl = if oe_order {
+            ((a[k] - b[k]) + d[k]) - c[k]
+        } else {
+            (a[k] - b[k]) - (c[k] - d[k])
+        };
+        let new = flush(da[k] * old - db[k] * curl);
         *acc += if OE {
             let w = if k == 0 || k + 1 == n { ends } else { 1.0 };
             w * (new as f64 * new as f64)
@@ -109,6 +156,7 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn hrow<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
+    oe_order: bool,
     h: &mut [f32],
     da: &[f32],
     db: &[f32],
@@ -119,9 +167,9 @@ fn hrow<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     ends: f64,
 ) -> f64 {
     if ENERGY {
-        h_row_energy::<COMMIT, OE>(h, da, db, a, b, c, d, ends)
+        h_row_energy::<COMMIT, OE>(oe_order, h, da, db, a, b, c, d, ends)
     } else {
-        h_row(h, da, db, a, b, c, d);
+        h_row(oe_order, h, da, db, a, b, c, d);
         0.0
     }
 }
@@ -160,14 +208,32 @@ fn e_energy_row<const OE: bool>(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f
     }
 }
 
-/// `u = ca·u + cb·((a − b) − (c − d))` over equal-length slices.
+/// `u = ca·u + cb·((a − b) − (c − d))` over equal-length slices, or with
+/// `oe` (openEMS's order, see [`CurlOrder`]) `u = ca·u + cb·(((a − b) −
+/// c) + d)`.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-fn e_row(u: &mut [f32], ca: &[f32], cb: &[f32], a: &[f32], b: &[f32], c: &[f32], d: &[f32]) {
+#[allow(clippy::too_many_arguments)]
+fn e_row(
+    oe: bool,
+    u: &mut [f32],
+    ca: &[f32],
+    cb: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    d: &[f32],
+) {
     let n = u.len();
     let (ca, cb, a, b, c, d) = (&ca[..n], &cb[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
-    for k in 0..n {
-        u[k] = flush(ca[k] * u[k] + cb[k] * ((a[k] - b[k]) - (c[k] - d[k])));
+    if oe {
+        for k in 0..n {
+            u[k] = flush(ca[k] * u[k] + cb[k] * (((a[k] - b[k]) - c[k]) + d[k]));
+        }
+    } else {
+        for k in 0..n {
+            u[k] = flush(ca[k] * u[k] + cb[k] * ((a[k] - b[k]) - (c[k] - d[k])));
+        }
     }
 }
 fn plane(v: &[f32], local: usize, p: usize) -> &[f32] {
@@ -361,6 +427,7 @@ fn h_plane<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
         let r = j * nz;
         wh += wx
             * hrow::<ENERGY, COMMIT, OE>(
+                co.oe_curl(),
                 &mut ix[r..r + m],
                 co.row(6, gi, j),
                 co.row(9, gi, j),
@@ -378,6 +445,7 @@ fn h_plane<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
             let wy = if j == 0 || j + 1 == ny { end_w } else { 1.0 };
             wh += wy
                 * hrow::<ENERGY, COMMIT, OE>(
+                    co.oe_curl(),
                     &mut iy[r..r + m],
                     co.row(7, gi, j),
                     co.row(10, gi, j),
@@ -392,6 +460,7 @@ fn h_plane<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
         for j in 0..ny - 1 {
             let r = j * nz;
             wh += hrow::<ENERGY, COMMIT, OE>(
+                co.oe_curl(),
                 &mut iz[r..r + nz],
                 co.row(8, gi, j),
                 co.row(11, gi, j),
@@ -477,6 +546,7 @@ fn h_rows(
     let m = nz - 1;
     if j + 1 < ny {
         h_row(
+            co.oe_curl(),
             &mut ix[r..r + m],
             co.row(6, gi, j),
             co.row(9, gi, j),
@@ -488,6 +558,7 @@ fn h_rows(
     }
     if let Some([uyn, uzn]) = next {
         h_row(
+            co.oe_curl(),
             &mut iy[r..r + m],
             co.row(7, gi, j),
             co.row(10, gi, j),
@@ -498,6 +569,7 @@ fn h_rows(
         );
         if j + 1 < ny {
             h_row(
+                co.oe_curl(),
                 &mut iz[r..r + nz],
                 co.row(8, gi, j),
                 co.row(11, gi, j),
@@ -530,8 +602,18 @@ fn e_rows(
     if gi + 1 < nx {
         let (ca, cb) = (co.row(0, gi, j), co.row(3, gi, j));
         let izm = if j == 0 { &zero[..nz] } else { &iz[r - nz..r] };
-        e_row(&mut ux[r..r + 1], ca, cb, &iz[r..], izm, &iy[r..], z1);
         e_row(
+            co.oe_curl(),
+            &mut ux[r..r + 1],
+            ca,
+            cb,
+            &iz[r..],
+            izm,
+            &iy[r..],
+            z1,
+        );
+        e_row(
+            co.oe_curl(),
             &mut ux[r + 1..r + nz],
             &ca[1..],
             &cb[1..],
@@ -544,8 +626,18 @@ fn e_rows(
     // y: curl_y = (ix[k] − ix[k−1]) − (iz[i] − iz[i−1]).
     if j + 1 < ny {
         let (ca, cb) = (co.row(1, gi, j), co.row(4, gi, j));
-        e_row(&mut uy[r..r + 1], ca, cb, &ix[r..], z1, &iz[r..], &izp[r..]);
         e_row(
+            co.oe_curl(),
+            &mut uy[r..r + 1],
+            ca,
+            cb,
+            &ix[r..],
+            z1,
+            &iz[r..],
+            &izp[r..],
+        );
+        e_row(
+            co.oe_curl(),
             &mut uy[r + 1..r + nz],
             &ca[1..],
             &cb[1..],
@@ -558,6 +650,7 @@ fn e_rows(
     // z: curl_z = (iy[i] − iy[i−1]) − (ix[j] − ix[j−1]).
     let ixm = if j == 0 { &zero[..nz] } else { &ix[r - nz..r] };
     e_row(
+        co.oe_curl(),
         &mut uz[r..r + nz - 1],
         co.row(2, gi, j),
         co.row(5, gi, j),

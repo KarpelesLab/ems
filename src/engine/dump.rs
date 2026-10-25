@@ -1716,6 +1716,7 @@ pub(crate) fn with_lookahead_currents<R>(
     if g.has_multigrid() || (engine.periodic.is_some() && !g.is_cylindrical()) {
         return None;
     }
+    let oe_curl = engine.curl_order() == super::CurlOrder::OpenEms;
     let co = engine.coefficients();
     let fields = engine.shared.store.lock();
     let n = g.nodes();
@@ -1753,9 +1754,14 @@ pub(crate) fn with_lookahead_currents<R>(
     let get = |c: Axis, p: [usize; 3]| -> f64 {
         let (a, b) = c.others();
         let idx = g.index(p);
-        let curl = (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p));
+        // The kernel's expression and summation order, bit for bit.
+        let curl = if oe_curl {
+            ((up(b, p, a) - u.get(b, p)) + u.get(a, p)) - up(a, p, b)
+        } else {
+            (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p))
+        };
         let (da, db) = (co.da(c)[idx], co.db(c)[idx]);
-        let k = da * i.get(c, p) - db * curl;
+        let k = super::kernel::flush(da * i.get(c, p) - db * curl);
         let mut v = owners
             .iter()
             .find_map(|o| o.lookahead_current(c, p, k))

@@ -1,0 +1,13 @@
+# openEMS reference outputs for tests/openems_sweep.rs; regenerate with
+# scripts/openems-oracle/gen-sweep.sh sweep_tie_cylshell_metal
+oracle revision:
+  openEMS-Project be30220 (2026-10-21)
+   openEMS ec4d2db (v0.37.0-32)
+   CSXCAD 626b99f (v0.7.0-8)
+   fparser 4b9c845
+command: openEMS model.xml --numThreads=1 --engine=basic 
+exit: 0
+dt: 1.5e-12
+keep: e1 h1 u1
+args: 
+files: e1 e2 e3 h1 u1 

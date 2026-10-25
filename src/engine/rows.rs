@@ -56,10 +56,16 @@ impl KernelCoeffs {
         Self { n, rows }
     }
 
-    /// Binds the view to the coefficients it was built from.
-    pub(crate) fn view<'a>(&'a self, co: &'a Coefficients) -> CoeffRows<'a> {
+    /// Binds the view to the coefficients it was built from; `oe_curl`
+    /// selects openEMS's summation order of the circulations
+    /// ([`CurlOrder::OpenEms`](super::CurlOrder::OpenEms)).
+    pub(crate) fn view<'a>(&'a self, co: &'a Coefficients, oe_curl: bool) -> CoeffRows<'a> {
         debug_assert_eq!(co.nodes(), self.n);
-        CoeffRows { co, kc: self }
+        CoeffRows {
+            co,
+            kc: self,
+            oe_curl,
+        }
     }
 
     /// Number of arrays stored as pools (diagnostics, tests).
@@ -119,9 +125,17 @@ fn hash(row: &[f32]) -> u64 {
 pub(crate) struct CoeffRows<'a> {
     co: &'a Coefficients,
     kc: &'a KernelCoeffs,
+    oe_curl: bool,
 }
 
 impl<'a> CoeffRows<'a> {
+    /// Whether the kernels sum the circulations in openEMS's order
+    /// ([`CurlOrder::OpenEms`](super::CurlOrder::OpenEms)).
+    #[inline(always)]
+    pub(crate) fn oe_curl(&self) -> bool {
+        self.oe_curl
+    }
+
     /// Row `(gi, j)` (`nz` values, k = 0..nz) of array `a` (ca 0–2,
     /// cb 3–5, da 6–8, db 9–11).
     #[inline(always)]
@@ -162,7 +176,7 @@ mod tests {
             let kc = KernelCoeffs::new(&co, threads);
             // ca, da are 0/1 patterns: pooled.
             assert!(kc.pooled() >= 6, "{}", kc.pooled());
-            let v = kc.view(&co);
+            let v = kc.view(&co, false);
             let [nx, ny, nz] = co.nodes();
             for a in 0..12 {
                 for gi in 0..nx {
