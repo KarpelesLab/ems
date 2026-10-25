@@ -180,7 +180,7 @@ cases! {
     // PEC edges, `--debug-PEC`).
     prim_multibox: 1e-4;            // (1.0e-5)
     prim_sphshell: 1e-4;            // (1.1e-5)
-    prim_sphshell_metal: 3e-3;      // (1.5e-3 inside the shell, weak field; identical PEC edges)
+    prim_sphshell_metal: 1e-6;      // (exact to the printed digits, §5.16.6)
     prim_cyl_oblique: 1e-4;
     prim_polygon_x: 1e-4;
     prim_linpoly_y: 1e-4;

@@ -4762,7 +4762,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-24, after wave 14 and the be30220 oracle)
+### Status (2026-10-25, after wave 15)
 
 | Step | State |
 |---|---|
@@ -4893,6 +4893,13 @@ layers, junctions of several sheets and sheets touching solid metal
 (§5.13); fused H/E engine steps on large slabs (×1.3–1.7 at 200³–256³,
 bit-identical, §6.1).
 
+Wave 15 (openEMS round-off, §5.16.6): openEMS's summation order of the
+curl terms on Cartesian grids, fitted bit for bit from field dumps, and a
+subnormal flush that leaves normal values unchanged; vacuum and metal
+models now match openEMS to the printed digits (feature sweep: 83 of 169
+models exact, was 9; `tie_cyl_metal`, `tie_cylshell_metal`,
+`prim_sphshell_metal` 1.1e-2…1.5e-3 → 0).
+
 Remaining:
 - openEMS's azimuthal multigrid coupling (3e-3…2e-2), closed-grid time
   steps with material ending at 2π (4 of 60, ≤ 5 %), the Drude fixture on
@@ -4901,12 +4908,11 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: `tie_cyl_metal` (1.1e-2), `tie_cylshell_metal`
-  (8.6e-3, identical edge and material dumps), `prim_sphshell_metal`
-  (1.5e-3); openEMS's Rennings step below 4e-8. (Polyhedron/STL surface
-  ties and tie round-off were resolved by following openEMS-Project
-  be30220, whose inside tests are closed with a mesh-relative tolerance,
-  §5.16.5.)
+- From the feature sweep: dielectric models at 2e-5…1.5e-4, where
+  openEMS's `vi` (and at some time steps `iv`) coefficients are one f32
+  step off a correctly rounded formula (§5.16.6); openEMS's summation
+  order on cylindrical grids (not fitted); openEMS's Rennings step below
+  4e-8.
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
