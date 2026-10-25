@@ -172,8 +172,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use bloch_wave::{PeriodicPlaneWave, PeriodicPlaneWaveSpec, WavePart};
 pub use boundary::periodic::BlochPair;
 pub use coeffs::{
-    Coefficients, FaceCondition, FaceConditions, OpenEmsTimestep, TimeStep, courant_limit,
-    dual_edge_lr, primary_edge_cg,
+    CoeffRounding, Coefficients, FaceCondition, FaceConditions, OpenEmsTimestep, TimeStep,
+    courant_limit, dual_edge_lr, primary_edge_cg,
 };
 pub use conformal::{
     ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, ConformalSheets,
@@ -220,6 +220,7 @@ pub struct EngineBuilder {
     faces: FaceConditions,
     timestep: TimeStep,
     threads: usize,
+    rounding: CoeffRounding,
 }
 
 /// The material input of an [`EngineBuilder`].
@@ -274,6 +275,15 @@ impl EngineBuilder {
         self
     }
 
+    /// Rounding of the circuit quantities when the coefficients are built
+    /// from per-edge materials (default [`CoeffRounding::Exact`]; openEMS
+    /// files use [`CoeffRounding::OpenEms`]). Changes the last bit of
+    /// some coefficients only.
+    pub fn coefficient_rounding(mut self, r: CoeffRounding) -> Self {
+        self.rounding = r;
+        self
+    }
+
     /// Computes the time step and coefficients, allocates the fields and
     /// starts the worker threads.
     ///
@@ -295,10 +305,16 @@ impl EngineBuilder {
         };
         let coeffs = match &self.materials {
             Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
-            Some(Materials::Edges(m)) => Coefficients::from_edges(&grid, m, &self.faces, dt)?,
-            None => {
-                Coefficients::from_edges(&grid, &EdgeMaterials::vacuum(&grid), &self.faces, dt)?
+            Some(Materials::Edges(m)) => {
+                Coefficients::from_edges_rounded(&grid, m, &self.faces, dt, self.rounding)?
             }
+            None => Coefficients::from_edges_rounded(
+                &grid,
+                &EdgeMaterials::vacuum(&grid),
+                &self.faces,
+                dt,
+                self.rounding,
+            )?,
         };
         let threads = match self.threads {
             0 => default_threads_for(grid.nodes()),
@@ -462,6 +478,7 @@ impl Engine {
             faces: FaceConditions::default(),
             timestep: TimeStep::default(),
             threads: 0,
+            rounding: CoeffRounding::Exact,
         }
     }
 

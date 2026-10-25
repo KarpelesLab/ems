@@ -166,13 +166,13 @@ pub(crate) use mode::SAMPLING_ATTR as MODE_SAMPLING_ATTR;
 pub use planewave::PlaneWaveSource;
 
 use crate::axis::Axis;
-use crate::engine::CurlOrder;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
 use crate::engine::boundary::cpml::CpmlBoundary;
 use crate::engine::boundary::mur::{MurBoundary, MurMedia};
 use crate::engine::boundary::upml::OpenEmsPml;
 use crate::engine::dispersive::Field as DispersiveField;
 use crate::engine::dispersive::Scheme as DispersiveScheme;
+use crate::engine::{CoeffRounding, CurlOrder};
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
     EdgePole, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires, OperatorHandle, SheetEdge,
@@ -445,6 +445,10 @@ pub struct Compiled {
     /// ([`CurlOrder::OpenEms`]) for openEMS files ([`Fdtd::openems_run`]),
     /// else the default. Set on the engine by [`build`](Self::build).
     pub curl_order: CurlOrder,
+    /// The rounding of the edge circuit quantities in the coefficients:
+    /// openEMS's ([`CoeffRounding::OpenEms`]) for openEMS files
+    /// ([`Fdtd::openems_run`]), else exact.
+    pub coefficient_rounding: CoeffRounding,
     /// Time step choice.
     pub timestep: TimeStep,
     /// Engine threads (`0`: available parallelism).
@@ -553,6 +557,7 @@ impl Compiled {
             .faces(self.faces)
             .timestep(self.timestep)
             .threads(self.threads)
+            .coefficient_rounding(self.coefficient_rounding)
     }
 
     /// Registers the boundary operators of [`build`](Self::build) on
@@ -1536,6 +1541,11 @@ pub fn compile(
         mur_media,
         mur,
         openems_pml: fdtd.get_openems_run() && conformal.is_none(),
+        coefficient_rounding: if fdtd.get_openems_run() {
+            CoeffRounding::OpenEms
+        } else {
+            CoeffRounding::Exact
+        },
         curl_order: if fdtd.get_openems_run() && !cyl {
             CurlOrder::OpenEms
         } else {

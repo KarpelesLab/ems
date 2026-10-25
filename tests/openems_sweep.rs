@@ -173,66 +173,68 @@ macro_rules! cases {
     };
 }
 
-// Agreement measured on the committed fixtures in parentheses.
+// Agreement measured on the committed fixtures in parentheses; "exact":
+// the probe files are openEMS's to the printed digits (openEMS's curl
+// order and coefficient rounding, `CurlOrder`, `CoeffRounding`).
 cases! {
     // Primitives (materials: csx's sampling agrees with openEMS's edge
     // averaging to the last digit of the material dump; metal: identical
     // PEC edges, `--debug-PEC`).
-    prim_multibox: 1e-4;            // (1.0e-5)
-    prim_sphshell: 1e-4;            // (1.1e-5)
-    prim_sphshell_metal: 1e-6;      // (exact to the printed digits, §5.16.6)
-    prim_cyl_oblique: 1e-4;
-    prim_polygon_x: 1e-4;
-    prim_linpoly_y: 1e-4;
-    prim_rotpoly_partial: 1e-4;
-    prim_polyhedron_cube: 1e-4;
-    prim_stl: 1e-4;                 // (2.8e-5; 5e-3 with openEMS e89286f's position-dependent faces)
-    prim_curve_diag: 1e-4;
-    prim_wire: 1e-4;
-    prim_wire_thick: 1e-4;          // (5.6e-5; closed surface since openEMS be30220)
-    prim_cs_cyl_box: 1e-4;
-    tie_sphere_metal: 1e-4;
+    prim_multibox: 1e-6;            // (exact; f32 round-off 1.0e-5)
+    prim_sphshell: 1e-6;            // (exact; f32 round-off 1.1e-5)
+    prim_sphshell_metal: 1e-6;      // (exact to the printed digits, §5.16.6; 1.5e-3 with the native order)
+    prim_cyl_oblique: 1e-6;         // (exact)
+    prim_polygon_x: 1e-6;           // (exact)
+    prim_linpoly_y: 1e-6;           // (exact)
+    prim_rotpoly_partial: 1e-6;     // (exact)
+    prim_polyhedron_cube: 1e-6;     // (exact)
+    prim_stl: 1e-6;                 // (exact; 2.8e-5; 5e-3 with openEMS e89286f's position-dependent faces)
+    prim_curve_diag: 1e-6;          // (exact)
+    prim_wire: 1e-6;                // (exact)
+    prim_wire_thick: 1e-6;          // (exact; 5.6e-5; closed surface since openEMS be30220)
+    prim_cs_cyl_box: 1e-6;          // (exact)
+    tie_sphere_metal: 1e-6;         // (exact)
     // Probes in the shadow of a metal cylinder (field ~1e-4 of the source's):
     // bit-identical fields with openEMS's summation order of the curl
     // (`CurlOrder::OpenEms`; 1.1e-2 and 8.6e-3 with the native order).
     tie_cyl_metal: 1e-6;            // (exact to the printed digits)
     tie_cylshell_metal: 1e-6;       // (exact to the printed digits)
-    tie_wire_z: 1e-3;               // (1.5e-4)
-    tie_linpoly_metal: 1e-4;
+    tie_wire_z: 1e-6;               // (exact; f32 round-off 1.5e-4)
+    tie_linpoly_metal: 1e-6;        // (exact)
     // Transformations.
-    tr_rotate_origin: 1e-4;         // (2.9e-5; 4.3e-3 without openEMS's inside tolerance)
-    tr_matrix: 1e-4;
-    tr_order: 1e-4;
-    tr_sphere: 1e-4;                // (4.0e-5; 4.7e-2 without the inside tolerance)
+    tr_rotate_origin: 1e-6;         // (exact; 2.9e-5; 4.3e-3 without openEMS's inside tolerance)
+    tr_matrix: 1e-6;                // (exact)
+    tr_order: 1e-6;                 // (exact)
+    tr_sphere: 1e-6;                // (exact; 4.0e-5; 4.7e-2 without the inside tolerance)
     // Priorities.
-    prio_overlap: 1e-4;
-    prio_metal_in_mat: 1e-4;
+    prio_overlap: 1e-6;             // (exact)
+    prio_metal_in_mat: 1e-6;        // (exact)
     // Materials.
-    mat_aniso: 2e-4;                // (5e-5)
-    mat_aniso_single: 1e-4;         // (0.6 with csx's reading of the short lists)
-    mat_aniso_two: 1e-4;            // (did not run: ε_z = 0)
-    mat_weight_aniso: 1e-4;
+    mat_aniso: 1e-6;                // (exact; f32 round-off 5e-5)
+    mat_aniso_single: 1e-6;         // (exact; 0.6 with csx's reading of the short lists)
+    mat_aniso_two: 1e-6;            // (exact; did not run: ε_z = 0)
+    mat_weight_aniso: 1e-6;         // (exact)
     mat_weight_coords: 1e-4;
-    mat_mue_sigma: 1e-4;            // (2.3e-5; 6e-3 with csx's arithmetic σ_m average)
-    mat_sigma_graded: 3e-4;         // (8.8e-5; 9e-2 with csx's average; identical material dumps)
-    bg_material: 1e-4;
+    mat_mue_sigma: 1e-6;            // (exact; 2.3e-5; 6e-3 with csx's arithmetic σ_m average)
+    mat_sigma_graded: 1e-6;         // (exact; 8.8e-5; 9e-2 with csx's average; identical material dumps)
+    bg_material: 1e-6;              // (exact)
     lorentz_weight: 1e-4;
     debye_weight: 1e-4;
     // Parameters, mesh.
-    param_set: 1e-4;
-    grid_unsorted: 1e-4;
-    grid_deltaunit_m: 3e-4;         // (1.0e-4; an ulp on the material-boundary coefficients)
+    param_set: 1e-6;                // (exact)
+    grid_unsorted: 1e-6;            // (exact)
+    grid_deltaunit_m: 1e-6;         // (exact; 1.0e-4; an ulp on the material-boundary coefficients)
     // Excitations.
-    exc_weight: 1e-4;
-    exc_sphere: 1e-4;
-    exc_disabled: 1e-4;
+    exc_weight: 1e-6;               // (exact)
+    exc_sphere: 1e-6;               // (exact)
+    exc_disabled: 1e-6;             // (exact)
     // Probes.
-    probe_two_prims: 1e-4;
-    probe_transformed: 1e-4;
-    probe_cylinder_prim: 1e-4;
-    probe_e_box: 1e-4;
-    probe_fd: 1e-3;                 // (1.8e-4)
-    probe_times: 1e-4;
+    probe_two_prims: 1e-6;          // (exact)
+    probe_transformed: 1e-6;        // (exact)
+    probe_cylinder_prim: 1e-6;      // (exact)
+    probe_e_box: 1e-6;              // (exact)
+    probe_fd: 1e-6;                 // (exact; f32 round-off 1.8e-4)
+    probe_times: 1e-6;              // (exact)
     probe_polygon_i: 1e-4;
     // Boundaries, absorbing sheets, settings.
     bc_spellings: 1e-4;
@@ -240,8 +242,8 @@ cases! {
     // the layers (8e-3 with the CPML; ems runs openEMS's layer for files).
     pml_open: 2e-5;                 // (4.0e-6)
     abc_line_s0_t0: 1e-5;           // (1e-6)
-    abc_line_s1_t1: 1e-5;
-    lumped_on_cyl: 1e-4;
+    abc_line_s1_t1: 1e-6;           // (exact)
+    lumped_on_cyl: 1e-6;            // (exact)
     // Conducting sheets: openEMS's sheet model (compile/openems_sheet.rs).
     sheet_copper: 2e-4;
     sheet_resistive: 2e-4;
@@ -259,5 +261,5 @@ cases! {
     dump_nomode: 1e-5;              // (2e-6)
     dump_optres2: 1e-5;
     dump_two_prims: 1e-5;
-    dump_transformed: 1e-5;
+    dump_transformed: 1e-6;         // (exact)
 }

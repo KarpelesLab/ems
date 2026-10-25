@@ -4203,6 +4203,69 @@ another way — not fitted yet; the same happens for some time steps on
 `sweep_tie_cyl_metal`, `sweep_tie_cylshell_metal` (exact to the printed
 digits, tolerance 1e-6; 40 kB).
 
+#### 5.16.7 Round-off: coefficient rounding
+
+The one-ulp `vi`/`iv` differences of §5.16.6 come from openEMS keeping
+the circuit quantities of an edge in `f32`. Fitted on `--debug-operator`
+dumps of the black box (hand-written vacuum boxes at 1 m and 1 mm cells
+with fixed `TimeStep` 1.0…1.9 ns resp. ps, the feature sweep's 169
+models and the 64 sweep fixtures; with a time step given explicitly so
+that it is the same in both codes): openEMS forms
+
+```text
+C = ε0·ε_r·A/l,  G = κ·A/l,  L = μ0·μ_r·A'/l',  R = σ_m·A'/l'   (f64, rounded to f32)
+vv = (C − G·dt/2)/(C + G·dt/2),  vi = dt/(C + G·dt/2)            (f64 from the f32 values, rounded to f32)
+ii, iv likewise from L, R
+```
+
+i.e. `vi = f32(dt / f32(C))` for a lossless edge. The correctly rounded
+`f64` quotient `f32(dt/C)` (ems's native) is one `f32` step off where
+`dt/C` lies near a rounding midpoint: for the vacuum boxes in 16 of the
+40 coefficients (`vi` at 1.0, 1.1, 1.3, 1.5, 1.7, 1.9 ns on 1 m cells
+and 1.0, 1.1 ps on 1 mm cells, `iv` at 1.1, 1.5, 1.6, 1.8, 1.9 ns and
+1.1, 1.6, 1.9 ps), the `f32` rule matches all 40; on material-boundary edges (`ε_r` 1.75: f64
+96.80649, openEMS 96.806496) and lossy ones (`mat_sigma_graded`, a 50 Ω
+lumped `G = f32(0.02)`, `vv` −0.25764078 vs −0.2576408) likewise. Other
+candidates (all-`f32` arithmetic, `f32` `dt`, `f32` `ε_r`, other
+constants, other operation orders) each fail some of these.
+
+ems: `CoeffRounding::OpenEms` (`Coefficients::from_edges_rounded`,
+`EngineBuilder::coefficient_rounding`, `Compiled::coefficient_rounding`)
+for openEMS files, on Cartesian and cylindrical grids;
+`CoeffRounding::Exact` stays the native default (one rounding, the
+closest `f32`). Operator dumps of the 64 sweep fixtures and 169 sweep
+models are now identical to openEMS's in `vv`, `vi`, `ii`, `iv` except
+for: the PML layer (dumped differently), conducting sheets (their own
+`C`, `G` from `compile/openems_sheet`; `sheet_graded`, `sheet_triangle_r`,
+`sheet_thin_resistive`: 1–3 ulp), the 4 edges of a lumped resistor
+(`lumped_caps`, `vv`: ems folds the element into the `f32` coefficients,
+§5.16.1), 4 of 21660 edges of `mat_weight_coords` (a weight function of
+`sin`, `cos`: `ε_r` itself differs in its last `f64` bits), and the
+models whose time step openEMS computes (`fdtd_odd`, `fdtd_tsm3_graded`:
+openEMS's Rennings `dt` is 3.5e-9 resp. 4.9e-9 relative below ems's;
+with ems's `dt` given as `TimeStep` the graded mesh's dumps are
+identical — the time step formula, not the coefficients; rounding the
+inverse `C`, `L` to `f32` inside the criterion gives −1.2e-8 and
+−9e-9, not fitted). On cylindrical grids the rule halves the mismatched
+edges (`adv_cyl_drude` 2900 → 0, `adv_cyl_multigrid` 2816 → 360,
+`adv_cyl_coax` 4820 → 2394; the rest is cylindrical geometry) and
+changes the probe agreement of the 31 cylindrical fixtures within its
+noise (largest change 1.9e-4 → 1.8e-4).
+
+Feature sweep (169 models, openEMS be30220, `compare.py` of the sweep
+tools, before → after): 78 → 123 exact (worst probe difference 0),
+13 → 5 above 1e-4 (`param_term` and `prim_userdefined`, rejected by
+openEMS; `probe_i_dirs` 8.4e-3, an all-round-off current column;
+`sheet_thin_resistive` 1.5e-4; `fdtd_odd` 1.3e-4, the time step); no
+model worse beyond noise. `prim_box_mat`, `prim_box_reversed`,
+`grid_unsorted`, `param_linear`, `prim_polyhedron_cube` 1.0e-4 → 0,
+`mat_aniso_weight1` 4.1e-5 → 0, `tie_wire_mat` 6.5e-5 → 0. Remaining
+~1e-5: sheets, lumped elements (8.6e-5), dispersive media (2e-5…6e-5),
+Mur and PML faces, computed time steps. Sweep fixtures
+(`tests/openems_sweep.rs`): 47 of 64 exact; their tolerances are 1e-6
+(were 1e-4…3e-3; `prim_sphshell_metal` 3e-3, `tie_wire_z` and
+`probe_fd` 1e-3, `mat_sigma_graded`, `grid_deltaunit_m` 3e-4).
+
 ## 6. Engine architecture
 
 ```

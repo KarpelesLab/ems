@@ -360,6 +360,28 @@ pub struct Coefficients {
     nodes: [usize; 3],
 }
 
+/// How [`Coefficients::from_edges_rounded`] rounds the circuit
+/// quantities of an edge (capacitance `C = ε·A/l`, conductance
+/// `G = κ·A/l`, inductance `L = μ·A/l`, resistance `R = σ_m·A/l`) before
+/// forming `ca = (C − G·dt/2)/(C + G·dt/2)`, `cb = dt/(C + G·dt/2)` and
+/// the H analogues in `f64`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CoeffRounding {
+    /// No intermediate rounding: each coefficient is the `f64` value
+    /// rounded once to `f32` (default).
+    #[default]
+    Exact,
+    /// openEMS's: `C`, `G`, `L` and `R` are rounded to `f32` first
+    /// (design §5.16.3). Black box, `--debug-operator`: with it every
+    /// `vv`, `vi`, `ii`, `iv` of the vacuum and material edges of the
+    /// feature sweep's Cartesian models is openEMS's bit for bit, among
+    /// them the vacuum `dt/C` at 1 m and 1 mm cells and dt 1.0…1.9 (ns
+    /// resp. ps), where the `f64` quotient is one `f32` step off in 15 of
+    /// 40 cases, and the material-boundary edges (`ε_r` 1.75: `f64`
+    /// 96.80649, openEMS 96.806496).
+    OpenEms,
+}
+
 impl Coefficients {
     /// Builds the coefficients for `grid`, the per-cell map `mats` and time
     /// step `dt`, with the outer faces handled according to `faces`.
@@ -409,6 +431,25 @@ impl Coefficients {
         faces: &FaceConditions,
         dt: f64,
     ) -> Result<Self> {
+        Self::from_edges_rounded(grid, mats, faces, dt, CoeffRounding::Exact)
+    }
+
+    /// [`from_edges`](Self::from_edges) with the rounding `rounding` of
+    /// the circuit quantities (see [`CoeffRounding`]).
+    ///
+    /// # Errors
+    /// As [`from_edges`](Self::from_edges).
+    pub fn from_edges_rounded(
+        grid: &Grid,
+        mats: &EdgeMaterials,
+        faces: &FaceConditions,
+        dt: f64,
+        rounding: CoeffRounding,
+    ) -> Result<Self> {
+        let store = |x: f64| match rounding {
+            CoeffRounding::Exact => x,
+            CoeffRounding::OpenEms => f64::from(x as f32),
+        };
         if mats.nodes() != grid.nodes() {
             return Err(Error::Invalid(format!(
                 "edge material map has {:?} nodes, grid has {:?}",
@@ -457,8 +498,8 @@ impl Coefficients {
                                     grid.dual_delta(ab, p[b]) * grid.dual_delta(ac, p[c])
                                         / grid.delta(axis, p[a])
                                 };
-                                let cap = EPS0 * eps[idx] * geo;
-                                let g = kap[idx] * geo;
+                                let cap = store(EPS0 * eps[idx] * geo);
+                                let g = store(kap[idx] * geo);
                                 let den = cap + 0.5 * g * dt;
                                 co[a][idx] = ((cap - 0.5 * g * dt) / den) as f32;
                                 co[3 + a][idx] = (dt / den) as f32;
@@ -478,8 +519,8 @@ impl Coefficients {
                                 grid.delta(ab, p[b]) * grid.delta(ac, p[c])
                                     / grid.dual_delta(axis, p[a])
                             };
-                            let l = MU0 * mu[idx] * geo;
-                            let r = sig[idx] * geo;
+                            let l = store(MU0 * mu[idx] * geo);
+                            let r = store(sig[idx] * geo);
                             let den = l + 0.5 * r * dt;
                             co[6 + a][idx] = ((l - 0.5 * r * dt) / den) as f32;
                             co[9 + a][idx] = (dt / den) as f32;
