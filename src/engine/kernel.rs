@@ -16,20 +16,20 @@ use super::rows::CoeffRows;
 use super::run::EnergyMeasure;
 use crate::constants::{EPS0, MU0};
 
-/// Rounds subnormal results to zero (`|x| ≲ 2^-126`), keeping normal
-/// values (absolute error ≤ 2^-126).
+/// Rounds subnormal results (`|x| < 2^-126`) to zero and returns every
+/// normal value unchanged, bit for bit.
 ///
 /// The leading tail of a numerical wave front in an initially empty grid
 /// decays geometrically and runs through the subnormal range, where many
-/// CPUs are much slower (a plane of subnormal inputs cost ~2× here). Hardware flush-to-zero needs `unsafe` (MXCSR),
-/// so we add and subtract a small normal constant instead: with
-/// `C = 2^-102`, `ulp(C) = 2^-125`, so any `|x| < 2^-126` rounds to `C`
-/// and the difference is exactly zero. The rounding is IEEE-exact, hence
-/// deterministic.
+/// CPUs are much slower (a plane of subnormal inputs cost ~2× here).
+/// Hardware flush-to-zero needs `unsafe` (MXCSR), so the kernels flush
+/// each result instead; the comparison and select vectorise. (An earlier
+/// form, `(x + C) − C` with `C = 2^-102`, also perturbed the last bits of
+/// the small normal values below ~2^-77, which made the leading tails
+/// differ from openEMS's, design §5.16.6.)
 #[inline(always)]
 pub(crate) fn flush(x: f32) -> f32 {
-    const C: f32 = f32::from_bits(25 << 23); // 2^(25 − 127) = 2^-102
-    (x + C) - C
+    if x.abs() < f32::MIN_POSITIVE { 0.0 } else { x }
 }
 
 /// `h = da·h − db·((a − b) − (c − d))` over equal-length slices.
