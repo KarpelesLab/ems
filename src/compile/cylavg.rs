@@ -13,7 +13,11 @@
 //! * ε and κ of a **z edge** on line `ρ_i`: the half between the dual line
 //!   `ρ_b` and `ρ_i` weighs `|ρ_i − ρ_b|·ρ_b`, i.e. its width times the
 //!   radius of the dual line that bounds it (instead of the annular area
-//!   `|ρ_i − ρ_b|·(ρ_i + ρ_b)/2`), times its α width;
+//!   `|ρ_i − ρ_b|·(ρ_i + ρ_b)/2`), times an α weight that is not the
+//!   half's own width: the dual width of line `j` for the upper half and
+//!   of line `j − 1` for the lower one (a whole cell at the first line);
+//!   black box, a box face swept through the lower quarter on random
+//!   sectors, design §5.16.11;
 //! * ε and κ of an **α edge**: the radial halves weigh their width `Δρ_h`
 //!   (no `ρ`), times their z width;
 //! * μ of a **ρ dual edge** (the H_ρ face): the harmonic mean of the two
@@ -62,6 +66,7 @@ fn mean(samples: &[(f64, f64)], harmonic: bool) -> Option<f64> {
 pub(crate) fn apply(model: &csx::ContinuousStructure, grid: &Grid, materials: &mut EdgeMaterials) {
     let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
     let n = grid.nodes();
+    let closed = grid.is_closed();
     let index = model.spatial_index(
         CoordSystem::Cylindrical,
         TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal),
@@ -97,14 +102,49 @@ pub(crate) fn apply(model: &csx::ContinuousStructure, grid: &Grid, materials: &m
         }
     };
     let mid = |a: usize, i: usize| 0.5 * (lines[a][i] + lines[a][i + 1]);
+    // openEMS's α weight of a z edge's half (black box, a box face swept
+    // through the lower quarter on random sectors): the upper half weighs
+    // the dual width of line `j`, the lower one that of line `j − 1` (a
+    // whole cell at the first line), not their own widths; on a closed
+    // grid the lines are periodic.
+    let al = lines[1];
+    let na = al.len();
+    let dual = |j: isize| -> f64 {
+        if closed {
+            let cells = (na - 1) as isize;
+            let jj = j.rem_euclid(cells) as usize;
+            let lo = if jj > 0 {
+                al[jj] - al[jj - 1]
+            } else {
+                al[na - 1] - al[na - 2]
+            };
+            0.5 * (lo + (al[jj + 1] - al[jj]))
+        } else if j <= 0 {
+            al[1] - al[0]
+        } else if j as usize >= na - 1 {
+            al[na - 1] - al[na - 2]
+        } else {
+            let j = j as usize;
+            0.5 * (al[j + 1] - al[j - 1])
+        }
+    };
+    let alpha_weight = |j: usize, lower: bool| -> f64 {
+        if lower {
+            dual(j as isize - 1)
+        } else {
+            dual(j as isize)
+        }
+    };
     let (mut eps, mut kap, mut mu) = (Vec::new(), Vec::new(), Vec::new());
-    for i in 1..n[0].saturating_sub(1) {
+    for i in 0..n[0] {
         let r = lines[0][i];
+        // Both radial halves exist (α edges, H_ρ faces).
+        let inner = i >= 1 && i + 1 < n[0];
         for j in 0..n[1] {
             for k in 0..n[2] {
                 let idx = grid.index([i, j, k]);
                 // α edge: radial halves × z halves.
-                if j + 1 < n[1] {
+                if inner && j + 1 < n[1] {
                     eps.clear();
                     kap.clear();
                     for hr in [half(0, i, -1), half(0, i, 1)].into_iter().flatten() {
@@ -122,15 +162,17 @@ pub(crate) fn apply(model: &csx::ContinuousStructure, grid: &Grid, materials: &m
                         materials.kappa_mut(Axis::Y)[idx] = c;
                     }
                 }
-                // z edge: radial halves × α halves, `Δρ_h·ρ_bound`.
-                if k + 1 < n[2] {
+                // z edge: radial halves × α halves, `Δρ_h·ρ_bound` times
+                // the α weight of `alpha_weight` (also with a single
+                // radial half, not on the axis).
+                if k + 1 < n[2] && r > 0.0 {
                     eps.clear();
                     kap.clear();
                     for hr in [half(0, i, -1), half(0, i, 1)].into_iter().flatten() {
                         for ha in [half(1, j, -1), half(1, j, 1)].into_iter().flatten() {
                             let p = [r + hr / 2.0, lines[1][j] + ha / 2.0, mid(2, k)];
                             if let Some(s) = sample(p) {
-                                let w = hr.abs() * (r + hr).abs() * ha.abs();
+                                let w = hr.abs() * (r + hr).abs() * alpha_weight(j, ha < 0.0);
                                 eps.push((w, s[0][2]));
                                 kap.push((w, s[2][2]));
                             }
@@ -142,7 +184,7 @@ pub(crate) fn apply(model: &csx::ContinuousStructure, grid: &Grid, materials: &m
                     }
                 }
                 // ρ dual edge (H_ρ face): radial half cells in series.
-                if j + 1 < n[1] && k + 1 < n[2] {
+                if inner && j + 1 < n[1] && k + 1 < n[2] {
                     mu.clear();
                     for hr in [half(0, i, -1), half(0, i, 1)].into_iter().flatten() {
                         if let Some(s) = sample([r + hr / 2.0, mid(1, j), mid(2, k)]) {

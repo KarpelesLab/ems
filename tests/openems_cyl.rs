@@ -371,6 +371,32 @@ fn cylindrical_current_boxes_at_the_seam_match_openems() {
     assert!(sim.run().unwrap().probe("i_first").is_none());
 }
 
+/// openEMS weighs the α halves of a z edge's dual face not by their own
+/// widths but by the dual widths of the edge's line (upper half) and of
+/// the line below it (lower half); black box, `--debug-material`: a box
+/// face between the lower quarter's centre and the line gives ε = 2.0 on
+/// this mesh (the halves' own widths 0.075 and 0.05 would give 1.8).
+#[test]
+fn z_edge_alpha_weights_follow_openems() {
+    let xml = r#"<openEMS>
+  <FDTD NumberOfTimesteps="10" endCriteria="0" f_max="1e9" CylinderCoords="1">
+    <Excitation Type="0" f0="0" fc="1e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1"><XLines>2,3,4,5,6</XLines><YLines>0,0.1,0.25,0.35,0.5</YLines><ZLines>0,1,2,3,4</ZLines></RectilinearGrid>
+    <Properties>
+      <Material Name="m"><Property Epsilon="3"/><Primitives><Box Priority="1"><P1 X="1" Y="0.2375" Z="1.5"/><P2 X="7" Y="0.6" Z="2.5"/></Box></Primitives></Material>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>"#;
+    let doc = csx::OpenEmsDocument::from_xml_str(xml).unwrap();
+    let (fdtd, _) = ems::Fdtd::from_document(&doc).unwrap();
+    let c = ems::compile::compile(&doc.structure, &fdtd, &ems::CompileOptions::default()).unwrap();
+    let eps = c.materials.eps_r(ems::Axis::Z)[c.grid.index([2, 2, 1])];
+    assert!((eps - 2.0).abs() < 1e-12, "{eps}");
+}
+
 /// openEMS runs a cylindrical mesh without `CylinderCoords="1"` as a
 /// Cartesian mesh, the primitive boxes at their literal corners
 /// (`cyl_no_cylinder_coords`, design §5.16.11); ems follows for files and
