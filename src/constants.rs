@@ -17,6 +17,25 @@ pub const EPS0: f64 = 1.0 / (MU0 * C0 * C0);
 /// Characteristic impedance of vacuum, `Z0 = μ0·c0` \[Ω\].
 pub const Z0: f64 = MU0 * C0;
 
+/// The vacuum permittivity openEMS computes its operator and time step
+/// with \[F/m\] (models read from openEMS files, design §5.16.10).
+///
+/// Measured on the black box, not taken from its source: every one of
+/// 96 509 interior `vi = f32(dt/f32(ε0·A/l))` coefficients of 600 random
+/// graded vacuum meshes (`--debug-operator`, fixed `TimeStep`) and the
+/// Rennings time step of 736 meshes agree with this value, and values
+/// 1e-10 (relative) above or below it already fail some; [`EPS0`] is
+/// 1.3e-10 higher and rounds 10 of those coefficients differently.
+pub const OPENEMS_EPS0: f64 = 8.854_187_817_62e-12;
+
+/// The vacuum permeability openEMS computes its operator and time step
+/// with \[H/m\] (see [`OPENEMS_EPS0`]): all 124 457 interior
+/// `iv = f32(dt/f32(μ0·A/l))` of the same meshes agree with it, and no
+/// value 4e-11 above or below it does ([`MU0`] is 5.8e-10 lower: 0.5 % of
+/// the coefficients one `f32` step off). It is not `1/(ε0·c0²)` with
+/// [`OPENEMS_EPS0`] (that is `4π·1e-7`, 4.5e-10 lower).
+pub const OPENEMS_MU0: f64 = 1.256_637_062e-6;
+
 #[cfg(test)]
 mod tests {
     use super::*;

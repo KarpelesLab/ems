@@ -101,7 +101,7 @@ impl Probe {
 
     /// Accumulates the weighted sum in `f32`, term by term in entry
     /// order (`s ← s + f32(w)·x`, rounded each time), instead of in
-    /// `f64`: openEMS's current probes (black box, design §5.16.8).
+    /// `f64`: openEMS's current probes (black box, design §5.16.9).
     pub(crate) fn f32_sum(mut self, on: bool) -> Self {
         self.f32_sum = on;
         self

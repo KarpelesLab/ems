@@ -214,7 +214,7 @@ cases! {
     mat_aniso_single: 1e-6;         // (exact; 0.6 with csx's reading of the short lists)
     mat_aniso_two: 1e-6;            // (exact; did not run: ε_z = 0)
     mat_weight_aniso: 1e-6;         // (exact)
-    mat_weight_coords: 1e-6;        // (exact; openEMS's ε0, §5.16.8)
+    mat_weight_coords: 1e-6;        // (exact; openEMS's ε0, §5.16.9)
     mat_mue_sigma: 1e-6;            // (exact; 2.3e-5; 6e-3 with csx's arithmetic σ_m average)
     mat_sigma_graded: 1e-6;         // (exact; 8.8e-5; 9e-2 with csx's average; identical material dumps)
     bg_material: 1e-6;              // (exact)
@@ -253,7 +253,7 @@ cases! {
     // Polygon sheets with three oblique sides (copper, σt = 0.1 S).
     sheet_triangle: 2e-4;
     sheet_triangle_r: 2e-4;
-    fdtd_odd: 1e-6;                 // (exact; 1.3e-4: openEMS's computed time step, §5.16.8)
+    fdtd_odd: 1e-6;                 // (exact; 1.3e-4: openEMS's computed time step, §5.16.10)
     fdtd_ts_and_steps0: 1e-30;      // (the t = 0 row of E-type files)
 }
 

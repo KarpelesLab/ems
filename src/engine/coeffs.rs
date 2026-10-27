@@ -381,23 +381,12 @@ pub enum CoeffRounding {
     /// 96.80649, openEMS 96.806496). The capacitances and inductances
     /// use openEMS's vacuum constants ([`OPENEMS_EPS0`], [`OPENEMS_MU0`])
     /// instead of [`EPS0`](crate::constants::EPS0),
-    /// [`MU0`](crate::constants::MU0) (design §5.16.8).
+    /// [`MU0`](crate::constants::MU0) (design §5.16.9).
     OpenEms,
 }
 
-/// The vacuum permittivity of openEMS's operator \[F/m\]: black box,
-/// `--debug-operator` dumps of 24 graded meshes with dielectric and
-/// magnetic boxes (99 438 vacuum E edges): `vi = f32(dt/f32(ε0·A/l))`
-/// holds for all of them exactly for `ε0` in `[8.8541878174e-12,
-/// 8.8541878178e-12]`, which contains this (CODATA 2006) value and not
-/// [`EPS0`](crate::constants::EPS0) (CODATA 2022, `1.2e-10` above).
-pub const OPENEMS_EPS0: f64 = 8.854_187_817_62e-12;
-
-/// The vacuum permeability of openEMS's operator \[H/m\]: the same dumps
-/// (87 300 vacuum H edges) require `μ0` in `[1.25663706194e-6,
-/// 1.25663706205e-6]`: this ten-digit value, not
-/// [`MU0`](crate::constants::MU0) (`1.25663706127e-6`) nor `4π·10⁻⁷`.
-pub const OPENEMS_MU0: f64 = 1.256_637_062e-6;
+// openEMS's vacuum constants (design §5.16.9, §5.16.10).
+pub use crate::constants::{OPENEMS_EPS0, OPENEMS_MU0};
 
 impl CoeffRounding {
     /// A circuit quantity as stored before the coefficients are formed:

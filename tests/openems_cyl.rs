@@ -180,7 +180,7 @@ fn probe_l2_sim(case: &str, model: &str, mut sim: Simulation) -> Vec<(String, f6
             let (et, ev) = (p.times(), p.scalar().unwrap());
             let (mut num, mut den) = (0.0, 0.0);
             // Both codes step with openEMS's time step (bit for bit since
-            // §5.16.8); ems's samples are interpolated to openEMS's times
+            // §5.16.10); ems's samples are interpolated to openEMS's times
             // (printed with 12 digits: the last may lie just above ems's).
             let dt = et[1] - et[0];
             for (&ti, &vi) in t.iter().zip(&v) {

@@ -6,7 +6,7 @@
 //! the formulas below were **established by black-box comparison** with
 //! openEMS v0.37 (the time step and the position of the limiting edge it
 //! reports for some 1 600 random rectilinear meshes, see
-//! `tests/openems_core.rs` and DESIGN §5.4, §5.16.1, §5.16.8), not taken
+//! `tests/openems_core.rs` and DESIGN §5.4, §5.16.1, §5.16.10), not taken
 //! from its source.
 //!
 //! Both are written with the circuit quantities of the integral-form Yee
@@ -63,7 +63,7 @@
 //!
 //! # openEMS's arithmetic
 //!
-//! Both steps are reproduced **bit for bit** (DESIGN §5.16.8; read back
+//! Both steps are reproduced **bit for bit** (DESIGN §5.16.10; read back
 //! from the probe files' 12-digit time column of 3 000-step runs, which
 //! pins openEMS's `dt` to a few `f64` ulps). openEMS evaluates them with
 //! its own constants ([`OPENEMS_EPS0`], [`OPENEMS_MU0`]) and with the
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn bit_exact_steps() {
         // openEMS's dt read back from the probe time column of 3 000-step
-        // runs (the interval that all rows allow; design §5.16.8).
+        // runs (the interval that all rows allow; design §5.16.10).
         let u: &[f64] = &[0., 1., 2., 3., 4.];
         let cases: [([&[f64]; 3], TimestepMethod, f64, f64); 5] = [
             // Uniform 1 mm cube: 3.5e-9 below Δ/(c·√3).

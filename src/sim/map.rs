@@ -1586,7 +1586,7 @@ pub(crate) fn current_loop(
 }
 
 /// The entries of a [`current_loop`] (normal `n`, box `start`…`stop`) in
-/// the order openEMS sums them (black box, design §5.16.8): the side
+/// the order openEMS sums them (black box, design §5.16.9): the side
 /// below the box along `c` (the `b` components), the side above it along
 /// `b` (the `c` components), the side above it along `c`, the side below
 /// it along `b`, each with ascending node index (`(n, b, c)` cyclic).

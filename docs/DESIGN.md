@@ -294,7 +294,8 @@ be `Sync` (§8).
   (`TimeStepMethod`, `engine::timestep`, §5.16): Rennings (default) or a
   per-edge Gershgorin bound (method 1), on the operator with materials,
   factor 1 by default, and shortened for a sinusoid so that its period is
-  an integer number of steps.
+  an integer number of steps; evaluated with openEMS's own arithmetic and
+  constants, so that the step is openEMS's bit for bit (§5.16.10).
 
 ### 5.5 Lumped elements and ports
 **LumpedElement (R)** over a box with `M` series edges along its direction and
@@ -3102,7 +3103,9 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
     exact `f32`: ems now evaluates it from `f32` circuit values with an
     `f32` square root and division, bit for bit on 23 of 27 vacuum and 18
     of 20 dielectric random meshes (rounding only the result: 15 of 27),
-    one `f32` step (≤ 1.2e-7) apart on the others. The `e2e_patch` and `e2e_msl_filter` fixtures (were 0.5
+    one `f32` step (≤ 1.2e-7) apart on the others. Wave 16: both steps
+    bit for bit (openEMS's constants and single-precision couplings,
+    §5.16.10). The `e2e_patch` and `e2e_msl_filter` fixtures (were 0.5
     and 2 % off) now run on openEMS's own time step (no `TimeStep`
     attribute; regenerated; filter ports 6e-7…1.1e-6, were 2e-7…5e-7 with
     the same rounded step), and every Cartesian
@@ -3169,7 +3172,7 @@ Files are read with openEMS's reading rules (`io::openems::read_model`,
   (a box over `[−1, 6.2]` rad leaves the extra line in vacuum and the
   `2π` line in the material; one over `[0, 2π]` fills both), up to 5 %;
   ems takes the periodic images. Full precision (probe time columns): 1e-8
-  … 6e-8 on the fixtures. The cylindrical fixtures now run on openEMS's
+  … 6e-8 on the fixtures (wave 16: bit for bit, §5.16.10). The cylindrical fixtures now run on openEMS's
   own step (regenerated: `adv_cyl_*`, `cyl_*`, `dump_cyl*`, `pml_cyl`,
   `e2e_coax_monopole`), except the debug dumps (`cli_debug_cyl*`), the
   conducting-sheet cavity (`cyl_sheet_*`: openEMS's thin fin model grows
@@ -4247,7 +4250,8 @@ openEMS's Rennings `dt` is 3.5e-9 resp. 4.9e-9 relative below ems's;
 with ems's `dt` given as `TimeStep` the graded mesh's dumps are
 identical — the time step formula, not the coefficients; rounding the
 inverse `C`, `L` to `f32` inside the criterion gives −1.2e-8 and
-−9e-9, not fitted). On cylindrical grids the rule halves the mismatched
+−9e-9, not fitted; both now identical, §5.16.10: openEMS's vacuum
+constants and its time-step arithmetic). On cylindrical grids the rule halves the mismatched
 edges (`adv_cyl_drude` 2900 → 0, `adv_cyl_multigrid` 2816 → 360,
 `adv_cyl_coax` 4820 → 2394; the rest is cylindrical geometry) and
 changes the probe agreement of the 31 cylindrical fixtures within its
@@ -4483,6 +4487,91 @@ openEMS, `sheet_thin_resistive`, `fdtd_odd`): `lumped_caps` 8.6e-5 → 0,
 `probe_polygon_i`, `probe_ui_shapes` 8.8e-8 → 0, `mat_weight_coords`
 4.1e-5 → 0. Sweep fixtures: `probe_polygon_i` and `mat_weight_coords`
 exact (tolerance 1e-6).
+
+#### 5.16.10 Round-off: the computed time step and openEMS's constants
+
+openEMS's own time step (no `TimeStep` in the file) was 3.5e-9…4.9e-9
+(relative) below ems's on `fdtd_odd` and `fdtd_tsm3_graded`, within
+4e-8 on random meshes (§5.16.1), and the method-1 step one `f32` step off
+on 15 % of them. Measured on the black box, never from its source: a probe
+at the excitation of a tiny PEC box (`OverSampling` 100000: one row per
+step) records `t = n·dt` with 12 digits for 3 000 steps; intersecting the
+intervals `[t_n ± ½ unit]/n` of all rows pins `dt` to 1e-15 (a few `f64`
+ulps), and `-vvv` prints the position of the limiting edge. Hand-made
+meshes isolated the terms: uniform cubes of 0.1 mm…1 m (the error depends
+on the mantissa of `Δ` only: single-precision rounding), one graded cell
+(only the coupling of the limiting edge to one face changes), then random
+graded meshes, with the edge's terms decomposed into their `f32` ulps.
+
+- **Constants.** openEMS computes with `ε0 = 8.85418781762e-12` and
+  `μ0 = 1.256637062e-6` (`OPENEMS_EPS0`, `OPENEMS_MU0`), not ems's CODATA
+  2022 values (`ε0` 1.3e-10 lower relative, `μ0` 5.8e-10 higher; `μ0` is
+  not `1/(ε0·c0²)`): the time steps of 720 random meshes fit only within
+  ±1e-10 of these two (scanned), and so do the operator's coefficients:
+  all 96 509 interior `vi` and 124 457 `iv` of 600 random graded meshes
+  (`--debug-operator`, fixed `TimeStep`), where ems's constants rounded
+  10 of 9 023 `vi` and 66 of 11 708 `iv` (60 meshes) one `f32` step
+  differently. The last 9 `iv` that the 2018 CODATA `μ0` still missed
+  fixed its value to 10 digits. `CoeffRounding::OpenEms` now forms `C`
+  and `L` with them (Cartesian and cylindrical); the native path keeps
+  CODATA 2022.
+- **Rennings.** `C`, `L` are `f32` (with full dual lengths at the
+  boundary, as before); each coupling `1/(C·L)` is computed in single
+  precision, `X = f32(1/f32(C·L))` (uniform cubes: one rounding per
+  coupling, 15 of 15 sizes, none with `f64` products; one graded cell:
+  the `f32` product, 13 of 16, at most 10 for other placements); the two couplings of one face are summed in
+  `f32`, `T_b = ¼(face below + face above)` in `f64` (sums in `f64`: 11 of
+  31 one-graded-cell meshes; all four in `f32`: 2); the own-axis term is
+  evaluated at both ends of the edge, from `f64` half sums and half
+  differences of the couplings `X(C_b(m), L_c)`, and averaged (the
+  cylindrical form of §5.16.1, equal in exact arithmetic); the face below
+  for `(a, b)` against the cyclic order takes geometry *and* material one
+  node lower along `c` (the cylindrical rule; exact arithmetic cancels
+  the shift, the rounding does not: 117 → 133 of 136); `ω²` and
+  `dt = 1/√ω²` in `f64`. With the constants (694 → 720 of 720) every one of
+  736 random vacuum meshes, graded along one to three axes, and 15
+  uniform cubes is openEMS's to the last bit; ems's `f64` formula was
+  up to 4e-8 off.
+- **Gershgorin** (method 1): the faces beyond the boundary count with
+  full dual lengths (mirrored; the half-cell rule of §5.16.1 in exact
+  arithmetic, 285 → 300 of 300), `Σ 1/L` is an `f32` sum of
+  `f32(1/L)` in the order (c upper, c lower, b upper, b lower) of the
+  edge's faces (24 orders tried), `ω² = Σ/C` and `dt = 1/√ω²` in `f32`.
+- **Cylindrical grids** (`engine::timestep_cyl`): the same arithmetic on
+  the cylindrical circuit values (`C = ε0·εr·(A/l)` with openEMS's
+  constants). Bit for bit on 60 random sectors, 60 closed grids and 60
+  grids with the axis, both methods (before: up to 1.3e-7 off), and 12
+  multigrids. On a multigrid openEMS's inner grids take Rennings whatever
+  `TimeStepMethod` says (`-vvv`: `CalcTimestep_Var3` for the inner,
+  `Var1` for the outer grid); with method 1 and no axis ems had taken
+  Gershgorin everywhere, 2–5 % too small on 3 of 12 meshes.
+
+Through the `ems` binary (probe time columns compared row for row): 410
+random Cartesian meshes (60 vacuum, 200 with ε, μ, κ and anisotropic
+boxes on and off the grid, 150 with metal boxes), both methods,
+and on the vacuum ones `TimeStepFactor` 0.61 and 0.73, a sinusoid (the
+period adjustment) and an explicit `TimeStep` with a factor: every time
+column identical. Unit
+tests: `engine::timestep::tests::bit_exact_steps`,
+`engine::timestep_cyl::tests::bit_exact_steps` (openEMS's intervals).
+
+Feature sweep (169 models, fresh be30220 runs, before → after): 123 → 127
+exact (`fdtd_odd` 1.3e-4, `fdtd_tsm3_graded` 4.5e-5,
+`fdtd_timestepfactor` 3.3e-5: the time step; `mat_weight_coords` 4.1e-5:
+the constants, not its weight function — its 4 edges were `ε0`'s); no
+other model changed. Sweep fixtures `fdtd_odd`, `mat_weight_coords`
+exact (tolerance 1e-6). The cylindrical fixtures run on openEMS's step
+bit for bit; `tests/openems_cyl.rs` matches the last row, whose printed
+time now lies an ulp above ems's, within 1e-6 `dt`.
+
+Not reproduced: cylindrical meshes with material boxes (4 of 60 sectors
+up to 1.5e-3, 3 of 60 closed grids up to 0.2 with Rennings): the edge
+materials differ (`--debug-material`: z edges at a box face in a sector,
+ε 1.46 vs 2.06; the seam of closed grids, §5.16.1), not the criterion.
+Seen on the way: openEMS runs a `CoordSystem="1"` grid as Cartesian
+without `CylinderCoords="1"` on `<FDTD>` (ems as cylindrical), and stops
+a run with `endCriteria="0"` and a sinusoid after `NumberOfTimesteps`
+where ems stops earlier.
 
 ## 6. Engine architecture
 
@@ -5189,7 +5278,10 @@ models exact, was 9; `tie_cyl_metal`, `tie_cylshell_metal`,
 `prim_sphshell_metal` 1.1e-2…1.5e-3 → 0); openEMS's
 coefficient rounding (C, G, L, R rounded to f32 first, §5.16.7): 123 of
 169 exact. Wave 16: openEMS's PML, Mur and AbsorbingBC arithmetic
-(§5.16.8): 136 of 169 exact, PML fixtures exact with openEMS's dt.
+(§5.16.8: 123 → 136 of 169 exact); lumped elements, current-probe sums,
+per-property `OverSampling` and openEMS's vacuum constants (§5.16.9:
+123 → 130); openEMS's computed time step bit for bit on every grid kind
+(§5.16.10: 123 → 127).
 
 Remaining:
 - openEMS's azimuthal multigrid coupling (3e-3…2e-2), closed-grid time
@@ -5199,12 +5291,12 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: openEMS's computed time step (3.5e-9…4.9e-9
-  relative below ems's on graded meshes, `fdtd_odd`, `fdtd_tsm3_graded`);
-  conducting-sheet and lumped-resistor coefficients (1–3 f32 steps);
-  the PML and openEMS's summation order on cylindrical grids;
-  `probe_i_dirs` (8.4e-3, a current column of pure round-off); openEMS's
-  Rennings step below 4e-8 (§5.16.6, §5.16.7).
+- From the feature sweep: conducting-sheet capacitances (1–3 f32 steps,
+  `sheet_thin_resistive` 1.5e-4) and series lumped elements (~1e-4, the
+  branch state of L and C), §5.16.9; the PML, the curl order and edge
+  materials of boxes in sectors and at the seam on cylindrical grids
+  (§5.16.10); `CoordSystem="1"` without `CylinderCoords` runs Cartesian
+  in openEMS; `endCriteria="0"` with a sinusoid runs all steps there.
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets

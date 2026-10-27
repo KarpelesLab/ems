@@ -46,7 +46,7 @@
 //!   the axis forces Gershgorin), so method 1 on a multigrid without the
 //!   axis takes the larger of the inner grids' Rennings and the outer
 //!   grid's Gershgorin limits (2–5 % more than Gershgorin everywhere on 3
-//!   of 12 random meshes, design §5.16.8).
+//!   of 12 random meshes, design §5.16.10).
 //! - **Arithmetic.** That of the Cartesian criteria
 //!   ([`timestep`](super::timestep): `f32` circuit values `C = ε·(A/l)`,
 //!   `L = μ·(A/l)` with openEMS's constants, single-precision couplings and
@@ -56,7 +56,7 @@
 //! methods (sectors and closed grids, with and without the axis, graded
 //! `ρ`, `α`, `z`, multigrid, materials; DESIGN §5.16.1 has the counts),
 //! and bit for bit on 180 random vacuum meshes (sectors, closed grids,
-//! the axis), both methods, and 12 multigrids (DESIGN §5.16.8).
+//! the axis), both methods, and 12 multigrids (DESIGN §5.16.10).
 
 use super::edge_material::EdgeMaterials;
 use super::grid::Grid;
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn bit_exact_steps() {
         // openEMS's dt read back from the probe time column of 3 000-step
-        // runs (design §5.16.8); [Rennings, Gershgorin].
+        // runs (design §5.16.10); [Rennings, Gershgorin].
         type Case<'a> = (&'a [f64], Vec<f64>, &'a [f64], Option<usize>, [[f64; 2]; 2]);
         let mut closed: Vec<f64> = (0..12)
             .map(|j| (TAU * j as f64 / 12.0 * 1e9).round() / 1e9)
