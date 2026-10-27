@@ -326,11 +326,12 @@ fn cylindrical_multigrid() {
 
 /// Drude-filled coax (`ε∞ = 2`, `f_p = 3 GHz`, `τ = 0.5 ns`): dispersive
 /// poles on a cylindrical grid (openEMS supports them; ems now maps them
-/// too): 4.8e-4…1.0e-3 (static `ε` alone agrees to 1e-6, the remainder is
-/// in the cylindrical pole coefficients).
+/// too): the probes identical to openEMS's printed digits with its pole
+/// arithmetic and its seam (design §5.16.12; 1.8e-10 here, the
+/// sample-time interpolation; was 3.8e-3).
 #[test]
 fn cylindrical_drude() {
-    check("adv_cyl_drude", 4e-3);
+    check("adv_cyl_drude", 1e-6);
 }
 
 /// A radial 20 Ω lumped resistor over the whole ring of a closed-azimuth

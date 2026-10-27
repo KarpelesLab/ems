@@ -54,7 +54,7 @@
 //! [`CompileOptions::dispersive_scheme`](super::CompileOptions::dispersive_scheme)
 //! (openEMS's explicit leapfrog by default, see
 //! [`Scheme`](crate::engine::dispersive::Scheme)). For openEMS files
-//! ([`Fdtd::openems_run`](crate::Fdtd::openems_run), Cartesian grids, the
+//! ([`Fdtd::openems_run`](crate::Fdtd::openems_run), the
 //! leapfrog scheme) the Lorentz and Drude poles run with openEMS's own
 //! `f32` arithmetic
 //! ([`OpenEmsPole`], bit for bit),

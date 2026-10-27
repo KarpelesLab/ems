@@ -102,6 +102,10 @@ pub(crate) struct Periodic {
     n: [usize; 3],
     /// [`merge_cached`](Self::merge_cached)'s table.
     cache: MergeCache,
+    /// Edges (component, low copy) [`merge_cached`](Self::merge_cached)
+    /// leaves alone: an operator keeps their two copies apart (openEMS's
+    /// seam with dispersive poles, design §5.16.12).
+    exempt: std::collections::HashSet<(Axis, [usize; 3])>,
 }
 
 /// One pair of copies of the merge, precomputed: the component, the two
@@ -150,7 +154,15 @@ impl Periodic {
             axes,
             n,
             cache: MergeCache::default(),
+            exempt: std::collections::HashSet::new(),
         }))
+    }
+
+    /// Leaves the copies of the E edge `(axis, lo)` (its low copy) out of
+    /// [`merge_cached`](Self::merge_cached).
+    pub(crate) fn exempt(&mut self, axis: Axis, lo: [usize; 3]) {
+        self.exempt.insert((axis, lo));
+        self.cache = MergeCache::default();
     }
 
     fn index(&self, [i, j, k]: [usize; 3]) -> usize {
@@ -230,6 +242,9 @@ impl Periodic {
             let lay = f.u.layout();
             let mut v = Vec::new();
             self.pairs(co, |_, axis, lo, hi, wl, wh| {
+                if self.exempt.contains(&(axis, lo)) {
+                    return;
+                }
                 v.push(PairEntry {
                     axis,
                     lo: lay.locate(lo),

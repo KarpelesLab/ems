@@ -585,6 +585,15 @@ impl Engine {
         self.shared.set_fused(mode);
     }
 
+    /// Leaves both copies of the periodic E edge `(axis, lo)` (`lo` its
+    /// low copy) out of the periodic merge: an operator keeps them apart
+    /// (openEMS's seam with dispersive poles, design §5.16.12).
+    pub(crate) fn exempt_from_periodic_merge(&mut self, axis: Axis, lo: [usize; 3]) {
+        if let Some(p) = &mut self.periodic {
+            p.exempt(axis, lo);
+        }
+    }
+
     /// Sets the summation order of the circulations in the Cartesian
     /// kernels (default [`CurlOrder::Paired`]; openEMS files use
     /// [`CurlOrder::OpenEms`]). It only changes the rounding.

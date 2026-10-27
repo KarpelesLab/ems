@@ -22,9 +22,23 @@
 //!
 //! Edges with a modified coefficient (lumped elements, PEC, absorbing
 //! layers) keep the periodic merge.
+//!
+//! **Dispersive poles on the seam** (design §5.16.12). openEMS keeps the
+//! seam's state on the `α = 2π` line and copies it to `α = 0` right after
+//! its main update, before the poles act: the `α = 0` copy (the one dumps,
+//! probes and the H cells `α_0 … α_1` read) holds the uncorrected `u*`,
+//! the `α = 2π` copy (read by the last H cells and by its own update) the
+//! corrected `u* − ΣV`, the poles in openEMS's `f32` arithmetic
+//! ([`OpenEmsPole`]) with the whole dual face's `vi` and `C`. The seam
+//! `H_α` next to such edges is then updated twice, once from each copy's
+//! E (each with its own whole current); the `α = 2π` E update reads the
+//! `α = 2π` current. Black box: a closed grid filled with a lossy Drude
+//! medium, every seam `E_ρ`, `E_z` at every step reproduced by an `f32`
+//! model of this.
 
 use super::boundary::upml::{self, PmlProfile};
 use super::coeffs::Coefficients;
+use super::dispersive::OpenEmsPole;
 use super::edge_material::EdgeMaterials;
 use super::fields::Fields;
 use super::grid::Grid;
@@ -48,6 +62,9 @@ struct SeamE {
     /// coefficient and update coefficients) and the edge's flux.
     layer: Option<(f32, [f32; 4])>,
     flux: f32,
+    /// openEMS's poles of the edge: `[A, B, K]` and the state `[V, W]`
+    /// (module docs); with poles `old` is the `α = 2π` copy's value.
+    poles: Vec<([f32; 3], [f32; 2])>,
 }
 
 /// One seam `H_α` dual edge (low node), `ii`, `iv` of the whole dual edge,
@@ -62,6 +79,10 @@ struct SeamH {
     /// As [`SeamE::layer`].
     layer: Option<(f32, [f32; 4])>,
     flux: f32,
+    /// Next to a seam E edge with poles: the two copies are updated apart
+    /// (`old_hi` the `α = 2π` copy's whole current).
+    split: bool,
+    old_hi: f32,
 }
 
 /// openEMS's seam update of a closed cylindrical grid; see the
@@ -79,6 +100,10 @@ pub(crate) struct OpenemsSeam {
     /// copies and the whole edge's current it came from (a half in the
     /// subnormal range would lose the whole value).
     whole: Vec<Option<(f32, f32)>>,
+    /// The same for the `α = 2π` copy of a split edge ([`SeamH::split`]).
+    whole_hi: Vec<Option<(f32, f32)>>,
+    /// Whether the seam `H_α` at `(i, k)` is split.
+    split: Vec<bool>,
 }
 
 /// `(vv, vi)` (or `(ii, iv)`) from the circuit quantities, rounded as
@@ -117,6 +142,7 @@ impl OpenemsSeam {
         dt: f64,
         pml: Option<&PmlProfile>,
         skip: impl Fn(Axis, [usize; 3], bool) -> bool,
+        poles: impl Fn(Axis, [usize; 3]) -> Vec<OpenEmsPole>,
     ) -> Self {
         let layer = |e_side: bool, axis: Axis, node: [usize; 3], geo: f64, rel: f64| {
             pml.and_then(|p| upml::layer_update(p, dt, e_side, axis, node, geo, rel))
@@ -167,6 +193,20 @@ impl OpenemsSeam {
                     let ep = mean(eps[il], eps[ih], da0, da1);
                     let kp = mean(kap[il], kap[ih], da0, da1);
                     let (vv, vi) = coeffs(EPS0 * ep * geo, kp * geo, dt);
+                    let layer = layer(true, axis, hi, geo, ep);
+                    // openEMS's layer replaces the update: no poles there.
+                    let circuit = f64::from((EPS0 * ep * geo) as f32);
+                    let poles = if layer.is_none() {
+                        poles(axis, lo)
+                            .into_iter()
+                            .map(|p| {
+                                let p = OpenEmsPole { circuit, ..p };
+                                (p.coefficients(f64::from(vi), dt), [0.0; 2])
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     e.push(SeamE {
                         axis,
                         node: lo,
@@ -174,8 +214,9 @@ impl OpenemsSeam {
                         vi,
                         cb: (cb[il], cb[ih]),
                         old: 0.0,
-                        layer: layer(true, axis, hi, geo, ep),
+                        layer,
                         flux: 0.0,
+                        poles,
                     });
                 }
             }
@@ -208,6 +249,8 @@ impl OpenemsSeam {
                     old: 0.0,
                     layer: layer(false, Axis::Y, hi, geo, m),
                     flux: 0.0,
+                    split: false,
+                    old_hi: 0.0,
                 });
             }
         }
@@ -251,8 +294,33 @@ impl OpenemsSeam {
                     old: 0.0,
                     layer: None,
                     flux: 0.0,
+                    poles: Vec::new(),
                 });
             }
+        }
+        // The H_α dual edges whose E neighbours on the seam have poles.
+        let mut split = vec![false; n[0] * n[2]];
+        for s in e.iter().filter(|s| !s.poles.is_empty()) {
+            let [i, _, k] = s.node;
+            let mut mark = |i: usize, k: usize| {
+                if i + 1 < n[0] && k + 1 < n[2] {
+                    split[i * n[2] + k] = true;
+                }
+            };
+            if s.axis == Axis::X {
+                mark(i, k);
+                if k > 0 {
+                    mark(i, k - 1);
+                }
+            } else {
+                mark(i, k);
+                if i > 0 {
+                    mark(i - 1, k);
+                }
+            }
+        }
+        for s in &mut h {
+            s.split = s.layer.is_none() && split[s.node[0] * n[2] + s.node[2]];
         }
         Self {
             e,
@@ -261,6 +329,8 @@ impl OpenemsSeam {
             last,
             nz: n[2],
             whole: vec![None; n[0] * n[2]],
+            whole_hi: vec![None; n[0] * n[2]],
+            split,
         }
     }
 
@@ -281,6 +351,21 @@ impl OpenemsSeam {
             _ => flush(lo + hi),
         }
     }
+
+    /// The whole current of one copy (`hi`: the `α = 2π` one) of a split
+    /// seam `H_α` dual edge ([`SeamH::split`]); [`whole`](Self::whole)
+    /// for the others.
+    fn whole_copy(&self, f: &Fields<'_>, i: usize, k: usize, hi: bool) -> f32 {
+        if !self.split[i * self.nz + k] {
+            return self.whole(f, i, k);
+        }
+        let x = f.i.get(Axis::Y, [i, if hi { self.last } else { 0 }, k]);
+        let w = if hi { &self.whole_hi } else { &self.whole };
+        match w[i * self.nz + k] {
+            Some((half, v)) if x == half => v,
+            _ => flush(x + x),
+        }
+    }
 }
 
 impl Operator for OpenemsSeam {
@@ -291,7 +376,8 @@ impl Operator for OpenemsSeam {
     fn pre_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         for n in 0..self.h.len() {
             let [i, _, k] = self.h[n].node;
-            self.h[n].old = self.whole(f, i, k);
+            self.h[n].old = self.whole_copy(f, i, k, false);
+            self.h[n].old_hi = self.whole_copy(f, i, k, true);
         }
     }
 
@@ -301,6 +387,7 @@ impl Operator for OpenemsSeam {
         for s in &mut self.h {
             let [i, _, k] = s.node;
             self.whole[i * self.nz + k] = None;
+            self.whole_hi[i * self.nz + k] = None;
             let hi = [i, last, k];
             if s.layer.is_none() && (db[ctx.grid.index(s.node)], db[ctx.grid.index(hi)]) != s.db {
                 continue;
@@ -321,10 +408,27 @@ impl Operator for OpenemsSeam {
             };
             let half = 0.5 * v;
             f.i.set(Axis::Y, s.node, half);
-            f.i.set(Axis::Y, hi, half);
             self.whole[i * self.nz + k] = Some((half, v));
+            if s.split {
+                // The α = 2π copy from its own E (module docs).
+                let a = u.get(Axis::X, [i, last, k + 1]);
+                let b = u.get(Axis::X, hi);
+                let c = u.get(Axis::Z, [i + 1, last, k]);
+                let d = u.get(Axis::Z, hi);
+                let v = oe_h(s.ii, s.old_hi, s.iv, a, b, c, d);
+                let half = 0.5 * v;
+                f.i.set(Axis::Y, hi, half);
+                self.whole_hi[i * self.nz + k] = Some((half, v));
+            } else {
+                f.i.set(Axis::Y, hi, half);
+            }
         }
-        for s in self.e.iter_mut().chain(&mut self.axis) {
+        for s in self.e.iter_mut() {
+            // With poles the α = 2π copy holds the corrected state.
+            let j = if s.poles.is_empty() { 0 } else { last };
+            s.old = f.u.get(s.axis, [s.node[0], j, s.node[2]]);
+        }
+        for s in &mut self.axis {
             s.old = f.u.get(s.axis, s.node);
         }
     }
@@ -333,6 +437,7 @@ impl Operator for OpenemsSeam {
         let n = ctx.grid.nodes();
         let last = self.last;
         let mut fluxes = Vec::new();
+        let mut states = Vec::new();
         for (q, s) in self.e.iter().enumerate() {
             let cb = ctx.coefficients.cb(s.axis);
             let hi = self.hi(s.node);
@@ -341,12 +446,12 @@ impl Operator for OpenemsSeam {
             }
             let [i, _, k] = s.node;
             let cur = &f.i;
-            // The whole seam H_α dual edge, 0 outside.
+            // The whole seam H_α dual edge (its α = 2π copy), 0 outside.
             let ha = |i: usize, k: usize| -> f32 {
                 if i + 1 >= n[0] || k + 1 >= n[2] {
                     0.0
                 } else {
-                    self.whole(f, i, k)
+                    self.whole_copy(f, i, k, true)
                 }
             };
             let (a, b, c, d) = if s.axis == Axis::X {
@@ -377,10 +482,30 @@ impl Operator for OpenemsSeam {
                 }
             };
             f.u.set(s.axis, s.node, v);
-            f.u.set(s.axis, hi, v);
+            if s.poles.is_empty() {
+                f.u.set(s.axis, hi, v);
+            } else {
+                // openEMS's poles on the α = 2π copy only, driven by its
+                // previous value (module docs, `OpenEmsPole`).
+                let mut st: Vec<[f32; 2]> = Vec::with_capacity(s.poles.len());
+                let mut c = v;
+                for &([a, b, kk], [pv, pw]) in &s.poles {
+                    let pv = flush(flush(a * pv) + flush(b * flush(s.old - pw)));
+                    let pw = flush(pw + flush(kk * pv));
+                    c = flush(c - pv);
+                    st.push([pv, pw]);
+                }
+                f.u.set(s.axis, hi, c);
+                states.push((q, st));
+            }
         }
         for (q, flux) in fluxes {
             self.e[q].flux = flux;
+        }
+        for (q, st) in states {
+            for (p, x) in self.e[q].poles.iter_mut().zip(st) {
+                p.1 = x;
+            }
         }
         // The axis: openEMS adds the ring of H_α at ρ_½ term by term over
         // all N + 1 α lines, the seam's at both ends.
@@ -392,13 +517,16 @@ impl Operator for OpenemsSeam {
                 continue;
             }
             let cur = &f.i;
-            let seam = self.whole(f, 0, k);
+            let (seam, seam_hi) = (
+                self.whole_copy(f, 0, k, false),
+                self.whole_copy(f, 0, k, true),
+            );
             let mut v = flush(s.vv * s.old);
             v = flush(v + flush(s.vi * seam));
             for j in 1..last {
                 v = flush(v + flush(s.vi * cur.get(Axis::Y, [0, j, k])));
             }
-            v = flush(v + flush(s.vi * seam));
+            v = flush(v + flush(s.vi * seam_hi));
             for j in 0..=last {
                 f.u.set(Axis::Z, [0, j, k], v);
             }

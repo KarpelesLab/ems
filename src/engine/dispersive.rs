@@ -199,6 +199,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
 use super::grid::Grid;
+use super::kernel::flush;
 use super::operator::{Hooks, Operator, OperatorHandle};
 use super::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::axis::Axis;
@@ -652,9 +653,11 @@ impl Side {
             if self.kind[q] == Kind::OpenEms {
                 let [a, b, k] = self.oe_coef[q];
                 let [v, w] = oe;
-                let v = a * v + b * (prev32 - w);
-                oe = [v, w + k * v];
-                u32_star -= v;
+                // Every operation flushed to zero, as openEMS's FTZ mode
+                // does (design §5.16.11).
+                let v = flush(flush(a * v) + flush(b * flush(prev32 - w)));
+                oe = [v, flush(w + flush(k * v))];
+                u32_star = flush(u32_star - v);
             }
             next.push((self.j[q], self.q[q], oe));
         }

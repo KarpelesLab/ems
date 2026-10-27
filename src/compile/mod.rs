@@ -602,6 +602,12 @@ impl Compiled {
     /// `engine`.
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
+        // Seam E edges whose openEMS poles the seam operator runs itself
+        // (low node → poles; design §5.16.12).
+        let mut seam_poles: std::collections::HashMap<
+            (crate::axis::Axis, [usize; 3]),
+            Vec<crate::engine::dispersive::OpenEmsPole>,
+        > = std::collections::HashMap::new();
         // openEMS's seam update of a closed azimuth (design §5.16.11),
         // first among the post-E hooks: it replaces the periodic merge.
         if self.curl_order == CurlOrder::OpenEms
@@ -612,6 +618,7 @@ impl Compiled {
             && self.abc.is_empty()
         {
             let n = self.grid.nodes();
+            let last = n[1] - 1;
             // Edges other operators act on keep the periodic merge.
             let mut touched = std::collections::HashSet::new();
             for p in &self.dispersive {
@@ -626,6 +633,45 @@ impl Compiled {
             }
             for &(a, p, _) in &self.openems_sheets {
                 touched.insert((a, p, false));
+            }
+            // openEMS poles on both copies of a seam ρ or z edge, the same
+            // on each: run by the seam operator; any other: the merge.
+            type Copies = (
+                Vec<crate::engine::dispersive::OpenEmsPole>,
+                Vec<crate::engine::dispersive::OpenEmsPole>,
+            );
+            let mut copies: std::collections::HashMap<_, Copies> = std::collections::HashMap::new();
+            for p in &self.dispersive_openems {
+                let seam = p.field == crate::engine::dispersive::Field::Electric
+                    && p.axis != crate::axis::Axis::Y
+                    && (p.node[1] == 0 || p.node[1] == last);
+                if !seam {
+                    touched.insert((
+                        p.axis,
+                        p.node,
+                        p.field == crate::engine::dispersive::Field::Magnetic,
+                    ));
+                    continue;
+                }
+                let lo = [p.node[0], 0, p.node[2]];
+                let e = copies.entry((p.axis, lo)).or_default();
+                if p.node[1] == 0 { &mut e.0 } else { &mut e.1 }.push(*p);
+            }
+            let params = |v: &[crate::engine::dispersive::OpenEmsPole]| -> Vec<[u64; 3]> {
+                v.iter()
+                    .map(|p| [p.omega_p.to_bits(), p.omega_0.to_bits(), p.gamma.to_bits()])
+                    .collect()
+            };
+            for ((axis, lo), (a, b)) in copies {
+                let hi = [lo[0], last, lo[2]];
+                if params(&a) == params(&b)
+                    && !touched.contains(&(axis, lo, false))
+                    && !touched.contains(&(axis, hi, false))
+                {
+                    seam_poles.insert((axis, lo), b);
+                } else {
+                    touched.insert((axis, lo, false));
+                }
             }
             let skip = |a: crate::axis::Axis, p: [usize; 3], h: bool| {
                 let hi = [p[0], n[1] - 1, p[2]];
@@ -643,8 +689,13 @@ impl Compiled {
                 engine.dt(),
                 profile.as_ref(),
                 skip,
+                |a, p| seam_poles.get(&(a, p)).cloned().unwrap_or_default(),
             );
             engine.add_operator(op);
+            // The seam operator keeps the two copies of these apart.
+            for &(a, p) in seam_poles.keys() {
+                engine.exempt_from_periodic_merge(a, p);
+            }
             if let Some(ring) = self.openems_multigrid {
                 let op = crate::engine::openems_cyl::OpenemsMultigrid::new(
                     &self.grid,
@@ -741,6 +792,15 @@ impl Compiled {
                 any = true;
             }
             for &e in &self.dispersive_openems {
+                let lo = [e.node[0], 0, e.node[2]];
+                let last = self.grid.nodes()[1] - 1;
+                if e.field == DispersiveField::Electric
+                    && (e.node[1] == 0 || e.node[1] == last)
+                    && seam_poles.contains_key(&(e.axis, lo))
+                {
+                    // Run by the seam operator.
+                    continue;
+                }
                 if let Some(l) = &layers
                     && l.contains(e.field == DispersiveField::Electric, e.axis, e.node)
                 {
@@ -1609,10 +1669,10 @@ pub fn compile(
         None
     };
 
-    // openEMS's pole arithmetic (files, Cartesian grids, the leapfrog
+    // openEMS's pole arithmetic (files, the leapfrog
     // scheme; design §5.16.12).
     let openems_poles =
-        fdtd.get_openems_run() && !cyl && opts.dispersive_scheme == DispersiveScheme::Leapfrog;
+        fdtd.get_openems_run() && opts.dispersive_scheme == DispersiveScheme::Leapfrog;
     let (mut dispersive, dispersive_openems) = dispersive::dispersive_poles(
         model,
         &node_map,
