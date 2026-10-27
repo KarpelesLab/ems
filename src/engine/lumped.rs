@@ -409,6 +409,7 @@ pub struct LumpedElement {
     drive_sources: Vec<(Source, Vec<f64>)>,
     record: bool,
     explicit_inductor: bool,
+    medium_folded: bool,
     state: Option<Installed>,
 }
 
@@ -451,6 +452,7 @@ impl LumpedElement {
             drive_sources: Vec::new(),
             record: false,
             explicit_inductor: false,
+            medium_folded: false,
             state: None,
         }
     }
@@ -501,6 +503,7 @@ impl LumpedElement {
             drive_sources: Vec::new(),
             record: false,
             explicit_inductor: false,
+            medium_folded: false,
             state: None,
         })
     }
@@ -612,6 +615,16 @@ impl LumpedElement {
     /// limit (`dt < 2·√(L_e·C_e)` alone). Ignored for series elements.
     pub fn explicit_inductor(mut self, on: bool) -> Self {
         self.explicit_inductor = on;
+        self
+    }
+
+    /// The edge coefficients already hold the element's parallel `G_e`
+    /// and `C_e` (set by the caller, e.g. openEMS's replacement of the
+    /// medium by the element, `sim::map`): [`add_to`](Self::add_to) does
+    /// not fold them in again. The current record and Thevenin sources
+    /// still use them.
+    pub(crate) fn medium_folded(mut self, on: bool) -> Self {
+        self.medium_folded = on;
         self
     }
 
@@ -876,7 +889,7 @@ impl LumpedElement {
         let mut cbs = Vec::with_capacity(edges.len());
         for ((&p, &(g_e, c_e, _)), others) in edges.iter().zip(&parts).zip(&copies) {
             let i = idx(p);
-            if g_e != 0.0 || c_e != 0.0 {
+            if !self.medium_folded && (g_e != 0.0 || c_e != 0.0) {
                 (ca[i], cb[i]) = fold_parallel(ca[i], cb[i], dt, g_e, c_e);
             }
             if others.is_empty() {

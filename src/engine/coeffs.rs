@@ -382,6 +382,57 @@ pub enum CoeffRounding {
     OpenEms,
 }
 
+impl CoeffRounding {
+    /// A circuit quantity as stored before the coefficients are formed:
+    /// unchanged ([`Exact`](Self::Exact)) or rounded to `f32`
+    /// ([`OpenEms`](Self::OpenEms)).
+    pub(crate) fn store(self, x: f64) -> f64 {
+        match self {
+            Self::Exact => x,
+            Self::OpenEms => f64::from(x as f32),
+        }
+    }
+}
+
+/// `A/l` of the E edge along `axis` starting at node `p` (dual face area
+/// over edge length), the factor of `ε` in its capacitance `C = ε·A/l`
+/// and of `κ` in its conductance.
+pub(crate) fn e_edge_geometry(grid: &Grid, axis: Axis, p: [usize; 3]) -> f64 {
+    let (ab, ac) = axis.others();
+    if grid.is_cylindrical() {
+        grid.dual_face_area(axis, p) / grid.edge_length(axis, p)
+    } else {
+        grid.dual_delta(ab, p[ab.index()]) * grid.dual_delta(ac, p[ac.index()])
+            / grid.delta(axis, p[axis.index()])
+    }
+}
+
+/// The medium capacitance and conductance `(C, G)` of the E edge along
+/// `axis` at `p` as [`Coefficients::from_edges_rounded`] forms them (with
+/// `rounding` applied).
+pub(crate) fn e_edge_circuit(
+    grid: &Grid,
+    mats: &EdgeMaterials,
+    axis: Axis,
+    p: [usize; 3],
+    rounding: CoeffRounding,
+) -> (f64, f64) {
+    let idx = grid.index(p);
+    let geo = e_edge_geometry(grid, axis, p);
+    (
+        rounding.store(EPS0 * mats.eps_r(axis)[idx] * geo),
+        rounding.store(mats.kappa(axis)[idx] * geo),
+    )
+}
+
+/// `(ca, cb)` of an E edge with capacitance `cap` and conductance `g`:
+/// `ca = (C − G·dt/2)/(C + G·dt/2)`, `cb = dt/(C + G·dt/2)` in `f64`,
+/// rounded once to `f32`.
+pub(crate) fn e_coefficients(cap: f64, g: f64, dt: f64) -> (f32, f32) {
+    let den = cap + 0.5 * g * dt;
+    (((cap - 0.5 * g * dt) / den) as f32, (dt / den) as f32)
+}
+
 impl Coefficients {
     /// Builds the coefficients for `grid`, the per-cell map `mats` and time
     /// step `dt`, with the outer faces handled according to `faces`.
@@ -446,10 +497,7 @@ impl Coefficients {
         dt: f64,
         rounding: CoeffRounding,
     ) -> Result<Self> {
-        let store = |x: f64| match rounding {
-            CoeffRounding::Exact => x,
-            CoeffRounding::OpenEms => f64::from(x as f32),
-        };
+        let store = |x: f64| rounding.store(x);
         if mats.nodes() != grid.nodes() {
             return Err(Error::Invalid(format!(
                 "edge material map has {:?} nodes, grid has {:?}",
@@ -492,17 +540,10 @@ impl Coefficients {
                             let degenerate = cyl
                                 && (grid.edge_length(axis, p) == 0.0 || grid.mg_removed_e(axis, p));
                             if !(on_pec_face || pec[idx] || degenerate) {
-                                let geo = if cyl {
-                                    grid.dual_face_area(axis, p) / grid.edge_length(axis, p)
-                                } else {
-                                    grid.dual_delta(ab, p[b]) * grid.dual_delta(ac, p[c])
-                                        / grid.delta(axis, p[a])
-                                };
+                                let geo = e_edge_geometry(grid, axis, p);
                                 let cap = store(EPS0 * eps[idx] * geo);
                                 let g = store(kap[idx] * geo);
-                                let den = cap + 0.5 * g * dt;
-                                co[a][idx] = ((cap - 0.5 * g * dt) / den) as f32;
-                                co[3 + a][idx] = (dt / den) as f32;
+                                (co[a][idx], co[3 + a][idx]) = e_coefficients(cap, g, dt);
                             }
                         }
                         // H dual edge along `axis` through p.

@@ -137,6 +137,7 @@
 pub mod bloch_wave;
 pub mod boundary;
 mod coeffs;
+pub(crate) use coeffs::{e_coefficients, e_edge_circuit};
 pub mod conformal;
 pub mod cylindrical;
 pub mod dispersive;

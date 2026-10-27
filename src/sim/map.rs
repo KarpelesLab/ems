@@ -13,6 +13,7 @@ use crate::compile::{ModelSources, NodeMap};
 use crate::engine::boundary::PmlLayers;
 use crate::engine::cylindrical;
 use crate::engine::port::loop_entries;
+use crate::engine::{CoeffRounding, EdgeMaterials, e_coefficients, e_edge_circuit};
 use crate::engine::{
     DumpPosition, DumpQuantity, DumpTiming, EdgeDft, EdgeSource, EdgeValues, Engine, FieldSampler,
     FreqDump, LumpedElement, OperatorHandle, PeriodicPlaneWave, PlaneWave, Probe, ProbeQuantity,
@@ -433,6 +434,7 @@ pub(crate) struct BlochMap {
 /// run (`bloch`), the imaginary engine gets no excitations (sources,
 /// Thevenin sources) other than its part of the plane waves, plane waves
 /// become [`PeriodicPlaneWave`]s, and SAR dumps are not supported.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn map_sources(
     engine: &mut Engine,
     src: &ModelSources,
@@ -441,6 +443,7 @@ pub(crate) fn map_sources(
     warnings: &mut Vec<String>,
     bloch: Option<BlochMap>,
     pml: Option<&PmlLayers>,
+    medium: Option<(&EdgeMaterials, CoeffRounding)>,
 ) -> Result<Mapped> {
     let mut mapped = Mapped::default();
     let dt = engine.dt();
@@ -720,46 +723,37 @@ pub(crate) fn map_sources(
                 add_caps(engine, g.axis, &[&g.edges[..], &g.in_layer[..]].concat());
             }
         }
-        if g.topology == Topology::Parallel && fdtd.get_openems_run() {
-            replace_medium(engine, g.axis, &g.edges);
-            // openEMS limits the edge capacitance of a parallel element
-            // with an inductor and no capacitor (design §5.16.1).
+        // openEMS replaces the edge's medium by the element (design
+        // §5.16.1) and limits the edge capacitance of a parallel element
+        // with an inductor and no capacitor, and of every series element
+        // by its branch impedance at the excitation's frequency (§5.16.3).
+        let folded = fdtd.get_openems_run();
+        if folded {
+            let parallel = g.topology == Topology::Parallel;
             let no_c = g.edges.iter().all(|e| e.c.is_none());
-            if no_c
-                && g.edges.iter().any(|e| e.l.is_some())
-                && let Some(f) = waveform.and_then(|w| w.nyquist_frequency())
-            {
-                let omega = 2.0 * core::f64::consts::PI * f;
-                let kept =
-                    limit_medium_capacitance(engine, g.axis, &g.edges, omega, Topology::Parallel);
-                if kept < 0.2 {
-                    warnings.push(format!(
+            let omega = waveform
+                .and_then(|w| w.nyquist_frequency())
+                .filter(|_| !parallel || (no_c && g.edges.iter().any(|e| e.l.is_some())))
+                .map(|f| 2.0 * core::f64::consts::PI * f);
+            let kept = replace_medium(engine, g.axis, &g.edges, g.topology, medium, omega);
+            if omega.is_some() && kept < 0.2 {
+                warnings.push(if parallel {
+                    format!(
                         "lumped element {:?}: openEMS's limit on the edge capacitance of a \
                          parallel R/L element keeps {:.0} % of an edge's capacitance; the \
                          explicit update may become unstable (as it does in openEMS)",
                         g.name,
                         100.0 * kept
-                    ));
-                }
-            }
-        }
-        // openEMS limits the edge capacitance of every series element by
-        // its branch impedance at the excitation's frequency (design
-        // §5.16.3).
-        if g.topology == Topology::Series
-            && fdtd.get_openems_run()
-            && let Some(f) = waveform.and_then(|w| w.nyquist_frequency())
-        {
-            let omega = 2.0 * core::f64::consts::PI * f;
-            let kept = limit_medium_capacitance(engine, g.axis, &g.edges, omega, Topology::Series);
-            if kept < 0.2 {
-                warnings.push(format!(
-                    "lumped element {:?}: openEMS's limit on the edge capacitance of a \
-                     series element keeps {:.0} % of an edge's capacitance; the update may \
-                     become unstable (as it does in openEMS)",
-                    g.name,
-                    100.0 * kept
-                ));
+                    )
+                } else {
+                    format!(
+                        "lumped element {:?}: openEMS's limit on the edge capacitance of a \
+                         series element keeps {:.0} % of an edge's capacitance; the update may \
+                         become unstable (as it does in openEMS)",
+                        g.name,
+                        100.0 * kept
+                    )
+                });
             }
         }
         let ne = g.edges.len();
@@ -778,13 +772,17 @@ pub(crate) fn map_sources(
                 .map(|e| {
                     let i = (e.node[0] * nodes[1] + e.node[1]) * nodes[2] + e.node[2];
                     let ge = e.r.map_or(0.0, |r| 1.0 / r);
-                    let (_, cb) = crate::engine::fold_parallel(
-                        co.ca(g.axis)[i],
-                        co.cb(g.axis)[i],
-                        dt,
-                        ge,
-                        e.c.unwrap_or(0.0),
-                    );
+                    let (_, cb) = if folded {
+                        (co.ca(g.axis)[i], co.cb(g.axis)[i])
+                    } else {
+                        crate::engine::fold_parallel(
+                            co.ca(g.axis)[i],
+                            co.cb(g.axis)[i],
+                            dt,
+                            ge,
+                            e.c.unwrap_or(0.0),
+                        )
+                    };
                     if ge > 0.0 {
                         1.0 / (f64::from(cb) * ge)
                     } else {
@@ -814,13 +812,8 @@ pub(crate) fn map_sources(
                 .iter()
                 .map(|e| {
                     let i = (e.node[0] * nodes[1] + e.node[1]) * nodes[2] + e.node[2];
-                    let (_, cb) = crate::engine::fold_parallel(
-                        co.ca(g.axis)[i],
-                        co.cb(g.axis)[i],
-                        dt,
-                        e.r.map_or(0.0, |r| 1.0 / r),
-                        e.c.unwrap_or(0.0),
-                    );
+                    // `folded` holds here (an openEMS parallel element).
+                    let cb = co.cb(g.axis)[i];
                     dt * f64::from(cb) / e.l.unwrap_or(f64::INFINITY)
                 })
                 .fold(0.0f64, f64::max);
@@ -836,7 +829,8 @@ pub(crate) fn map_sources(
         }
         let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?
             .record_current()
-            .explicit_inductor(explicit);
+            .explicit_inductor(explicit)
+            .medium_folded(folded);
         for (k, weights) in g.sources {
             debug_assert_eq!(weights.len(), ne);
             let ex = &src.excitations[k];
@@ -1325,49 +1319,85 @@ pub(crate) fn map_sources(
     Ok(mapped)
 }
 
-/// openEMS semantics ([`Fdtd::openems_run`]) of a parallel lumped element
-/// on its edges: the
-/// element's capacitance *replaces* the edge's own (medium) capacitance,
-/// and its resistance the medium's conductance; values the element does
-/// not set keep the medium's. (Established by black-box comparison with
-/// openEMS v0.37: C on vacuum and on a lossy dielectric, R on a lossy
-/// dielectric agree to ~1e-6; adding the element to the medium, as the
-/// engine's [`LumpedElement`] does by itself, is ~1 % off for a 1 pF
-/// element on a 1 mm vacuum cell.) The edges are set to `C = 0` / `G = 0`
-/// where the element provides the value, so that the element's own
-/// folding ([`fold_parallel`](crate::engine::fold_parallel)) gives exactly
-/// its value there.
-fn replace_medium(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
-    let nodes = engine.grid().nodes();
-    let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
+/// openEMS semantics ([`Fdtd::openems_run`]) of a lumped element on its
+/// edges, folded once into the edge coefficients.
+///
+/// A parallel element's capacitance *replaces* the edge's own (medium)
+/// capacitance, and its resistance the medium's conductance; values the
+/// element does not set keep the medium's. (Established by black-box
+/// comparison with openEMS v0.37: C on vacuum and on a lossy dielectric, R
+/// on a lossy dielectric agree to ~1e-6; adding the element to the medium,
+/// as the engine's [`LumpedElement`] does by itself, is ~1 % off for a
+/// 1 pF element on a 1 mm vacuum cell.) A series element keeps the medium
+/// capacitance and drops its conductance (`--debug-operator`: `vv = 1` on
+/// lossy media); a series resistor without a branch is folded in as the
+/// edge's conductance (it acts as the parallel fold, §5.16.1). With
+/// `omega`, the capacitance is then limited ([`capacitance_limit`]).
+///
+/// The edge gets `C = f32(C_e)` or the medium's `C`, `G = f32(1/R_e)` or
+/// the medium's `G`, `C = f32(C_max)` where limited (rounded per
+/// `medium`'s [`CoeffRounding`], openEMS's rounding of the circuit
+/// quantities, design §5.16.7), then `vv`, `vi` in `f64`
+/// (`--debug-operator` dumps of 160 random R, C, R‖C, R‖L, L, series
+/// elements on vacuum, dielectrics and lossy media, uniform and graded
+/// meshes: every element edge bit for bit). The medium's `C`, `G` are
+/// those of the edge materials of `medium` where they give the edge's
+/// coefficients exactly, else they are recovered from the coefficients
+/// (`C = dt·(1 + ca)/(2·cb)`, `G = (1 − ca)/cb`, exact up to their `f32`
+/// rounding). The element is installed with
+/// [`medium_folded`](LumpedElement::medium_folded). Returns the smallest
+/// kept fraction of an edge's capacitance under the limit (1 without).
+fn replace_medium(
+    engine: &mut Engine,
+    axis: Axis,
+    edges: &[EdgeValues],
+    topology: Topology,
+    medium: Option<(&EdgeMaterials, CoeffRounding)>,
+    omega: Option<f64>,
+) -> f64 {
+    let grid = engine.grid().clone();
     let dt = engine.dt();
+    let rounding = medium.map_or(CoeffRounding::Exact, |m| m.1);
+    let mut kept = 1.0f64;
     let mut co = engine.coefficients_mut();
     let (ca, cb) = co.e_mut(axis);
     for e in edges {
-        if e.c.is_none() && e.r.is_none() {
+        let series = topology == Topology::Series;
+        let branch = series && (e.l.is_some() || e.c.is_some());
+        if !series && e.c.is_none() && e.r.is_none() && omega.is_none() {
             continue;
         }
-        let i = idx(e.node);
-        let (a, b) = (f64::from(ca[i]), f64::from(cb[i]));
-        let mut cap = dt * (1.0 + a) / (2.0 * b);
-        let mut cond = (1.0 - a) / b;
-        if e.c.is_some() {
-            cap = 0.0;
+        let i = grid.index(e.node);
+        let (a, b) = (ca[i], cb[i]);
+        if !b.is_finite() {
+            continue;
         }
-        if e.r.is_some() {
+        let exact = medium
+            .map(|(m, r)| e_edge_circuit(&grid, m, axis, e.node, r))
+            .filter(|&(c, g)| e_coefficients(c, g, dt) == (a, b));
+        let (mut cap, mut cond) = exact.unwrap_or_else(|| {
+            let (a, b) = (f64::from(a), f64::from(b));
+            (dt * (1.0 + a) / (2.0 * b), (1.0 - a) / b)
+        });
+        if !series && let Some(c) = e.c {
+            cap = rounding.store(c);
+        }
+        if series {
             cond = 0.0;
         }
-        let den = cap + 0.5 * cond * dt;
-        if den > 0.0 {
-            ca[i] = ((cap - 0.5 * cond * dt) / den) as f32;
-            cb[i] = (dt / den) as f32;
-        } else {
-            // Nothing left of the medium: the element provides all of the
-            // edge's C and G when it is folded in.
-            ca[i] = 1.0;
-            cb[i] = f32::INFINITY;
+        if !branch && let Some(r) = e.r {
+            cond = rounding.store(1.0 / r);
         }
+        if let Some(omega) = omega {
+            let limit = capacitance_limit(e, omega, topology);
+            if cap > limit {
+                kept = kept.min(limit / cap);
+                cap = rounding.store(limit);
+            }
+        }
+        (ca[i], cb[i]) = e_coefficients(cap, cond, dt);
     }
+    kept
 }
 
 /// openEMS's limit on the medium capacitance of the edges of a parallel
@@ -1387,57 +1417,31 @@ fn replace_medium(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
 /// with the element's per-edge `C_e'` (wave 14, same dumps: R, RL, L, LC
 /// and RLC branches, `R` = 1…1000 Ω, `L` = 1.1…50 nH, `C` = 0.5…5 pF, two
 /// frequencies, 5 digits; this is the "different update" of large series
-/// resistors noted before). Returns the smallest kept fraction of an
-/// edge's capacitance (1 when nothing was limited).
-fn limit_medium_capacitance(
-    engine: &mut Engine,
-    axis: Axis,
-    edges: &[EdgeValues],
-    omega: f64,
-    topology: Topology,
-) -> f64 {
-    let mut kept = 1.0f64;
+/// resistors noted before). Infinite if `omega` is not finite and
+/// positive, or nothing limits.
+fn capacitance_limit(e: &EdgeValues, omega: f64, topology: Topology) -> f64 {
     if !(omega.is_finite() && omega > 0.0) {
-        return kept;
+        return f64::INFINITY;
     }
-    let nodes = engine.grid().nodes();
-    let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
-    let dt = engine.dt();
-    let mut co = engine.coefficients_mut();
-    let (ca, cb) = co.e_mut(axis);
-    for e in edges {
-        let limit = match topology {
-            Topology::Parallel => {
-                e.r.map(|r| 1.0 / (20.0 * omega * r))
-                    .into_iter()
-                    .chain(e.l.map(|l| 1.0 / (20.0 * omega * omega * l)))
-                    .fold(f64::INFINITY, f64::min)
-            }
-            // The series branch's admittance at ω.
-            Topology::Series => {
-                let r = e.r.unwrap_or(0.0);
-                let x = e.l.map_or(0.0, |l| omega * l) - e.c.map_or(0.0, |c| 1.0 / (omega * c));
-                let z = r.hypot(x);
-                if z > 0.0 {
-                    1.0 / (20.0 * omega * z)
-                } else {
-                    f64::INFINITY
-                }
-            }
-        };
-        let i = idx(e.node);
-        let (a, b) = (f64::from(ca[i]), f64::from(cb[i]));
-        let cap = dt * (1.0 + a) / (2.0 * b);
-        if !(b.is_finite() && cap > limit) {
-            continue;
+    match topology {
+        Topology::Parallel => {
+            e.r.map(|r| 1.0 / (20.0 * omega * r))
+                .into_iter()
+                .chain(e.l.map(|l| 1.0 / (20.0 * omega * omega * l)))
+                .fold(f64::INFINITY, f64::min)
         }
-        kept = kept.min(limit / cap);
-        let cond = (1.0 - a) / b;
-        let den = limit + 0.5 * cond * dt;
-        ca[i] = ((limit - 0.5 * cond * dt) / den) as f32;
-        cb[i] = (dt / den) as f32;
+        // The series branch's admittance at ω.
+        Topology::Series => {
+            let r = e.r.unwrap_or(0.0);
+            let x = e.l.map_or(0.0, |l| omega * l) - e.c.map_or(0.0, |c| 1.0 / (omega * c));
+            let z = r.hypot(x);
+            if z > 0.0 {
+                1.0 / (20.0 * omega * z)
+            } else {
+                f64::INFINITY
+            }
+        }
     }
-    kept
 }
 
 /// PEC end caps of a lumped element: the transverse E edges of its two end

@@ -326,6 +326,7 @@ impl Simulation {
             &mut warnings,
             part(WavePart::Real),
             layers.as_ref(),
+            Some((&compiled.materials, compiled.coefficient_rounding)),
         )?;
         mapped.lumped_ids = mapped
             .lumped
@@ -346,6 +347,7 @@ impl Simulation {
                     &mut ignored,
                     part(WavePart::Imag),
                     layers.as_ref(),
+                    Some((&compiled.materials, compiled.coefficient_rounding)),
                 )?;
                 Some(Box::new(BlochState {
                     imag,
