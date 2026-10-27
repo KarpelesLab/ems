@@ -5281,7 +5281,11 @@ coefficient rounding (C, G, L, R rounded to f32 first, §5.16.7): 123 of
 (§5.16.8: 123 → 136 of 169 exact); lumped elements, current-probe sums,
 per-property `OverSampling` and openEMS's vacuum constants (§5.16.9:
 123 → 130); openEMS's computed time step bit for bit on every grid kind
-(§5.16.10: 123 → 127).
+(§5.16.10: 123 → 127); together 146 of 169 exact and 162 to
+the printed digits (≤ 4e-13); left: `sheet_thin_resistive` 1.5e-4,
+`lumped_series_rlc` 8.8e-5, the dispersive `debye_weight`,
+`drude_kappa`, `lorentz_weight` 2e-5…6e-5, and `param_term`,
+`prim_userdefined`, which openEMS rejects.
 
 Remaining:
 - openEMS's azimuthal multigrid coupling (3e-3…2e-2), closed-grid time
@@ -5291,7 +5295,7 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: conducting-sheet capacitances (1–3 f32 steps,
+- From the feature sweep: dispersive-pole (ADE) arithmetic; conducting-sheet capacitances (1–3 f32 steps,
   `sheet_thin_resistive` 1.5e-4) and series lumped elements (~1e-4, the
   branch state of L and C), §5.16.9; the PML, the curl order and edge
   materials of boxes in sectors and at the seam on cylindrical grids
