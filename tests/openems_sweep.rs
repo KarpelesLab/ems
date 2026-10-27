@@ -218,7 +218,7 @@ cases! {
     mat_mue_sigma: 1e-6;            // (exact; 2.3e-5; 6e-3 with csx's arithmetic σ_m average)
     mat_sigma_graded: 1e-6;         // (exact; 8.8e-5; 9e-2 with csx's average; identical material dumps)
     bg_material: 1e-6;              // (exact)
-    lorentz_weight: 1e-4;
+    lorentz_weight: 1e-6;           // (exact; 2.2e-5 before openEMS's pole arithmetic, §5.16.12)
     debye_weight: 1e-4;
     // Parameters, mesh.
     param_set: 1e-6;                // (exact)

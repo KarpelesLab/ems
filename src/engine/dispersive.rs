@@ -477,6 +477,72 @@ pub struct EdgePole {
     pub pole: Pole,
 }
 
+/// A Lorentz or Drude pole of an openEMS file, updated with openEMS's own
+/// arithmetic ([`Dispersive::push_openems`], design §5.16.12): the same
+/// explicit leapfrog scheme as [`Scheme::Leapfrog`], but in `f32`, in
+/// voltage units and with openEMS's coefficients. Identified from per-step
+/// field dumps of the black box (every update of every pole edge bit for
+/// bit): with `vi` the edge's `cb` (`db` for a magnetic pole), `C` its
+/// capacitance (inductance) [`circuit`](Self::circuit) and
+/// `d = 1 + γ·dt/2`,
+///
+/// ```text
+/// A = f32((1 − γ·dt/2)/d),  B = f32(vi·dt·ω_p²·C/d),  K = f32(ω_0²·dt/(ω_p²·C·vi))
+/// V ← A·V + B·(u^n − W),    W ← W + K·V,              u^{n+1} = u* − V   (f32, in this order)
+/// ```
+///
+/// `V = vi·j` is the branch current in volts, `W = q/C_p` the voltage of
+/// the pole's capacitor (0 for Drude), `u*` the plain kernel result; the
+/// poles of an edge are subtracted one after the other, in insertion order.
+/// The strength enters through the edge's own `C`: `ω_p` is the material's
+/// `2π·f_plasma`, not scaled by the edge's `ε` as in [`Pole`] (the same in
+/// exact arithmetic, `ω_p²·ε0·ε_e·A/l = (2π·f_p)²·C`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenEmsPole {
+    /// Electric (E edge) or magnetic (H dual edge) pole.
+    pub field: Field,
+    /// Direction of the edge.
+    pub axis: Axis,
+    /// Start node of the E edge / node of the dual edge (engine layout).
+    pub node: [usize; 3],
+    /// Plasma frequency `ω_p = 2π·f_plasma` of the material \[rad/s\].
+    pub omega_p: f64,
+    /// Resonance frequency `ω_0 = 2π·f_Lor` \[rad/s\] (0: Drude).
+    pub omega_0: f64,
+    /// Damping `γ = 1/τ` \[1/s\].
+    pub gamma: f64,
+    /// The edge's capacitance \[F\] (electric) or inductance \[H\]
+    /// (magnetic) as openEMS stores it (an `f32` value, with openEMS's
+    /// vacuum constants, see
+    /// [`CoeffRounding::OpenEms`](super::CoeffRounding::OpenEms)).
+    pub circuit: f64,
+}
+
+impl OpenEmsPole {
+    /// `[A, B, K]` for an edge with coefficient `vi` (`cb` or `db`) and
+    /// time step `dt`, in openEMS's operation order (see the type docs).
+    pub fn coefficients(&self, vi: f64, dt: f64) -> [f32; 3] {
+        let half = self.gamma * dt / 2.0;
+        let d = 1.0 + half;
+        let wp2 = self.omega_p * self.omega_p;
+        let a = (1.0 - half) / d;
+        let b = vi * dt * wp2 * self.circuit / d;
+        let k = self.omega_0 * self.omega_0 * dt / (wp2 * self.circuit * vi);
+        [a as f32, b as f32, k as f32]
+    }
+}
+
+/// How a pole is integrated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// Semi-implicit trapezoidal rule (`f64` state).
+    Trapezoidal,
+    /// Explicit leapfrog (`f64` state).
+    Leapfrog,
+    /// openEMS's `f32` leapfrog ([`OpenEmsPole`]).
+    OpenEms,
+}
+
 /// Branch state of all edges of one field type in one slab (structure of
 /// arrays, edges in global order, poles in CSR layout).
 #[derive(Debug, Default, Clone)]
@@ -501,12 +567,20 @@ struct Side {
     inv_z: Vec<f64>,
     /// `½·L` per pole (energy).
     half_l: Vec<f64>,
-    /// Whether the pole uses the explicit leapfrog update.
-    explicit: Vec<bool>,
+    /// How the pole is integrated.
+    kind: Vec<Kind>,
     /// Branch current `j^n` (magnetic: voltage) per pole.
     j: Vec<f64>,
     /// Branch charge `q^n` per pole.
     q: Vec<f64>,
+    /// openEMS poles: `(A, B, K)` per pole (zeros for the others).
+    oe_coef: Vec<[f32; 3]>,
+    /// openEMS poles: `(V, W)` per pole.
+    oe_state: Vec<[f32; 2]>,
+    /// Whether the edge has poles other than openEMS ones.
+    mixed: Vec<bool>,
+    /// `cb` / `db` of the edge at installation (look-ahead only).
+    coef: Vec<f64>,
 }
 
 impl Side {
@@ -534,47 +608,107 @@ impl Side {
     /// `edges`.
     fn correct(&mut self, f: &mut SlabMut<'_>, coef: [&[f32]; 3], dt: f64, edges: Range<usize>) {
         let p = f.nodes()[1] * f.nodes()[2];
-        let mut p0 = edges
-            .start
-            .checked_sub(1)
-            .map_or(0, |e| self.pole_end[e] as usize);
+        let mut next = Vec::new();
         for e in edges {
-            let p1 = self.pole_end[e] as usize;
             let ax = self.axis[e] as usize;
             let gi = self.plane[e] as usize;
             let off = self.off[e] as usize;
             let cb = coef[ax][gi * p + off] as f64;
-            let half_prev = 0.5 * self.prev[e];
             let plane = f.plane_mut(Axis::ALL[ax], gi);
-            let u_star = plane[off] as f64;
-            let mut s = 0.0;
-            for q in p0..p1 {
-                if self.explicit[q] {
+            plane[off] = self.step_edge(e, plane[off], cb, dt, &mut next);
+            let p0 = self.pole_start(e);
+            for (q, (j, c, oe)) in (p0..).zip(next.drain(..)) {
+                self.j[q] = j;
+                self.q[q] = c;
+                self.oe_state[q] = oe;
+            }
+        }
+    }
+
+    /// First pole of edge `e`.
+    fn pole_start(&self, e: usize) -> usize {
+        e.checked_sub(1).map_or(0, |e| self.pole_end[e] as usize)
+    }
+
+    /// The update of edge `e` from the kernel result `u_in` (module docs,
+    /// [`OpenEmsPole`]): returns the corrected value and pushes each pole's
+    /// new `(j, q, [V, W])` to `next`, the state unchanged.
+    fn step_edge(
+        &self,
+        e: usize,
+        u_in: f32,
+        cb: f64,
+        dt: f64,
+        next: &mut Vec<(f64, f64, [f32; 2])>,
+    ) -> f32 {
+        let (p0, p1) = (self.pole_start(e), self.pole_end[e] as usize);
+        next.clear();
+        // openEMS's poles first, in f32 (`OpenEmsPole`).
+        let mut u32_star = u_in;
+        let prev32 = self.prev[e] as f32;
+        for q in p0..p1 {
+            let mut oe = self.oe_state[q];
+            if self.kind[q] == Kind::OpenEms {
+                let [a, b, k] = self.oe_coef[q];
+                let [v, w] = oe;
+                let v = a * v + b * (prev32 - w);
+                oe = [v, w + k * v];
+                u32_star -= v;
+            }
+            next.push((self.j[q], self.q[q], oe));
+        }
+        if !self.mixed[e] {
+            return u32_star;
+        }
+        let half_prev = 0.5 * self.prev[e];
+        let u_star = u32_star as f64;
+        let mut s = 0.0;
+        for q in p0..p1 {
+            match self.kind[q] {
+                Kind::OpenEms => {}
+                Kind::Leapfrog => {
                     // Leapfrog: j^{n+½} from u^n, then q^{n+1}.
                     let j = self.a[q] * self.j[q]
                         + self.inv_z[q] * (self.prev[e] - self.q[q] * self.inv_c[q]);
-                    self.j[q] = j;
-                    self.q[q] += dt * j;
+                    next[q - p0].0 = j;
+                    next[q - p0].1 = self.q[q] + dt * j;
                     s += j;
-                } else {
+                }
+                Kind::Trapezoidal => {
                     s += (self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev)
                         * self.inv_z[q];
                 }
             }
-            let u_new = ((u_star - cb * s) / (1.0 + 0.5 * cb * self.sum_inv_z[e])) as f32;
-            plane[off] = u_new;
-            let half_new = 0.5 * u_new as f64;
-            for q in p0..p1 {
-                if self.explicit[q] {
-                    continue;
-                }
-                let k = self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev;
-                let jb = (k + half_new) * self.inv_z[q];
-                self.j[q] = 2.0 * jb - self.j[q];
-                self.q[q] += dt * jb;
-            }
-            p0 = p1;
         }
+        let u_new = ((u_star - cb * s) / (1.0 + 0.5 * cb * self.sum_inv_z[e])) as f32;
+        let half_new = 0.5 * u_new as f64;
+        for q in p0..p1 {
+            if self.kind[q] != Kind::Trapezoidal {
+                continue;
+            }
+            let k = self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev;
+            let jb = (k + half_new) * self.inv_z[q];
+            next[q - p0].0 = 2.0 * jb - self.j[q];
+            next[q - p0].1 = self.q[q] + dt * jb;
+        }
+        u_new
+    }
+
+    /// The edge of axis `axis` at plane `plane`, offset `off`, if any
+    /// (edges are sorted by plane, axis and offset).
+    fn find(&self, axis: Axis, plane: usize, off: usize) -> Option<usize> {
+        let key = (plane as u32, axis.index() as u8, off as u32);
+        let mut lo = 0;
+        let mut hi = self.edges();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match (self.plane[mid], self.axis[mid], self.off[mid]).cmp(&key) {
+                core::cmp::Ordering::Less => lo = mid + 1,
+                core::cmp::Ordering::Greater => hi = mid,
+                core::cmp::Ordering::Equal => return Some(mid),
+            }
+        }
+        None
     }
 
     /// Adds `Σ ½·L·j² + ½·q²/C_p` to `w`, in pole order (one running
@@ -600,9 +734,25 @@ struct EdgeBranches {
     field: Field,
     axis: Axis,
     node: [usize; 3],
-    /// Per pole: `(2L/dt, 1/C_p, 1/z, ½·L, false)` (trapezoidal) or
-    /// `(k_a, 1/C_p, k_b, ½·L, true)` (leapfrog).
-    poles: Vec<(f64, f64, f64, f64, bool)>,
+    /// `cb` / `db` at installation.
+    coef: f64,
+    poles: Vec<Branch>,
+}
+
+/// One pole's integration constants.
+#[derive(Debug, Clone, Copy)]
+struct Branch {
+    /// `2L/dt` (trapezoidal) or `k_a` (leapfrog).
+    a: f64,
+    /// `1/C_p`.
+    inv_c: f64,
+    /// `1/z` (trapezoidal) or `k_b` (leapfrog).
+    inv_z: f64,
+    /// `½·L` (energy).
+    half_l: f64,
+    kind: Kind,
+    /// `(A, B, K)` of an openEMS pole.
+    oe: [f32; 3],
 }
 
 /// The slab hooks: per-slab state.
@@ -702,6 +852,7 @@ impl SlabHooks for Parts {
 #[derive(Debug, Default)]
 pub struct Dispersive {
     entries: Vec<EdgePole>,
+    openems: Vec<OpenEmsPole>,
     scheme: Scheme,
     /// Built at installation, partitioned at registration.
     built: Vec<EdgeBranches>,
@@ -859,19 +1010,35 @@ impl Dispersive {
         self.push(e.field, e.axis, e.node, e.pole);
     }
 
+    /// Adds a pole with openEMS's arithmetic (see [`OpenEmsPole`]; the
+    /// openEMS-file path). Poles with `ω_p = 0` are ignored. On an edge
+    /// that also has [`push`](Self::push) poles, the openEMS poles are
+    /// applied first.
+    pub fn push_openems(&mut self, p: OpenEmsPole) {
+        if p.omega_p != 0.0 {
+            self.openems.push(p);
+        }
+    }
+
     /// The requested (non-null) pole entries, in insertion order.
     pub fn entries(&self) -> &[EdgePole] {
         &self.entries
     }
 
-    /// Number of requested (non-null) pole entries.
+    /// The requested openEMS poles ([`push_openems`](Self::push_openems)),
+    /// in insertion order.
+    pub fn openems_entries(&self) -> &[OpenEmsPole] {
+        &self.openems
+    }
+
+    /// Number of requested (non-null) pole entries, both kinds.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() + self.openems.len()
     }
 
     /// Whether no pole was requested.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.openems.is_empty()
     }
 
     /// Number of distinct edges carrying poles after installation.
@@ -902,25 +1069,50 @@ impl Dispersive {
         let grid = engine.grid();
         let n = grid.nodes();
         let dt = engine.dt();
+        let in_grid = |field: Field, axis: Axis, node: [usize; 3]| {
+            let a = axis.index();
+            let (b, c) = axis.others();
+            let (b, c) = (b.index(), c.index());
+            let exists = (0..3).all(|t| node[t] < n[t])
+                && match field {
+                    Field::Electric => node[a] + 1 < n[a],
+                    Field::Magnetic => node[b] + 1 < n[b] && node[c] + 1 < n[c],
+                };
+            if exists {
+                Ok(())
+            } else {
+                Err(Error::Invalid(format!(
+                    "dispersive {field:?} edge {axis}:{node:?} is not in the grid ({n:?} nodes)"
+                )))
+            }
+        };
         for e in &self.entries {
             e.pole.validate()?;
-            let a = e.axis.index();
-            let (b, c) = e.axis.others();
-            let (b, c) = (b.index(), c.index());
-            let exists = (0..3).all(|t| e.node[t] < n[t])
-                && match e.field {
-                    Field::Electric => e.node[a] + 1 < n[a],
-                    Field::Magnetic => e.node[b] + 1 < n[b] && e.node[c] + 1 < n[c],
-                };
-            if !exists {
+            in_grid(e.field, e.axis, e.node)?;
+        }
+        for e in &self.openems {
+            let vals = [e.omega_p, e.omega_0, e.gamma, e.circuit];
+            if !vals.iter().all(|v| v.is_finite() && *v >= 0.0) {
                 return Err(Error::Invalid(format!(
-                    "dispersive {:?} edge {}:{:?} is not in the grid ({n:?} nodes)",
-                    e.field, e.axis, e.node
+                    "openEMS dispersive pole {e:?}: parameters must be finite and >= 0"
                 )));
             }
+            in_grid(e.field, e.axis, e.node)?;
         }
-        let mut entries = self.entries.clone();
-        let key = |e: &EdgePole| (e.node[0], e.field, e.axis.index(), e.node[1], e.node[2]);
+        // openEMS poles first on their edge (stable sort keeps the
+        // insertion order of each kind).
+        type Entry = (Field, Axis, [usize; 3], Result<Pole, OpenEmsPole>);
+        let mut entries: Vec<Entry> = self
+            .openems
+            .iter()
+            .map(|e| (e.field, e.axis, e.node, Err(*e)))
+            .chain(
+                self.entries
+                    .iter()
+                    .map(|e| (e.field, e.axis, e.node, Ok(e.pole))),
+            )
+            .collect();
+        let key = |e: &Entry| (e.2[0], e.0, e.1.index(), e.2[1], e.2[2]);
         entries.sort_by_key(key);
         let co = engine.coefficients();
         let mut built: Vec<EdgeBranches> = Vec::new();
@@ -928,34 +1120,35 @@ impl Dispersive {
         let mut last = None;
         for e in &entries {
             let k = key(e);
-            let idx = grid.index(e.node);
-            let (ab, ac) = e.axis.others();
+            let (field, axis, node, pole) = *e;
+            let idx = grid.index(node);
+            let (ab, ac) = axis.others();
             // `m = X0·g`, `g` the dual face area over the edge length
             // (cylindrical grids: the physical lengths and areas).
-            let (coef, m) = match e.field {
+            let (coef, m) = match field {
                 Field::Electric if grid.is_cylindrical() => (
-                    co.cb(e.axis)[idx],
-                    EPS0 * grid.dual_face_area(e.axis, e.node) / grid.edge_length(e.axis, e.node),
+                    co.cb(axis)[idx],
+                    EPS0 * grid.dual_face_area(axis, node) / grid.edge_length(axis, node),
                 ),
                 Field::Electric => (
-                    co.cb(e.axis)[idx],
-                    EPS0 * grid.dual_delta(ab, e.node[ab.index()])
-                        * grid.dual_delta(ac, e.node[ac.index()])
-                        / grid.delta(e.axis, e.node[e.axis.index()]),
+                    co.cb(axis)[idx],
+                    EPS0 * grid.dual_delta(ab, node[ab.index()])
+                        * grid.dual_delta(ac, node[ac.index()])
+                        / grid.delta(axis, node[axis.index()]),
                 ),
                 Field::Magnetic if grid.is_cylindrical() => (
-                    co.db(e.axis)[idx],
-                    MU0 * grid.face_area(e.axis, e.node) / grid.dual_edge_length(e.axis, e.node),
+                    co.db(axis)[idx],
+                    MU0 * grid.face_area(axis, node) / grid.dual_edge_length(axis, node),
                 ),
                 Field::Magnetic => (
-                    co.db(e.axis)[idx],
-                    MU0 * grid.delta(ab, e.node[ab.index()]) * grid.delta(ac, e.node[ac.index()])
-                        / grid.dual_delta(e.axis, e.node[e.axis.index()]),
+                    co.db(axis)[idx],
+                    MU0 * grid.delta(ab, node[ab.index()]) * grid.delta(ac, node[ac.index()])
+                        / grid.dual_delta(axis, node[axis.index()]),
                 ),
             };
             let new_edge = last != Some(k);
             last = Some(k);
-            if coef == 0.0 {
+            if coef == 0.0 || matches!(pole, Err(p) if p.circuit == 0.0) {
                 if new_edge {
                     skipped += 1;
                 }
@@ -963,21 +1156,48 @@ impl Dispersive {
             }
             if new_edge {
                 built.push(EdgeBranches {
-                    field: e.field,
-                    axis: e.axis,
-                    node: e.node,
+                    field,
+                    axis,
+                    node,
+                    coef: f64::from(coef),
                     poles: Vec::new(),
                 });
             }
-            let leap = match self.scheme {
-                Scheme::Leapfrog => e.pole.leapfrog(m, dt),
-                Scheme::Trapezoidal => None,
-            };
-            let branch = match leap {
-                Some((ka, kb, inv_c, half_l)) => (ka, inv_c, kb, half_l, true),
-                None => {
-                    let (a, inv_c, z) = e.pole.branch(m, dt);
-                    (a, inv_c, 1.0 / z, 0.25 * a * dt, false)
+            let branch = match pole {
+                Err(p) => Branch {
+                    a: 0.0,
+                    inv_c: 0.0,
+                    inv_z: 0.0,
+                    half_l: 0.0,
+                    kind: Kind::OpenEms,
+                    oe: p.coefficients(f64::from(coef), dt),
+                },
+                Ok(pole) => {
+                    let leap = match self.scheme {
+                        Scheme::Leapfrog => pole.leapfrog(m, dt),
+                        Scheme::Trapezoidal => None,
+                    };
+                    match leap {
+                        Some((ka, kb, inv_c, half_l)) => Branch {
+                            a: ka,
+                            inv_c,
+                            inv_z: kb,
+                            half_l,
+                            kind: Kind::Leapfrog,
+                            oe: [0.0; 3],
+                        },
+                        None => {
+                            let (a, inv_c, z) = pole.branch(m, dt);
+                            Branch {
+                                a,
+                                inv_c,
+                                inv_z: 1.0 / z,
+                                half_l: 0.25 * a * dt,
+                                kind: Kind::Trapezoidal,
+                                oe: [0.0; 3],
+                            }
+                        }
+                    }
                 }
             };
             built
@@ -1068,19 +1288,25 @@ impl Operator for Dispersive {
             side.off.push((eb.node[1] * nz + eb.node[2]) as u32);
             side.prev.push(0.0);
             let mut sum = 0.0;
-            for (a, inv_c, inv_z, half_l, explicit) in eb.poles {
-                side.a.push(a);
-                side.inv_c.push(inv_c);
-                side.inv_z.push(inv_z);
-                side.half_l.push(half_l);
-                side.explicit.push(explicit);
+            let mut mixed = false;
+            for b in eb.poles {
+                side.a.push(b.a);
+                side.inv_c.push(b.inv_c);
+                side.inv_z.push(b.inv_z);
+                side.half_l.push(b.half_l);
+                side.kind.push(b.kind);
                 side.j.push(0.0);
                 side.q.push(0.0);
-                if !explicit {
-                    sum += inv_z;
+                side.oe_coef.push(b.oe);
+                side.oe_state.push([0.0; 2]);
+                if b.kind == Kind::Trapezoidal {
+                    sum += b.inv_z;
                 }
+                mixed |= b.kind != Kind::OpenEms;
             }
             side.sum_inv_z.push(sum);
+            side.mixed.push(mixed);
+            side.coef.push(eb.coef);
             side.pole_end.push(side.a.len() as u32);
         }
         let parts = Arc::new(Parts {
@@ -1096,6 +1322,26 @@ impl Operator for Dispersive {
     /// [Magnetic poles](self#magnetic-poles)).
     fn energy(&self) -> f64 {
         self.electric_energy() + self.magnetic_energy()
+    }
+
+    fn has_lookahead_currents(&self) -> bool {
+        self.parts
+            .as_ref()
+            .is_some_and(|p| (0..p.slabs.len()).any(|s| p.slab(s).h.edges() > 0))
+    }
+
+    /// The corrected current of a magnetic-pole dual edge, as the next H
+    /// half-step would make it (the state is not changed): look-ahead H
+    /// samples after the last step include the poles, as openEMS's do.
+    fn lookahead_current(&self, axis: Axis, node: [usize; 3], kernel: f32) -> Option<f32> {
+        let p = self.parts.as_ref()?;
+        let off = node[1] * self.nodes[2] + node[2];
+        (0..p.slabs.len()).find_map(|s| {
+            let st = p.slab(s);
+            let e = st.h.find(axis, node[0], off)?;
+            let mut next = Vec::new();
+            Some(st.h.step_edge(e, kernel, st.h.coef[e], p.dt, &mut next))
+        })
     }
 }
 
@@ -1120,6 +1366,82 @@ mod tests {
         let s = Pole::lorentz(3e10, 1e10, 1e9).scaled(0.25);
         let r = s.susceptibility(w) / Pole::lorentz(3e10, 1e10, 1e9).susceptibility(w);
         assert!((r - 0.25).norm() < 1e-12);
+    }
+
+    /// A box of poles on the E and H edges of nodes 3..7 of a 1 mm
+    /// vacuum grid, an initial field and `steps` steps: `(u_z, i_x)` and
+    /// the look-ahead current sample of the dual edge `H_x(5, 5, 5)`.
+    fn pole_box(threads: usize, openems: bool, steps: u64) -> (Vec<f32>, Vec<f32>, f64) {
+        use crate::engine::{CellMaterials, Material, Probe};
+        let g = Grid::uniform([10, 10, 10], [1e-3; 3]).unwrap();
+        let m = CellMaterials::new(&g, Material::VACUUM);
+        let mut e = Engine::builder(g.clone())
+            .materials(m)
+            .threads(threads)
+            .build()
+            .unwrap();
+        let (wp, w0, gamma) = (2.0 * core::f64::consts::PI * 10e9, 2.0e10 * 2.5, 1e9);
+        let mut d = Dispersive::new().with_scheme(Scheme::Leapfrog);
+        for field in [Field::Electric, Field::Magnetic] {
+            for axis in Axis::ALL {
+                for i in 3..8 {
+                    for j in 3..8 {
+                        for k in 3..8 {
+                            let node = [i, j, k];
+                            // `g = A/l` of a uniform 1 mm cell.
+                            let (x0, geo) = match field {
+                                Field::Electric => (EPS0, 1e-3),
+                                Field::Magnetic => (MU0, 1e-3),
+                            };
+                            if openems {
+                                d.push_openems(OpenEmsPole {
+                                    field,
+                                    axis,
+                                    node,
+                                    omega_p: wp,
+                                    omega_0: w0,
+                                    gamma,
+                                    circuit: f64::from((x0 * geo) as f32),
+                                });
+                            } else {
+                                d.push(field, axis, node, Pole::lorentz(wp, w0, gamma));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        d.add_to(&mut e).unwrap();
+        let probe = e.add_operator(Probe::current(Axis::X, [5, 5, 5]));
+        {
+            let mut f = e.fields_mut();
+            f.u.set(Axis::Z, [5, 5, 4], 1.0);
+            f.u.set(Axis::Y, [4, 5, 5], -0.5);
+        }
+        e.run(steps);
+        let look = e.operator(&probe).lookahead(&e).map_or(f64::NAN, |s| s.1);
+        (e.u_component(Axis::Z), e.i_component(Axis::X), look)
+    }
+
+    /// openEMS's `f32` pole arithmetic: the same physics as the `f64`
+    /// leapfrog scheme, bit-identical for any thread count, and the
+    /// look-ahead current includes the magnetic poles.
+    #[test]
+    fn openems_poles() {
+        let (u1, i1, l1) = pole_box(1, true, 60);
+        let (u3, i3, l3) = pole_box(3, true, 60);
+        assert!(u1 == u3 && i1 == i3 && l1.to_bits() == l3.to_bits());
+        let (uf, _, _) = pole_box(1, false, 60);
+        let max = uf.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let diff = u1
+            .iter()
+            .zip(&uf)
+            .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(max > 1e-3 && diff < 1e-4 * max, "{diff} of {max}");
+        // The look-ahead of step 60 is the current the next step makes.
+        let (_, i61, _) = pole_box(1, true, 61);
+        let n = 11;
+        assert_eq!(l1, f64::from(i61[(5 * n + 5) * n + 5]));
     }
 
     /// The branch admittance `1/(jωL + R + 1/(jωC))` is `jω·ε0·χ·g`.

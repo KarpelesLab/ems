@@ -475,6 +475,13 @@ pub struct Compiled {
     /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
     /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
     pub dispersive: Vec<EdgePole>,
+    /// The Lorentz/Drude poles of an openEMS file ([`Fdtd::openems_run`]),
+    /// updated with openEMS's `f32` arithmetic
+    /// ([`OpenEmsPole`](crate::engine::dispersive::OpenEmsPole), design
+    /// §5.16.12); installed in the same [`Dispersive`] operator as
+    /// [`dispersive`](Self::dispersive), which then holds the Debye poles
+    /// and the conducting-sheet branches only.
+    pub dispersive_openems: Vec<crate::engine::dispersive::OpenEmsPole>,
     /// Time integration of the Lorentz/Drude poles of
     /// [`dispersive`](Self::dispersive) ([`CompileOptions::dispersive_scheme`]).
     pub dispersive_scheme: DispersiveScheme,
@@ -700,7 +707,7 @@ impl Compiled {
         if self.openems_pmc {
             self.add_mur(engine, &mut h)?;
         }
-        if !self.dispersive.is_empty() {
+        if !(self.dispersive.is_empty() && self.dispersive_openems.is_empty()) {
             let layers = h
                 .openems_pml
                 .as_ref()
@@ -715,6 +722,16 @@ impl Compiled {
                     continue;
                 }
                 d.push_entry(e);
+                any = true;
+            }
+            for &e in &self.dispersive_openems {
+                if let Some(l) = &layers
+                    && l.contains(e.field == DispersiveField::Electric, e.axis, e.node)
+                {
+                    h.pml_poles_ignored += 1;
+                    continue;
+                }
+                d.push_openems(e);
                 any = true;
             }
             if any {
@@ -1576,7 +1593,17 @@ pub fn compile(
         None
     };
 
-    let mut dispersive = dispersive::dispersive_poles(model, &node_map, &materials, &mut warnings);
+    // openEMS's pole arithmetic (files, Cartesian grids, the leapfrog
+    // scheme; design §5.16.12).
+    let openems_poles =
+        fdtd.get_openems_run() && !cyl && opts.dispersive_scheme == DispersiveScheme::Leapfrog;
+    let (mut dispersive, dispersive_openems) = dispersive::dispersive_poles(
+        model,
+        &node_map,
+        &materials,
+        openems_poles.then_some(&grid),
+        &mut warnings,
+    );
     let thin_wires = wire::thin_wires(
         full_model,
         &grid,
@@ -1594,6 +1621,11 @@ pub fn compile(
         &dispersive,
         opts.dispersive_scheme,
     )?;
+    if openems_poles {
+        // The Lorentz/Drude poles run with openEMS's arithmetic
+        // (`dispersive_openems`); Debye poles keep the trapezoidal rule.
+        dispersive.retain(|e| matches!(e.pole, crate::engine::Pole::Debye { .. }));
+    }
     let (faces, (mut mur, mut pml)) = map_boundaries(fdtd);
     if cyl {
         cylindrical::drop_ignored_boundaries(&grid, &mut mur, &mut pml, &mut warnings);
@@ -1704,6 +1736,7 @@ pub fn compile(
         node_map,
         abc,
         dispersive,
+        dispersive_openems,
         dispersive_scheme: opts.dispersive_scheme,
         thin_wires,
         oblique_wires,

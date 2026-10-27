@@ -447,6 +447,26 @@ pub(crate) fn e_edge_circuit(
     )
 }
 
+/// The medium inductance of the H dual edge along `axis` at `p` as
+/// [`Coefficients::from_edges_rounded`] forms it (with `rounding`
+/// applied).
+pub(crate) fn h_edge_inductance(
+    grid: &Grid,
+    mats: &EdgeMaterials,
+    axis: Axis,
+    p: [usize; 3],
+    rounding: CoeffRounding,
+) -> f64 {
+    let (ab, ac) = axis.others();
+    let geo = if grid.is_cylindrical() {
+        grid.face_area(axis, p) / grid.dual_edge_length(axis, p)
+    } else {
+        grid.delta(ab, p[ab.index()]) * grid.delta(ac, p[ac.index()])
+            / grid.dual_delta(axis, p[axis.index()])
+    };
+    rounding.store(rounding.mu0() * mats.mu_r(axis)[grid.index(p)] * geo)
+}
+
 /// `(ca, cb)` of an E edge with capacitance `cap` and conductance `g`:
 /// `ca = (C − G·dt/2)/(C + G·dt/2)`, `cb = dt/(C + G·dt/2)` in `f64`,
 /// rounded once to `f32`.

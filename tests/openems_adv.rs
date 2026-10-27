@@ -129,7 +129,9 @@ fn check(name: &str, tol: f64) {
 // TEM parallel-plate line (PEC z walls, PMC y walls) of 100 × 2 × 2 cells
 // of 1 mm, a soft Ez plane source at x = 10 mm, a dispersive slab on
 // 30 ≤ x ≤ 70 mm (faces on mesh lines), voltage probes at x = 20, 50,
-// 80 mm, 1.8 ps time step. Measured agreement ~1.5e-6 for every case.
+// 80 mm, 1.8 ps time step. Measured agreement ~1.5e-6 for every case;
+// the Lorentz and Drude cases are bit-identical since openEMS's pole
+// arithmetic (design §5.16.12: 1.0e-12…1.8e-12, the 12 printed digits).
 
 /// Debye slab (`Epsilon = 2`, `EpsilonDelta_1 = 3`, `τ = 30 ps`).
 #[test]
@@ -142,28 +144,28 @@ fn debye_slab() {
 /// edge's averaged `ε∞` (trapezoidal scheme: 2.4e-2 off).
 #[test]
 fn drude_slab() {
-    check("adv_drude_slab", 2e-5);
+    check("adv_drude_slab", 1e-6);
 }
 
 /// Lossy Lorentz slab (`Epsilon = 2`, `f_p = 5 GHz`, `f_Lor = 7 GHz`,
 /// `τ = 1 ns`, resonance in the band).
 #[test]
 fn lorentz_slab() {
-    check("adv_lorentz_slab", 2e-5);
+    check("adv_lorentz_slab", 1e-6);
 }
 
 /// Magnetic Lorentz slab (`Epsilon = 1.5`, `Mue = 1.2`, magnetic
 /// `f_p = 4 GHz`, `f_Lor = 8 GHz`, `τ = 0.5 ns`).
 #[test]
 fn lorentz_magnetic_slab() {
-    check("adv_lorentz_mag_slab", 2e-5);
+    check("adv_lorentz_mag_slab", 1e-6);
 }
 
 /// Two-pole material (`Order = 2`): an electric Lorentz pole, and a
 /// second order with an electric and a magnetic Drude pole.
 #[test]
 fn lorentz_two_poles() {
-    check("adv_lorentz2_slab", 2e-5);
+    check("adv_lorentz2_slab", 1e-6);
 }
 
 /// Debye slab with faces off the mesh: `29.6 ≤ x ≤ 70.4`, `z ≤ 1.2` (the
@@ -178,7 +180,7 @@ fn debye_offgrid() {
 /// the time discretisation matters here (trapezoidal: 5e-2 off).
 #[test]
 fn lorentz_coarse() {
-    check("adv_lorentz_coarse", 2e-5);
+    check("adv_lorentz_coarse", 1e-6);
 }
 
 /// The same coarse Lorentz line with the trapezoidal scheme differs by a

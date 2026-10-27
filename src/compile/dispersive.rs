@@ -68,9 +68,9 @@ use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
 
 use super::NodeMap;
 use crate::axis::Axis;
-use crate::engine::EdgeMaterials;
-use crate::engine::Pole;
-use crate::engine::dispersive::{EdgePole, Field};
+
+use crate::engine::dispersive::{EdgePole, Field, OpenEmsPole};
+use crate::engine::{CoeffRounding, EdgeMaterials, Grid, Pole, e_edge_circuit, h_edge_inductance};
 
 /// Value of `a` along `dir` at `vars` (isotropic: axis 0).
 fn val(a: &Aniso, iso: bool, dir: usize, vars: &[f64; 7]) -> f64 {
@@ -99,7 +99,9 @@ fn lorentz_pole(f_p: f64, f_l: f64, tau: f64, inf: f64) -> Pole {
 }
 
 /// Poles of `field` along `dir` of a Lorentz material at Cartesian `c`,
-/// on an edge whose effective static `ε` (or `μ`) is `inf`.
+/// on an edge whose effective static `ε` (or `μ`) is `inf`; with
+/// `raw`, also the material parameters `(ω_p, ω_0, γ)` of each pole kept
+/// (unscaled `ω_p = 2π·f_p`, for openEMS's arithmetic).
 fn lorentz_poles(
     m: &LorentzMaterial,
     field: Field,
@@ -107,6 +109,7 @@ fn lorentz_poles(
     c: Vec3,
     inf: f64,
     out: &mut Vec<Pole>,
+    mut raw: Option<&mut Vec<[f64; 3]>>,
 ) {
     let vars = weight_vars(c);
     let iso = m.material.isotropic;
@@ -123,14 +126,18 @@ fn lorentz_poles(
                 &p.mue_relax_time,
             ),
         };
-        let pole = lorentz_pole(
+        let (fp, fl, tau) = (
             val(fp, iso, dir, &vars),
             val(fl, iso, dir, &vars),
             val(tau, iso, dir, &vars),
-            inf,
         );
+        let pole = lorentz_pole(fp, fl, tau, inf);
         if !pole.is_null() {
             out.push(pole);
+            if let Some(r) = raw.as_deref_mut() {
+                let gamma = if tau > 0.0 { 1.0 / tau } else { 0.0 };
+                r.push([two_pi() * fp, two_pi() * fl, gamma]);
+            }
         }
     }
 }
@@ -162,7 +169,15 @@ struct Sampler<'a> {
 impl Sampler<'_> {
     /// Poles of the dispersive property winning at `p` (none for metal,
     /// plain materials or background).
-    fn sample(&self, p: Vec3, field: Field, dir: usize, edge_inf: f64, out: &mut Vec<Pole>) {
+    fn sample(
+        &self,
+        p: Vec3,
+        field: Field,
+        dir: usize,
+        edge_inf: f64,
+        out: &mut Vec<Pole>,
+        raw: Option<&mut Vec<[f64; 3]>>,
+    ) {
         let Some(h) = self.index.query(p) else {
             return;
         };
@@ -173,7 +188,7 @@ impl Sampler<'_> {
         };
         match &h.property.kind {
             PropertyKind::LorentzMaterial(m) => {
-                lorentz_poles(m, field, dir, c, edge_inf, out);
+                lorentz_poles(m, field, dir, c, edge_inf, out, raw);
             }
             PropertyKind::DebyeMaterial(m) if field == Field::Electric => {
                 debye_poles(m, dir, c, out);
@@ -192,8 +207,15 @@ impl Sampler<'_> {
 
     /// Poles of the E edge (`field = Electric`) or H dual edge along `d`
     /// at node `n`: those of the property at the edge's midpoint (see the
-    /// module docs).
-    fn edge_poles(&self, field: Field, d: usize, n: [usize; 3], edge_inf: f64) -> Vec<Pole> {
+    /// module docs); the Lorentz/Drude material parameters in `raw`.
+    fn edge_poles(
+        &self,
+        field: Field,
+        d: usize,
+        n: [usize; 3],
+        edge_inf: f64,
+        raw: Option<&mut Vec<[f64; 3]>>,
+    ) -> Vec<Pole> {
         let (t1, t2) = ((d + 1) % 3, (d + 2) % 3);
         let mut p = Vec3::ZERO;
         match field {
@@ -209,7 +231,7 @@ impl Sampler<'_> {
             }
         }
         let mut out = Vec::new();
-        self.sample(p, field, d, edge_inf, &mut out);
+        self.sample(p, field, d, edge_inf, &mut out, raw);
         out
     }
 }
@@ -229,12 +251,18 @@ fn node_range(lines: &[f64], lo: f64, hi: f64) -> core::ops::Range<usize> {
 /// The dispersive poles of `model` per engine edge (see the module docs).
 /// Invalid poles are dropped with a warning. On a cylindrical grid the
 /// midpoints are `(ρ, α, z)` points.
+///
+/// With `openems` (the engine grid of an openEMS file), the Lorentz and
+/// Drude poles are also returned as [`OpenEmsPole`]s, with the edge's
+/// capacitance (inductance) as openEMS's coefficients form it
+/// ([`CoeffRounding::OpenEms`]); the first list still holds every pole.
 pub(super) fn dispersive_poles(
     model: &csx::ContinuousStructure,
     node_map: &NodeMap,
     materials: &EdgeMaterials,
+    openems: Option<&Grid>,
     warnings: &mut Vec<String>,
-) -> Vec<EdgePole> {
+) -> (Vec<EdgePole>, Vec<OpenEmsPole>) {
     let dispersive =
         TypeMask::of(PropertyType::LorentzMaterial) | TypeMask::of(PropertyType::DebyeMaterial);
     let mut bbox = BoundingBox::EMPTY;
@@ -253,7 +281,7 @@ pub(super) fn dispersive_poles(
         }
     }
     if bbox.is_empty() || !(bbox.min.is_finite() && bbox.max.is_finite()) {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let cs = model.grid.coord_system;
     let s = Sampler {
@@ -275,6 +303,8 @@ pub(super) fn dispersive_poles(
         }
     });
     let mut out = Vec::new();
+    let mut oe = Vec::new();
+    let mut raw = Vec::new();
     let mut bad = 0usize;
     let fields: &[Field] = if magnetic {
         &[Field::Electric, Field::Magnetic]
@@ -301,7 +331,23 @@ pub(super) fn dispersive_poles(
                             Field::Electric => materials.eps_r(axis)[idx],
                             Field::Magnetic => materials.mu_r(axis)[idx],
                         };
-                        for pole in s.edge_poles(field, d, n, edge_inf) {
+                        raw.clear();
+                        let poles = s.edge_poles(
+                            field,
+                            d,
+                            n,
+                            edge_inf,
+                            openems.is_some().then_some(&mut raw),
+                        );
+                        let circuit = openems.filter(|_| !raw.is_empty()).map(|g| match field {
+                            Field::Electric => {
+                                e_edge_circuit(g, materials, axis, n, CoeffRounding::OpenEms).0
+                            }
+                            Field::Magnetic => {
+                                h_edge_inductance(g, materials, axis, n, CoeffRounding::OpenEms)
+                            }
+                        });
+                        for (q, pole) in poles.into_iter().enumerate() {
                             if pole.validate().is_err() {
                                 bad += 1;
                                 continue;
@@ -312,6 +358,18 @@ pub(super) fn dispersive_poles(
                                 node: n,
                                 pole,
                             });
+                            if let Some(circuit) = circuit {
+                                let [omega_p, omega_0, gamma] = raw[q];
+                                oe.push(OpenEmsPole {
+                                    field,
+                                    axis,
+                                    node: n,
+                                    omega_p,
+                                    omega_0,
+                                    gamma,
+                                    circuit,
+                                });
+                            }
                         }
                     }
                 }
@@ -323,7 +381,7 @@ pub(super) fn dispersive_poles(
             "dispersive materials: {bad} edge pole(s) with negative or non-finite parameters ignored"
         ));
     }
-    out
+    (out, oe)
 }
 
 #[cfg(test)]
