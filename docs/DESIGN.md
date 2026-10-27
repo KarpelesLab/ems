@@ -5419,22 +5419,27 @@ per-property `OverSampling` and openEMS's vacuum constants (§5.16.9:
 the printed digits (≤ 4e-13); left: `sheet_thin_resistive` 1.5e-4,
 `lumped_series_rlc` 8.8e-5, the dispersive `debye_weight`,
 `drude_kappa`, `lorentz_weight` 2e-5…6e-5, and `param_term`,
-`prim_userdefined`, which openEMS rejects.
+`prim_userdefined`, which openEMS rejects. Cylindrical grids (§5.16.11):
+openEMS's curl order there too, the per-operation subnormal flush, its
+seam and axis updates, its multigrid and the α weights of z-edge
+materials; 14 of 24 cylindrical fixtures exact (were 2), among them
+`pml_cyl` and `adv_cyl_multigrid` (2e-2 → 0); a cylindrical mesh without
+`CylinderCoords="1"` runs Cartesian, as in openEMS.
 
 Remaining:
-- openEMS's azimuthal multigrid coupling (3e-3…2e-2), closed-grid time
-  steps with material ending at 2π (4 of 60, ≤ 5 %), the Drude fixture on
-  cylindrical grids (3.8e-3), sheets next to the α seam (5e-3 on one
-  edge), two sheets meeting on a line.
+- Cylindrical (§5.16.11): dispersive media on the α seam
+  (`adv_cyl_drude` 3.8e-3), box α faces in closed grids, conducting
+  sheets (2.5e-5), `cyl_wrap_lumped` 1.6e-5, `e2e_coax_monopole` probes
+  3e-7…8e-5, the last H dump with the multigrid; kept on purpose:
+  openEMS's lumped elements on the α = 0 line and its (N−1)/N ring
+  current; HDF5 dump divisions (≤ 1e-7).
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
 - From the feature sweep: dispersive-pole (ADE) arithmetic; conducting-sheet capacitances (1–3 f32 steps,
   `sheet_thin_resistive` 1.5e-4) and series lumped elements (~1e-4, the
-  branch state of L and C), §5.16.9; the PML, the curl order and edge
-  materials of boxes in sectors and at the seam on cylindrical grids
-  (§5.16.10); `CoordSystem="1"` without `CylinderCoords` runs Cartesian
-  in openEMS; `endCriteria="0"` with a sinusoid runs all steps there.
+  branch state of L and C), §5.16.9; `endCriteria="0"` with a sinusoid
+  runs all steps in openEMS.
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
