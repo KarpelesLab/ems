@@ -1755,13 +1755,14 @@ pub(crate) fn with_lookahead_currents<R>(
         let (a, b) = c.others();
         let idx = g.index(p);
         // The kernel's expression and summation order, bit for bit.
-        let curl = if oe_curl {
-            ((up(b, p, a) - u.get(b, p)) + u.get(a, p)) - up(a, p, b)
-        } else {
-            (up(b, p, a) - u.get(b, p)) - (up(a, p, b) - u.get(a, p))
-        };
         let (da, db) = (co.da(c)[idx], co.db(c)[idx]);
-        let k = super::kernel::flush(da * i.get(c, p) - db * curl);
+        let (t0, t1) = (up(b, p, a), u.get(b, p));
+        let (t2, t3) = (up(a, p, b), u.get(a, p));
+        let k = if oe_curl {
+            super::kernel::oe_h(da, i.get(c, p), db, t0, t1, t2, t3)
+        } else {
+            super::kernel::flush(da * i.get(c, p) - db * ((t0 - t1) - (t2 - t3)))
+        };
         let mut v = owners
             .iter()
             .find_map(|o| o.lookahead_current(c, p, k))

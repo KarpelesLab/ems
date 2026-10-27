@@ -571,9 +571,61 @@ impl Compiled {
     /// `engine`.
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
+        // openEMS's seam update of a closed azimuth (design §5.16.8),
+        // first among the post-E hooks: it replaces the periodic merge.
+        if self.curl_order == CurlOrder::OpenEms
+            && self.grid.is_closed()
+            && !self.grid.has_multigrid()
+            && self.conformal.is_none()
+            && self.oblique_wires.is_none()
+            && self.abc.is_empty()
+        {
+            let n = self.grid.nodes();
+            let pml = &self.pml;
+            // Edges other operators act on keep the periodic merge.
+            let mut touched = std::collections::HashSet::new();
+            for p in &self.dispersive {
+                touched.insert((
+                    p.axis,
+                    p.node,
+                    p.field == crate::engine::dispersive::Field::Magnetic,
+                ));
+            }
+            for e in &self.sheets {
+                touched.insert((e.axis, e.node, false));
+            }
+            for &(a, p, _) in &self.openems_sheets {
+                touched.insert((a, p, false));
+            }
+            let skip = |a: crate::axis::Axis, p: [usize; 3], h: bool| {
+                let hi = [p[0], n[1] - 1, p[2]];
+                touched.contains(&(a, p, h))
+                    || touched.contains(&(a, hi, h))
+                    || pml.iter().any(|(f, c)| {
+                        let x = f.axis().index();
+                        let w = c.cells;
+                        if f.is_max() {
+                            p[x] + w + 1 >= n[x]
+                        } else {
+                            p[x] <= w
+                        }
+                    })
+            };
+            let op = crate::engine::openems_cyl::OpenemsSeam::new(
+                &self.grid,
+                &self.materials,
+                &engine.coefficients(),
+                engine.dt(),
+                skip,
+            );
+            engine.add_operator(op);
+        }
         if self.openems_pmc {
             // openEMS's axis update of a closed azimuth (design §5.15).
-            if self.grid.has_axis() && self.grid.is_closed() {
+            if self.grid.has_axis()
+                && self.grid.is_closed()
+                && (self.curl_order != CurlOrder::OpenEms || self.grid.has_multigrid())
+            {
                 engine.add_operator(crate::engine::cylindrical::OpenemsAxisSeam);
             }
             pmc_half_cell(engine, &self.faces);
@@ -1579,7 +1631,7 @@ pub fn compile(
         } else {
             CoeffRounding::Exact
         },
-        curl_order: if fdtd.get_openems_run() && !cyl {
+        curl_order: if fdtd.get_openems_run() {
             CurlOrder::OpenEms
         } else {
             CurlOrder::Paired

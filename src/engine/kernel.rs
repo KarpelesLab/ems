@@ -32,6 +32,23 @@ pub(crate) fn flush(x: f32) -> f32 {
     if x.abs() < f32::MIN_POSITIVE { 0.0 } else { x }
 }
 
+/// openEMS's H update `da·h − db·(((a − b) + d) − c)` with every
+/// operation's subnormal result flushed to zero (design §5.16.8: openEMS
+/// runs with the CPU's flush-to-zero mode, which acts on each operation).
+#[inline(always)]
+pub(crate) fn oe_h(da: f32, h: f32, db: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
+    let curl = flush(flush(flush(a - b) + d) - c);
+    flush(flush(da * h) - flush(db * curl))
+}
+
+/// openEMS's E update `ca·u + cb·(((a − b) − c) + d)`, flushed like
+/// [`oe_h`].
+#[inline(always)]
+pub(crate) fn oe_e(ca: f32, u: f32, cb: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
+    let curl = flush(flush(flush(a - b) - c) + d);
+    flush(flush(ca * u) + flush(cb * curl))
+}
+
 /// `h = da·h − db·((a − b) − (c − d))` over equal-length slices, or with
 /// `oe` (openEMS's order, see [`CurlOrder`]) `h = da·h − db·(((a − b) +
 /// d) − c)`.
@@ -52,7 +69,7 @@ fn h_row(
     let (da, db, a, b, c, d) = (&da[..n], &db[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
     if oe {
         for k in 0..n {
-            h[k] = flush(da[k] * h[k] - db[k] * (((a[k] - b[k]) + d[k]) - c[k]));
+            h[k] = oe_h(da[k], h[k], db[k], a[k], b[k], c[k], d[k]);
         }
     } else {
         for k in 0..n {
@@ -73,8 +90,12 @@ fn h_row(
 /// without PML, dispersive media or other extra operators gives the same
 /// fields as openEMS bit for bit when the update coefficients are equal
 /// (design §5.16.6). openEMS files ([`Fdtd::openems_run`](crate::Fdtd::openems_run))
-/// use it. Only the Cartesian main kernel follows the setting; boundary
-/// and other operators keep their own expressions.
+/// use it, on Cartesian and cylindrical grids (openEMS's cylindrical
+/// engine sums in the same order, design §5.16.8). With it the kernels
+/// also flush the subnormal result of every operation to zero, as
+/// openEMS's flush-to-zero arithmetic does, not only the final value. Only
+/// the main kernel follows the setting; boundary and other operators keep
+/// their own expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CurlOrder {
     /// `(a − b) − (c − d)` (default).
@@ -123,12 +144,11 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
     let mut acc = [0.0f64; 4];
     let mut one = |k: usize, acc: &mut f64| {
         let old = h[k];
-        let curl = if oe_order {
-            ((a[k] - b[k]) + d[k]) - c[k]
+        let new = if oe_order {
+            oe_h(da[k], old, db[k], a[k], b[k], c[k], d[k])
         } else {
-            (a[k] - b[k]) - (c[k] - d[k])
+            flush(da[k] * old - db[k] * ((a[k] - b[k]) - (c[k] - d[k])))
         };
-        let new = flush(da[k] * old - db[k] * curl);
         *acc += if OE {
             let w = if k == 0 || k + 1 == n { ends } else { 1.0 };
             w * (new as f64 * new as f64)
@@ -228,7 +248,7 @@ fn e_row(
     let (ca, cb, a, b, c, d) = (&ca[..n], &cb[..n], &a[..n], &b[..n], &c[..n], &d[..n]);
     if oe {
         for k in 0..n {
-            u[k] = flush(ca[k] * u[k] + cb[k] * (((a[k] - b[k]) - c[k]) + d[k]));
+            u[k] = oe_e(ca[k], u[k], cb[k], a[k], b[k], c[k], d[k]);
         }
     } else {
         for k in 0..n {
