@@ -3373,6 +3373,8 @@ faces on the mesh and off it, and on a coarse filled line:
   leapfrog `χ(Ω)` and differs from openEMS by 1–7 % at 1 mm / 1.8 ps and
   5 % on a 4 mm / 7 ps line. The explicit scheme adds a stability limit
   (`ω_0·dt < 2`, `ω_p·dt` small) that ems does not check.
+- openEMS's `f32` arithmetic of the Lorentz/Drude poles (bit for bit) and
+  its rule dropping Debye poles with `τ < 3·dt`: §5.16.12.
 
 **Plane waves** (§5.11, `compile::planewave`). `Excite` is the incident
 E vector and `PropDir` the propagation direction in both codes (same
@@ -4706,6 +4708,104 @@ material boxes leaving the α range there). Tolerances of the exact
 fixtures are now 1e-6 (`tests/openems_adv.rs`, `openems_cyl.rs`,
 `openems_pml.rs`, `openems_dumps.rs`). Feature sweep (169 models):
 146 exact, unchanged (its only cylindrical model was exact before).
+
+#### 5.16.12 Round-off: dispersive poles
+
+Wave 17 (area M), black box only. The Drude, Lorentz and Debye fixtures
+agreed to 0.4e-6…1.1e-6 (§5.16.2) and the sweep's `drude_kappa`,
+`lorentz_weight`, `debye_weight` to 6.0e-5, 2.2e-5, 6.4e-5: the physics
+was openEMS's, the `f32` arithmetic of the poles was not. Fitted from
+per-step `Et`/`Ht` dumps (`DumpMode 0`, `OverSampling` 1000 on the dump
+box: one dump per step) of hand-written 10³-cell PEC boxes with 1 m cells
+(the dumped E and H are the engine's `u` and `i`), a fixed `TimeStep`
+(1.0 and 1.5 ns) and a pole box on nodes 3…7, with `--debug-operator`
+for `vv`, `vi`, `ii`, `iv`. The vacuum edges reproduce openEMS's update
+(§5.16.6) exactly, so `u* = f32(vv·u) + f32(vi·∮i)` is known per edge
+and step, and the pole's correction `u* − u'` is observed directly; a
+least-squares fit of it against the previous corrections, `u^n` and the
+running sum of the corrections gave the linear structure (exact to the
+`f32` noise), then bit-level searches over operation orders, `f32`/`f64`
+state and coefficient formulas the rounding. Where a correction is small
+against `u*` its bits are poorly constrained, so the decisive runs used
+strong poles (`ω_p·dt` up to 0.8), for which 37 % of the corrections are
+pinned to a single `f32` value.
+
+**Lorentz and Drude** (`OpenEmsPole`, `Dispersive::push_openems`). openEMS
+keeps per pole the branch current in volts `V = vi·j` and the voltage of
+the pole's capacitor `W = q/C_p` (0 for Drude), both `f32`:
+
+```text
+A = f32((1 − γ·dt/2)/d),  B = f32(vi·dt·ω_p²·C/d),  K = f32(ω_0²·dt/(ω_p²·C·vi)),  d = 1 + γ·dt/2
+V ← A·V + B·(u^n − W),  W ← W + K·V,  u^{n+1} = u* − V        (f32, in this order)
+```
+
+with `ω_p = 2π·f_plasma` of the material (not scaled), `C` the edge's
+`f32` capacitance of §5.16.7 (openEMS's `ε0`, so the edge's averaged `ε`
+enters through it: the `√ε_e` factor of §5.16.2), `vi` the edge's `f32`
+coefficient (lossy edges: `dt/(C + G·dt/2)`), the poles of one edge
+subtracted one after the other in their order; magnetic poles the same
+with `L`, `ii`/`iv` and the current `i^{n−½}` (`i' = i* − V`). Rejected on
+the way: the `f64` state and correction of ems's leapfrog (first
+mismatch after 5–10 steps), `V` in current units with `u' = vv·u +
+vi·(∮i − j)` or `u* − f32(vi·j)` (50–67 % of the updates), `B` with the
+`f64` `vi` (vacuum boxes exact, a lossy one 48 % of the edges), `B` with `ε0·ε_e` instead of `C`,
+`K` from `c/b` or `ε0·ε_e` (the corner edges of a lossy box one `f32`
+step off), the restoring term as `C_r·ΣV` in 15 groupings, and the sum of
+the poles before the subtraction. With this rule every E and H value at
+every step of eleven models is openEMS's: Drude and Lorentz, lossless
+(`τ = 0`) and lossy, `ε∞` 1…2.2 with `κ` 0.005 S/m (the interface and
+corner edges included), `ω_0·dt` 0.14…0.66, a magnetic Lorentz pole,
+a two-pole material (Lorentz + Drude), a pole box touching a Mur face and
+`τ = 2·dt`. On openEMS files with Cartesian grids and the leapfrog scheme
+(`Compiled::dispersive_openems`); the native path keeps the `f64`
+schemes, cylindrical files too (`adv_cyl_drude` is 3.8e-3 either way:
+the cylindrical pole edges, not the arithmetic, agent L's area). The
+look-ahead H sample after the last step (dumps and current probes,
+`Operator::lookahead_current`) now includes the magnetic poles; it
+missed their correction entirely before (the last H dump of a magnetic
+Lorentz box was 0.66 off on its 240 pole edges), on the native path as
+well. Cost: one more `f32` pair of state per pole, no `f64` solve on
+edges with openEMS poles only.
+
+**Debye poles below three time steps.** openEMS drops a Debye pole
+whose relaxation time is below `3·dt` (black box: the correction is
+exactly 0 at every step; `τ` = 2.999997 ns vs 3.000003 ns at
+`dt` = 1 ns, 4.499997 ns vs 4.500003 ns at 1.5 ns, the threshold
+`τ ≥ 3·dt` with the `f64` product: `τ = 3 ns`, `dt = 1 ns` is dropped,
+`τ = 4.5 ns`, `dt = 1.5 ns` kept; independent of `Δε` 0.3…30 and of
+`ε∞`; Lorentz poles with `τ = 2·dt` are kept). ems drops them as well on
+openEMS files, with a warning (`Compiled::openems_debye_cutoff`,
+`BoundaryHandles::debye_poles_ignored`); the model is then the static
+medium, bit for bit with openEMS's dumps.
+
+**Not reproduced: the Debye arithmetic.** The structure is ems's
+trapezoidal rule (§5.16.2) exactly: the correction obeys
+`r' = (1 − g)/(1 + β)·r + β/(1 + β)·(u^n − u^{n−1} + vi·∮i)` with
+`β = (Δε/ε_e)·dt/(2τ + dt)`, `g = dt/(τ + dt/2)` (least squares to
+1e-16 of the signal), and `β` contains neither `vi` nor `ε0` (with
+`β = 1` the first update is exactly `u*/2` on all 300 edges). The
+rounding was not found: on the first update of an edge (`u^n = 0`, no
+state) openEMS gives `f32(F·u*)`, `F = 1/(1 + β)`, on every edge when
+`β < 1` (4 runs, `β` 0.21…0.91), `u* − f32(β/(1 + β)·u*)` when `β` is 3
+or 7 (`F` a power of two), and neither when `β` is 1.33, 1.43 or 2.09
+(at most 262 of 300; some 14 000 one- and two-rounding expressions of
+`u*`, the curl and the coefficients tried, `f32`/`f64` coefficients, ±12
+`f32` steps on each). The full updates of 7 state forms × 5 `W` updates
+and of the correction recursion in 10 orders reproduce at most two thirds
+of the updates.
+`debye_weight` stays at 6.4e-5, the Debye fixtures at 0.4e-6…1.1e-6.
+
+Feature sweep (169 models, be30220, before → after): 146 → 148 exact
+(`drude_kappa` 6.0e-5 → 0, `lorentz_weight` 2.2e-5 → 0, both on 1 mm
+cells); no model changed otherwise. Fixtures: `adv_drude_slab`,
+`adv_lorentz_slab`, `adv_lorentz_mag_slab`, `adv_lorentz2_slab`,
+`adv_lorentz_coarse` 0.5e-6…1.5e-6 → 1.0e-12…1.8e-12 (the 12 printed
+digits; tolerances 2e-5 → 1e-6), `sweep_lorentz_weight` exact (1e-4 →
+1e-6). Unchanged: the Debye fixtures, `rs_0` (a Drude box in a PML,
+1.8e-6) and `rs_1` (a Lorentz box at a Mur face with series lumped
+elements, 1.6e-5: a 1 m model of a Lorentz box touching a Mur face is
+exact, the rest is §5.16.9's series elements), `e2e_drude_slab` (the plane
+wave, §5.16.2), `adv_cyl_drude`.
 
 #### 5.16.13 Round-off: conducting-sheet branches and series lumped elements
 
