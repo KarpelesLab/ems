@@ -53,7 +53,13 @@
 //! The poles are integrated with the scheme of
 //! [`CompileOptions::dispersive_scheme`](super::CompileOptions::dispersive_scheme)
 //! (openEMS's explicit leapfrog by default, see
-//! [`Scheme`](crate::engine::dispersive::Scheme)).
+//! [`Scheme`](crate::engine::dispersive::Scheme)). For openEMS files
+//! ([`Fdtd::openems_run`](crate::Fdtd::openems_run), Cartesian grids, the
+//! leapfrog scheme) the Lorentz and Drude poles run with openEMS's own
+//! `f32` arithmetic
+//! ([`OpenEmsPole`], bit for bit),
+//! and Debye poles whose relaxation time is below three time steps are
+//! dropped, as openEMS drops them (design §5.16.12).
 //!
 //! On cylindrical grids the midpoints are `(ρ, α, z)` points, the
 //! candidate edges those in the primitives' `(ρ, z)` bounding box (in the
@@ -396,6 +402,47 @@ mod tests {
         assert_eq!(node_range(&l, -5.0, 10.0), 0..5);
         assert_eq!(node_range(&l, 5.0, 6.0), 4..5);
         assert_eq!(node_range(&l, -6.0, -5.0), 0..0);
+    }
+
+    /// openEMS files: Lorentz/Drude poles get openEMS's arithmetic and
+    /// Debye poles with `τ < 3·dt` are dropped; native compiles keep both
+    /// as before.
+    #[test]
+    fn openems_file_poles() {
+        use crate::{CompileOptions, Fdtd};
+        use csx::properties::{DebyePole, LorentzPole};
+        let mut model = csx::ContinuousStructure::new();
+        model.grid.delta_unit = 1.0;
+        for a in 0..3 {
+            model.grid.set_lines(a, (0..=8).map(|q| q as f64)).unwrap();
+        }
+        let shape = |lo: f64, hi: f64| {
+            csx::Primitive::new(csx::primitives::BoxShape::new([lo; 3], [hi; 3]))
+        };
+        let mut dm = DebyeMaterial::default();
+        dm.poles.push(DebyePole::new(3.0, 2e-9));
+        let id = model.add_property(csx::Property::debye_material("deb", dm));
+        model.add_primitive(id, shape(1.0, 3.0)).unwrap();
+        let mut lm = LorentzMaterial::default();
+        let mut pole = LorentzPole::zero();
+        pole.eps_plasma_frequency.set(2e7);
+        pole.eps_relax_time.set(1e-7);
+        lm.poles.push(pole);
+        let id = model.add_property(csx::Property::lorentz_material("lor", lm));
+        model.add_primitive(id, shape(4.0, 7.0)).unwrap();
+        for openems in [false, true] {
+            let fdtd = Fdtd::new().timestep(1e-9).openems_run(openems).threads(1);
+            let c = crate::compile::compile(&model, &fdtd, &CompileOptions::default()).unwrap();
+            assert_eq!(c.dispersive_openems.is_empty(), !openems);
+            assert!(
+                c.dispersive
+                    .iter()
+                    .all(|e| !openems || matches!(e.pole, Pole::Debye { .. }))
+            );
+            let (_e, h) = c.build().unwrap();
+            assert_eq!(h.debye_poles_ignored > 0, openems);
+            assert!(h.dispersive.is_some());
+        }
     }
 
     #[test]

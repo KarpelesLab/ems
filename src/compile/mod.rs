@@ -482,6 +482,11 @@ pub struct Compiled {
     /// [`dispersive`](Self::dispersive), which then holds the Debye poles
     /// and the conducting-sheet branches only.
     pub dispersive_openems: Vec<crate::engine::dispersive::OpenEmsPole>,
+    /// openEMS's rule for Debye poles (openEMS files): a pole is dropped
+    /// unless its relaxation time is at least three time steps,
+    /// `τ ≥ 3·dt` (black box, design §5.16.12; the static medium
+    /// remains).
+    pub openems_debye_cutoff: bool,
     /// Time integration of the Lorentz/Drude poles of
     /// [`dispersive`](Self::dispersive) ([`CompileOptions::dispersive_scheme`]).
     pub dispersive_scheme: DispersiveScheme,
@@ -559,6 +564,9 @@ pub struct BoundaryHandles {
     /// PML layer ([`Compiled::openems_pml`]: openEMS's layer replaces the
     /// update there, its output is that of the static medium).
     pub pml_poles_ignored: usize,
+    /// Debye poles left out by openEMS's `τ ≥ 3·dt` rule
+    /// ([`Compiled::openems_debye_cutoff`]).
+    pub debye_poles_ignored: usize,
 }
 
 impl Compiled {
@@ -714,11 +722,19 @@ impl Compiled {
                 .map(|p| engine.operator(p).layers().clone());
             let mut d = Dispersive::new().with_scheme(self.dispersive_scheme);
             let mut any = false;
+            let dt = engine.dt();
             for &e in &self.dispersive {
                 if let Some(l) = &layers
                     && l.contains(e.field == DispersiveField::Electric, e.axis, e.node)
                 {
                     h.pml_poles_ignored += 1;
+                    continue;
+                }
+                if self.openems_debye_cutoff
+                    && let crate::engine::Pole::Debye { tau, .. } = e.pole
+                    && tau < 3.0 * dt
+                {
+                    h.debye_poles_ignored += 1;
                     continue;
                 }
                 d.push_entry(e);
@@ -1737,6 +1753,7 @@ pub fn compile(
         abc,
         dispersive,
         dispersive_openems,
+        openems_debye_cutoff: fdtd.get_openems_run(),
         dispersive_scheme: opts.dispersive_scheme,
         thin_wires,
         oblique_wires,

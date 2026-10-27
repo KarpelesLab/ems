@@ -310,6 +310,13 @@ impl Simulation {
                 boundaries.pml_poles_ignored
             ));
         }
+        if boundaries.debye_poles_ignored > 0 {
+            warnings.push(format!(
+                "{} Debye pole(s) with a relaxation time below 3 time steps ignored (openEMS's rule; \
+                 the static medium remains)",
+                boundaries.debye_poles_ignored
+            ));
+        }
         if opts.mesh_check {
             warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
         }

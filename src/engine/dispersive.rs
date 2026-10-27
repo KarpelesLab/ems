@@ -496,7 +496,8 @@ pub struct EdgePole {
 /// poles of an edge are subtracted one after the other, in insertion order.
 /// The strength enters through the edge's own `C`: `ω_p` is the material's
 /// `2π·f_plasma`, not scaled by the edge's `ε` as in [`Pole`] (the same in
-/// exact arithmetic, `ω_p²·ε0·ε_e·A/l = (2π·f_p)²·C`).
+/// exact arithmetic, `ω_p²·ε0·ε_e·A/l = (2π·f_p)²·C`). `A`, `B`, `K` are
+/// formed once, from the edge's coefficient at installation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenEmsPole {
     /// Electric (E edge) or magnetic (H dual edge) pole.
