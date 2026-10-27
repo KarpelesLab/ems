@@ -658,3 +658,53 @@ fn csx_lorentz_material_matches_engine_setup() {
         assert!(err < 1e-5, "{err}");
     }
 }
+
+/// On a cylindrical grid the poles of a primitive away from `x > 0` are
+/// found: an α range inside `[π/2, 3π/2]` (all at negative x) used to get
+/// no pole at all (the candidate edges came from the Cartesian bounding
+/// box).
+#[test]
+fn cylindrical_poles_follow_the_alpha_range() {
+    use csx::CoordSystem;
+    let mut model = csx::ContinuousStructure::new();
+    model.coord_system = CoordSystem::Cylindrical;
+    model.grid.coord_system = CoordSystem::Cylindrical;
+    model.grid.delta_unit = 1e-3;
+    model
+        .grid
+        .set_lines(0, (0..=6).map(|i| 2.0 + i as f64))
+        .unwrap();
+    model
+        .grid
+        .set_lines(1, (0..=8).map(|j| j as f64 * PI / 4.0))
+        .unwrap();
+    model.grid.set_lines(2, (0..=4).map(|k| k as f64)).unwrap();
+    let mut lm = csx::properties::LorentzMaterial::default();
+    lm.material.epsilon.set(2.0);
+    let mut pole = csx::properties::LorentzPole::zero();
+    pole.eps_plasma_frequency.set(3e9);
+    pole.eps_relax_time.set(0.5e-9);
+    lm.poles.push(pole);
+    let id = model.add_property(csx::Property::lorentz_material("drude", lm));
+    model
+        .add_primitive(
+            id,
+            csx::Primitive::new(csx::primitives::BoxShape::new(
+                [1.0, 0.5 * PI + 0.1, -1.0],
+                [9.0, 1.5 * PI - 0.1, 5.0],
+            )),
+        )
+        .unwrap();
+    let fdtd = Fdtd::new().threads(1);
+    let c = compile(&model, &fdtd, &CompileOptions::default()).unwrap();
+    // z edges on the α lines 3π/4, π, 5π/4 (7 radii, 4 edges each); none
+    // elsewhere.
+    let z: Vec<_> = c
+        .dispersive
+        .iter()
+        .filter(|p| p.field == Field::Electric && p.axis == Axis::Z)
+        .map(|p| p.node)
+        .collect();
+    assert_eq!(z.len(), 3 * 7 * 4, "{z:?}");
+    assert!(z.iter().all(|n| (3..=5).contains(&n[1])));
+}

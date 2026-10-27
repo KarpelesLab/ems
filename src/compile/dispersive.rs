@@ -55,8 +55,13 @@
 //! (openEMS's explicit leapfrog by default, see
 //! [`Scheme`](crate::engine::dispersive::Scheme)).
 //!
-//! Limitations: sampling runs serially; cylindrical grids are not
-//! supported (static values only, with a warning).
+//! On cylindrical grids the midpoints are `(ρ, α, z)` points, the
+//! candidate edges those in the primitives' `(ρ, z)` bounding box (in the
+//! grid's coordinates; the Cartesian box had left out every pole of a
+//! primitive that lies at negative x, black box `adv_cyl_drude`
+//! variants) and every α line (csx normalises α ranges to `[−π, π)`).
+//!
+//! Limitations: sampling runs serially.
 
 use csx::properties::{Aniso, DebyeMaterial, LorentzMaterial, weight_vars};
 use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
@@ -236,7 +241,7 @@ pub(super) fn dispersive_poles(
     let mut magnetic = false;
     for p in model.properties_of(dispersive) {
         for q in &p.primitives {
-            bbox = bbox.union(&q.bounding_box(model.coord_system));
+            bbox = bbox.union(&q.bounding_box_in(model.grid.coord_system, model.coord_system));
         }
         if let PropertyKind::LorentzMaterial(m) = &p.kind {
             magnetic |= m.poles.iter().any(|q| {
@@ -257,8 +262,18 @@ pub(super) fn dispersive_poles(
         cs,
     };
     let dims = node_map.nodes();
-    let ranges: [core::ops::Range<usize>; 3] =
-        core::array::from_fn(|a| node_range(s.lines[a], bbox.min[a], bbox.max[a]));
+    // csx normalises a cylindrical bounding box's α range to [−π, π)
+    // (design §8.1), which can leave out part of the primitive on a
+    // [0, 2π] grid: on cylindrical grids every α line is a candidate (the
+    // spatial index decides).
+    let cyl = cs == CoordSystem::Cylindrical;
+    let ranges: [core::ops::Range<usize>; 3] = core::array::from_fn(|a| {
+        if cyl && a == 1 {
+            0..dims[1]
+        } else {
+            node_range(s.lines[a], bbox.min[a], bbox.max[a])
+        }
+    });
     let mut out = Vec::new();
     let mut bad = 0usize;
     let fields: &[Field] = if magnetic {
