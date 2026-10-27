@@ -5,14 +5,15 @@
 //! criteria. Their definitions are not part of the openEMS documentation;
 //! the formulas below were **established by black-box comparison** with
 //! openEMS v0.37 (the time step and the position of the limiting edge it
-//! reports for some 150 random rectilinear meshes, see
-//! `tests/openems_core.rs` and DESIGN §5.4), not taken from its source.
+//! reports for some 1 600 random rectilinear meshes, see
+//! `tests/openems_core.rs` and DESIGN §5.4, §5.16.1, §5.16.8), not taken
+//! from its source.
 //!
 //! Both are written with the circuit quantities of the integral-form Yee
-//! scheme (design §5.1): an E edge along `a` at node `n` has
-//! `1/C = l/(ε0·εr·A*)` (`l` its length, `A*` its dual face) and an H
-//! dual edge `1/L = l*/(μ0·μr·A)` (`l*` the dual edge length, `A` the
-//! primary face), with the edge materials of [`EdgeMaterials`].
+//! scheme (design §5.1): an E edge along `a` at node `n` has the
+//! capacitance `C = ε0·εr·A*/l` (`l` its length, `A*` its dual face) and an
+//! H dual edge the inductance `L = μ0·μr·A/l*` (`l*` the dual edge length,
+//! `A` the primary face), with the edge materials of [`EdgeMaterials`].
 //!
 //! # Method 1 ("CFL"): Gershgorin bound
 //!
@@ -25,15 +26,7 @@
 //! i.e. `dt = 2/√ρ` with `ρ` the Gershgorin row bound of `C⁻¹·K·L⁻¹·Kᵀ`
 //! (each face couples 4 edges, `ρ ≤ 4·max ω²`). This is a rigorous
 //! stability bound; on a uniform cubic mesh `dt = Δ/(2c)`, a factor
-//! `√3/2` below the Courant limit. Dual lengths at the domain boundary are
-//! half cells. openEMS's step by this method is a single-precision value
-//! (the probe files' 12-digit time column, on 27 random graded meshes:
-//! always an exact `f32`). ems evaluates `ω_e²` from the circuit values
-//! `C`, `L` rounded to `f32` and takes `1/√max ω²` in `f32`: openEMS's
-//! value bit for bit on 23 of the 27 meshes, one `f32` step (≤ 1.2e-7)
-//! apart on the others (rounding only the result: 15 of 27; other
-//! placements of the single-precision steps, in lengths, areas or the
-//! sums, also give 23 at best).
+//! `√3/2` below the Courant limit.
 //!
 //! # Method 3 (Rennings, the openEMS default)
 //!
@@ -48,31 +41,55 @@
 //! ω²  = T_b + T_c + max(O_c + |D_b|, O_b + |D_c|)
 //! ```
 //!
-//! and `dt = 1/max ω`. `L'`, `C'` are `L`, `C` with the material of
-//! the (dual) edge one node lower along `c` (the geometry stays that of the
-//! edge) when `(a, b)` runs against the cyclic order (`b = a − 1`: (x, z),
-//! (y, x), (z, y)); otherwise `L' = L`, `C' = C`. On a uniform mesh
-//! `T_b = c²/Δ_b²` and the `max` term is `c²/Δ_a²`, the exact Courant limit
-//! `1/(c·√(Σ 1/Δ²))`. `D_b` measures how the cells along `b` change at
-//! the node; the criterion is not symmetric: a cell that grows *upwards*
-//! (`Δ_{n} > Δ_{n−1}`) lowers the time step more than the mirrored mesh.
-//! openEMS evaluates it on every node index including the last one of each
-//! axis, where the missing cells and dual lengths are those of the last
-//! cell (and the dual length at the first node is the full first cell, not
-//! a half cell); ems does the same.
+//! and `dt = 1/max ω`. `L'`, `C'` are `L`, `C` of the (dual) edges one
+//! node lower along `c` when `(a, b)` runs against the cyclic order
+//! (`b = a − 1`: (x, z), (y, x), (z, y)); otherwise `L' = L`, `C' = C`. On
+//! a uniform mesh `T_b = c²/Δ_b²` and the `max` term is `c²/Δ_a²`, the
+//! exact Courant limit `1/(c·√(Σ 1/Δ²))`. `D_b` measures how the cells
+//! along `b` change at the node; the criterion is not symmetric: a cell
+//! that grows *upwards* (`Δ_{n} > Δ_{n−1}`) lowers the time step more than
+//! the mirrored mesh. openEMS evaluates it on every node index including
+//! the last one of each axis, where the missing cells and dual lengths are
+//! those of the last cell (and the dual length at the first node is the
+//! full first cell, not a half cell); ems does the same.
 //!
-//! This reproduces openEMS to its printed 6 digits on ~1 600 random
-//! meshes (graded along one, two or three axes, cell ratios up to 30;
-//! vacuum, grid-aligned and off-grid boxes and layers of ε, μ, κ and
-//! anisotropic media; DESIGN §5.16.1). The `|D|` terms and the shifted
-//! materials were fitted from those runs: the earlier form
-//! `T_b + T_c + O_b + O_c − L_c(n)·Q_b` (lower `b`, unshifted) agrees
-//! where the cells grow along the transverse axes and was up to 8 % off
-//! elsewhere.
+//! The `|D|` terms and the shifted materials were fitted from black-box
+//! runs to openEMS's printed 6 digits (~1 600 random meshes graded along
+//! one, two or three axes, cell ratios up to 30; vacuum, grid-aligned and
+//! off-grid boxes and layers of ε, μ, κ and anisotropic media; DESIGN
+//! §5.16.1): the earlier form `T_b + T_c + O_b + O_c − L_c(n)·Q_b` (lower
+//! `b`, unshifted) agrees where the cells grow along the transverse axes
+//! and was up to 8 % off elsewhere.
 //!
-//! The result is a double; openEMS's own value is within 4e-8 of it
-//! (12-digit probe time columns of 14 random graded vacuum meshes; its
-//! single-precision round-off, not reproduced).
+//! # openEMS's arithmetic
+//!
+//! Both steps are reproduced **bit for bit** (DESIGN §5.16.8; read back
+//! from the probe files' 12-digit time column of 3 000-step runs, which
+//! pins openEMS's `dt` to a few `f64` ulps). openEMS evaluates them with
+//! its own constants ([`OPENEMS_EPS0`], [`OPENEMS_MU0`]) and with the
+//! circuit values `C`, `L` rounded to `f32`; each coupling `1/(C·L)` is a
+//! single-precision product and quotient, `X(C, L) = f32(1/f32(C·L))`:
+//!
+//! - Rennings: each bracket of `T_b` (the two couplings of one face) is
+//!   summed in `f32`, `T_b` from the two in `f64`; the own-axis term is
+//!   evaluated at both ends `m ∈ {n, n + e_a}` of the edge from the
+//!   couplings `X(C_b(m), L_c)` (`O_b ± D_b` as `f64` half sums and half
+//!   differences) and averaged over the ends; the face below for `(a, b)`
+//!   against the cyclic order takes its geometry, not only its materials,
+//!   one node lower along `c` (the same circuit values at a node one lower:
+//!   the coupling is unchanged in exact arithmetic, the rounding is not);
+//!   `ω²`, the maximum and `dt = 1/√ω²` are `f64`.
+//! - Gershgorin: the dual lengths at the boundary are full cells and the
+//!   faces beyond the boundary count, mirrored (the half-cell rule in
+//!   exact arithmetic); `Σ 1/L` is an `f32` sum of `f32(1/L)` in the order
+//!   (c upper, c lower, b upper, b lower), `ω² = f32(Σ/C)` and
+//!   `dt = 1/√ω²` in `f32`.
+//!
+//! On 736 random vacuum meshes (graded along up to three axes, uniform
+//! cubes of 0.1 mm…1 m) the Rennings step and on 300 the Gershgorin step
+//! are openEMS's to the last bit (before: Rennings within 4e-8, e.g.
+//! 3.5e-9 below on a uniform 1 mm cube, Gershgorin 1 `f32` step off on 15 %
+//! of the meshes).
 //!
 //! Materials enter through `εr` of the E edges and `μr` of the H dual
 //! edges (positions outside the mesh use the nearest edge's). PEC edges
@@ -85,7 +102,7 @@
 use super::edge_material::EdgeMaterials;
 use super::grid::Grid;
 use crate::axis::Axis;
-use crate::constants::{EPS0, MU0};
+use crate::constants::{OPENEMS_EPS0, OPENEMS_MU0};
 
 /// The openEMS time-step criterion (`TimeStepMethod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -107,167 +124,97 @@ impl TimestepMethod {
     }
 }
 
-/// Mesh geometry with openEMS's boundary rules.
-struct Geo {
-    n: [usize; 3],
-    /// Primary deltas per axis.
-    p: [Vec<f64>; 3],
-    /// Dual lengths per node.
-    d: [Vec<f64>; 3],
+/// `C` (E edges) and `L` (H dual edges) of every edge in `f32`, with full
+/// dual lengths at the boundary. A lookup clamps every index into the
+/// mesh: geometry and material of a position outside are those of the
+/// nearest edge (openEMS's lines extrapolated with the outermost cell give
+/// the same cells).
+struct Circuit {
+    /// Per axis: table dimensions, then values (index `(i·d1 + j)·d2 + k`).
+    c: [([usize; 3], Vec<f32>); 3],
+    l: [([usize; 3], Vec<f32>); 3],
 }
 
-impl Geo {
-    fn new(grid: &Grid, full_boundary_duals: bool) -> Self {
+impl Circuit {
+    fn new(grid: &Grid, m: &EdgeMaterials) -> Self {
         let n = grid.nodes();
         let p: [Vec<f64>; 3] = Axis::ALL.map(|a| {
-            (0..n[a.index()].saturating_sub(1))
-                .map(|i| grid.delta(a, i))
-                .collect()
+            let k = n[a.index()].saturating_sub(1);
+            if k == 0 {
+                vec![1.0]
+            } else {
+                (0..k).map(|i| grid.delta(a, i)).collect()
+            }
         });
-        let d = core::array::from_fn(|a| {
+        // Dual lengths per node: the full cell at either end.
+        let d: [Vec<f64>; 3] = core::array::from_fn(|a| {
             let p = &p[a];
             (0..n[a])
-                .map(|i| {
-                    let lo = i.checked_sub(1).and_then(|j| p.get(j)).copied();
-                    let hi = p.get(i).copied();
-                    match (lo, hi) {
-                        (Some(l), Some(h)) => 0.5 * (l + h),
-                        (Some(x), None) | (None, Some(x)) => {
-                            if full_boundary_duals {
-                                x
-                            } else {
-                                0.5 * x
-                            }
-                        }
+                .map(
+                    |i| match (i.checked_sub(1).and_then(|j| p.get(j)), p.get(i)) {
+                        (Some(&l), Some(&h)) if i + 1 < n[a] => 0.5 * (l + h),
+                        (Some(&x), _) | (None, Some(&x)) => x,
                         (None, None) => 1.0,
-                    }
-                })
+                    },
+                )
                 .collect()
         });
-        Self { n, p, d }
-    }
-
-    /// Primary delta of cell `i` on axis `a`, clamped into the mesh.
-    fn p(&self, a: usize, i: isize) -> f64 {
-        let v = &self.p[a];
-        if v.is_empty() {
-            return 1.0;
-        }
-        v[i.clamp(0, v.len() as isize - 1) as usize]
-    }
-
-    /// Dual length at node `i` on axis `a`, clamped into the mesh.
-    fn d(&self, a: usize, i: isize) -> f64 {
-        let v = &self.d[a];
-        v[i.clamp(0, v.len() as isize - 1) as usize]
-    }
-
-    /// Engine array index of a node clamped into the mesh (`edge_axis`:
-    /// also keep the index along that axis on a real edge / face).
-    fn idx(&self, n: [isize; 3], edge_axes: [bool; 3]) -> usize {
-        let c: [usize; 3] = core::array::from_fn(|d| {
-            let max = if edge_axes[d] {
-                self.n[d].saturating_sub(2)
-            } else {
-                self.n[d] - 1
-            };
-            n[d].clamp(0, max as isize) as usize
-        });
-        (c[0] * self.n[1] + c[1]) * self.n[2] + c[2]
-    }
-}
-
-/// `1/C` \[1/F\] of the E edge along `a` at `n` (clamped).
-fn inv_c(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3]) -> f64 {
-    inv_c_mat_at(g, m, a, n, n)
-}
-
-/// [`inv_c`] with the geometry of the edge at `n` but the permittivity of
-/// the edge (along `a`) at `mat` (both clamped).
-fn inv_c_mat_at(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3], mat: [isize; 3]) -> f64 {
-    let (b, c) = ((a + 1) % 3, (a + 2) % 3);
-    let mut along = [false; 3];
-    along[a] = true;
-    let eps = m.eps_r(Axis::ALL[a])[g.idx(mat, along)];
-    g.p(a, n[a]) / (EPS0 * eps * g.d(b, n[b]) * g.d(c, n[c]))
-}
-
-/// `1/L` \[1/H\] of the H dual edge along `a` at `n` (clamped).
-fn inv_l(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3]) -> f64 {
-    inv_l_mat_at(g, m, a, n, n)
-}
-
-/// [`inv_l`] with the geometry of the dual edge at `n` but the
-/// permeability of the dual edge (along `a`) at `mat` (both clamped).
-fn inv_l_mat_at(g: &Geo, m: &EdgeMaterials, a: usize, n: [isize; 3], mat: [isize; 3]) -> f64 {
-    let (b, c) = ((a + 1) % 3, (a + 2) % 3);
-    let mut across = [true; 3];
-    across[a] = false;
-    let mu = m.mu_r(Axis::ALL[a])[g.idx(mat, across)];
-    g.d(a, n[a]) / (MU0 * mu * g.p(b, n[b]) * g.p(c, n[c]))
-}
-
-/// [`inv_c`] and [`inv_l`] of every edge, precomputed: both depend on
-/// the node only through its clamped indices, so a lookup clamps the same
-/// way and returns the same value bit for bit (the criteria evaluate each
-/// edge's value up to 15 times).
-struct Tables {
-    /// Per axis: table dimensions, then values (index `(i·d1 + j)·d2 + k`).
-    ic: [([usize; 3], Vec<f64>); 3],
-    il: [([usize; 3], Vec<f64>); 3],
-}
-
-impl Tables {
-    fn new(g: &Geo, m: &EdgeMaterials) -> Self {
-        let dims = |a: usize, edge: bool| -> [usize; 3] {
-            core::array::from_fn(|d| {
-                let along = d == a;
-                // inv_c: along a cells, across nodes; inv_l: the reverse.
-                if along == edge {
-                    g.n[d].saturating_sub(1).max(1)
+        let fill = |a: usize, edge: bool| -> ([usize; 3], Vec<f32>) {
+            let dims: [usize; 3] = core::array::from_fn(|q| {
+                // C: cells along a, nodes across; L: the reverse.
+                if (q == a) == edge {
+                    n[q].saturating_sub(1).max(1)
                 } else {
-                    g.n[d]
+                    n[q]
                 }
-            })
-        };
-        let fill = |a: usize, edge: bool| -> ([usize; 3], Vec<f64>) {
-            let d = dims(a, edge);
-            let mut v = Vec::with_capacity(d[0] * d[1] * d[2]);
-            for i in 0..d[0] {
-                for j in 0..d[1] {
-                    for k in 0..d[2] {
-                        let n = [i as isize, j as isize, k as isize];
+            });
+            let (b, c) = ((a + 1) % 3, (a + 2) % 3);
+            let ax = Axis::ALL[a];
+            let mut v = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
+            for i in 0..dims[0] {
+                for j in 0..dims[1] {
+                    for k in 0..dims[2] {
+                        let q = [i, j, k];
+                        let idx = (i * n[1] + j) * n[2] + k;
                         v.push(if edge {
-                            inv_c(g, m, a, n)
+                            let geo = d[b][q[b]] * d[c][q[c]] / p[a][q[a]];
+                            (OPENEMS_EPS0 * m.eps_r(ax)[idx] * geo) as f32
                         } else {
-                            inv_l(g, m, a, n)
+                            let geo = p[b][q[b]] * p[c][q[c]] / d[a][q[a]];
+                            (OPENEMS_MU0 * m.mu_r(ax)[idx] * geo) as f32
                         });
                     }
                 }
             }
-            (d, v)
+            (dims, v)
         };
         Self {
-            ic: core::array::from_fn(|a| fill(a, true)),
-            il: core::array::from_fn(|a| fill(a, false)),
+            c: core::array::from_fn(|a| fill(a, true)),
+            l: core::array::from_fn(|a| fill(a, false)),
         }
     }
 
-    fn get(t: &([usize; 3], Vec<f64>), n: [isize; 3]) -> f64 {
+    fn get(t: &([usize; 3], Vec<f32>), n: [isize; 3]) -> f32 {
         let (d, v) = t;
         let c: [usize; 3] = core::array::from_fn(|q| n[q].clamp(0, d[q] as isize - 1) as usize);
         v[(c[0] * d[1] + c[1]) * d[2] + c[2]]
     }
 
-    /// [`inv_c`] of the E edge along `a` at `n`.
-    fn c(&self, a: usize, n: [isize; 3]) -> f64 {
-        Self::get(&self.ic[a], n)
+    /// `C` of the E edge along `a` at `n`.
+    fn c(&self, a: usize, n: [isize; 3]) -> f32 {
+        Self::get(&self.c[a], n)
     }
 
-    /// [`inv_l`] of the H dual edge along `a` at `n`.
-    fn l(&self, a: usize, n: [isize; 3]) -> f64 {
-        Self::get(&self.il[a], n)
+    /// `L` of the H dual edge along `a` at `n`.
+    fn l(&self, a: usize, n: [isize; 3]) -> f32 {
+        Self::get(&self.l[a], n)
     }
+}
+
+/// openEMS's coupling `1/(C·L)` of an edge and a face, in single
+/// precision.
+fn x(c: f32, l: f32) -> f32 {
+    1.0 / (c * l)
 }
 
 fn shift(n: [isize; 3], a: usize, k: isize) -> [isize; 3] {
@@ -282,9 +229,10 @@ fn shift(n: [isize; 3], a: usize, k: isize) -> [isize; 3] {
 /// Cartesian grids only (a cylindrical grid gets the same formula on its
 /// coordinate lines, which is not what openEMS does there).
 pub fn openems_timestep(grid: &Grid, materials: &EdgeMaterials, method: TimestepMethod) -> f64 {
+    let cir = Circuit::new(grid, materials);
     match method {
-        TimestepMethod::Cfl => gershgorin(grid, materials),
-        TimestepMethod::Rennings => rennings(grid, materials),
+        TimestepMethod::Cfl => gershgorin(grid.nodes(), &cir),
+        TimestepMethod::Rennings => rennings(grid.nodes(), &cir),
     }
 }
 
@@ -294,71 +242,64 @@ fn nodes_iter(n: [usize; 3]) -> impl Iterator<Item = [isize; 3]> {
     })
 }
 
-fn gershgorin(grid: &Grid, m: &EdgeMaterials) -> f64 {
-    let g = Geo::new(grid, false);
-    let tb = Tables::new(&g, m);
+fn gershgorin(n: [usize; 3], cir: &Circuit) -> f64 {
     let mut w2max = 0.0f64;
     for a in 0..3 {
-        for n in nodes_iter(g.n) {
-            if n[a] as usize + 1 >= g.n[a] {
+        let (b, c) = ((a + 1) % 3, (a + 2) % 3);
+        for q in nodes_iter(n) {
+            if q[a] as usize + 1 >= n[a] {
                 continue;
             }
-            let ic = single(tb.c(a, n));
-            let mut s = 0.0;
-            for t in [(a + 1) % 3, (a + 2) % 3] {
+            // The faces normal to b (spanning a × c) and to c (a × b),
+            // upper then lower; beyond the boundary the nearest one.
+            let mut s = 0.0f32;
+            for t in [c, b] {
                 let o = 3 - a - t;
-                for ct in [n[t] - 1, n[t]] {
-                    if ct < 0 || ct as usize + 1 >= g.n[t] {
-                        continue;
-                    }
-                    // Face normal to o spanning a × t-cell ct.
-                    let mut f = n;
-                    f[t] = ct;
-                    s += single(tb.l(o, f));
-                }
+                s += 1.0 / cir.l(o, q);
+                s += 1.0 / cir.l(o, shift(q, t, -1));
             }
-            w2max = w2max.max(ic * s);
+            w2max = w2max.max(f64::from(s) / f64::from(cir.c(a, q)));
         }
     }
     // openEMS's single-precision step (module docs).
-    (1.0 / (w2max as f32).sqrt()) as f64
+    f64::from(1.0 / (w2max as f32).sqrt())
 }
 
-/// The reciprocal `1/x` of a circuit value `x` stored in single precision.
-fn single(inv: f64) -> f64 {
-    1.0 / ((1.0 / inv) as f32 as f64)
-}
-
-fn rennings(grid: &Grid, m: &EdgeMaterials) -> f64 {
-    let g = Geo::new(grid, true);
-    let tb = Tables::new(&g, m);
+fn rennings(n: [usize; 3], cir: &Circuit) -> f64 {
     let mut w2max = 0.0f64;
     for a in 0..3 {
-        for n in nodes_iter(g.n) {
-            // Per transverse axis b: T_b, O_b and D_b of the module docs.
-            let mut tod = [(0.0, 0.0, 0.0); 2];
-            for (slot, b) in [(a + 1) % 3, (a + 2) % 3].into_iter().enumerate() {
+        let bs = [(a + 1) % 3, (a + 2) % 3];
+        for q in nodes_iter(n) {
+            // Per transverse axis b: T_b and the two dual edges along c.
+            let mut tl = [(0.0f64, 0.0f32, 0.0f32); 2];
+            for (slot, b) in bs.into_iter().enumerate() {
                 let c = 3 - a - b;
-                let lm = tb.l(c, shift(n, b, -1));
-                let l0 = tb.l(c, n);
+                let lm = cir.l(c, shift(q, b, -1));
+                let l0 = cir.l(c, q);
                 // The face below along b: for (a, b) against the cyclic
-                // order its dual edge and its two E edges take their
-                // materials one node lower along c.
-                let t_below = if (b + 3 - a) % 3 == 2 {
-                    let f = shift(n, b, -1);
-                    inv_l_mat_at(&g, m, c, f, shift(f, c, -1))
-                        * (inv_c_mat_at(&g, m, a, f, shift(f, c, -1))
-                            + inv_c_mat_at(&g, m, a, n, shift(n, c, -1)))
+                // order the circuit values one node lower along c.
+                let below = if (b + 3 - a) % 3 == 2 {
+                    let f = shift(shift(q, b, -1), c, -1);
+                    let lb = cir.l(c, f);
+                    x(cir.c(a, f), lb) + x(cir.c(a, shift(q, c, -1)), lb)
                 } else {
-                    lm * (tb.c(a, shift(n, b, -1)) + tb.c(a, n))
+                    x(cir.c(a, shift(q, b, -1)), lm) + x(cir.c(a, q), lm)
                 };
-                let t = 0.25 * (t_below + l0 * (tb.c(a, n) + tb.c(a, shift(n, b, 1))));
-                let q = 0.5 * (tb.c(b, n) + tb.c(b, shift(n, a, 1)));
-                tod[slot] = (t, 0.5 * (lm + l0) * q, 0.5 * (lm - l0) * q);
+                let above = x(cir.c(a, q), l0) + x(cir.c(a, shift(q, b, 1)), l0);
+                tl[slot] = (0.25 * (f64::from(below) + f64::from(above)), lm, l0);
             }
-            let [(t0, o0, d0), (t1, o1, d1)] = tod;
-            let w2 = t0 + t1 + (o1 + d0.abs()).max(o0 + d1.abs());
-            w2max = w2max.max(w2);
+            let [(t0, lm0, l00), (t1, lm1, l01)] = tl;
+            // The own-axis term at both ends of the edge.
+            let mut own = 0.0f64;
+            for m in [q, shift(q, a, 1)] {
+                let (c0, c1) = (cir.c(bs[0], m), cir.c(bs[1], m));
+                let (x0m, x00) = (f64::from(x(c0, lm0)), f64::from(x(c0, l00)));
+                let (x1m, x10) = (f64::from(x(c1, lm1)), f64::from(x(c1, l01)));
+                let (lc0, dc0) = (0.5 * (x0m + x00), 0.5 * (x0m - x00));
+                let (lc1, dc1) = (0.5 * (x1m + x10), 0.5 * (x1m - x10));
+                own += (lc1 + dc0.abs()).max(lc0 + dc1.abs());
+            }
+            w2max = w2max.max(t0 + t1 + 0.5 * own);
         }
     }
     1.0 / w2max.sqrt()
@@ -393,9 +334,10 @@ mod tests {
     #[test]
     fn uniform_mesh() {
         let u = [1.0; 10];
-        // Rennings = Courant limit, CFL (Gershgorin) = Δ/(2c).
+        // Rennings = Courant limit, CFL (Gershgorin) = Δ/(2c), up to
+        // openEMS's single-precision circuit values.
         let r = dt(&u, TimestepMethod::Rennings);
-        assert!((r / (1e-3 / (C0 * 3f64.sqrt())) - 1.0).abs() < 1e-12);
+        assert!((r / (1e-3 / (C0 * 3f64.sqrt())) - 1.0).abs() < 6e-8);
         let c = dt(&u, TimestepMethod::Cfl);
         assert!((c / (1e-3 / (2.0 * C0)) - 1.0).abs() < 6e-8);
         assert_eq!(c, c as f32 as f64);
@@ -499,5 +441,73 @@ mod tests {
         // an exact 1000 steps becomes 1001.
         assert!((periodic_timestep(1.92583e-12, 1e-9) / 1.92308e-12 - 1.0).abs() < 3e-6);
         assert!((periodic_timestep(1e-12, 1e-9) - 1e-9 / 1001.0).abs() < 1e-24);
+    }
+
+    /// The time step of `mm` lines (as written in a file with
+    /// `DeltaUnit` 1e-3), vacuum.
+    fn dt_mm(mm: [&[f64]; 3], method: TimestepMethod) -> f64 {
+        let g = Grid::new(mm.map(|l| l.iter().map(|v| v * 1e-3).collect())).unwrap();
+        openems_timestep(&g, &EdgeMaterials::vacuum(&g), method)
+    }
+
+    #[test]
+    fn bit_exact_steps() {
+        // openEMS's dt read back from the probe time column of 3 000-step
+        // runs (the interval that all rows allow; design §5.16.8).
+        let u: &[f64] = &[0., 1., 2., 3., 4.];
+        let cases: [([&[f64]; 3], TimestepMethod, f64, f64); 5] = [
+            // Uniform 1 mm cube: 3.5e-9 below Δ/(c·√3).
+            (
+                [u, u, u],
+                TimestepMethod::Rennings,
+                1.925833194728315e-12,
+                1.9258331947283165e-12,
+            ),
+            // One graded x cell.
+            (
+                [&[0., 1., 2., 3.7, 4.7, 5.7], u, u],
+                TimestepMethod::Rennings,
+                1.9248549583386012e-12,
+                1.9248549583386077e-12,
+            ),
+            // Graded along all three axes; the limit at the last x node.
+            (
+                [
+                    &[0., 1.39, 3.03, 5.43, 7.43, 8.31],
+                    &[0., 0.65, 1.7, 4.1],
+                    &[0., 0.67, 1.78, 2.86, 5.17, 6.57],
+                ],
+                TimestepMethod::Rennings,
+                1.40843904836242e-12,
+                1.4084390483624214e-12,
+            ),
+            (
+                [
+                    &[0., 0.37, 1.8, 2.84],
+                    &[0., 2.29, 2.98, 3.38],
+                    &[0., 0.6, 1.2, 1.8, 2.4, 3., 3.6],
+                ],
+                TimestepMethod::Cfl,
+                6.406501306017993e-13,
+                6.406501306017998e-13,
+            ),
+            (
+                [
+                    &[0., 0.54, 1.99, 2.25, 3.66, 6.11],
+                    &[0., 1.8, 2.6, 3.64],
+                    &[0., 1.02, 1.73, 3.18, 4.54],
+                ],
+                TimestepMethod::Cfl,
+                1.075432603213355e-12,
+                1.075432603213357e-12,
+            ),
+        ];
+        for (mm, method, lo, hi) in cases {
+            let dt = dt_mm(mm, method);
+            assert!(
+                lo <= dt && dt <= hi,
+                "{mm:?} {method:?}: {dt:e} not in [{lo:e}, {hi:e}]"
+            );
+        }
     }
 }

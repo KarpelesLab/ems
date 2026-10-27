@@ -41,17 +41,28 @@
 //!   grid per zone. A zone boundary on line `I` splits the mesh into an
 //!   inner grid with the lines `ρ_0 … ρ_I` and every second `α` line, and
 //!   the outer grid, whose edges with `ρ` index `> I` (on the full mesh)
-//!   set its step. The step is the smallest of all grids.
+//!   set its step. The step is the smallest of all grids. `TimeStepMethod`
+//!   applies to the outer grid only: the inner grids use Rennings (unless
+//!   the axis forces Gershgorin), so method 1 on a multigrid without the
+//!   axis takes the larger of the inner grids' Rennings and the outer
+//!   grid's Gershgorin limits (2–5 % more than Gershgorin everywhere on 3
+//!   of 12 random meshes, design §5.16.8).
+//! - **Arithmetic.** That of the Cartesian criteria
+//!   ([`timestep`](super::timestep): `f32` circuit values `C = ε·(A/l)`,
+//!   `L = μ·(A/l)` with openEMS's constants, single-precision couplings and
+//!   sums, the Gershgorin step in `f32`).
 //!
 //! Agreement with openEMS's printed 6 digits on every measured mesh, both
 //! methods (sectors and closed grids, with and without the axis, graded
-//! `ρ`, `α`, `z`, multigrid, materials; DESIGN §5.16.1 has the counts).
+//! `ρ`, `α`, `z`, multigrid, materials; DESIGN §5.16.1 has the counts),
+//! and bit for bit on 180 random vacuum meshes (sectors, closed grids,
+//! the axis), both methods, and 12 multigrids (DESIGN §5.16.8).
 
 use super::edge_material::EdgeMaterials;
 use super::grid::Grid;
 use super::timestep::TimestepMethod;
 use crate::axis::Axis;
-use crate::constants::{EPS0, MU0};
+use crate::constants::{OPENEMS_EPS0, OPENEMS_MU0};
 
 /// Ghost lines added on each side of every axis.
 const GHOST: usize = 3;
@@ -181,9 +192,10 @@ impl<'a> Sub<'a> {
         (m, (c[0] * dims[1] + c[1]) * dims[2] + c[2])
     }
 
-    /// `1/C` of the E edge along `a` at `n` with the permittivity of the
-    /// edge at `mat`.
-    fn inv_c(&self, a: usize, n: [isize; 3], mat: [isize; 3]) -> f64 {
+    /// `C` of the E edge along `a` at `n`, rounded to `f32` (openEMS's
+    /// arithmetic, see [`timestep`](super::timestep)); infinite for an
+    /// edge of zero length (it couples to nothing).
+    fn c(&self, a: usize, n: [isize; 3]) -> f32 {
         let [i, j, k] = self.clamp(n);
         let (l, area) = match a {
             0 => (self.p(0, i), self.rm(i) * self.d(1, j) * self.d(2, k)),
@@ -194,18 +206,18 @@ impl<'a> Sub<'a> {
             }
         };
         if l == 0.0 {
-            return 0.0;
+            return f32::INFINITY;
         }
         let mut along = [false; 3];
         along[a] = true;
-        let (m, q) = self.mat_index(mat, along);
+        let (m, q) = self.mat_index(n, along);
         let eps = m.eps_r(Axis::ALL[a])[q];
-        l / (EPS0 * eps * area)
+        (OPENEMS_EPS0 * eps * (area / l)) as f32
     }
 
-    /// `1/L` of the H dual edge along `a` at `n` with the permeability of
-    /// the dual edge at `mat` (0 for a face of zero area, on the axis).
-    fn inv_l(&self, a: usize, n: [isize; 3], mat: [isize; 3]) -> f64 {
+    /// `L` of the H dual edge along `a` at `n`, rounded to `f32`; infinite
+    /// for a face of zero area (on the axis), which carries no flux.
+    fn l(&self, a: usize, n: [isize; 3]) -> f32 {
         let [i, j, k] = self.clamp(n);
         let (l, area) = match a {
             0 => (self.d(0, i), self.rn(i) * self.p(1, j) * self.p(2, k)),
@@ -216,21 +228,13 @@ impl<'a> Sub<'a> {
             }
         };
         if area == 0.0 {
-            return 0.0;
+            return f32::INFINITY;
         }
         let mut across = [true; 3];
         across[a] = false;
-        let (m, q) = self.mat_index(mat, across);
+        let (m, q) = self.mat_index(n, across);
         let mu = m.mu_r(Axis::ALL[a])[q];
-        l / (MU0 * mu * area)
-    }
-
-    fn c(&self, a: usize, n: [isize; 3]) -> f64 {
-        self.inv_c(a, n, n)
-    }
-
-    fn l(&self, a: usize, n: [isize; 3]) -> f64 {
-        self.inv_l(a, n, n)
+        (OPENEMS_MU0 * mu * (area / l)) as f32
     }
 
     fn nodes(&self) -> impl Iterator<Item = [isize; 3]> + '_ {
@@ -241,24 +245,23 @@ impl<'a> Sub<'a> {
         })
     }
 
-    /// Largest `ω²` of the Gershgorin criterion.
+    /// Largest `ω²` of the Gershgorin criterion, with openEMS's
+    /// single-precision sum (see [`timestep`](super::timestep)).
     fn gershgorin(&self) -> f64 {
         let mut w2max = 0.0f64;
         for a in 0..3 {
+            let (b, c) = ((a + 1) % 3, (a + 2) % 3);
             for n in self.nodes() {
                 if n[a] as usize + 1 >= self.n[a] || (self.axis && a == 2 && n[0] == 0) {
                     continue;
                 }
-                let mut s = 0.0;
-                for t in [(a + 1) % 3, (a + 2) % 3] {
+                let mut s = 0.0f32;
+                for t in [c, b] {
                     let o = 3 - a - t;
-                    for ct in [n[t] - 1, n[t]] {
-                        let mut f = n;
-                        f[t] = ct;
-                        s += self.l(o, f);
-                    }
+                    s += 1.0 / self.l(o, n);
+                    s += 1.0 / self.l(o, shift(n, t, -1));
                 }
-                w2max = w2max.max(self.c(a, n) * s);
+                w2max = w2max.max(f64::from(s) / f64::from(self.c(a, n)));
             }
         }
         w2max
@@ -270,33 +273,39 @@ impl<'a> Sub<'a> {
     /// `D_b(m) = ½(1/L_c(n − e_b) − 1/L_c(n))·(1/C_b(m))` (see the module
     /// docs; on Cartesian meshes the same branch wins at both ends and this
     /// is the `max(O_c + |D_b|, O_b + |D_c|)` of
-    /// [`timestep`](super::timestep)).
+    /// [`timestep`](super::timestep)), with openEMS's single-precision
+    /// couplings `X(C, L)` and bracket sums (as there).
     fn rennings(&self) -> f64 {
+        let x = |c: f32, l: f32| 1.0 / (c * l);
         let mut w2max = 0.0f64;
         for a in 0..3 {
+            let bs = [(a + 1) % 3, (a + 2) % 3];
             for n in self.nodes() {
-                let bs = [(a + 1) % 3, (a + 2) % 3];
-                // Per transverse axis b: T_b, the mean and half the
-                // difference of the two dual edges along c.
-                let mut tld = [(0.0, 0.0, 0.0); 2];
+                // Per transverse axis b: T_b and the two dual edges along c.
+                let mut tl = [(0.0f64, 0.0f32, 0.0f32); 2];
                 for (slot, b) in bs.into_iter().enumerate() {
                     let c = 3 - a - b;
                     let lm = self.l(c, shift(n, b, -1));
                     let l0 = self.l(c, n);
-                    let t_below = if (b + 3 - a) % 3 == 2 {
+                    let below = if (b + 3 - a) % 3 == 2 {
                         let f = shift(shift(n, b, -1), c, -1);
-                        self.l(c, f) * (self.c(a, f) + self.c(a, shift(n, c, -1)))
+                        let lb = self.l(c, f);
+                        x(self.c(a, f), lb) + x(self.c(a, shift(n, c, -1)), lb)
                     } else {
-                        lm * (self.c(a, shift(n, b, -1)) + self.c(a, n))
+                        x(self.c(a, shift(n, b, -1)), lm) + x(self.c(a, n), lm)
                     };
-                    let t = 0.25 * (t_below + l0 * (self.c(a, n) + self.c(a, shift(n, b, 1))));
-                    tld[slot] = (t, 0.5 * (lm + l0), 0.5 * (lm - l0));
+                    let above = x(self.c(a, n), l0) + x(self.c(a, shift(n, b, 1)), l0);
+                    tl[slot] = (0.25 * (f64::from(below) + f64::from(above)), lm, l0);
                 }
-                let [(t0, l0, d0), (t1, l1, d1)] = tld;
+                let [(t0, lm0, l00), (t1, lm1, l01)] = tl;
                 let mut own = 0.0;
                 for m in [n, shift(n, a, 1)] {
                     let (c0, c1) = (self.c(bs[0], m), self.c(bs[1], m));
-                    own += (l1 * c1 + (d0 * c0).abs()).max(l0 * c0 + (d1 * c1).abs());
+                    let (x0m, x00) = (f64::from(x(c0, lm0)), f64::from(x(c0, l00)));
+                    let (x1m, x10) = (f64::from(x(c1, lm1)), f64::from(x(c1, l01)));
+                    let (lc0, dc0) = (0.5 * (x0m + x00), 0.5 * (x0m - x00));
+                    let (lc1, dc1) = (0.5 * (x1m + x10), 0.5 * (x1m - x10));
+                    own += (lc1 + dc0.abs()).max(lc0 + dc1.abs());
                 }
                 w2max = w2max.max(t0 + t1 + 0.5 * own);
             }
@@ -304,11 +313,13 @@ impl<'a> Sub<'a> {
         w2max
     }
 
-    fn omega2(&self, method: TimestepMethod) -> f64 {
+    /// The time step of this grid: Gershgorin (with the axis or by
+    /// `method`) in single precision, Rennings in double.
+    fn dt(&self, method: TimestepMethod) -> f64 {
         if self.axis || method == TimestepMethod::Cfl {
-            self.gershgorin()
+            f64::from(1.0 / (self.gershgorin() as f32).sqrt())
         } else {
-            self.rennings()
+            1.0 / self.rennings().sqrt()
         }
     }
 }
@@ -365,17 +376,28 @@ pub fn openems_timestep_cyl_seam(
     seam: Option<&SeamMaterials>,
 ) -> f64 {
     let level = |l: usize| seam.and_then(|s| s.levels.get(l));
-    let mut w2 = 0.0f64;
     let mut lines = grid.nodes()[0];
     let mut stride = 1;
+    // The outer grid first; openEMS's inner grids of a multigrid take
+    // its default criterion (Rennings) whatever `TimeStepMethod` says.
+    let mut dt = f64::INFINITY;
     for (l, &zone) in grid.multigrid().iter().enumerate() {
-        w2 = w2.max(Sub::new(grid, materials, level(l), lines, stride, zone + 1).omega2(method));
+        let m = if l == 0 {
+            method
+        } else {
+            TimestepMethod::Rennings
+        };
+        dt = dt.min(Sub::new(grid, materials, level(l), lines, stride, zone + 1).dt(m));
         lines = zone + 1;
         stride *= 2;
     }
     let l = grid.multigrid().len();
-    w2 = w2.max(Sub::new(grid, materials, level(l), lines, stride, 0).omega2(method));
-    1.0 / w2.sqrt()
+    let m = if l == 0 {
+        method
+    } else {
+        TimestepMethod::Rennings
+    };
+    dt.min(Sub::new(grid, materials, level(l), lines, stride, 0).dt(m))
 }
 
 #[cfg(test)]
@@ -472,10 +494,81 @@ mod tests {
         let g = g.with_multigrid(&[8]).unwrap();
         let d = openems_timestep_cyl(&g, &m, TimestepMethod::Rennings);
         assert!((d / 3.06136e-13 - 1.0).abs() < 5e-6, "{d:e}");
-        let outer = 1.0
-            / Sub::new(&g, &m, None, 21, 1, 9)
-                .omega2(TimestepMethod::Rennings)
-                .sqrt();
+        let outer = Sub::new(&g, &m, None, 21, 1, 9).dt(TimestepMethod::Rennings);
         assert!((outer / 1.05352e-12 - 1.0).abs() < 5e-6, "{outer:e}");
+    }
+
+    #[test]
+    fn bit_exact_steps() {
+        // openEMS's dt read back from the probe time column of 3 000-step
+        // runs (design §5.16.8); [Rennings, Gershgorin].
+        type Case<'a> = (&'a [f64], Vec<f64>, &'a [f64], Option<usize>, [[f64; 2]; 2]);
+        let mut closed: Vec<f64> = (0..12)
+            .map(|j| (TAU * j as f64 / 12.0 * 1e9).round() / 1e9)
+            .collect();
+        closed.push(TAU);
+        let mg: Vec<f64> = (0..=16).map(|j| TAU * j as f64 / 16.0).collect();
+        let cases: [Case; 4] = [
+            // Graded sector.
+            (
+                &[13.74, 14.81, 16.56, 17.18, 18.85, 19.96, 21.3],
+                vec![0.0, 0.0558, 0.1911, 0.2456, 0.5733],
+                &[0.0, 1.61, 2.78, 4.08],
+                None,
+                [
+                    [1.5832126385725107e-12, 1.5832126385725113e-12],
+                    [1.401835245107284e-12, 1.4018352451072874e-12],
+                ],
+            ),
+            // Closed azimuth (openEMS's extra line).
+            (
+                &[26.42, 28.04, 28.89, 30.19],
+                closed,
+                &[0.0, 1.4, 3.16, 4.47, 5.38, 7.87],
+                None,
+                [
+                    [2.1336266257286215e-12, 2.133626625728627e-12],
+                    [1.7859728453084577e-12, 1.7859728453084607e-12],
+                ],
+            ),
+            // With the axis: Gershgorin for both.
+            (
+                &[0.0, 1.41, 2.4, 3.64, 5.52, 5.96, 6.69],
+                vec![0.0, 0.2149, 0.2462, 0.4802, 0.5412],
+                &[0.0, 2.16, 3.31, 5.72],
+                None,
+                [[1.2059035952964546e-13, 1.2059035952964602e-13]; 2],
+            ),
+            // Multigrid split at line 3: with method 1 the inner grid still
+            // takes Rennings (1.02333e-12 s, the outer grid's Gershgorin
+            // step 8.29588e-13 s is smaller; Gershgorin on both: 7.95e-13).
+            (
+                &[1.38, 1.85, 2.44, 3.2, 3.61, 4.39, 5.59, 6.23],
+                mg,
+                &[0.0, 1.11, 2.21, 3.42, 3.87],
+                Some(3),
+                [
+                    [1.0233256432085309e-12, 1.0233256432085337e-12],
+                    [8.295878632484651e-13, 8.295878632484663e-13],
+                ],
+            ),
+        ];
+        for (rho, alpha, z, split, want) in cases {
+            let mut g = Grid::cylindrical([mm(rho), alpha, mm(z)]).unwrap();
+            if let Some(s) = split {
+                g = g.with_multigrid(&[s]).unwrap();
+            }
+            let m = EdgeMaterials::vacuum(&g);
+            for (method, [lo, hi]) in [TimestepMethod::Rennings, TimestepMethod::Cfl]
+                .into_iter()
+                .zip(want)
+            {
+                let d = openems_timestep_cyl(&g, &m, method);
+                assert!(
+                    lo <= d && d <= hi,
+                    "{rho:?} {method:?}: {d:e} not in [{lo:e}, {hi:e}]"
+                );
+            }
+        }
     }
 }
