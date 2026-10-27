@@ -33,7 +33,7 @@ pub(crate) fn flush(x: f32) -> f32 {
 }
 
 /// openEMS's H update `da·h − db·(((a − b) + d) − c)` with every
-/// operation's subnormal result flushed to zero (design §5.16.8: openEMS
+/// operation's subnormal result flushed to zero (design §5.16.11: openEMS
 /// runs with the CPU's flush-to-zero mode, which acts on each operation).
 #[inline(always)]
 pub(crate) fn oe_h(da: f32, h: f32, db: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
@@ -91,7 +91,7 @@ fn h_row(
 /// fields as openEMS bit for bit when the update coefficients are equal
 /// (design §5.16.6). openEMS files ([`Fdtd::openems_run`](crate::Fdtd::openems_run))
 /// use it, on Cartesian and cylindrical grids (openEMS's cylindrical
-/// engine sums in the same order, design §5.16.8). With it the kernels
+/// engine sums in the same order, design §5.16.11). With it the kernels
 /// also flush the subnormal result of every operation to zero, as
 /// openEMS's flush-to-zero arithmetic does, not only the final value. Only
 /// the main kernel follows the setting; boundary and other operators keep

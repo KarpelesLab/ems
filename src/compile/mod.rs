@@ -497,6 +497,13 @@ pub struct Compiled {
     /// their branch poles in [`dispersive`](Self::dispersive) are the
     /// sheet's, not a medium's.
     pub openems_sheets: Vec<(Axis, [usize; 3], [f64; 2])>,
+    /// openEMS's azimuthal multigrid (files with one zone boundary on a
+    /// closed grid with the axis, vacuum inside the zone; design
+    /// §5.16.11): the zone boundary line. [`grid`](Self::grid) is then the
+    /// plain fine grid and [`build`](Self::build) installs openEMS's
+    /// coarse operator and interpolation; other multigrid models keep the
+    /// zones in the grid (ems's embedding, §5.15.1).
+    pub openems_multigrid: Option<usize>,
     /// Conformal PEC geometry ([`CompileOptions::conformal`]); applied to
     /// the coefficients by [`build`](Self::build) before any operator.
     pub conformal: Option<ConformalPec>,
@@ -571,7 +578,7 @@ impl Compiled {
     /// `engine`.
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
-        // openEMS's seam update of a closed azimuth (design §5.16.8),
+        // openEMS's seam update of a closed azimuth (design §5.16.11),
         // first among the post-E hooks: it replaces the periodic merge.
         if self.curl_order == CurlOrder::OpenEms
             && self.grid.is_closed()
@@ -619,6 +626,15 @@ impl Compiled {
                 skip,
             );
             engine.add_operator(op);
+            if let Some(ring) = self.openems_multigrid {
+                let op = crate::engine::openems_cyl::OpenemsMultigrid::new(
+                    &self.grid,
+                    &engine.coefficients(),
+                    engine.dt(),
+                    ring,
+                );
+                engine.add_operator(op);
+            }
         }
         if self.openems_pmc {
             // openEMS's axis update of a closed azimuth (design §5.15).
@@ -1617,7 +1633,35 @@ pub fn compile(
     } else {
         (sheet_map.edges, Vec::new())
     };
+    // openEMS's multigrid (files, design §5.16.11): the plain fine grid
+    // with `OpenemsMultigrid`, the time step resolved on the zoned grid.
+    let openems_multigrid = openems_multigrid_ring(
+        &grid,
+        fdtd,
+        &materials,
+        &dispersive,
+        &sheet_edges,
+        &mur,
+        &pml,
+    );
+    let grid = match openems_multigrid {
+        Some(_) => {
+            let dt = match timestep {
+                TimeStep::OpenEms(o) => o.resolve(&grid, &materials)?,
+                t => t.resolve(&grid)?,
+            };
+            timestep = TimeStep::OpenEms(crate::engine::OpenEmsTimestep {
+                method: crate::engine::timestep::TimestepMethod::default(),
+                factor: 1.0,
+                fixed: Some(dt),
+                period: None,
+            });
+            grid.with_multigrid(&[])?
+        }
+        None => grid,
+    };
     Ok(Compiled {
+        openems_multigrid,
         grid,
         delta_unit: model.grid.delta_unit,
         materials,
@@ -1668,6 +1712,56 @@ pub fn compile(
         },
         warnings,
     })
+}
+
+/// The zone boundary line of a multigrid that openEMS's own scheme
+/// replaces ([`OpenemsMultigrid`](crate::engine::openems_cyl::OpenemsMultigrid)):
+/// files only, a closed grid with the axis, one zone boundary, uniform α
+/// lines, vacuum without other operators inside the zone, no absorbing
+/// faces. Other multigrid models keep ems's embedding (§5.15.1).
+fn openems_multigrid_ring(
+    grid: &Grid,
+    fdtd: &Fdtd,
+    materials: &EdgeMaterials,
+    dispersive: &[EdgePole],
+    sheets: &[SheetEdge],
+    mur: &[(Face, Option<f64>)],
+    pml: &[(Face, Cpml)],
+) -> Option<usize> {
+    let &[ring] = grid.multigrid() else {
+        return None;
+    };
+    if !(fdtd.get_openems_run() && grid.is_closed() && grid.has_axis())
+        || !mur.is_empty()
+        || !pml.is_empty()
+    {
+        return None;
+    }
+    let d = grid.deltas(Axis::Y);
+    if d.iter().any(|&x| (x - d[0]).abs() > 1e-9 * d[0]) {
+        return None;
+    }
+    let inside = |node: [usize; 3]| node[0] <= ring;
+    if dispersive.iter().any(|p| inside(p.node)) || sheets.iter().any(|e| inside(e.node)) {
+        return None;
+    }
+    let n = grid.nodes();
+    for axis in Axis::ALL {
+        let (eps, kap) = (materials.eps_r(axis), materials.kappa(axis));
+        let (mu, sig) = (materials.mu_r(axis), materials.sigma_m(axis));
+        let pec = materials.pec_mask(axis);
+        for i in 0..=ring {
+            for j in 0..n[1] {
+                for k in 0..n[2] {
+                    let q = grid.index([i, j, k]);
+                    if eps[q] != 1.0 || mu[q] != 1.0 || kap[q] != 0.0 || sig[q] != 0.0 || pec[q] {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+    Some(ring)
 }
 
 #[cfg(test)]

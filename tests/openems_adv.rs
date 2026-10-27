@@ -311,12 +311,12 @@ fn cylindrical_cavity_with_axis() {
     check("adv_cyl_axis", 2e-5);
 }
 
-/// The same cavity with `MultiGrid="4"`: 3.0e-3…2.0e-2 (1.0–2.9e-2
-/// before openEMS's axis update). openEMS's multigrid moves its own
-/// solution by 0.6–1 % (ems's by 0.1 %).
+/// The same cavity with `MultiGrid="4"`: identical to the printed digits
+/// with openEMS's multigrid scheme for files (design §5.16.11; 3.0e-3…2.0e-2
+/// with ems's embedding).
 #[test]
 fn cylindrical_multigrid() {
-    check("adv_cyl_multigrid", 6e-2);
+    check("adv_cyl_multigrid", 1e-6);
 }
 
 /// Drude-filled coax (`ε∞ = 2`, `f_p = 3 GHz`, `τ = 0.5 ns`): dispersive

@@ -1,5 +1,5 @@
 //! openEMS's arithmetic on the seam of a closed cylindrical grid (models
-//! read from openEMS files, design §5.16.8).
+//! read from openEMS files, design §5.16.11).
 //!
 //! ems stores the seam (the `α = 0` half-plane of a closed azimuth) twice,
 //! as the first and the last α plane, and joins the copies with the
@@ -359,6 +359,330 @@ impl Operator for OpenemsSeam {
             v = flush(v + flush(s.vi * seam));
             for j in 0..=last {
                 f.u.set(Axis::Z, [0, j, k], v);
+            }
+        }
+    }
+}
+
+/// openEMS's azimuthal multigrid on a closed grid with the axis and one
+/// zone boundary (models read from openEMS files, design §5.16.11).
+///
+/// openEMS runs a coarse operator (every second α line) on the rings
+/// inside the zone boundary `ρ_I` next to the fine operator, which
+/// updates the edges on and outside `ρ_I` and reads the inner fields from
+/// the fine arrays, where openEMS writes the coarse values interpolated
+/// onto the fine lines. Black box (per-step dumps of a 1 m-cell model,
+/// reproduced bit for bit over 38 steps by an `f32` model of):
+///
+/// - the coarse H update (cells and lines inside `ρ_I`) from the coarse
+///   E and, on `ρ_I`, the fine E: `E_z` of the even lines, `E_α` of a
+///   coarse arc the sum of its two fine edges;
+/// - the coarse E update inside `ρ_I`, the axis by openEMS's ring sum of
+///   the coarse `H_α` (§5.15);
+/// - coarse coefficients of the coarse cell geometry (`C`, `L` rounded to
+///   `f32` first);
+/// - fine values inside `ρ_I`: quantities on the α lines (`E_ρ`, `E_z`,
+///   `H_α`) the coarse value on even lines and the mean of the two
+///   neighbours on odd ones, quantities on α cells (`E_α`, `H_ρ`, `H_z`)
+///   the linear interpolation between the centres of the coarse cell and
+///   its neighbour towards the fine cell (3/4 and 1/4), arc voltages and
+///   `H_α` currents scaled to the fine lengths (½); the first fine `E_α`
+///   cell extrapolates from the last coarse cell's unwrapped centre
+///   (weights 13/12 and −1/12), unlike `H_ρ` and `H_z`.
+///
+/// The engine's grid is the plain fine grid; the operator overwrites
+/// every field inside `ρ_I` after the kernels (and after
+/// [`OpenemsSeam`]).
+#[derive(Debug, Clone)]
+pub(crate) struct OpenemsMultigrid {
+    /// Zone boundary line.
+    ring: usize,
+    /// Coarse α cells.
+    nc: usize,
+    nz: usize,
+    /// Coarse E and H, `[c][(i·nc + jc)·nz + k]`, `i ≤ ring`.
+    e: [Vec<f32>; 3],
+    h: [Vec<f32>; 3],
+    /// Coarse coefficients (`ca`/`cb`, `da`/`db`; `cb = 0`: no edge).
+    ce: [Vec<(f32, f32)>; 3],
+    ch: [Vec<(f32, f32)>; 3],
+    /// Axis z edges: `(vv, vi)` per k (`vi = 0`: PEC).
+    axis: Vec<(f32, f32)>,
+    /// Weights `(own, neighbour)` of the fine α-cell interpolation of a
+    /// coarse cell's low and high fine cell, and of the first `E_α` cell.
+    w_lo: (f32, f32),
+    w_hi: (f32, f32),
+    w_first_ea: (f32, f32),
+}
+
+impl OpenemsMultigrid {
+    /// The emulation for `grid` (closed, with the axis, uniform α, `ring`
+    /// the zone boundary line) on vacuum inside the zone, with the fine
+    /// engine coefficients `co` (for the faces and PEC edges) and time
+    /// step `dt`.
+    pub(crate) fn new(grid: &Grid, co: &Coefficients, dt: f64, ring: usize) -> Self {
+        let n = grid.nodes();
+        let (nr, nz) = (n[0], n[2]);
+        let nc = (n[1] - 1) / 2;
+        let r = grid.lines(Axis::X);
+        let z = grid.lines(Axis::Z);
+        let al: Vec<f64> = grid.lines(Axis::Y).iter().step_by(2).copied().collect();
+        let da = |j: usize| al[j + 1] - al[j];
+        let dda = |j: usize| 0.5 * (da(j) + da(if j > 0 { j - 1 } else { nc - 1 }));
+        let dl = |i: usize| if i + 1 < nr { r[i + 1] - r[i] } else { 0.0 };
+        let ddr = |i: usize| 0.5 * (if i > 0 { r[i] - r[i - 1] } else { 0.0 } + dl(i));
+        let dz = |k: usize| if k + 1 < nz { z[k + 1] - z[k] } else { 0.0 };
+        let ddz = |k: usize| 0.5 * (if k > 0 { z[k] - z[k - 1] } else { 0.0 } + dz(k));
+        let rh = |i: usize| {
+            if i + 1 < nr {
+                0.5 * (r[i] + r[i + 1])
+            } else {
+                r[i]
+            }
+        };
+        let len = (ring + 1) * nc * nz;
+        let idx = |i: usize, jc: usize, k: usize| (i * nc + jc) * nz + k;
+        let mut ce: [Vec<(f32, f32)>; 3] = core::array::from_fn(|_| vec![(0.0, 0.0); len]);
+        let mut ch: [Vec<(f32, f32)>; 3] = core::array::from_fn(|_| vec![(0.0, 0.0); len]);
+        for c in 0..3 {
+            let axis = Axis::ALL[c];
+            let (cb, db) = (co.cb(axis), co.db(axis));
+            for i in 0..ring {
+                for jc in 0..nc {
+                    for k in 0..nz {
+                        let fine = grid.index([i, 2 * jc, k]);
+                        if cb[fine] != 0.0 && !(c == 2 && i == 0) {
+                            let (area, l) = match c {
+                                0 => (rh(i) * dda(jc) * ddz(k), dl(i)),
+                                1 => (ddr(i) * ddz(k), r[i] * da(jc)),
+                                _ => {
+                                    let lo = if i > 0 { 0.5 * (r[i - 1] + r[i]) } else { r[i] };
+                                    (dda(jc) * 0.5 * (rh(i) * rh(i) - lo * lo), dz(k))
+                                }
+                            };
+                            if area > 0.0 && l > 0.0 {
+                                ce[c][idx(i, jc, k)] = coeffs(EPS0 * area / l, 0.0, dt);
+                            }
+                        }
+                        if db[fine] != 0.0 {
+                            let (area, l) = match c {
+                                0 => (r[i] * da(jc) * dz(k), ddr(i)),
+                                1 => (dl(i) * dz(k), rh(i) * dda(jc)),
+                                _ => (da(jc) * 0.5 * (r[i + 1] * r[i + 1] - r[i] * r[i]), ddz(k)),
+                            };
+                            if area > 0.0 && l > 0.0 {
+                                ch[c][idx(i, jc, k)] = coeffs(MU0 * area / l, 0.0, dt);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let cbz = co.cb(Axis::Z);
+        let axis = (0..nz)
+            .map(|k| {
+                if k + 1 >= nz || cbz[grid.index([0, 0, k])] == 0.0 {
+                    return (0.0, 0.0);
+                }
+                let area: f64 = (0..nc).map(|jc| dda(jc) * 0.5 * rh(0) * rh(0)).sum();
+                coeffs_f64(EPS0 * area / dz(k), 0.0, dt)
+            })
+            .collect();
+        // Interpolation weights between coarse cell centres (uniform α).
+        let fl = grid.lines(Axis::Y);
+        let cen = |jc: usize| 0.5 * (al[jc] + al[jc + 1]);
+        let fcen = |j: usize| 0.5 * (fl[j] + fl[j + 1]);
+        let w = |x: f64, own: f64, nb: f64| {
+            let t = (x - nb) / (own - nb);
+            (t as f32, (1.0 - t) as f32)
+        };
+        let step = cen(1) - cen(0);
+        let w_lo = w(fcen(2), cen(1), cen(0));
+        let w_hi = w(fcen(1), cen(0), cen(0) + step);
+        let w_first_ea = w(fcen(0), cen(0), cen(nc - 1));
+        Self {
+            ring,
+            nc,
+            nz,
+            e: core::array::from_fn(|_| vec![0.0; len]),
+            h: core::array::from_fn(|_| vec![0.0; len]),
+            ce,
+            ch,
+            axis,
+            w_lo,
+            w_hi,
+            w_first_ea,
+        }
+    }
+
+    fn idx(&self, i: usize, jc: usize, k: usize) -> usize {
+        (i * self.nc + jc) * self.nz + k
+    }
+
+    /// Coarse value of component `c` at `p = (i, jc, k)` with periodic α
+    /// and 0 outside `0 ≤ i ≤ ring`, `0 ≤ k < nz`.
+    fn get(&self, v: &[Vec<f32>; 3], c: usize, p: [isize; 3]) -> f32 {
+        let [i, jc, k] = p;
+        if i < 0 || k < 0 || i as usize > self.ring || k as usize >= self.nz {
+            return 0.0;
+        }
+        let jc = jc.rem_euclid(self.nc as isize) as usize;
+        v[c][self.idx(i as usize, jc, k as usize)]
+    }
+
+    /// `own·a + nb·b`, flushed per operation.
+    fn lerp((own, nb): (f32, f32), a: f32, b: f32) -> f32 {
+        flush(flush(own * a) + flush(nb * b))
+    }
+}
+
+impl Operator for OpenemsMultigrid {
+    fn hooks(&self) -> Hooks {
+        Hooks::POST_H | Hooks::POST_E
+    }
+
+    fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
+        let (ring, nc, nz) = (self.ring, self.nc, self.nz);
+        // The fine E on ρ_I onto the coarse grid's line I.
+        for jc in 0..nc {
+            for k in 0..nz {
+                let q = self.idx(ring, jc, k);
+                self.e[2][q] = f.u.get(Axis::Z, [ring, 2 * jc, k]);
+                self.e[1][q] = flush(
+                    f.u.get(Axis::Y, [ring, 2 * jc, k]) + f.u.get(Axis::Y, [ring, 2 * jc + 1, k]),
+                );
+            }
+        }
+        // The coarse H update inside the zone.
+        let mut next = self.h.clone();
+        for (c, out) in next.iter_mut().enumerate() {
+            let (ca, cb) = ((c + 1) % 3, (c + 2) % 3);
+            for i in 0..ring {
+                for jc in 0..nc {
+                    for k in 0..nz {
+                        let q = self.idx(i, jc, k);
+                        let (ii, iv) = self.ch[c][q];
+                        if iv == 0.0 {
+                            continue;
+                        }
+                        let p = [i as isize, jc as isize, k as isize];
+                        let (mut pa, mut pb) = (p, p);
+                        pa[ca] += 1;
+                        pb[cb] += 1;
+                        let g = |c: usize, p: [isize; 3]| self.get(&self.e, c, p);
+                        out[q] = oe_h(
+                            ii,
+                            self.h[c][q],
+                            iv,
+                            g(cb, pa),
+                            g(cb, p),
+                            g(ca, pb),
+                            g(ca, p),
+                        );
+                    }
+                }
+            }
+        }
+        self.h = next;
+        // Into the fine arrays.
+        let last = 2 * nc;
+        for i in 0..ring {
+            for jc in 0..nc {
+                let (nx, pv) = ((jc + 1) % nc, (jc + nc - 1) % nc);
+                let (j0, j1) = (2 * jc, 2 * jc + 1);
+                for k in 0..nz {
+                    let h = |c: usize, j: usize| self.h[c][self.idx(i, j, k)];
+                    for c in [0, 2] {
+                        let axis = Axis::ALL[c];
+                        f.i.set(axis, [i, j0, k], Self::lerp(self.w_lo, h(c, jc), h(c, pv)));
+                        f.i.set(axis, [i, j1, k], Self::lerp(self.w_hi, h(c, jc), h(c, nx)));
+                    }
+                    let even = flush(0.5 * h(1, jc));
+                    let odd = flush(0.25 * flush(h(1, jc) + h(1, nx)));
+                    if jc == 0 {
+                        // The seam's two copies hold half the fine edge each.
+                        let q = 0.5 * even;
+                        f.i.set(Axis::Y, [i, 0, k], q);
+                        f.i.set(Axis::Y, [i, last, k], q);
+                    } else {
+                        f.i.set(Axis::Y, [i, j0, k], even);
+                    }
+                    f.i.set(Axis::Y, [i, j1, k], odd);
+                }
+            }
+        }
+    }
+
+    fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
+        let (ring, nc, nz) = (self.ring, self.nc, self.nz);
+        let mut next = self.e.clone();
+        for (c, out) in next.iter_mut().enumerate() {
+            let (ca, cb) = ((c + 1) % 3, (c + 2) % 3);
+            for i in 0..ring {
+                for jc in 0..nc {
+                    for k in 0..nz {
+                        let q = self.idx(i, jc, k);
+                        let (vv, vi) = self.ce[c][q];
+                        if vi == 0.0 {
+                            continue;
+                        }
+                        let p = [i as isize, jc as isize, k as isize];
+                        let (mut pa, mut pb) = (p, p);
+                        pa[ca] -= 1;
+                        pb[cb] -= 1;
+                        let g = |c: usize, p: [isize; 3]| self.get(&self.h, c, p);
+                        out[q] = oe_e(
+                            vv,
+                            self.e[c][q],
+                            vi,
+                            g(cb, p),
+                            g(cb, pa),
+                            g(ca, p),
+                            g(ca, pb),
+                        );
+                    }
+                }
+            }
+        }
+        // The axis: openEMS's ring sum of the coarse H_α, seam twice.
+        for k in 0..nz {
+            let (vv, vi) = self.axis[k];
+            if vi == 0.0 {
+                continue;
+            }
+            let ha = |jc: usize| self.h[1][self.idx(0, jc, k)];
+            let mut v = flush(vv * self.e[2][self.idx(0, 0, k)]);
+            for jc in (0..nc).chain([0]) {
+                v = flush(v + flush(vi * ha(jc)));
+            }
+            for jc in 0..nc {
+                next[2][self.idx(0, jc, k)] = v;
+            }
+        }
+        self.e = next;
+        // Into the fine arrays (line I stays the fine operator's).
+        let last = 2 * nc;
+        for i in 0..ring {
+            for jc in 0..nc {
+                let (nx, pv) = ((jc + 1) % nc, (jc + nc - 1) % nc);
+                let (j0, j1) = (2 * jc, 2 * jc + 1);
+                for k in 0..nz {
+                    let e = |c: usize, j: usize| self.e[c][self.idx(i, j, k)];
+                    for c in [0, 2] {
+                        let axis = Axis::ALL[c];
+                        let even = e(c, jc);
+                        f.u.set(axis, [i, j0, k], even);
+                        f.u.set(axis, [i, j1, k], flush(0.5 * flush(e(c, jc) + e(c, nx))));
+                        if jc == 0 {
+                            f.u.set(axis, [i, last, k], even);
+                        }
+                    }
+                    let first = if jc == 0 { self.w_first_ea } else { self.w_lo };
+                    let lo = flush(0.5 * Self::lerp(first, e(1, jc), e(1, pv)));
+                    let hi = flush(0.5 * Self::lerp(self.w_hi, e(1, jc), e(1, nx)));
+                    f.u.set(Axis::Y, [i, j0, k], lo);
+                    f.u.set(Axis::Y, [i, j1, k], hi);
+                }
             }
         }
     }
