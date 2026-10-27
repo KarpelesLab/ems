@@ -302,12 +302,14 @@ fn cylindrical_dumps() {
 /// `N` distinct α lines (and dual lines), interpolates node values across
 /// the seam, and updates the axis `E_z` with a ring sum that counts the
 /// seam line twice; ems reproduces all three for files (design §5.15,
-/// §5.16.2): every E and H dump within 2e-6 of its peak (before: a 7th α
-/// line, and 1.5e-2…8e-2 near the axis and at the seam).
+/// §5.16.2), and with openEMS's seam and axis arithmetic (§5.16.11) every
+/// E and H dump agrees to float round-off of the dump's own division
+/// (before: 2e-6 of its peak; a 7th α line and 1.5e-2…8e-2 near the axis
+/// and at the seam before that).
 #[test]
 fn closed_cylindrical_dumps() {
     let e = check("dump_cyl_closed", "", DumpFileOptions::new(), &[]);
-    assert_close("dump_cyl_closed", &e, 1e-5);
+    assert_close("dump_cyl_closed", &e, 1e-6);
 }
 
 /// SAR files: local, raw and 1 g averaged SAR (openEMS's `SIMPLE` cube

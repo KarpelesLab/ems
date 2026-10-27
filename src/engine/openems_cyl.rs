@@ -30,7 +30,7 @@ use super::grid::Grid;
 use super::kernel::{flush, oe_e, oe_h};
 use super::operator::{Hooks, Operator, StepContext};
 use crate::axis::Axis;
-use crate::constants::{EPS0, MU0};
+use crate::constants::{OPENEMS_EPS0 as EPS0, OPENEMS_MU0 as MU0};
 
 /// One seam E edge: component, the low (`α_0`) node; the other copy is at
 /// `α_N`. `vv`, `vi` of the whole dual face, and the copies' `cb` at setup

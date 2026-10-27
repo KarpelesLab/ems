@@ -288,27 +288,30 @@ fn pml_grading_is_ignored() {
 // switch; `α` lines in radians).
 
 /// Coax `ρ = 2…8 mm` (12 cells), closed azimuth (16 cells), PEC ends,
-/// radial soft source over the whole circle: 1.1–1.6e-6 (radial voltages)
-/// and 7.8e-5 for the weak axial voltage.
+/// radial soft source over the whole circle: identical to the printed
+/// digits (openEMS's seam update, curl order and time step, design
+/// §5.16.10, §5.16.11; were 1.1–1.6e-6 and 7.8e-5 for the weak axial
+/// voltage).
 #[test]
 fn cylindrical_coax() {
-    check("adv_cyl_coax", 5e-4);
+    check("adv_cyl_coax", 1e-6);
 }
 
 /// Annular cavity `ρ = 1…10 mm` without the axis, an off-centre Ez source:
-/// 1.4e-6…2.4e-5.
+/// identical to the printed digits (were 1.4e-6…2.4e-5).
 #[test]
 fn cylindrical_cavity_without_axis() {
-    check("adv_cyl_noaxis", 2e-4);
+    check("adv_cyl_noaxis", 1e-6);
 }
 
-/// The full cavity `ρ = 0…10 mm` with the axis: 5.5e-7…4.4e-6 with
-/// openEMS's axis update for files (its ring sum counts the seam line
-/// twice, design §5.15); 4.4–5.1e-3 with ems's own (energy-conserving)
-/// axis cell.
+/// The full cavity `ρ = 0…10 mm` with the axis: identical to the printed
+/// digits with openEMS's axis update for files (its ring sum counts the
+/// seam line twice, design §5.15, §5.16.11; 5.5e-7…4.4e-6 before its
+/// exact arithmetic); 4.4–5.1e-3 with ems's own (energy-conserving) axis
+/// cell.
 #[test]
 fn cylindrical_cavity_with_axis() {
-    check("adv_cyl_axis", 2e-5);
+    check("adv_cyl_axis", 1e-6);
 }
 
 /// The same cavity with `MultiGrid="4"`: identical to the printed digits

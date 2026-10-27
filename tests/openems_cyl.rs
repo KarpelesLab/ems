@@ -114,8 +114,14 @@ fn cylindrical_conducting_sheets_match_openems() {
         "cyl_sheet_fin",
         "cyl_sheet_seam",
     ] {
+        // Without a sheet, identical to the printed digits.
+        let tol = if case.ends_with("none") || case.ends_with("seam") {
+            1e-6
+        } else {
+            1e-4
+        };
         for (n, e) in probe_l2(case, "model.xml") {
-            assert!(e < 1e-4, "{case}/{n}: {e:e}");
+            assert!(e < tol, "{case}/{n}: {e:e}");
         }
     }
 }
@@ -211,11 +217,13 @@ fn probe_l2_sim(case: &str, model: &str, mut sim: Simulation) -> Vec<(String, f6
 /// weighs the two radial halves of the dual face by `Δρ_h·ρ` of the dual
 /// line bounding each half, ems natively by their exact annular areas
 /// (first order in `Δρ/ρ`, design §5.15); models read from openEMS files
-/// use openEMS's weight: 5e-7…8e-6 (1.2e-4…1.7e-3 with the exact areas).
+/// use openEMS's weight: identical to the printed digits (5e-7…8e-6
+/// before openEMS's arithmetic, design §5.16.11; 1.2e-4…1.7e-3 with the
+/// exact areas).
 #[test]
 fn cylindrical_cell_constant_material_matches_openems() {
     for (n, e) in probe_l2("cyl_cellconst", "model.xml") {
-        assert!(e < 3e-5, "{n}: {e:e}");
+        assert!(e < 1e-6, "{n}: {e:e}");
     }
     // The cell 6.5..7 mm (midpoint 6.75 inside the box face 6.752, its
     // centroid 6.7531 outside) is dielectric: a ρ edge in it reads ε = 4.
@@ -235,13 +243,13 @@ fn cylindrical_cell_constant_material_matches_openems() {
 /// quarter-cell centres as csx but weighs the radial halves differently
 /// (z edges `Δρ_h·ρ_b`, α edges and H_ρ faces `Δρ_h`; `compile::cylavg`,
 /// design §5.15). Models read from files use openEMS's weights and agree
-/// closely; with csx's weights (ems's own averages, `openems_run` off)
-/// the probes differ by about 1e-3.
+/// to the printed digits; with csx's weights (ems's own averages,
+/// `openems_run` off) the probes differ by about 1e-3.
 #[test]
 fn cylindrical_radial_interfaces_match_openems() {
     let case = "cyl_radial";
     for (n, e) in probe_l2(case, "model.xml") {
-        assert!(e < 3e-5, "{n}: {e:e}");
+        assert!(e < 1e-6, "{n}: {e:e}");
     }
     let xml = std::fs::read_to_string(fixture(case).join("model.xml")).unwrap();
     let doc = csx::OpenEmsDocument::from_xml_str(&xml).unwrap();
@@ -295,12 +303,16 @@ fn axis_ignores_the_rho_min_boundary() {
 /// α range is normalised to `[−π, π)` and missed them; ems re-selects them
 /// periodically (`compile::cylindrical`). A half-ring resistor over
 /// `[π, 2π)` then agrees with openEMS to 1e-7, a source over `[π, 3π/2]`
-/// to 1e-6.
+/// to the printed digits.
 #[test]
 fn cylindrical_boxes_past_pi_match_openems() {
     for case in ["cyl_wrap_lumped", "cyl_wrap_exc"] {
         for (n, e) in probe_l2(case, "model.xml") {
-            let tol = if n == "uz_c" { 3e-4 } else { 2e-5 };
+            let tol = match (case, n.as_str()) {
+                ("cyl_wrap_exc", _) => 1e-6,
+                (_, "uz_c") => 3e-4,
+                _ => 2e-5,
+            };
             assert!(e < tol, "{case}/{n}: {e:e}");
         }
     }
