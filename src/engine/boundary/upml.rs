@@ -202,6 +202,65 @@ impl Profile {
     }
 }
 
+/// The layer update of one E edge (`e_side`) or H dual edge of `grid`
+/// inside the `faces` layers (time step `dt`), for a caller that runs it
+/// itself (openEMS's seam of a closed cylindrical grid,
+/// [`OpenemsSeam`](crate::engine::openems_cyl::OpenemsSeam)): the flux
+/// increment coefficient `dt/((A/l)·(1 + a_p))` and the four update
+/// coefficients of [`Run::apply`], from the edge's geometry `geo = A/l`
+/// and relative permittivity (permeability) `rel`; `None` outside the
+/// layers.
+pub(crate) fn layer_update(
+    profile: &PmlProfile,
+    dt: f64,
+    e_side: bool,
+    comp: Axis,
+    node: [usize; 3],
+    geo: f64,
+    rel: f64,
+) -> Option<(f32, [f32; 4])> {
+    let [aa, ap, aq] = profile.0.at(e_side, comp, node);
+    if aa == 0.0 && ap == 0.0 && aq == 0.0 {
+        return None;
+    }
+    let m = if e_side {
+        OPENEMS_PML_EPS0
+    } else {
+        OPENEMS_PML_MU0
+    } * rel;
+    Some((
+        (dt / ((1.0 + ap) * geo)) as f32,
+        [
+            ((1.0 - ap) / (1.0 + ap)) as f32,
+            ((1.0 - aq) / (1.0 + aq)) as f32,
+            ((1.0 + aa) / ((1.0 + aq) * m)) as f32,
+            ((1.0 - aa) / ((1.0 + aq) * m)) as f32,
+        ],
+    ))
+}
+
+/// One step of the layer update of [`Run::apply`]: the flux `f` and the
+/// value `v` the update starts from, the kernel's flux increment `t`;
+/// returns the new value (and updates `f`).
+pub(crate) fn layer_step(co: [f32; 4], f: &mut f32, v: f32, t: f32) -> f32 {
+    let [ap, aq, bp, bm] = co;
+    let f0 = *f;
+    let f1 = flush(flush(ap * f0) + t);
+    *f = f1;
+    flush(flush(flush(aq * v) - flush(bm * f0)) + flush(bp * f1))
+}
+
+/// The grading of the layers on `faces` (see [`layer_update`]).
+#[derive(Debug, Clone)]
+pub(crate) struct PmlProfile(Profile);
+
+impl PmlProfile {
+    /// The profile of `faces` (face, cells) on `grid` for time step `dt`.
+    pub(crate) fn new(grid: &Grid, dt: f64, faces: &[(Face, usize)]) -> Self {
+        Self(Profile::new(grid, dt, faces))
+    }
+}
+
 /// Which edges lie inside the layers of an [`OpenEmsPml`] (those whose
 /// update the layer replaces; the interface planes are outside), from
 /// [`OpenEmsPml::layers`].
@@ -347,8 +406,8 @@ impl Run {
             q += n;
             for k in 0..n {
                 let f0 = f[k];
-                let f1 = flush(ap[k] * f0 + t[k]);
-                let x = flush((aq[k] * v[k] - bm[k] * f0) + bp[k] * f1);
+                let f1 = flush(flush(ap[k] * f0) + t[k]);
+                let x = flush(flush(flush(aq[k] * v[k]) - flush(bm[k] * f0)) + flush(bp[k] * f1));
                 f[k] = f1;
                 v[k] = x;
                 t[k] = x;
@@ -476,8 +535,8 @@ impl SlabHooks for Parts {
                 };
                 let inc = flush(0.0 * r.v[q] - db[o] * t);
                 let f0 = r.f[q];
-                let f1 = flush(ap * f0 + inc);
-                let v = flush((aq * r.v[q] - bm * f0) + bp * f1);
+                let f1 = flush(flush(ap * f0) + inc);
+                let v = flush(flush(flush(aq * r.v[q]) - flush(bm * f0)) + flush(bp * f1));
                 sum += v as f64 * v as f64 - inc as f64 * inc as f64;
             }
             add(i, MU0 * sum);
@@ -714,8 +773,10 @@ impl Operator for OpenEmsPml {
         let r = p.h.iter().find(|r| r.comp == axis && r.plane == node[0])?;
         let (q, [ap, aq, bp, bm]) = r.find(node[1] * self.nodes[2] + node[2])?;
         let f0 = r.f[q];
-        let f1 = flush(ap * f0 + kernel);
-        Some(flush((aq * r.v[q] - bm * f0) + bp * f1))
+        let f1 = flush(flush(ap * f0) + kernel);
+        Some(flush(
+            flush(flush(aq * r.v[q]) - flush(bm * f0)) + flush(bp * f1),
+        ))
     }
 
     fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {

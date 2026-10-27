@@ -15,7 +15,7 @@
 //! * `pml_lumped`: lumped elements across and inside a layer (their R
 //!   and C act outside it only);
 //! * `pml_end`: the energy end criterion (stop step and level);
-//! * `pml_cyl`: a cylindrical grid with the axis, layers on `ρ_max` and
+//! * `pml_cyl`: a cylindrical grid without the axis, layers on `ρ_max` and
 //!   both z faces;
 //! * `pml_wg_iris`, `pml_msl_filter`: the end-to-end waveguide iris and
 //!   microstrip filter with PML ends.
@@ -260,10 +260,12 @@ fn end_criterion() {
 }
 
 /// Cylindrical grid (closed azimuth, no axis): layers on `ρ_max` and both
-/// z faces, 1.4e-6…7e-6.
+/// z faces, identical to the printed digits (openEMS's cylindrical curl
+/// order, its seam update inside the layers and the per-operation flush,
+/// design §5.16.11; 1.4e-6…7e-6 before).
 #[test]
 fn cylindrical() {
-    check("pml_cyl", 3e-5);
+    check("pml_cyl", 1e-6);
 }
 
 /// The WR-90 iris with PML ends (6.6 GHz cutoff, 7–13 GHz pulse): 3e-7…7e-7

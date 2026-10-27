@@ -588,7 +588,6 @@ impl Compiled {
             && self.abc.is_empty()
         {
             let n = self.grid.nodes();
-            let pml = &self.pml;
             // Edges other operators act on keep the periodic merge.
             let mut touched = std::collections::HashSet::new();
             for p in &self.dispersive {
@@ -606,23 +605,19 @@ impl Compiled {
             }
             let skip = |a: crate::axis::Axis, p: [usize; 3], h: bool| {
                 let hi = [p[0], n[1] - 1, p[2]];
-                touched.contains(&(a, p, h))
-                    || touched.contains(&(a, hi, h))
-                    || pml.iter().any(|(f, c)| {
-                        let x = f.axis().index();
-                        let w = c.cells;
-                        if f.is_max() {
-                            p[x] + w + 1 >= n[x]
-                        } else {
-                            p[x] <= w
-                        }
-                    })
+                touched.contains(&(a, p, h)) || touched.contains(&(a, hi, h))
             };
+            // Seam edges in openEMS's PML layers run the layer update.
+            let faces: Vec<(Face, usize)> = self.pml.iter().map(|&(f, c)| (f, c.cells)).collect();
+            let profile = (self.openems_pml && !faces.is_empty()).then(|| {
+                crate::engine::boundary::upml::PmlProfile::new(&self.grid, engine.dt(), &faces)
+            });
             let op = crate::engine::openems_cyl::OpenemsSeam::new(
                 &self.grid,
                 &self.materials,
                 &engine.coefficients(),
                 engine.dt(),
+                profile.as_ref(),
                 skip,
             );
             engine.add_operator(op);

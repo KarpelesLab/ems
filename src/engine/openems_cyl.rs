@@ -23,6 +23,7 @@
 //! Edges with a modified coefficient (lumped elements, PEC, absorbing
 //! layers) keep the periodic merge.
 
+use super::boundary::upml::{self, PmlProfile};
 use super::coeffs::Coefficients;
 use super::edge_material::EdgeMaterials;
 use super::fields::Fields;
@@ -43,6 +44,10 @@ struct SeamE {
     vi: f32,
     cb: (f32, f32),
     old: f32,
+    /// Inside an openEMS PML layer: the layer update (flux increment
+    /// coefficient and update coefficients) and the edge's flux.
+    layer: Option<(f32, [f32; 4])>,
+    flux: f32,
 }
 
 /// One seam `H_α` dual edge (low node), `ii`, `iv` of the whole dual edge,
@@ -54,6 +59,9 @@ struct SeamH {
     iv: f32,
     db: (f32, f32),
     old: f32,
+    /// As [`SeamE::layer`].
+    layer: Option<(f32, [f32; 4])>,
+    flux: f32,
 }
 
 /// openEMS's seam update of a closed cylindrical grid; see the
@@ -107,8 +115,12 @@ impl OpenemsSeam {
         mats: &EdgeMaterials,
         co: &Coefficients,
         dt: f64,
+        pml: Option<&PmlProfile>,
         skip: impl Fn(Axis, [usize; 3], bool) -> bool,
     ) -> Self {
+        let layer = |e_side: bool, axis: Axis, node: [usize; 3], geo: f64, rel: f64| {
+            pml.and_then(|p| upml::layer_update(p, dt, e_side, axis, node, geo, rel))
+        };
         let n = grid.nodes();
         let last = n[1] - 1;
         let r = grid.lines(Axis::X);
@@ -162,6 +174,8 @@ impl OpenemsSeam {
                         vi,
                         cb: (cb[il], cb[ih]),
                         old: 0.0,
+                        layer: layer(true, axis, hi, geo, ep),
+                        flux: 0.0,
                     });
                 }
             }
@@ -192,6 +206,8 @@ impl OpenemsSeam {
                     iv,
                     db: (db[il], db[ih]),
                     old: 0.0,
+                    layer: layer(false, Axis::Y, hi, geo, m),
+                    flux: 0.0,
                 });
             }
         }
@@ -203,6 +219,7 @@ impl OpenemsSeam {
                 let copies: Vec<usize> = (0..n[1]).map(|j| grid.index([0, j, k])).collect();
                 if copies.iter().any(|&c| cb[c] == 0.0)
                     || (0..n[1]).any(|j| skip(Axis::Z, [0, j, k], false))
+                    || layer(true, Axis::Z, [0, 0, k], 1.0, 1.0).is_some()
                 {
                     continue;
                 }
@@ -232,6 +249,8 @@ impl OpenemsSeam {
                     vi,
                     cb: (cb[copies[0]], cb[copies[n[1] - 1]]),
                     old: 0.0,
+                    layer: None,
+                    flux: 0.0,
                 });
             }
         }
@@ -279,11 +298,11 @@ impl Operator for OpenemsSeam {
     fn post_h(&mut self, f: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let db = ctx.coefficients.db(Axis::Y);
         let last = self.last;
-        for s in &self.h {
+        for s in &mut self.h {
             let [i, _, k] = s.node;
             self.whole[i * self.nz + k] = None;
             let hi = [i, last, k];
-            if (db[ctx.grid.index(s.node)], db[ctx.grid.index(hi)]) != s.db {
+            if s.layer.is_none() && (db[ctx.grid.index(s.node)], db[ctx.grid.index(hi)]) != s.db {
                 continue;
             }
             let u = &f.u;
@@ -291,7 +310,15 @@ impl Operator for OpenemsSeam {
             let b = u.get(Axis::X, s.node);
             let c = u.get(Axis::Z, [i + 1, 0, k]);
             let d = u.get(Axis::Z, s.node);
-            let v = oe_h(s.ii, s.old, s.iv, a, b, c, d);
+            let v = match s.layer {
+                None => oe_h(s.ii, s.old, s.iv, a, b, c, d),
+                Some((cbf, co)) => {
+                    // The kernel's flux increment with `da = 0`, then the
+                    // layer update (engine::boundary::upml).
+                    let t = flush(0.0 - flush(cbf * flush(flush(flush(a - b) + d) - c)));
+                    upml::layer_step(co, &mut s.flux, s.old, t)
+                }
+            };
             let half = 0.5 * v;
             f.i.set(Axis::Y, s.node, half);
             f.i.set(Axis::Y, hi, half);
@@ -305,10 +332,11 @@ impl Operator for OpenemsSeam {
     fn post_e(&mut self, f: &mut Fields<'_>, ctx: &StepContext<'_>) {
         let n = ctx.grid.nodes();
         let last = self.last;
-        for s in &self.e {
+        let mut fluxes = Vec::new();
+        for (q, s) in self.e.iter().enumerate() {
             let cb = ctx.coefficients.cb(s.axis);
             let hi = self.hi(s.node);
-            if (cb[ctx.grid.index(s.node)], cb[ctx.grid.index(hi)]) != s.cb {
+            if s.layer.is_none() && (cb[ctx.grid.index(s.node)], cb[ctx.grid.index(hi)]) != s.cb {
                 continue;
             }
             let [i, _, k] = s.node;
@@ -336,9 +364,23 @@ impl Operator for OpenemsSeam {
                     cur.get(Axis::X, [i, last - 1, k]),
                 )
             };
-            let v = oe_e(s.vv, s.old, s.vi, a, b, c, d);
+            let v = match s.layer {
+                None => oe_e(s.vv, s.old, s.vi, a, b, c, d),
+                Some((cbf, co)) => {
+                    // The kernel's flux increment with `ca = 0`, then the
+                    // layer update (engine::boundary::upml).
+                    let t = flush(cbf * flush(flush(flush(a - b) - c) + d));
+                    let mut flux = s.flux;
+                    let v = upml::layer_step(co, &mut flux, s.old, t);
+                    fluxes.push((q, flux));
+                    v
+                }
+            };
             f.u.set(s.axis, s.node, v);
             f.u.set(s.axis, hi, v);
+        }
+        for (q, flux) in fluxes {
+            self.e[q].flux = flux;
         }
         // The axis: openEMS adds the ring of H_α at ρ_½ term by term over
         // all N + 1 α lines, the seam's at both ends.
