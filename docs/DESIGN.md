@@ -5072,7 +5072,7 @@ curl terms on Cartesian grids, fitted bit for bit from field dumps, and a
 subnormal flush that leaves normal values unchanged; vacuum and metal
 models now match openEMS to the printed digits (feature sweep: 83 of 169
 models exact, was 9; `tie_cyl_metal`, `tie_cylshell_metal`,
-`prim_sphshell_metal` 1.1e-2…1.5e-3 → 0)); openEMS's
+`prim_sphshell_metal` 1.1e-2…1.5e-3 → 0); openEMS's
 coefficient rounding (C, G, L, R rounded to f32 first, §5.16.7): 123 of
 169 exact. Wave 16: openEMS's PML, Mur and AbsorbingBC arithmetic
 (§5.16.8): 136 of 169 exact, PML fixtures exact with openEMS's dt.
@@ -5088,7 +5088,7 @@ Remaining:
 - From the feature sweep: openEMS's computed time step (3.5e-9…4.9e-9
   relative below ems's on graded meshes, `fdtd_odd`, `fdtd_tsm3_graded`);
   conducting-sheet and lumped-resistor coefficients (1–3 f32 steps);
-  the PML on cylindrical grids; openEMS's summation order on cylindrical grids;
+  the PML and openEMS's summation order on cylindrical grids;
   `probe_i_dirs` (8.4e-3, a current column of pure round-off); openEMS's
   Rennings step below 4e-8 (§5.16.6, §5.16.7).
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
