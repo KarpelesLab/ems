@@ -829,7 +829,7 @@ openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
   a file run the layer openEMS runs, Gedney's uniaxial PML with
   openEMS's fixed exponential grading, instead of the CPML, so that
   results match openEMS (−58 dB at normal incidence with 8 cells, against
-  the CPML's −84 dB). The native API keeps the CPML; with conformal PEC
+  the CPML's −84 dB; openEMS's arithmetic bit for bit, §5.16.8). The native API keeps the CPML; with conformal PEC
   the CPML is used for files too (the conformal step couples to it).
 - **AbsorbingBC sheets** (csx `AbsorbingBC`, implemented,
   `engine::boundary::abc::AbsorbingSheet`): the same first-order Mur update
@@ -3716,17 +3716,18 @@ a black box:
   profile along `ρ`) and on the z faces; ems too, for files (instead of
   the stretched-radius PML of §5.15.2).
 
-ems collapses the two stages into one lossy update where the flux equals
-the field (the tangential components of a single layer: coefficients
-only); the others (normal components, overlaps, driven edges) get
-`ca = 0`, `cb = dt/(C·(1 + a_p))` so the kernel writes the flux
-increment, and a slab hook completes the update from two stored `f32`
-(flux, start value). Coefficient rows are kept once per distinct row.
+Every layer edge gets `ca = 0` and the flux-stage `cb`, so the kernel
+writes the flux increment, and a slab hook completes the update from two
+stored `f32` (flux, start value), in openEMS's arithmetic since wave 16
+(§5.16.8; before, the tangential components of a single layer were
+collapsed into one lossy update, 1e-6…2e-5 from openEMS). Coefficient
+rows are kept once per distinct row.
 The kernel's look-ahead (end-criterion energy, the last H sample of
 probes and dumps) gets the true H through `SlabHooks::energy_openems_slab`
 and `Operator::lookahead_current`. Cost: 100³ with `PML_8` on all faces
 runs at the CPML's speed (8 threads 1.8–2.1 vs 1.8–2.0 GCells/s, 16
-threads 2.9–3.0 vs 2.4–2.7; a serial energy correction had cost 30 %).
+threads 2.9–3.0 vs 2.4–2.7; a serial energy correction had cost 30 %). Wave 16's state on every layer edge costs
+20–30 % of that (§5.16.8).
 
 Agreement with openEMS (relative L2 of the probes): the vacuum line
 `adv_pml_vacuum` 6e-7 (the same −58 dB reflection), `pml_face` (one
@@ -4265,6 +4266,116 @@ Mur and PML faces, computed time steps. Sweep fixtures
 (`tests/openems_sweep.rs`): 47 of 64 exact; their tolerances are 1e-6
 (were 1e-4…3e-3; `prim_sphshell_metal` 3e-3, `tie_wire_z` and
 `probe_fd` 1e-3, `mat_sigma_graded`, `grid_deltaunit_m` 3e-4).
+
+#### 5.16.8 Round-off: PML layers and Mur faces
+
+Wave 16 fitted openEMS's arithmetic of its `PML_n` layer (§5.16.2) and
+of the first-order Mur faces and `AbsorbingBC` sheets, as §5.16.6 did
+for the curl, from per-step `Et`/`Ht` dumps (`OverSampling` ≥ 100, raw
+HDF5, `DumpMode 0`) of hand-written models with 1 m cells
+(`DeltaUnit 1`: the dumped fields are the engine's `u` and `i`), a fixed
+`TimeStep` and `--debug-operator` / `--debug-material`.
+
+**Mur faces.** Of six orders of the 1-D update (§5.6) one reproduces
+every face edge of a box with Mur on two faces (all 9357 updates; the
+domain edges follow §5.16.3):
+
+```text
+u_b^{n+1} = (u_1^n − k·u_b^n) + k·u_1^{n+1}       (f32, k = f32((v·dt − Δ)/(v·dt + Δ)))
+```
+
+— the part before the neighbour's new value is what openEMS's domain
+edge keeps alone (§5.16.3, `u_1^n − k·u_c^n`). ems's own order is
+`u_1^n + k·(u_1^{n+1} − u_b^n)`. With it, an all-Mur box with graded
+boundary cells and media reaching the faces (local phase velocity, 80
+steps) and a PMC/PEC/Mur mix are identical to openEMS's at every step.
+`MurBoundary::openems_order` (files).
+
+**AbsorbingBC sheets** use the same order, but `k` is formed with
+`v·dt` rounded to `f32`: `k = f32((f32(v·dt) − Δ)/(f32(v·dt) + Δ))`.
+A 1 mm sheet needed `k` one `f32` step away from the correctly rounded
+value; of 13 formulas (an `f32` `Δ`, `c0`, `dt`, other groupings) only
+this one gives the needed value for 1 m, 1 mm and 0.7 mm cells, and the
+sheets then match bit for bit (`AbsorbingSheet::openems_order`, files).
+Two semantic differences found on the way are *not* emulated (ems keeps
+its documented behaviour, rule of §5.16): with `NormalSignPositive="0"`
+openEMS takes `Δ` from the cell on the far side of the sheet (between
+the sheet and the next line up, while the neighbour it reads is the line
+below; graded meshes only), and `PhaseVelocity="0"` runs the vacuum `c0`
+also inside a dielectric (ε_r = 2.2: openEMS `k = −0.29902`, the vacuum
+value; ems the local `−0.46647`).
+
+**PML.** openEMS runs every edge of a layer (any `a_w ≠ 0`) in two
+stages with its own flux `F`; the interface plane keeps the ordinary
+update. The flux stage is the main engine with the coefficients its
+`--debug-operator` dump shows there:
+
+```text
+F' = vv·F + vi·∮i,   vv = f32((1 − a_p)/(1 + a_p)),   vi = f32(dt/((A/l)·(1 + a_p)))
+```
+
+(`A/l` the edge's geometry factor as in the coefficients, no `ε`: every
+coefficient of all 8489 layer edges of a three-face model with graded
+cells and an `ε_r`/`μ_r`/κ block, bit for bit), the curl in openEMS's
+order (§5.16.6). The second stage fits
+
+```text
+u' = (k·u − b₋·F) + b₊·F'        (f32, in this order)
+k = f32((1 − a_q)/(1 + a_q)),  b± = f32((1 ± a_a)/((1 + a_q)·ε))
+```
+
+and the same for H with `μ` (the only one of five orders tried that
+matches every update). `F` is in units of `ε·u`
+(`D·l`). Fitted constants: `ε = ε_r·ε0'` with `ε0' = 1/(4π·10⁻⁷·c0²)` =
+8.854187817620389e-12, `μ = μ_r·μ0'` with `μ0' = 1.256637062e-6` (ten
+digits): with ems's CODATA 2022 constants about 0.5 % of the coefficients
+(those within 0.003 `f32` ulp of a rounding midpoint) were one step off.
+The permittivity was pinned to ±2e-11 relative and the permeability to
+`4π·10⁻⁷·(1 + [3, 5.1]·10⁻¹⁰)` by intersecting, over the edges of three
+models, the constants each edge's exact solution set allows; other
+candidates (CODATA 2018/2022 `μ0`, `4π·10⁻⁷`, `f32` media, `f32` `a`,
+other groupings) leave whole models off. The grading `a_w` uses ems's
+constants (only `Z0·ε0 = 1/c0` enters it). Validated on 8 further random
+models (two to five faces, PMC/PEC mixes, `ε_r` 1.3–6, `μ_r` 1.1–2.8
+with averaged interfaces in the layers, `dt` 0.85–1.15 ns): every E and
+H value at every step identical.
+
+ems (`OpenEmsPml`, files): every layer edge keeps `F` and its start value
+(the single-stage collapse of the tangential components and the special
+treatment of driven edges are gone: openEMS's source adds to the field
+in any case); the kernel writes `vi·∮i` (`ca = 0`; without fused
+multiply-add `0·u + vi·∮i` is exact and `vv·F + t` has openEMS's bits),
+the slab hook forms `F'` and `u'` in the order above.
+`OpenEmsPml::with_materials` takes `ε_r`, `μ_r` from the edge materials
+(`new` derives them from the coefficients, last bits off). Public API:
+`OpenEmsPml::with_driven` removed. Cost: every layer edge streams two
+`f32` of state and its coefficient row — 100³ with `PML_8` on all faces
+(40 % of the cells in layers) 170–190 vs 230–250 MCells/s on 1 thread,
+1.0–1.7 vs 1.7–2.1 GCells/s on 8 and 1.4–1.7 vs 2.1 GCells/s on 16
+(a loaded shared machine; PEC 480–530 MCells/s on 1 thread).
+
+Agreement. Feature sweep (169 models, fresh be30220 runs, before →
+after): 123 → 136 exact, no model worse; `pml_open` 4.5e-6 → 0,
+`pml_big_3/4/8/plain` 1.2e-5…1.9e-5 → 0, the Mur models
+`abc_line_ref_mur`, `bc_mur_pv`, `bc_numbers`, `bc_names_lower`,
+`bc_spellings`, `fdtd_endcrit` 7e-7…3e-5 → 0, `abc_line_s0_t0/t1` 1.1e-6
+→ 0, `bc_mixed` 4.0e-6 → 1.8e-13 (one printed digit of an interpolated
+E probe). New fixture `pml_exact` (three overlapping layers, one graded,
+a lossy dielectric-magnetic block in all of them, fixed time step, 96 kB):
+every probe exact. The other `pml_*` fixtures stay at 4e-7…1e-5: their
+time step is openEMS's computed one, which differs from ems's in the
+last bits (§5.16.7, area of the time-step criterion); with openEMS's
+printed `dt` given as `TimeStep` (dumps of the first 120 steps)
+`pml_face`, `pml_corner`, `pml_medium` and `pml_end` give identical
+probes, `pml_wg_iris` 6e-9 (a difference at its source plane that also
+appears with PEC ends), `pml_lumped` 1.3e-7 on the port current (lumped
+elements, §5.16.7). Not reproduced: cylindrical grids (`pml_cyl`
+unchanged at 1e-6…9e-6: openEMS's cylindrical curl order, §5.16.6).
+Found on the way, not PML: `E` dumps of edges of length 0.8 m (lines
+0.9, 1.7) differ in the last bit in some steps without any PML, the
+fields themselves are identical (the dump's division, not fitted), and a
+boundary `H` dual edge of a graded corner cell has `iv` one `f32` step
+off (`--debug-operator`, 5 edges of a mesh with a 0.4 m first cell).
 
 ## 6. Engine architecture
 
