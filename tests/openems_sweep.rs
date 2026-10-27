@@ -214,7 +214,7 @@ cases! {
     mat_aniso_single: 1e-6;         // (exact; 0.6 with csx's reading of the short lists)
     mat_aniso_two: 1e-6;            // (exact; did not run: ε_z = 0)
     mat_weight_aniso: 1e-6;         // (exact)
-    mat_weight_coords: 1e-4;
+    mat_weight_coords: 1e-6;        // (exact; openEMS's ε0, §5.16.8)
     mat_mue_sigma: 1e-6;            // (exact; 2.3e-5; 6e-3 with csx's arithmetic σ_m average)
     mat_sigma_graded: 1e-6;         // (exact; 8.8e-5; 9e-2 with csx's average; identical material dumps)
     bg_material: 1e-6;              // (exact)

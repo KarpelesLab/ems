@@ -378,9 +378,26 @@ pub enum CoeffRounding {
     /// them the vacuum `dt/C` at 1 m and 1 mm cells and dt 1.0…1.9 (ns
     /// resp. ps), where the `f64` quotient is one `f32` step off in 15 of
     /// 40 cases, and the material-boundary edges (`ε_r` 1.75: `f64`
-    /// 96.80649, openEMS 96.806496).
+    /// 96.80649, openEMS 96.806496). The capacitances and inductances
+    /// use openEMS's vacuum constants ([`OPENEMS_EPS0`], [`OPENEMS_MU0`])
+    /// instead of [`EPS0`](crate::constants::EPS0),
+    /// [`MU0`](crate::constants::MU0) (design §5.16.8).
     OpenEms,
 }
+
+/// The vacuum permittivity of openEMS's operator \[F/m\]: black box,
+/// `--debug-operator` dumps of 24 graded meshes with dielectric and
+/// magnetic boxes (99 438 vacuum E edges): `vi = f32(dt/f32(ε0·A/l))`
+/// holds for all of them exactly for `ε0` in `[8.8541878174e-12,
+/// 8.8541878178e-12]`, which contains this (CODATA 2006) value and not
+/// [`EPS0`](crate::constants::EPS0) (CODATA 2022, `1.2e-10` above).
+pub const OPENEMS_EPS0: f64 = 8.854_187_817_62e-12;
+
+/// The vacuum permeability of openEMS's operator \[H/m\]: the same dumps
+/// (87 300 vacuum H edges) require `μ0` in `[1.25663706194e-6,
+/// 1.25663706205e-6]`: this ten-digit value, not
+/// [`MU0`](crate::constants::MU0) (`1.25663706127e-6`) nor `4π·10⁻⁷`.
+pub const OPENEMS_MU0: f64 = 1.256_637_062e-6;
 
 impl CoeffRounding {
     /// A circuit quantity as stored before the coefficients are formed:
@@ -390,6 +407,22 @@ impl CoeffRounding {
         match self {
             Self::Exact => x,
             Self::OpenEms => f64::from(x as f32),
+        }
+    }
+
+    /// The vacuum permittivity the capacitances are formed with.
+    pub(crate) fn eps0(self) -> f64 {
+        match self {
+            Self::Exact => EPS0,
+            Self::OpenEms => OPENEMS_EPS0,
+        }
+    }
+
+    /// The vacuum permeability the inductances are formed with.
+    pub(crate) fn mu0(self) -> f64 {
+        match self {
+            Self::Exact => MU0,
+            Self::OpenEms => OPENEMS_MU0,
         }
     }
 }
@@ -420,7 +453,7 @@ pub(crate) fn e_edge_circuit(
     let idx = grid.index(p);
     let geo = e_edge_geometry(grid, axis, p);
     (
-        rounding.store(EPS0 * mats.eps_r(axis)[idx] * geo),
+        rounding.store(rounding.eps0() * mats.eps_r(axis)[idx] * geo),
         rounding.store(mats.kappa(axis)[idx] * geo),
     )
 }
@@ -498,6 +531,7 @@ impl Coefficients {
         rounding: CoeffRounding,
     ) -> Result<Self> {
         let store = |x: f64| rounding.store(x);
+        let (eps0, mu0) = (rounding.eps0(), rounding.mu0());
         if mats.nodes() != grid.nodes() {
             return Err(Error::Invalid(format!(
                 "edge material map has {:?} nodes, grid has {:?}",
@@ -541,7 +575,7 @@ impl Coefficients {
                                 && (grid.edge_length(axis, p) == 0.0 || grid.mg_removed_e(axis, p));
                             if !(on_pec_face || pec[idx] || degenerate) {
                                 let geo = e_edge_geometry(grid, axis, p);
-                                let cap = store(EPS0 * eps[idx] * geo);
+                                let cap = store(eps0 * eps[idx] * geo);
                                 let g = store(kap[idx] * geo);
                                 (co[a][idx], co[3 + a][idx]) = e_coefficients(cap, g, dt);
                             }
@@ -560,7 +594,7 @@ impl Coefficients {
                                 grid.delta(ab, p[b]) * grid.delta(ac, p[c])
                                     / grid.dual_delta(axis, p[a])
                             };
-                            let l = store(MU0 * mu[idx] * geo);
+                            let l = store(mu0 * mu[idx] * geo);
                             let r = store(sig[idx] * geo);
                             let den = l + 0.5 * r * dt;
                             co[6 + a][idx] = ((l - 0.5 * r * dt) / den) as f32;

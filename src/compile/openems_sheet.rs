@@ -87,7 +87,7 @@ use crate::Result;
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0};
 use crate::engine::dispersive::{EdgePole, Field, Pole};
-use crate::engine::{EdgeMaterials, Grid, SheetEdge, TimeStep};
+use crate::engine::{EdgeMaterials, Grid, OPENEMS_EPS0, SheetEdge, TimeStep};
 use crate::fdtd::Fdtd;
 use crate::waveform::Waveform;
 
@@ -382,7 +382,9 @@ pub(super) fn emulate(
                 p,
                 [materials.eps_r(e.axis)[idx], materials.kappa(e.axis)[idx]],
             ));
-            materials.eps_r_mut(e.axis)[idx] = c / (EPS0 * geo);
+            // The coefficients of openEMS files are formed with openEMS's
+            // ε0 (`CoeffRounding::OpenEms`): the edge gets `C = c`.
+            materials.eps_r_mut(e.axis)[idx] = c / (OPENEMS_EPS0 * geo);
             materials.kappa_mut(e.axis)[idx] = g_e / geo;
             let m = EPS0 * geo;
             for (lb, rb) in [(row[2], row[3]), (row[4], row[5])] {

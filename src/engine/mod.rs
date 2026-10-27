@@ -173,8 +173,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use bloch_wave::{PeriodicPlaneWave, PeriodicPlaneWaveSpec, WavePart};
 pub use boundary::periodic::BlochPair;
 pub use coeffs::{
-    CoeffRounding, Coefficients, FaceCondition, FaceConditions, OpenEmsTimestep, TimeStep,
-    courant_limit, dual_edge_lr, primary_edge_cg,
+    CoeffRounding, Coefficients, FaceCondition, FaceConditions, OPENEMS_EPS0, OPENEMS_MU0,
+    OpenEmsTimestep, TimeStep, courant_limit, dual_edge_lr, primary_edge_cg,
 };
 pub use conformal::{
     ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, ConformalSheets,
