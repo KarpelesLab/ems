@@ -5535,10 +5535,12 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: dispersive-pole (ADE) arithmetic; conducting-sheet capacitances (1–3 f32 steps,
-  `sheet_thin_resistive` 1.5e-4) and series lumped elements (~1e-4, the
-  branch state of L and C), §5.16.9; `endCriteria="0"` with a sinusoid
-  runs all steps in openEMS.
+- From the feature sweep: dispersive-pole (ADE) arithmetic; the last
+  bits of conducting-sheet coefficients (openEMS's single-precision
+  branch update is matched, §5.16.13; `sheet_thin_resistive` 1.5e-4) and
+  series lumped elements (~1e-4: the bilinear branch is confirmed, its
+  internal scaling not found, §5.16.9, §5.16.13); `endCriteria="0"` with
+  a sinusoid runs all steps in openEMS.
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
