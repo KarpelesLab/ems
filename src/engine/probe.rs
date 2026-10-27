@@ -50,6 +50,8 @@ pub struct Probe {
     values: Vec<f64>,
     purity: Option<(Vec<ModeSample>, f64)>,
     purity_values: Vec<f64>,
+    /// Sum in `f32` ([`f32_sum`](Self::f32_sum)).
+    f32_sum: bool,
     /// Storage locations of `entries` and of the purity sample terms,
     /// from the first sample (the engine's layout is fixed).
     locs: Option<ProbeLocs>,
@@ -76,6 +78,7 @@ impl Probe {
             values: Vec::new(),
             purity: None,
             purity_values: Vec::new(),
+            f32_sum: false,
             locs: None,
         }
     }
@@ -93,6 +96,14 @@ impl Probe {
     /// Adds component `axis` at `node` with `weight`.
     pub fn entry(mut self, axis: Axis, node: [usize; 3], weight: f64) -> Self {
         self.entries.push((axis, node, weight));
+        self
+    }
+
+    /// Accumulates the weighted sum in `f32`, term by term in entry
+    /// order (`s ← s + f32(w)·x`, rounded each time), instead of in
+    /// `f64`: openEMS's current probes (black box, design §5.16.8).
+    pub(crate) fn f32_sum(mut self, on: bool) -> Self {
+        self.f32_sum = on;
         self
     }
 
@@ -172,13 +183,17 @@ impl Probe {
             });
         }
         let locs = self.locs.as_ref().expect("built above");
-        // Deterministic: fixed entry order, f64 accumulation.
-        let v = self
-            .entries
-            .iter()
-            .zip(&locs.entries)
-            .map(|(&(a, _, w), &l)| w * f.at(a, l) as f64)
-            .sum();
+        // Deterministic: fixed entry order, f64 (or f32) accumulation.
+        let terms = self.entries.iter().zip(&locs.entries);
+        let v = if self.f32_sum {
+            f64::from(
+                terms
+                    .map(|(&(a, _, w), &l)| w as f32 * f.at(a, l))
+                    .fold(0.0f32, |s, x| s + x),
+            )
+        } else {
+            terms.map(|(&(a, _, w), &l)| w * f.at(a, l) as f64).sum()
+        };
         let p = self.purity_core(&|s, c, k| {
             let (a, _, _) = self.purity.as_ref().expect("purity samples").0[s].field[c][k];
             f64::from(f.at(a, locs.terms[s][c][k]))
@@ -239,11 +254,16 @@ impl Probe {
             return None;
         }
         super::dump::with_lookahead_currents(engine, |get| {
-            let v = self
-                .entries
-                .iter()
-                .map(|&(a, node, w)| w * get(a, node))
-                .sum();
+            let terms = self.entries.iter();
+            let v = if self.f32_sum {
+                f64::from(
+                    terms
+                        .map(|&(a, node, w)| w as f32 * get(a, node) as f32)
+                        .fold(0.0f32, |s, x| s + x),
+                )
+            } else {
+                terms.map(|&(a, node, w)| w * get(a, node)).sum()
+            };
             ((n as f64 + 0.5) * engine.dt(), v, self.purity_with(get))
         })
     }

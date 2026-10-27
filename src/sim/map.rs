@@ -1148,7 +1148,14 @@ pub(crate) fn map_sources(
                     start_coords: at(lo),
                     stop_coords: at(hi),
                 };
-                let mut pr = Probe::new(ProbeQuantity::Current);
+                // openEMS files (Cartesian): openEMS's order and f32 sum.
+                let oe_sum = fdtd.get_openems_run() && !grid.is_cylindrical();
+                let entries = if oe_sum {
+                    openems_loop_order(entries, n, start, stop)
+                } else {
+                    entries
+                };
+                let mut pr = Probe::new(ProbeQuantity::Current).f32_sum(oe_sum);
                 let empty = crossed.contains(&true);
                 for (axis, node, w) in entries.into_iter().filter(|_| !empty) {
                     pr = pr.entry(axis, node, w * weight);
@@ -1570,6 +1577,35 @@ pub(crate) fn current_loop(
             .collect(),
         layer,
     ))
+}
+
+/// The entries of a [`current_loop`] (normal `n`, box `start`…`stop`) in
+/// the order openEMS sums them (black box, design §5.16.8): the side
+/// below the box along `c` (the `b` components), the side above it along
+/// `b` (the `c` components), the side above it along `c`, the side below
+/// it along `b`, each with ascending node index (`(n, b, c)` cyclic).
+fn openems_loop_order(
+    mut entries: LoopEntries,
+    n: usize,
+    start: [usize; 3],
+    stop: [usize; 3],
+) -> LoopEntries {
+    let (b, c) = ((n + 1) % 3, (n + 2) % 3);
+    let lo = [0, 1, 2].map(|d| start[d].min(stop[d]));
+    let hi = [0, 1, 2].map(|d| start[d].max(stop[d]));
+    entries.sort_by_key(|&(a, p, _)| {
+        let a = a.index();
+        if a == b && p[c] < lo[c] {
+            (0, p[b])
+        } else if a == c && p[b] >= hi[b] {
+            (1, p[c])
+        } else if a == b {
+            (2, p[b])
+        } else {
+            (3, p[c])
+        }
+    });
+    entries
 }
 
 /// Index of the mesh line nearest to `x` (openEMS probe snapping: on a
