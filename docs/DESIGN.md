@@ -2661,7 +2661,7 @@ halves differently (`--debug-material`, `cli_debug_cyl_sector`):
 
 | average | csx (ems native) | openEMS |
 |---|---|---|
-| ε, κ of a z edge on `ρ_i` | annular area `Δρ_h·(ρ_i + ρ_b)/2` (exact) | `Δρ_h·ρ_b`, `ρ_b` the dual line bounding the half |
+| ε, κ of a z edge on `ρ_i` | annular area `Δρ_h·(ρ_i + ρ_b)/2` (exact) | `Δρ_h·ρ_b`, `ρ_b` the dual line bounding the half; in α the dual widths of lines `j` and `j − 1` instead of the halves' widths (§5.16.11) |
 | ε, κ of an α edge | `Δρ_h·ρ_h` (`ρ_h` the half's centre) | `Δρ_h` |
 | μ of a ρ dual edge (H_ρ face), harmonic | `Δρ_h·ρ_h` | `Δρ_h` |
 
@@ -2825,6 +2825,11 @@ right choice (the mesh check still reports the limiting arcs).
 | lossless cavity energy, 5000 steps after the pulse | | drift 5.7e-7 |
 | random fields at Courant factor 1.0, 20 000 steps: closed grid with axis (3 levels), PEC sector, annulus without axis | ×4.90, ×3.90, ×1.67 | energy constant to 4.4e-7, 1.7e-7, 6.0e-7 |
 | 1 vs 3 threads | | bit-identical |
+
+**openEMS files** with one zone boundary on a closed grid with the axis
+(vacuum inside the zone) run openEMS's own scheme instead, a coarse
+operator coupled by interpolation (`OpenemsMultigrid`, §5.16.11); its
+results equal openEMS's to the printed digits.
 
 **Limits.** Removed edges hold 0, so field dumps and probes inside the
 zones see the stored representation: removed lines read 0 and H_α holds
@@ -3552,7 +3557,8 @@ regeneration on it in wave 14:
   regression used for the axis update does not apply directly; the
   coupling of the two operators (which grid owns the ring `ρ_I`, how the
   fine H at `ρ_{I+½}` sees the coarse E) is not fitted, and
-  `adv_cyl_multigrid` keeps its fixed `TimeStep`;
+  `adv_cyl_multigrid` keeps its fixed `TimeStep` (wave 16: fitted, and
+  run for files, §5.16.11);
 - dispersive poles work in openEMS on cylindrical grids, and now in ems
   (midpoint rule in `(ρ, α, z)`, physical areas): 1.7–3.8e-3 on a
   Drude-filled coax at openEMS's step of 1.8e-12 s (0.5–1e-3 at a fixed
@@ -4183,11 +4189,11 @@ look-ahead H of `engine::dump` uses the same order).
 ems keeps its mirror-symmetric order natively (`CurlOrder::Paired`) and
 uses openEMS's (`CurlOrder::OpenEms`, `Engine::set_curl_order`,
 `Compiled::curl_order`) for openEMS files on Cartesian grids. Only the
-main kernel follows it; CPML/UPML, conformal, multigrid and the
-cylindrical operators keep their expressions (on cylindrical grids
-openEMS's order made `dump_cyl` worse, 9.7e-6 → 1.5e-5: openEMS's
-cylindrical engine sums differently, not fitted). Thread counts stay
-bit-identical (both orders are per-edge expressions).
+main kernel follows it; CPML/UPML, conformal and multigrid keep their
+expressions. (Wave 16: cylindrical grids follow too, §5.16.11; the
+order had seemed to make `dump_cyl` worse, 9.7e-6 → 1.5e-5, because the
+seam, the axis and the subnormal flush were still ems's.) Thread counts
+stay bit-identical (both orders are per-edge expressions).
 
 Feature sweep (169 models, openEMS be30220, before → after): 9 → 83
 models agree to the printed digits (≤ 1e-8), 136 → 73 to ≤ 1e-4, 24 → 13
@@ -4572,6 +4578,134 @@ Seen on the way: openEMS runs a `CoordSystem="1"` grid as Cartesian
 without `CylinderCoords="1"` on `<FDTD>` (ems as cylindrical), and stops
 a run with `endCriteria="0"` and a sinusoid after `NumberOfTimesteps`
 where ems stops earlier.
+
+#### 5.16.11 Round-off: cylindrical grids
+
+Fitted on per-step `Et`/`Ht` dumps (`DumpMode` 0, `OverSampling` ≥ 100,
+so every step is written) and `--debug-operator` of small hand-written
+cylindrical models with 1 m cells and a fixed `TimeStep`, compared bit
+for bit (field dumps inverted to the engine's `u`, `i`; a dump entry
+counts as a state difference only if no `f32` value explains both
+codes' dumps). Tooling and models were scratch; the rules below are on
+the file path only (`Fdtd::openems_run`), ems's native cylindrical
+scheme is unchanged.
+
+- **Curl order.** openEMS's cylindrical engine sums the circulation in
+  its Cartesian order (§5.16.6): on a sector (6 × 6 × 6 cells, three
+  source components) every H update and every E update but the source
+  edges match `((a − b) − c) + d` / `((a − b) + d) − c` (the second best
+  forms 82–92 %); with it the sector's dumps are identical at every one
+  of 40 steps. `CurlOrder::OpenEms` now applies to cylindrical files.
+- **Flush to zero of every operation.** openEMS runs with the CPU's
+  flush-to-zero mode, which flushes each operation's subnormal result,
+  not only the final one: with mm cells the leading tail of a wave front
+  reaches the subnormal range (`i ~ 1e-38`) after 10 steps, and only the
+  per-operation flush (`kernel::oe_e`, `oe_h`: `a − b`, the sums, both
+  products, the result) reproduces openEMS's zeros there (a single final
+  flush, ems's native one, differs from step 10, no flush at all from
+  step 8). The same holds for the PML layer update (§5.16.8:
+  `upml::layer_step`, `Run::apply`; `pml_cyl` needed it, the Cartesian
+  sweep is unchanged). Both on the openEMS path only.
+- **The seam** (`engine::openems_cyl::OpenemsSeam`). openEMS updates
+  each seam E edge (ρ and z edges on `α = 0`) once, with the
+  coefficients of its whole dual face and the neighbours across the seam
+  (`H_z`, `H_ρ` of the last α cell, the whole `H_α` dual edge), and each
+  seam `H_α` dual edge once with its whole dual length; ems's copies with
+  half faces and the `1/cb`-weighted periodic merge are exact but round
+  differently. The operator recomputes these edges after the kernels
+  (`H_α` post-H, both copies holding half the current, the whole value
+  kept so that a subnormal half loses nothing; E post-E, before the other
+  operators, the periodic merge's result replaced). A closed 4 × 6 × 4
+  grid with two asymmetric sources: identical dumps at every step of 40
+  (before: from step 4). Edges with dispersive poles, conducting sheets
+  or changed coefficients (lumped elements) keep the merge; edges inside
+  openEMS's PML run the layer update of §5.16.8 on the whole edge.
+- **The axis.** openEMS's axis z edge (§5.16.2: the ring sum over the
+  `N + 1` α lines, the seam's `H_α` twice) adds the terms one by one,
+  `u = vv·u; u += vi·i_α(α_0); … ; u += vi·i_α(α_{N−1}); u += vi·i_α(α_0)`
+  (74 of 74 updates; summing the ring first: 35 of 74), with `vv`, `vi`
+  of the disc `C = ε0·ε·πρ_½²/Δz` **not** rounded to `f32` first (unlike
+  every other edge, §5.16.7: `vi` 96.84546 where the rounded `C` gives
+  96.84545, 8 of 8 against 5 of 8). Two axis models (one with a lossy
+  dielectric and a radial material face) are identical at every step.
+- **Multigrid** (`OpenemsMultigrid`). openEMS's scheme (one zone
+  boundary `ρ_I`, a closed grid with the axis) reproduced bit for bit by
+  an `f32` model and then in ems: a coarse operator (every second α
+  line, its own coefficients of the coarse cell geometry, rounded as
+  §5.16.7; the axis by the ring rule over the coarse lines) updates the
+  cells and lines inside `ρ_I`; the fine operator updates everything on
+  and outside `ρ_I` and reads the fields inside from the fine arrays,
+  into which openEMS writes the coarse values after each half step. On α
+  lines (`E_ρ`, `E_z`, `H_α`): the coarse value on even lines, the mean
+  of the neighbours on odd ones (`H_α` currents halved with the dual
+  length); on α cells (`E_α`, `H_ρ`, `H_z`): linear interpolation between
+  the centres of the coarse cell and its neighbour (3/4 and 1/4), `E_α`
+  arc voltages halved, except that the first `E_α` cell extrapolates from
+  the last coarse cell's unwrapped centre (13/12 and −1/12; `H_ρ` and
+  `H_z` wrap). The coarse H on `ρ_{I−½}` reads `E_z` of the even fine
+  lines on `ρ_I` and, for `E_α`, the sum of the coarse arc's two fine
+  edges. Exact on the fit model for 38 steps but the last H dump (ems's
+  look-ahead H does not see the operator) and on `adv_cyl_multigrid`
+  (3.0e-3…2.0e-2 with ems's embedding). Used for files with one zone
+  boundary, a closed grid with the axis, uniform α, vacuum inside the
+  zone and no PML or Mur faces; other multigrid files keep ems's
+  embedding (§5.15.1). `Compiled::openems_multigrid` (new field) holds
+  the zone line; the grid is then the plain fine grid, the time step the
+  one resolved on the zoned grid.
+- **Materials of z edges** (`compile::cylavg`). A box face swept through
+  the lower α quarter of a z edge's dual face: openEMS weighs the upper
+  α half by the dual width of the edge's line and the lower half by the
+  dual width of the line below (a whole cell at the first line), not by
+  the halves' own widths (`(α_j − α_{j−2})/(α_{j+1} − α_{j−1})` measured
+  to 6 digits on 15 configurations, also on the `ρ_min` and `ρ_max`
+  lines). Random sectors with one or two material boxes: 58 of 60
+  material dumps identical (11 of 30 before; the two left differ on PEC
+  boundary edges, where openEMS samples the out-of-domain quarter).
+  Closed grids still differ on some edges near α faces of boxes (not
+  resolved; the dump's α index is shifted against the lines there, which
+  made the cases hard to read).
+- **Dispersive poles on cylindrical grids** were all missing for a
+  primitive at negative x (the candidate edges came from its Cartesian
+  bounding box), native path too; fixed (every α line a candidate,
+  `tests/validation_dispersive.rs`). On the seam openEMS updates the two
+  copies apart (the `α = 0` copy of a Drude-filled ring steps as the
+  static medium at first, then gets half the pole's correction): not
+  reproduced, `adv_cyl_drude` stays at 3.8e-3.
+- **`CylinderCoords`.** Without `CylinderCoords="1"` on `<FDTD>` openEMS
+  runs a `CoordSystem="1"` mesh as a Cartesian one (rectilinear debug
+  dumps, the α lines as y lines in drawing units) and takes the boxes at
+  their literal corners; files now do the same, with a warning
+  (`io::openems::parse_model`; fixture `cyl_no_cylinder_coords`, a
+  lossy box and a source, identical to the printed digits). Not
+  checked: other primitives (a `Cylinder` there differs from both
+  readings).
+
+Dump formula (not changed): openEMS's raw dumps divide by the edge
+length computed from the drawing-unit deltas times the unit
+(`f32(u/(Δ·unit))`), ems multiplies by `1/Δ` of the metre lines; for
+lengths ≤ 1 both give the same `f32`, otherwise an ulp differs now and
+then (the remaining 1e-15…1e-7 of the cylindrical HDF5 dumps).
+
+Cylindrical fixtures (24 with probes or dumps, openEMS be30220; "exact"
+= every printed probe digit equal), wave 15 → now: 2 → 14 exact
+(`adv_cyl_axis`, `adv_cyl_coax`, `adv_cyl_noaxis`, `adv_cyl_multigrid`,
+`cyl_cellconst`, `cyl_radial`, `cyl_wrap_exc`, `cyl_sheet_none`,
+`cyl_sheet_seam`, `pml_cyl`, the new `cyl_no_cylinder_coords`, as
+before `cyl_planewave`, `sweep_prim_cs_cyl_box`; with I's time step,
+§5.16.10, which they all need), `dump_cyl_closed` to 9e-16 of its norm
+(was 3e-6), `dump_cyl` 9e-8, `cyl_sar` 1.7e-7. Left: conventions ems
+keeps on purpose (`cyl_wrap_ring` 0.89, `adv_cyl_lumped_ring` 4.5e-2:
+openEMS's lumped elements on the α = 0 line only; `cyl_current_seam`
+0.11 and `e2e_coax_monopole`'s `port_it` 0.33: its `(N − 1)/N` ring
+current, §5.16.2), `adv_cyl_drude` 3.8e-3 (above), the conducting
+sheets (`cyl_sheet_fin` 2.4e-5, `cyl_sheet_tube` 2.8e-5, as on
+Cartesian grids), `cyl_wrap_lumped` 1.6e-5 (its weak `uz_c`; the same
+resistor on a sector is exact), `cyl_radial_port` 1.4e-6 and the other
+`e2e_coax_monopole` probes 3e-7…8e-5 (lumped ports, Mur faces and
+material boxes leaving the α range there). Tolerances of the exact
+fixtures are now 1e-6 (`tests/openems_adv.rs`, `openems_cyl.rs`,
+`openems_pml.rs`, `openems_dumps.rs`). Feature sweep (169 models):
+146 exact, unchanged (its only cylindrical model was exact before).
 
 ## 6. Engine architecture
 

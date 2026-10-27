@@ -113,10 +113,10 @@ models (wall time; design §10).
 
 | area | implemented | not yet |
 |---|---|---|
-| mesh | Cartesian and cylindrical (ρ, α, z, with axis, closed azimuth and azimuthal multigrid near the axis) rectilinear, non-uniform; solver-aware checks (`ems::mesh`) | |
+| mesh | Cartesian and cylindrical (ρ, α, z, with axis, closed azimuth and azimuthal multigrid near the axis; openEMS files: openEMS's cylindrical arithmetic, seam, axis and multigrid, design §5.16.11) rectilinear, non-uniform; solver-aware checks (`ems::mesh`) | |
 | materials | ε, μ, κ, σ, diagonal anisotropy, weighting, sub-cell averaging (via `csx`; openEMS's radial weights for cylindrical XML models), CellConstantMaterial (also on cylindrical grids); Drude, Lorentz, Debye (electric and magnetic) | |
 | metal | PEC volumes, sheets and lines; priorities; ConductingSheet (skin-effect thin conductor; openEMS files: openEMS's own sheet model, design §5.16.2); conformal PEC volumes and zero-thickness sheets (`CompileOptions::with_conformal`); thin wires (radius below the cell size), axis-aligned or oblique; on cylindrical grids: sheets, ConductingSheet (openEMS files: openEMS's model too), conformal PEC volumes and sheets, oblique thin wires | |
-| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); openEMS's own `PML_n` layer for openEMS files (its arithmetic bit for bit on Cartesian grids); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave); stretched-radius cylindrical PML on ρ_max | |
+| boundaries | PEC, PMC, Mur, CPML (`PML_n`, medium-tuned); openEMS's own `PML_n` layer for openEMS files (its arithmetic bit for bit on Cartesian and cylindrical grids); AbsorbingBC sheets; periodic; Bloch / oblique incidence (`Fdtd::bloch_wavevector` or an oblique plane wave); stretched-radius cylindrical PML on ρ_max | |
 | sources | E/H soft/hard excitations with weighting and delay; plane waves (TF/SF; homogeneous possibly lossy background, and natively layered or dispersive backgrounds with the exact discrete incident field, oblique incidence included); Gaussian, sine, Dirac, step, custom waveforms | |
 | lumped elements | R, L, C, parallel and series; openEMS's update and spreading for XML models | |
 | probes | voltage, current, E/H field, waveguide mode voltage/current; DFT; openEMS probe text files including mode-matching files with mode purity (`ems::io::openems`) | |
