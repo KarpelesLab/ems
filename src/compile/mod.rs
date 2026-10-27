@@ -589,10 +589,10 @@ impl Compiled {
         // gives a cut edge the capacitance C/f_e (slivers would read as
         // ε_r ~ 1/f_e and switch the absorption off, design §5.13).
         if self.openems_pml && !self.pml.is_empty() {
-            let op = OpenEmsPml::with_driven(
+            let op = OpenEmsPml::with_materials(
                 engine,
                 self.pml.iter().map(|&(f, p)| (f, p.cells)),
-                self.driven_edges(),
+                &self.materials,
             )?;
             h.openems_pml = Some(engine.add_operator(op));
         }
@@ -711,8 +711,9 @@ impl Compiled {
     }
 
     /// The edges the field excitations drive (`true`: E edge, every copy
-    /// of a cylindrical axis edge; `false`: H dual edge), for
-    /// [`OpenEmsPml::with_driven`].
+    /// of a cylindrical axis edge; `false`: H dual edge), for the Mur
+    /// faces openEMS holds while an excitation runs
+    /// ([`MurBoundary::hold_faces`]).
     fn driven_edges(&self) -> Vec<(bool, Axis, [usize; 3])> {
         let mut out = Vec::new();
         for ex in &self.sources.excitations {

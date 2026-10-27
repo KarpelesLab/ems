@@ -5,6 +5,8 @@
 //! ([`ems::engine::boundary::upml::OpenEmsPml`]) for files:
 //!
 //! * `pml_face`: one layer, oblique incidence, probes inside it;
+//! * `pml_exact`: openEMS's arithmetic, bit for bit (fixed time step,
+//!   overlapping layers, a lossy block in the layers);
 //! * `pml_corner`: four layers overlapping in edges and three-layer
 //!   corners, a graded layer, a lossy block and a metal plate in the
 //!   layers, raw E/H line dumps through the corners (feature `hdf5`);
@@ -154,6 +156,16 @@ fn check(case: &str, tol: f64) -> (PathBuf, String) {
 #[test]
 fn one_face() {
     check("pml_face", 2e-5);
+}
+
+/// openEMS's layer arithmetic (design §5.16.8): three overlapping layers
+/// (one graded), a lossy dielectric-magnetic block reaching into all of
+/// them, a fixed time step. Every probe, including those in the edge and
+/// corner overlaps, is openEMS's to the printed digits (was 1e-6…5e-6
+/// with the collapsed single-stage update and ems's constants).
+#[test]
+fn exact_arithmetic() {
+    check("pml_exact", 1e-6);
 }
 
 /// Overlapping layers (edges, three-layer corners), a graded layer, a

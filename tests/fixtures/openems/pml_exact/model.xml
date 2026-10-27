@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  openEMS's layer arithmetic (design §5.16.8): PML_6 on xmax (graded
+  cells), PML_4 on ymin and PML_5 on zmax overlapping in edges and a
+  corner, PMC on ymax, a dielectric-magnetic block with conductivity
+  reaching into all three layers, an oblique soft E source, 1 mm cells and
+  a fixed time step (so that the comparison does not depend on the time
+  step criterion). Probes outside the layers, in a single layer and in the
+  overlaps. Hand-written for the ems PML fixtures
+  (scripts/openems-oracle/gen-pml.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30" TimeStep="1.5e-12">
+    <Excitation Type="0" f0="10e9" fc="9e9"/>
+    <BoundaryCond xmin="PEC" xmax="PML_6" ymin="PML_4" ymax="PMC" zmin="PEC" zmax="PML_5"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,16.8,17.9,18.7,19.4,20.6,21.3</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0.3,0.5,1">
+        <Primitives><Box Priority="0"><P1 X="7" Y="8" Z="7"/><P2 X="8" Y="9" Z="9"/></Box></Primitives>
+      </Excitation>
+      <Material Name="block">
+        <Property Epsilon="3.1" Mue="1.4" Kappa="0.05"/>
+        <Primitives><Box Priority="1"><P1 X="13.5" Y="-1" Z="10.5"/><P2 X="30" Y="7.5" Z="30"/></Box></Primitives>
+      </Material>
+      <ProbeBox Name="ut" Type="0">
+        <Primitives><Box Priority="0"><P1 X="12" Y="9" Z="0"/><P2 X="12" Y="9" Z="17"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_out" Type="2">
+        <Primitives><Box Priority="0"><P1 X="11" Y="10" Z="8"/><P2 X="11" Y="10" Z="8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_out" Type="3">
+        <Primitives><Box Priority="0"><P1 X="11" Y="10" Z="8"/><P2 X="11" Y="10" Z="8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_x" Type="2">
+        <Primitives><Box Priority="0"><P1 X="18.7" Y="9" Z="7"/><P2 X="18.7" Y="9" Z="7"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_x" Type="3">
+        <Primitives><Box Priority="0"><P1 X="18.7" Y="9" Z="7"/><P2 X="18.7" Y="9" Z="7"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_xy" Type="2">
+        <Primitives><Box Priority="0"><P1 X="17.9" Y="2" Z="8"/><P2 X="17.9" Y="2" Z="8"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ht_xyz" Type="3">
+        <Primitives><Box Priority="0"><P1 X="19.4" Y="1" Z="14"/><P2 X="19.4" Y="1" Z="14"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="et_xyz" Type="2">
+        <Primitives><Box Priority="0"><P1 X="19.4" Y="1" Z="14"/><P2 X="19.4" Y="1" Z="14"/></Box></Primitives>
+      </ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

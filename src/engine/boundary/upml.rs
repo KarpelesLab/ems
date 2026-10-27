@@ -7,7 +7,7 @@
 //! from openEMS files that end in PML layers differed from openEMS by
 //! 1e-3…1e-2. For those files ([`Fdtd::openems_run`](crate::Fdtd::openems_run))
 //! the faces are run by this operator instead, which reproduces openEMS's
-//! layer to f32 round-off (design §5.16.2).
+//! layer bit for bit on Cartesian grids (design §5.16.2, §5.16.8).
 //!
 //! # Formulation
 //!
@@ -22,19 +22,27 @@
 //! integrated in two stages through an auxiliary flux `F`:
 //!
 //! ```text
-//! jω·s_p·F_a = (∇×H)_a / ε          (F: the flux, in units of E)
-//! s_a·F_a    = s_q·E_a
+//! jω·s_p·F_a = (∇×H)_a              (F: the flux density, D·l)
+//! s_a·F_a    = ε·s_q·E_a
 //! ```
 //!
 //! which in the integral form of the engine (`u = E·l`, `C = ε·A*/l`),
 //! with `a_w = σ_w·dt/(2ε0)` and centred differences, becomes
 //!
 //! ```text
-//! F' = (1 − a_p)/(1 + a_p)·F + dt/(C·(1 + a_p))·∮i
-//! u' = (1 − a_q)/(1 + a_q)·u + ((1 + a_a)·F' − (1 − a_a)·F)/(1 + a_q)
+//! F' = (1 − a_p)/(1 + a_p)·F + dt/((A*/l)·(1 + a_p))·∮i
+//! u' = ((1 − a_q)/(1 + a_q)·u − (1 − a_a)/((1 + a_q)·ε)·F) + (1 + a_a)/((1 + a_q)·ε)·F'
 //! ```
 //!
-//! and the same for H with `μ`, `L = μ·A/l*` and `−∮u`. Each `a_w` is
+//! and the same for H with `μ`, `A/l*` and `−∮u`. Every edge of a layer
+//! carries its flux `F` (also where the two stages would collapse into one
+//! lossy update in exact arithmetic), and the `f32` operations run in the
+//! order written: this is openEMS's arithmetic, fitted bit for bit from
+//! its per-step field dumps (see [Where this comes from](self#where-this-comes-from)).
+//! Each coefficient is evaluated in `f64` and rounded once to `f32`; the
+//! `ε` and `μ` of the second stage are `ε_r·ε0'` and `μ_r·μ0'` with
+//! openEMS's constants `ε0' = 1/(4π·10⁻⁷·c0²)` and `μ0' = 1.256637062·10⁻⁶`
+//! (the grading `a_w` uses ems's, which give the same values). Each `a_w` is
 //! taken where the edge lies along `w`: the edge midpoint along its own
 //! direction and its start node (a primary line) along the others for E;
 //! the node along its own direction and the dual lines (cell midpoints)
@@ -65,37 +73,33 @@
 //!
 //! # Where this comes from
 //!
-//! Black-box measurements of openEMS v0.37 (design §5.16.2): its
+//! Black-box measurements of openEMS v0.37 (design §5.16.2, §5.16.8): its
 //! `--debug-operator` dump shows, inside a `PML_n` layer, the coefficients
-//! of the flux stage above (e.g. `vi = dt·l/A` and `vv = (1 − a)/(1 + a)`
-//! for the components whose flux stage is stretched); per-step dumps of
-//! all E and H components of small models (one face, two and three
-//! overlapping faces, `ε_r`/`μ_r`/lossy media, graded layers, both face
-//! sides) were reproduced edge by edge with the update above to 4e-7 of
-//! each edge's peak (f32 round-off). openEMS ignores `PML_Grading`
-//! (§5.16.1); the profile above is the only one it runs.
+//! of the flux stage above (`vv = (1 − a_p)/(1 + a_p)`,
+//! `vi = dt/((A/l)·(1 + a_p))`, every edge of a graded three-face model);
+//! per-step dumps of all E and H components of small models with 1 m
+//! cells (one to five faces, overlaps, `ε_r`, `μ_r` and lossy media in the
+//! layers, both face sides, 18 models) are reproduced bit for bit at every
+//! step by the update above. openEMS ignores `PML_Grading` (§5.16.1); the
+//! profile above is the only one it runs.
 //!
 //! # Engine coupling
 //!
-//! Most edges of a layer need no extra state: where `a_a = 0` and one of
-//! `a_p`, `a_q` is 0 (the tangential components of a single layer), the
-//! two stages collapse into one lossy update `u' = A·u + B·∮i`, which is
-//! written into the engine coefficients. The others (the components normal
-//! to a layer, and tangential ones where layers overlap) get `ca = 0`,
-//! `cb = dt/(C·(1 + a_p))`, so that the kernel writes the flux increment
-//! into `u`; a [slab hook](crate::engine::SlabHooks) then forms `F'` and
-//! `u'` from its stored `F` and `u` (two `f32` per edge). The stored `u`
-//! is taken back from the fields in the other half-step, after the serial
-//! hooks, so that sources and the periodic / axis merges acting on a layer
-//! edge are seen as openEMS sees them: a source adds to the field, not to
-//! the flux. Edges driven by a source keep the two-stage update for that
-//! reason ([`OpenEmsPml::with_driven`]). The hook runs inside the
-//! half-step on the thread owning the slab; every value is computed by
-//! the same expression whatever the partition, so results are
-//! bit-identical for any thread count.
+//! Every layer edge gets `ca = 0` and `cb = dt/((A/l)·(1 + a_p))`, so that
+//! the kernel writes the flux increment `t` into `u` (with no fused
+//! multiply-add, `0·u + cb·∮i` is `cb·∮i` exactly, and `vv·F + t` then has
+//! the bits of openEMS's flux update); a
+//! [slab hook](crate::engine::SlabHooks) then forms `F'` and `u'` from its
+//! stored `F` and `u` (two `f32` per edge). The stored `u` is taken back
+//! from the fields in the other half-step, after the serial hooks, so that
+//! sources and the periodic / axis merges acting on a layer edge are seen
+//! as openEMS sees them: a source adds to the field, not to the flux. The
+//! hook runs inside the half-step on the thread owning the slab; every
+//! value is computed by the same expression whatever the partition, so
+//! results are bit-identical for any thread count.
 //!
 //! The kernel's read-only H look-ahead sees the flux increment instead of
-//! the current on the H edges with state (the normal H of each layer).
+//! the current on the H edges of the layers.
 //! The operator corrects openEMS's energy measure
 //! ([`Engine::energy_openems`](crate::engine::Engine::energy_openems),
 //! through [`SlabHooks::energy_openems_slab`]), so that it counts the
@@ -110,7 +114,7 @@
 //! `ρ_max` layer shows the same profile along `ρ`).
 
 use core::ops::Range;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::axis::Axis;
@@ -119,9 +123,18 @@ use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
 use crate::engine::operator::{Hooks, Operator};
 use crate::engine::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
-use crate::engine::{Coefficients, Engine};
+use crate::engine::{Coefficients, EdgeMaterials, Engine};
 use crate::fdtd::Face;
 use crate::{Error, Result};
+
+/// The permittivity of vacuum \[F/m\] in the second stage of openEMS's
+/// layer update: `1/(μ0·c0²)` with the former exact `μ0 = 4π·10⁻⁷`
+/// (black box, design §5.16.8; ems's [`EPS0`] is CODATA 2022's).
+const OPENEMS_PML_EPS0: f64 = 8.854_187_817_620_389e-12;
+
+/// The permeability of vacuum \[H/m\] in the second stage of openEMS's
+/// layer update: `1.256637062·10⁻⁶`, ten digits (black box, design §5.16.8).
+const OPENEMS_PML_MU0: f64 = 1.256_637_062e-6;
 
 /// Conductivity `σ(d)` \[S/m\] of openEMS's `PML_n` layer at physical depth
 /// `depth` \[m\] below the interface, for a layer of `cells` cells and
@@ -335,7 +348,7 @@ impl Run {
             for k in 0..n {
                 let f0 = f[k];
                 let f1 = flush(ap[k] * f0 + t[k]);
-                let x = flush(aq[k] * v[k] + (bp[k] * f1 - bm[k] * f0));
+                let x = flush((aq[k] * v[k] - bm[k] * f0) + bp[k] * f1);
                 f[k] = f1;
                 v[k] = x;
                 t[k] = x;
@@ -464,7 +477,7 @@ impl SlabHooks for Parts {
                 let inc = flush(0.0 * r.v[q] - db[o] * t);
                 let f0 = r.f[q];
                 let f1 = flush(ap * f0 + inc);
-                let v = flush(aq * r.v[q] + (bp * f1 - bm * f0));
+                let v = flush((aq * r.v[q] - bm * f0) + bp * f1);
                 sum += v as f64 * v as f64 - inc as f64 * inc as f64;
             }
             add(i, MU0 * sum);
@@ -511,11 +524,10 @@ pub struct OpenEmsPml {
 impl OpenEmsPml {
     /// Layers of `cells` cells on each listed face of `engine` (its grid,
     /// time step and coefficients): rewrites the coefficients of the layer
-    /// edges and prepares the state of the others (see the
-    /// [module docs](self)). Create it after every change of the medium
-    /// coefficients. Lumped elements must not act on layer edges
-    /// ([`layers`](Self::layers)): openEMS ignores their R and C there,
-    /// and folding them into the rewritten coefficients is unstable.
+    /// edges and prepares their state (see the [module docs](self)).
+    /// Create it after every change of the medium coefficients. Lumped
+    /// elements must not act on layer edges ([`layers`](Self::layers)):
+    /// openEMS ignores their R and C there.
     ///
     /// # Errors
     /// [`Error::Invalid`] if a face is listed twice, has no cells or more
@@ -524,25 +536,35 @@ impl OpenEmsPml {
         engine: &mut Engine,
         faces: impl IntoIterator<Item = (Face, usize)>,
     ) -> Result<Self> {
-        Self::with_driven(engine, faces, [])
+        Self::build(engine, faces, None)
     }
 
-    /// Like [`new`](Self::new), with the edges that other operators drive
-    /// (sources: `(true, axis, node)` for an E edge, `false` for an H
-    /// dual edge). Inside a layer such an edge keeps the two-stage update
-    /// with its own flux even where it would collapse into one lossy
-    /// update: the value a source adds stays in the field but not in the
-    /// flux, as in openEMS (black-box: a soft source on the tangential
-    /// edges of a layer keeps its contribution undamped there).
+    /// Like [`new`](Self::new), with the edge materials the engine was
+    /// built from: the second stage of the update divides by the edge's
+    /// `ε0·ε_r` (`μ0·μ_r`), as openEMS does. [`new`](Self::new) takes the
+    /// capacitance (inductance) from the engine coefficients instead,
+    /// which differs in the last bits.
     ///
     /// # Errors
-    /// As [`new`](Self::new).
-    pub fn with_driven(
+    /// As [`new`](Self::new), and if the materials do not match the grid.
+    pub fn with_materials(
         engine: &mut Engine,
         faces: impl IntoIterator<Item = (Face, usize)>,
-        driven: impl IntoIterator<Item = (bool, Axis, [usize; 3])>,
+        materials: &EdgeMaterials,
     ) -> Result<Self> {
-        let driven: HashSet<(bool, Axis, [usize; 3])> = driven.into_iter().collect();
+        if materials.nodes() != engine.grid().nodes() {
+            return Err(Error::Invalid(
+                "PML: the edge materials do not match the grid".into(),
+            ));
+        }
+        Self::build(engine, faces, Some(materials))
+    }
+
+    fn build(
+        engine: &mut Engine,
+        faces: impl IntoIterator<Item = (Face, usize)>,
+        materials: Option<&EdgeMaterials>,
+    ) -> Result<Self> {
         let grid = engine.grid().clone();
         let dt = engine.dt();
         let n = grid.nodes();
@@ -562,11 +584,13 @@ impl OpenEmsPml {
             list.push((face, cells));
         }
         let prof = Profile::new(&grid, dt, &list);
+        let cyl = grid.is_cylindrical();
         let mut co = engine.coefficients_mut();
         let (mut e_runs, mut h_runs) = (Vec::new(), Vec::new());
         let mut edges = [0usize; 2];
         for (side, e_side) in [(0usize, true), (1, false)] {
             for comp in Axis::ALL {
+                let (p, q) = comp.others();
                 let (ca, cb) = if e_side {
                     co.e_mut(comp)
                 } else {
@@ -588,27 +612,41 @@ impl OpenEmsPml {
                             if aa == 0.0 && ap == 0.0 && aq == 0.0 {
                                 continue;
                             }
-                            // dt/C (dt/L) without the conductance.
-                            let k0 = 2.0 * cb[idx] as f64 / (1.0 + ca[idx] as f64);
-                            let fp = (1.0 - ap) / (1.0 + ap);
-                            let fq = (1.0 - aq) / (1.0 + aq);
+                            // A/l of the edge (E) or dual edge (H), as the
+                            // engine coefficients take it.
+                            let geo = match (e_side, cyl) {
+                                (true, true) => {
+                                    grid.dual_face_area(comp, node) / grid.edge_length(comp, node)
+                                }
+                                (true, false) => {
+                                    grid.dual_delta(p, node[p.index()])
+                                        * grid.dual_delta(q, node[q.index()])
+                                        / grid.delta(comp, node[comp.index()])
+                                }
+                                (false, true) => {
+                                    grid.face_area(comp, node) / grid.dual_edge_length(comp, node)
+                                }
+                                (false, false) => {
+                                    grid.delta(p, node[p.index()]) * grid.delta(q, node[q.index()])
+                                        / grid.dual_delta(comp, node[comp.index()])
+                                }
+                            };
+                            // ε (μ) of the edge's medium.
+                            let m = match materials {
+                                Some(mt) if e_side => OPENEMS_PML_EPS0 * mt.eps_r(comp)[idx],
+                                Some(mt) => OPENEMS_PML_MU0 * mt.mu_r(comp)[idx],
+                                None => Coefficients::capacitance(ca[idx], cb[idx], dt) / geo,
+                            };
                             edges[side] += 1;
-                            let free = !driven.contains(&(e_side, comp, node));
-                            if free && aa == 0.0 && aq == 0.0 {
-                                ca[idx] = fp as f32;
-                                cb[idx] = (k0 / (1.0 + ap)) as f32;
-                            } else if free && aa == 0.0 && ap == 0.0 {
-                                ca[idx] = fq as f32;
-                                cb[idx] = (k0 / (1.0 + aq)) as f32;
-                            } else {
-                                ca[idx] = 0.0;
-                                cb[idx] = (k0 / (1.0 + ap)) as f32;
-                                mask[k] = true;
-                                row[0][k] = fp as f32;
-                                row[1][k] = fq as f32;
-                                row[2][k] = ((1.0 + aa) / (1.0 + aq)) as f32;
-                                row[3][k] = ((1.0 - aa) / (1.0 + aq)) as f32;
-                            }
+                            // Flux stage: the kernel writes the increment
+                            // dt·∮/(A/l·(1 + a_p)).
+                            ca[idx] = 0.0;
+                            cb[idx] = (dt / ((1.0 + ap) * geo)) as f32;
+                            mask[k] = true;
+                            row[0][k] = ((1.0 - ap) / (1.0 + ap)) as f32;
+                            row[1][k] = ((1.0 - aq) / (1.0 + aq)) as f32;
+                            row[2][k] = ((1.0 + aa) / ((1.0 + aq) * m)) as f32;
+                            row[3][k] = ((1.0 - aa) / ((1.0 + aq) * m)) as f32;
                         }
                         run.push_row(j, &mask, row, &mut known);
                     }
@@ -652,7 +690,7 @@ impl OpenEmsPml {
     }
 
     /// Number of E edges and H dual edges that carry state (flux and last
-    /// value).
+    /// value): every edge inside the layers, as in openEMS.
     pub fn state_counts(&self) -> [usize; 2] {
         let count = |runs: &[Run]| runs.iter().map(Run::len).sum();
         [count(&self.e), count(&self.h)]
@@ -677,7 +715,7 @@ impl Operator for OpenEmsPml {
         let (q, [ap, aq, bp, bm]) = r.find(node[1] * self.nodes[2] + node[2])?;
         let f0 = r.f[q];
         let f1 = flush(ap * f0 + kernel);
-        Some(flush(aq * r.v[q] + (bp * f1 - bm * f0)))
+        Some(flush((aq * r.v[q] - bm * f0) + bp * f1))
     }
 
     fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {

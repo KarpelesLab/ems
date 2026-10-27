@@ -240,7 +240,7 @@ cases! {
     bc_spellings: 1e-6;             // (exact; Mur faces in openEMS's order, §5.16.8)
     // openEMS's PML_8 on every face of a 40³ box, probes 4–12 cells from
     // the layers (8e-3 with the CPML; ems runs openEMS's layer for files).
-    pml_open: 2e-5;                 // (4.0e-6)
+    pml_open: 1e-6;                 // (exact; 4.0e-6 before openEMS's layer arithmetic, §5.16.8)
     abc_line_s0_t0: 1e-6;           // (exact; 1e-6 before openEMS's sheet arithmetic, §5.16.8)
     abc_line_s1_t1: 1e-6;           // (exact)
     lumped_on_cyl: 1e-6;            // (exact)
