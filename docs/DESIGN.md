@@ -4377,6 +4377,113 @@ fields themselves are identical (the dump's division, not fitted), and a
 boundary `H` dual edge of a graded corner cell has `iv` one `f32` step
 off (`--debug-operator`, 5 edges of a mesh with a 0.4 m first cell).
 
+#### 5.16.9 Round-off: vacuum constants, lumped elements, current probes
+
+Wave 16 (area J), black box only; the fits below use hand-written
+models, `--debug-operator` dumps and per-step `DumpMode="0"` dumps
+(`OverSampling` on the dump box, see the end of this section).
+
+**Vacuum constants.** The `mat_weight_coords` edges of §5.16.7 were not
+the weight function: csx's `ε_r` there is openEMS's (5.585000000000001
+for the worst edge, the `f32` material dumps agree), and the `f64`
+capacitance `ε0·ε_r·A/l` lies near an `f32` rounding midpoint, where
+ems's `ε0` (CODATA 2022, `1/(μ0·c0²)` = 8.8541878188e-12) and
+openEMS's round apart. On 24 random graded meshes with dielectric and
+magnetic boxes (`ε_r` 1, 2.5; `μ_r` 1.5…7.1; weights) ems had 4…118
+`vi` and 2…260 `iv` mismatches per model, all one `f32` step. Every
+vacuum edge constrains the constant (`vi = f32(dt/f32(ε0·A/l))`): the
+99 438 E edges need `ε0 ∈ [8.8541878174e-12, 8.8541878178e-12]`, the
+87 300 H edges `μ0 ∈ [1.25663706194e-6, 1.25663706205e-6]`. openEMS's
+operator uses `ε0 = 8.85418781762e-12` (CODATA 2006) and
+`μ0 = 1.256637062e-6` (ten digits; not `4π·10⁻⁷`, not CODATA 2018's
+1.25663706212e-6, not ems's 1.25663706127e-6); 8.8541878128e-12 and
+8.854187817e-12 each fail tens of edges. With them
+(`OPENEMS_EPS0`, `OPENEMS_MU0`, used by `CoeffRounding::OpenEms` for
+`C` and `L`) the 24 models, 160 lumped-element models, 12 weight-function
+variants and the feature sweep's 1 mm Cartesian models have every
+`vv`, `vi`, `ii`, `iv` of openEMS (apart from the items below and the
+PML layer). The native constants are unchanged (CODATA 2022, more
+accurate). `c0 = 1/√(ε0·μ0)` of openEMS's constants is 2.2e-10 below
+299 792 458 m/s: not the 3.5e-9 of openEMS's computed time step
+(§5.16.7). Other uses of ε0/μ0 on the file path (time step, Mur, PML,
+dispersive poles, sheet branches) keep ems's constants.
+
+**Lumped elements.** Measured on 160 random models (R, C, L 2…10 nH,
+R‖C, R‖L, series R, L, C, RL, RLC; `ε_r` 1…4.4, `κ` 0…1.7 S/m; 1–3
+columns × 1–3 series edges; uniform and graded meshes; `dt` 1.0…1.9
+ps): openEMS builds the element edge like a material edge, each circuit
+quantity rounded to `f32` (§5.16.7):
+
+- parallel: `C = f32(C_e)` if the element has a capacitor, else the
+  medium's `f32(ε0·ε_r·A/l)`; `G = f32(1/R_e)` if it has a resistor,
+  else the medium's `f32(κ·A/l)`; an R/L element without capacitor gets
+  `C = f32(C_max)` where the medium exceeds the limit of §5.16.1;
+- series: the medium's `C`, limited to `f32(C_max)` (§5.16.1), and
+  `G = 0` — the medium's conductance is dropped (`vv = 1` on lossy
+  media; ems kept it before);
+- then `vv`, `vi` in `f64` from these values.
+
+ems formed the same values by recovering `C`, `G` from the `f32`
+coefficients twice (`replace_medium`, then `fold_parallel`), one `f32`
+step off in `vv` on the 4 edges of `lumped_caps` and on 1–9 edges of a
+third of the random models. It now folds once from the exact medium
+values (`e_edge_circuit` from the edge materials, used where they give
+the edge's coefficients exactly, else recovered) and installs the
+element with `medium_folded`. All element edges of the 160 models are
+openEMS's except series resistors without L or C: openEMS keeps
+`vv = 1` there and updates the resistor separately; ems folds it as the
+edge conductance. Per-step dumps (1 m cells) give the same physics,
+`j = (u^n + u^{n+1})/(2R)`, but none of ~30 `f32`/`f64` operation orders
+of the corrected update reproduces openEMS's bits (≤ 28 % of the
+steps), nor does any one-step form for L, C, RL, RLC branches (they
+carry hidden branch state): series elements stay at the round-off level
+(`lumped_series_rlc` 8.8e-5; series R 9.3e-5, on a lossy medium
+1.1e-4, series LC on a lossy medium 8.6e-5).
+
+**Current probes.** openEMS sums the loop currents in `f32`, rounding
+after every term, in a fixed order: for a loop with normal `n` and
+`(n, b, c)` cyclic, the `b` components on the side below the box along
+`c`, then the `c` components on the side above it along `b`, the `b`
+components above along `c`, the `c` components below along `b`, each
+side with ascending node index. Fitted on `probe_i_dirs` scaled to 1 m
+cells (the noInterpolation H dump is the engine current there) over 24
+side orders × 16 directions × `f32`/`f64` accumulation: only this one
+reproduces all 61 samples of the round-off column `ix` and of `iz`; on
+the 1 mm original the same sum of the engine's currents (taken from
+ems, whose fields are openEMS's) reproduces all samples, while `H·Δl`
+forms do not. The box direction does not matter (`izr` = `iz`). ems
+uses it for openEMS files on Cartesian grids (`Probe::f32_sum`,
+`map::openems_loop_order`; also for the sample after the last step);
+native probes keep the `f64` sum.
+
+**OverSampling of probes and dumps.** openEMS honours an `OverSampling`
+attribute on `<ProbeBox>` and `<DumpBox>`: the time-domain interval is
+`max(1, ⌊N/OS⌋)` with the property's value, replacing the `<FDTD>` one
+(10 variants, `N` = 41: OS 10, 3, 2, 1, 50 give 4, 13, 20, 41, 1 steps;
+1 is honoured, unlike `<FDTD OverSampling="1">`, which means 4; 0
+crashes openEMS). csx keeps the attribute among the property's
+unrecognised ones (§8.1 item 22); ems reads it from there
+(`ProbeSpec::oversampling`, `ProbeResult::oversampling`,
+`Results::openems_probe_interval_of`) and warns for values that are not
+positive integers. Fixture `sweep_prop_oversampling` (exact).
+
+**Not reproduced.** Conducting sheets (`sheet_thin_resistive` 1.5e-4;
+the sheet fixtures 2e-5…6e-5): openEMS's sheet edge capacitance is not
+`f32(K·w/l)` for any constant `K` — with a negligible conductance
+(`σ` = 1e-6 S/m, `vv = 1`) and 7200 interior edges of 16 random graded
+meshes no `K` reproduces more than 69 % of the `vi` (also with `f32`
+widths, lengths, `dt`, per-square values, half-cell sums or another
+`μ0`); the best `c` is 1.4e-7 below the table's 0.022224575. Not
+fitted.
+
+Feature sweep (169 models, openEMS be30220, before → after): 123 → 130
+exact, 5 → 4 above 1e-4 (`param_term`, `prim_userdefined` rejected by
+openEMS, `sheet_thin_resistive`, `fdtd_odd`): `lumped_caps` 8.6e-5 → 0,
+`probe_i_dirs` 8.4e-3 → 0, `probe_i_snap`, `probe_fd`,
+`probe_polygon_i`, `probe_ui_shapes` 8.8e-8 → 0, `mat_weight_coords`
+4.1e-5 → 0. Sweep fixtures: `probe_polygon_i` and `mat_weight_coords`
+exact (tolerance 1e-6).
+
 ## 6. Engine architecture
 
 ```
@@ -4868,7 +4975,7 @@ These are reported here, not fixed in csx from this repo.
 22. **Per-property OverSampling.** openEMS honours an `OverSampling`
     attribute on a `<ProbeBox>` or `<DumpBox>` (time-domain sampling
     every `max(1, ⌊N/OverSampling⌋)` steps, 1 allowed, 0 crashes it,
-    §5.16.8); csx's `ProbeBox`/`DumpBox` have no field for it and keep it
+    §5.16.9); csx's `ProbeBox`/`DumpBox` have no field for it and keep it
     among `extra_attributes`, where ems reads it
     (`compile::ProbeSpec::oversampling`). A typed
     `Option<u32>` on `ProbeBox` would also write it back.
