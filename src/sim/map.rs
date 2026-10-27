@@ -52,6 +52,8 @@ pub(crate) struct ProbeEntry {
     /// H-type probes after a run: the sample at `(N + ½)·dt` openEMS
     /// records after the last step `N` (time, values, mode purity).
     pub final_sample: Option<(f64, Vec<f64>, Option<f64>)>,
+    /// The probe's own `OverSampling` ([`ProbeSpec::oversampling`]).
+    pub oversampling: Option<u32>,
 }
 
 /// The engine operator behind a model dump.
@@ -993,6 +995,7 @@ pub(crate) fn map_sources(
                     location,
                     waveguide: true,
                     final_sample: None,
+                    oversampling: p.oversampling,
                 });
                 continue;
             }
@@ -1222,15 +1225,18 @@ pub(crate) fn map_sources(
             location: Some(location),
             waveguide: false,
             final_sample: None,
+            oversampling: p.oversampling,
         });
     }
 
     // ---- dumps (openEMS sampling rules, see `io::openems::dump`).
     let k = dump_interval(fdtd, dt);
     let nyquist = openems_nyquist(fdtd, dt);
-    let td_interval = oe::time_domain_interval(nyquist, fdtd.get_oversampling().unwrap_or(4));
+    let oversampling = fdtd.get_oversampling().unwrap_or(4);
     for d in &src.dumps {
         let s = &d.settings;
+        // A dump's own OverSampling replaces the <FDTD> one.
+        let td_interval = oe::time_domain_interval(nyquist, d.oversampling.unwrap_or(oversampling));
         let id = s.dump_type.id();
         let fd = (10..=15).contains(&id);
         let q = match id {

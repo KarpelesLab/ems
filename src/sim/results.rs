@@ -84,6 +84,8 @@ pub struct ProbeResult {
     /// (time, values, mode purity), written to the openEMS probe files
     /// only.
     pub(crate) final_sample: Option<(f64, Vec<f64>, Option<f64>)>,
+    /// The probe's own `OverSampling` attribute, if any.
+    pub(crate) oversampling: Option<u32>,
 }
 
 impl ProbeResult {
@@ -115,6 +117,14 @@ impl ProbeResult {
     /// [`mode_purity`](Self::mode_purity)).
     pub fn location(&self) -> Option<&ProbeLocation> {
         self.location.as_ref()
+    }
+
+    /// The probe property's own `OverSampling` attribute (openEMS
+    /// samples the probe's time-domain file with it instead of the
+    /// `<FDTD>` one, see
+    /// [`Results::openems_probe_interval_of`]); `None` if not set.
+    pub fn oversampling(&self) -> Option<u32> {
+        self.oversampling
     }
 
     /// Waveguide (mode-matching) probes (`WaveguideVoltage` /
@@ -592,6 +602,18 @@ impl Results {
     /// the sampling of its frequency-domain probe values.
     pub fn openems_nyquist_interval(&self) -> u64 {
         self.openems_intervals.1
+    }
+
+    /// The time-domain sampling interval openEMS uses for the probe `p`:
+    /// `max(1, ⌊N/OverSampling⌋)` with the probe's own
+    /// [`oversampling`](ProbeResult::oversampling) and the
+    /// [Nyquist interval](Self::openems_nyquist_interval) `N`, else
+    /// [`openems_probe_interval`](Self::openems_probe_interval).
+    pub fn openems_probe_interval_of(&self, p: &ProbeResult) -> u64 {
+        match p.oversampling {
+            Some(os) => (self.openems_nyquist_interval() / u64::from(os.max(1))).max(1),
+            None => self.openems_probe_interval(),
+        }
     }
 
     /// How the run stopped (`None` for results taken without

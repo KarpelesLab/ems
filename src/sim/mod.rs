@@ -849,6 +849,7 @@ impl Simulation {
                     location: p.location,
                     mode_purity,
                     final_sample,
+                    oversampling: p.oversampling,
                 }
             })
             .collect();
@@ -876,6 +877,7 @@ impl Simulation {
                     location: None,
                     mode_purity: None,
                     final_sample: None,
+                    oversampling: None,
                 }
             })
             .collect();

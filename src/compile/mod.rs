@@ -386,6 +386,13 @@ pub struct ProbeSpec<T> {
     /// the current, the lower corners of the box's cells), the position
     /// openEMS reports in its probe files; `None` otherwise.
     pub mode_range: Option<([usize; 3], [usize; 3])>,
+    /// The property's own `OverSampling` attribute (time-domain probes
+    /// and dumps; a positive integer), which openEMS honours instead of
+    /// the `<FDTD>` one (black box: the sampling interval is
+    /// `max(1, ⌊N/OverSampling⌋)` for the Nyquist interval `N`, also for
+    /// 1, where the `<FDTD>` value below 2 means 4; 0 crashes openEMS).
+    /// csx keeps it among the property's unrecognised attributes.
+    pub oversampling: Option<u32>,
 }
 
 /// An absorbing sheet from a csx `AbsorbingBC` primitive (see
@@ -1076,6 +1083,7 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                     mode_entries: mode.entries,
                     mode_samples: mode.samples,
                     mode_range: mode.range,
+                    oversampling: property_oversampling(p, warnings),
                 })
             }
             PropertyKind::DumpBox(d) => dumps.push(ProbeSpec {
@@ -1088,11 +1096,33 @@ fn probe_specs(model: &csx::ContinuousStructure, grid: &Grid, warnings: &mut Vec
                 mode_entries: Vec::new(),
                 mode_samples: None,
                 mode_range: None,
+                oversampling: property_oversampling(p, warnings),
             }),
             _ => {}
         }
     }
     (probes, dumps)
+}
+
+/// The `OverSampling` attribute of a probe or dump property (see
+/// [`ProbeSpec::oversampling`]); a value that is not a positive integer
+/// is reported and ignored.
+fn property_oversampling(p: &csx::Property, warnings: &mut Vec<String>) -> Option<u32> {
+    let (_, v) = p
+        .extra_attributes
+        .iter()
+        .find(|(k, _)| k == "OverSampling")?;
+    match v.trim().parse::<u32>() {
+        Ok(n) if n > 0 => Some(n),
+        _ => {
+            warnings.push(format!(
+                "probe/dump {:?}: OverSampling = {v:?} is not a positive integer; ignored \
+                 (the <FDTD> value applies)",
+                p.name
+            ));
+            None
+        }
+    }
 }
 
 /// Corner node indices of a probe / dump primitive; see the module docs.

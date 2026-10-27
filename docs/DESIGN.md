@@ -4865,6 +4865,13 @@ These are reported here, not fixed in csx from this repo.
 21. **OverSampling.** `FdtdSettings` stores `OverSampling` as `u32`, so a
     negative value is a parse error; openEMS reads any value below 2 as
     its default (4).
+22. **Per-property OverSampling.** openEMS honours an `OverSampling`
+    attribute on a `<ProbeBox>` or `<DumpBox>` (time-domain sampling
+    every `max(1, ⌊N/OverSampling⌋)` steps, 1 allowed, 0 crashes it,
+    §5.16.8); csx's `ProbeBox`/`DumpBox` have no field for it and keep it
+    among `extra_attributes`, where ems reads it
+    (`compile::ProbeSpec::oversampling`). A typed
+    `Option<u32>` on `ProbeBox` would also write it back.
 
 ### 8.2 Feedback for hdf5rs
 

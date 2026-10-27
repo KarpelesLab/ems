@@ -1,0 +1,7 @@
+% time-domain electric field probe by openEMS v0.37.0-32-gec4d2db @Tue Oct 27 18:05:54 2026
+% start-coordinates: (0.01,0.005,0.007) m -> [10,5,7]
+% stop-coordinates: (0.01,0.005,0.007) m -> [10,5,7]
+% t/s	Ex/(V/m)	Ey/(V/m)	Ez/(V/m)
+0	0	0	0
+6.15e-11	-8.70153893384e-07	2.10024175828e-06	1.82440007546e-06
+1.23e-10	7.44269570419e-05	-8.64364082531e-05	0.000120273483617

@@ -436,8 +436,8 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
         }
     }
     if opts.verbose >= 2 {
-        let k = before.openems_probe_interval();
         for p in before.probes() {
+            let k = before.openems_probe_interval_of(p);
             println!(
                 "probe '{}': time-domain sampling every {k} timestep(s) (Nyquist/{})",
                 p.name(),

@@ -236,6 +236,7 @@ cases! {
     probe_fd: 1e-6;                 // (exact; f32 round-off 1.8e-4)
     probe_times: 1e-6;              // (exact)
     probe_polygon_i: 1e-6;          // (exact)
+    prop_oversampling: 1e-6;        // (exact; a ProbeBox/DumpBox OverSampling)
     // Boundaries, absorbing sheets, settings.
     bc_spellings: 1e-6;             // (exact; Mur faces in openEMS's order, §5.16.8)
     // openEMS's PML_8 on every face of a 40³ box, probes 4–12 cells from

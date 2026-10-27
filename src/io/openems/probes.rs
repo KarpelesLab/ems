@@ -50,7 +50,8 @@
 //! # Sampling (what the values are)
 //!
 //! openEMS writes the time-domain series every `K_t` steps (see
-//! [`Results::openems_probe_interval`]), starting with the initial state:
+//! [`Results::openems_probe_interval_of`]; a probe's own `OverSampling`
+//! replaces the `<FDTD>` one), starting with the initial state:
 //! E-type probes (voltage, E field) at `t = k·dt` from `k = 0`, H-type
 //! probes (current, H field) at `t = (k + ½)·dt`, for `k` a multiple of
 //! `K_t`. ems records every step and writes the same rows: the E-type
@@ -641,7 +642,7 @@ pub fn write_probe(
 
 /// Writes the openEMS probe files of every model probe of `results` into
 /// `dir` (created if needed), with openEMS's sampling intervals
-/// ([`Results::openems_probe_interval`],
+/// ([`Results::openems_probe_interval_of`],
 /// [`Results::openems_nyquist_interval`]); see [`write_probe`]. Lumped
 /// element currents (which openEMS does not write) are skipped. Returns
 /// the paths written.
@@ -660,12 +661,10 @@ pub fn write_probe(
 pub fn write_probes(results: &Results, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("{}: {e}", dir.display())))?;
-    let (k, n) = (
-        results.openems_probe_interval(),
-        results.openems_nyquist_interval(),
-    );
+    let n = results.openems_nyquist_interval();
     let mut out = Vec::new();
     for p in results.probes() {
+        let k = results.openems_probe_interval_of(p);
         out.extend(write_probe(p, dir, k, n)?);
     }
     Ok(out)
