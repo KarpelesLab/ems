@@ -70,8 +70,13 @@ jobs:
         timeout-minutes: 15
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake libhdf5-dev libvtk9-dev libcgal-dev libtinyxml-dev \
+          # man-db triggers can stall package installs on the runners;
+          # retries and lock timeouts guard against slow mirrors.
+          echo "man-db man-db/auto-update boolean false" | sudo debconf-set-selections
+          sudo rm -f /var/lib/man-db/auto-update
+          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o DPkg::Lock::Timeout=120"
+          sudo apt-get $APT update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT install -y -qq cmake libhdf5-dev libvtk9-dev libcgal-dev libtinyxml-dev \
             libboost-program-options-dev libboost-thread-dev libboost-system-dev \
             libboost-filesystem-dev libboost-chrono-dev libboost-date-time-dev \
             libboost-serialization-dev >/dev/null
@@ -80,8 +85,13 @@ jobs:
         timeout-minutes: 15
         if: steps.cache.outputs.cache-hit == 'true'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libhdf5-dev libvtk9-dev libtinyxml-dev \
+          # man-db triggers can stall package installs on the runners;
+          # retries and lock timeouts guard against slow mirrors.
+          echo "man-db man-db/auto-update boolean false" | sudo debconf-set-selections
+          sudo rm -f /var/lib/man-db/auto-update
+          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o DPkg::Lock::Timeout=120"
+          sudo apt-get $APT update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get $APT install -y -qq libhdf5-dev libvtk9-dev libtinyxml-dev \
             libboost-program-options-dev libboost-thread-dev libboost-system-dev \
             libboost-filesystem-dev libboost-chrono-dev libboost-date-time-dev \
             libboost-serialization-dev >/dev/null
