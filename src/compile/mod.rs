@@ -172,6 +172,7 @@ use crate::engine::boundary::mur::{MurBoundary, MurMedia};
 use crate::engine::boundary::upml::OpenEmsPml;
 use crate::engine::dispersive::Field as DispersiveField;
 use crate::engine::dispersive::Scheme as DispersiveScheme;
+use crate::engine::openems_sheet::OpenEmsSheetBranches;
 use crate::engine::{CoeffRounding, CurlOrder};
 use crate::engine::{
     ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
@@ -407,6 +408,10 @@ pub struct AbcSpec {
     pub phase_velocity: Option<f64>,
 }
 
+/// An openEMS conducting-sheet edge on a Cartesian grid: axis, node and
+/// its two branches `(L, R)` \[H, Ω\] ([`Compiled::openems_sheet_branches`]).
+pub type OpenEmsSheetBranch = (Axis, [usize; 3], [(f64, f64); 2]);
+
 /// Engine inputs produced by [`compile`]; [`build`](Self::build) turns
 /// them into an [`Engine`].
 #[derive(Debug, Clone)]
@@ -494,8 +499,8 @@ pub struct Compiled {
     /// azimuthal multigrid;
     /// `compile/openems_sheet.rs`), with the `[ε_r, κ]` of the medium
     /// they replace: their `ε`/`κ` in [`materials`](Self::materials) and
-    /// their branch poles in [`dispersive`](Self::dispersive) are the
-    /// sheet's, not a medium's.
+    /// their branch poles in [`dispersive`](Self::dispersive) (cylindrical
+    /// grids) are the sheet's, not a medium's.
     pub openems_sheets: Vec<(Axis, [usize; 3], [f64; 2])>,
     /// openEMS's azimuthal multigrid (files with one zone boundary on a
     /// closed grid with the axis, vacuum inside the zone; design
@@ -504,6 +509,10 @@ pub struct Compiled {
     /// coarse operator and interpolation; other multigrid models keep the
     /// zones in the grid (ems's embedding, §5.15.1).
     pub openems_multigrid: Option<usize>,
+    /// The branches `(L, R)` of the openEMS sheet edges on Cartesian
+    /// grids, updated as openEMS does (single precision; design §5.16.13)
+    /// by an operator registered after the dispersive poles.
+    pub openems_sheet_branches: Vec<OpenEmsSheetBranch>,
     /// Conformal PEC geometry ([`CompileOptions::conformal`]); applied to
     /// the coefficients by [`build`](Self::build) before any operator.
     pub conformal: Option<ConformalPec>,
@@ -710,6 +719,20 @@ impl Compiled {
             }
             if any {
                 h.dispersive = Some(d.add_to(engine)?);
+            }
+        }
+        if !self.openems_sheet_branches.is_empty() {
+            let dt = engine.dt();
+            let mut b = OpenEmsSheetBranches::default();
+            {
+                let co = engine.coefficients();
+                for &(axis, node, lr) in &self.openems_sheet_branches {
+                    let cb = co.cb(axis)[engine.grid().index(node)];
+                    b.push(axis, node, lr, dt, cb);
+                }
+            }
+            if !b.is_empty() {
+                engine.add_operator(b);
             }
         }
         // After the dispersive poles: as slab hooks (see
@@ -1606,7 +1629,7 @@ pub fn compile(
     let mur_media = (fdtd.get_openems_run() && !cyl).then(|| mur_point_media(model, &grid, &mur));
     // openEMS's sheet model replaces the slab on files (last: it pins the
     // time step resolved with the final materials).
-    let (sheet_edges, openems_sheets) = if fdtd.get_openems_run() {
+    let (sheet_edges, openems_sheets, openems_sheet_branches) = if fdtd.get_openems_run() {
         let emu = openems_sheet::emulate(
             model,
             &grid,
@@ -1624,9 +1647,9 @@ pub fn compile(
             ));
         }
         dispersive.extend(emu.poles);
-        (emu.rest, emu.edges)
+        (emu.rest, emu.edges, emu.branches)
     } else {
-        (sheet_map.edges, Vec::new())
+        (sheet_map.edges, Vec::new(), Vec::new())
     };
     // openEMS's multigrid (files, design §5.16.11): the plain fine grid
     // with `OpenemsMultigrid`, the time step resolved on the zoned grid.
@@ -1687,6 +1710,7 @@ pub fn compile(
         sheets: sheet_edges,
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,
+        openems_sheet_branches,
         conformal,
         excitation_duration: match fdtd.get_waveform() {
             Some(

@@ -18,8 +18,12 @@
 //!   `L_b·di_b/dt + R_b·i_b = u`, integrated like openEMS's Drude poles
 //!   (branch currents at half steps driven by `u^n`, the leapfrog scheme
 //!   of [`Scheme::Leapfrog`](crate::engine::dispersive::Scheme::Leapfrog)).
-//!   The medium around the sheet does not enter (the vacuum capacitance of
-//!   the cell is replaced, not added).
+//!   On Cartesian grids the branches keep openEMS's single-precision state
+//!   and operation order ([`crate::engine::openems_sheet`], design
+//!   §5.16.13); on cylindrical grids they are poles of the general
+//!   dispersive operator (`f64` state). The medium around the sheet does
+//!   not enter (the vacuum capacitance of the cell is replaced, not
+//!   added).
 //! * **Scaling.** Per square of sheet, `G = g·σt`, `R_b = r_b/(σt)`,
 //!   `L_b = l_b·μ0·t` and `C = dt²/(c·μ0·t)` (the capacitance depends on
 //!   the time step: it is no physical sheet capacitance); an edge of
@@ -95,10 +99,13 @@ use crate::waveform::Waveform;
 /// `(g, c, l_1, r_1, l_2, r_2)` per square, `G = g·σt`,
 /// `C = dt²/(c·μ0·t)`, `L_b = l_b·μ0·t`, `R_b = r_b/(σt)`. Measured with
 /// openEMS v0.37 (σ = 1e6 S/m, 1 mm cells, `dt` = 1.8 ps, 1500 steps;
-/// reproduced with other `σ`, `t` and `dt` to 7 digits).
+/// reproduced with other `σ`, `t` and `dt` to 7 digits). `c` of bin 0 is
+/// refined to the value that reproduces the most `f32` coefficients of
+/// openEMS (operator dumps of 1 523 random models; design §5.16.13):
+/// 0.02222457325 instead of the measured 0.022224575.
 #[rustfmt::skip]
 pub(crate) const TABLE: [[f64; 6]; 30] = [
-    [0.13708436, 0.022224575, 0.11928209, 1.3027544, 0.099069049, 10.62245],
+    [0.13708436, 0.02222457325, 0.11928209, 1.3027544, 0.099069049, 10.62245],
     [0.12443278, 0.019525936, 0.11765065, 1.2992612, 0.086577439, 10.219529],
     [0.10874258, 0.016475925, 0.11249568, 1.3200334, 0.072683973, 10.247559],
     [0.09215452, 0.013604945, 0.10237379, 1.4182922, 0.059808052, 10.991476],
@@ -158,8 +165,14 @@ pub(super) struct Emulation {
     /// Native sheet edges that are not emulated (kept for the slab
     /// operator): those of cylindrical grids with an azimuthal multigrid.
     pub rest: Vec<SheetEdge>,
-    /// Branch poles of the emulated edges.
+    /// Branch poles of the emulated edges on cylindrical grids (the
+    /// general dispersive operator).
     pub poles: Vec<EdgePole>,
+    /// Branches `(L, R)` of the emulated edges on Cartesian grids, with
+    /// openEMS's single-precision update
+    /// ([`OpenEmsSheetBranches`](crate::engine::openems_sheet)), and the
+    /// time step they are formed with.
+    pub branches: Vec<super::OpenEmsSheetBranch>,
     /// The emulated edges with the `[ε_r, κ]` they had.
     pub edges: Vec<(Axis, [usize; 3], [f64; 2])>,
     /// Number of edges made PEC (in the first cell of their axis).
@@ -386,9 +399,14 @@ pub(super) fn emulate(
             // ε0 (`CoeffRounding::OpenEms`): the edge gets `C = c`.
             materials.eps_r_mut(e.axis)[idx] = c / (OPENEMS_EPS0 * geo);
             materials.kappa_mut(e.axis)[idx] = g_e / geo;
+            let lr =
+                [(row[2], row[3]), (row[4], row[5])].map(|(lb, rb)| (lb * lt / s, rb / (st * s)));
+            if !cyl {
+                out.branches.push((e.axis, p, lr));
+                continue;
+            }
             let m = EPS0 * geo;
-            for (lb, rb) in [(row[2], row[3]), (row[4], row[5])] {
-                let (lb, rb) = (lb * lt / s, rb / (st * s));
+            for (lb, rb) in lr {
                 out.poles.push(EdgePole {
                     field: Field::Electric,
                     axis: e.axis,

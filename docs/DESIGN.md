@@ -4707,6 +4707,105 @@ fixtures are now 1e-6 (`tests/openems_adv.rs`, `openems_cyl.rs`,
 `openems_pml.rs`, `openems_dumps.rs`). Feature sweep (169 models):
 146 exact, unchanged (its only cylindrical model was exact before).
 
+#### 5.16.13 Round-off: conducting-sheet branches and series lumped elements
+
+Wave 17 (area N), black box only: hand-written models, `--debug-operator`
+dumps and per-step `DumpMode="0"` dumps (`OverSampling` on the dump box,
+1 m cells so that the dumped E is the edge voltage), the edge update
+reconstructed from the dumped currents with openEMS's curl order.
+
+**Sheet branches (fitted).** openEMS's console names the model
+"Conducting Sheet Extension, Max. Dispersion Order N = 2, Voltage ADE On"
+(two Drude-type branches). The branch update was identified on a single
+sheet edge: the state is held in volts, `x_b = cb·j_b`, in single
+precision,
+
+```text
+x_b ← f32(f32(k_a·x_b) + f32(f32(k_b·cb)·u^n))      (before the E update)
+u   ← f32(f32(u* − x_1) − x_2)                       (after it)
+```
+
+with `k_a = (L/dt − R/2)/(L/dt + R/2)`, `k_b = 1/(L/dt + R/2)` in `f64`,
+then rounded. On 16 random 1 m models (σ 1…1e8 S/m, t 10 µm…10 mm, bins 0
+and 6) the update with these coefficients reproduces all 400 steps where
+the branches are resistive (`k_a ≈ −1`, 6 of 16). In the others it
+reproduces all 400 steps once `k_b·cb` (and in 2 cases `k_a`) is moved by
+1–3 `f32` ulps (exhaustive search ±4 ulps). Every other form tried fails
+within 6–50 steps: state in amperes, the sum `x_1 + x_2` subtracted at
+once, the other branch order, `f64` or fused updates. ems used `f64`
+state. It now uses this update for openEMS files on Cartesian grids
+(`engine::openems_sheet::OpenEmsSheetBranches`, an operator registered
+after the dispersive poles). Cylindrical sheets keep the dispersive
+operator. They were not measured. Using the new update on their
+single-copy edges left `cyl_sheet_tube` at 2.8e-5 and moved `cyl_sheet_fin`
+only from 2.35e-5 to 2.27e-5, so it was not adopted there.
+
+**Sheet capacitance (`c` of bin 0 refined).** The measured `c` = 0.022224575
+is 7.9e-8 too high. Fitted on operator dumps, `C = f32(dt²·s/(c·μ0·t))`
+with `c` = 0.02222457325 reproduces the sheet `vi` of 74 % of 400 uniform
+random models (s = 1; 28 % before) and 55 % of 18 000 edges of 40 graded
+models with random `t` (35 % before). No `c` reproduces all of them.
+
+**Not reproduced: the last bits of the sheet coefficients.** The ulp
+moves above and the remaining `vi` mismatches have no formula yet. What
+was measured:
+
+- `σ` and `t` enter as `f32`. Within one `f32(σ)` or `f32(t)` bin every
+  coefficient is identical (scans 1e-8 apart). A factor-2 change of `σ`,
+  `t`, `dt`, the mesh or the unit leaves the mantissas unchanged. The
+  excitation frequency (within a bin) and the normal cell size do not
+  matter.
+- With `t` and `dt` dyadic, `C` still depends on `f32(σ)` (σ 1e-12…1e-4,
+  where `G` is far below an ulp). Over 300 consecutive `f32(σ)` values,
+  `vi` moves by one ulp in a pattern of period ≈ 3.7 with a slow drift.
+  No pair or triple of `f32` rounding errors of `σ`-products separates it
+  (`σ·α` for 40 000 mantissas `α`, `σt`, `1/σt`, `μ0σt²`, `r_b/σt`,
+  `g·σt`; linear separation).
+- With `t` dyadic, `C` over random `dt` fits one rounding of
+  `dt²/(c·μ0·t)` exactly. With `dt` dyadic and `t` random it does not:
+  `C` deviates by up to ±3 ulps.
+- On graded meshes, per model, no `K` makes `C = f32(K·w/l)` for more
+  than 70 % of the edges, while `vi` stays monotone in `w/l`. None of
+  12 600 fold orders with `f32` rounding of `dt`, `t`, `w`, `l` and `K`
+  fits, nor `f32` mesh lines, half-cell sums, `f32` edge lengths or areas,
+  or a vacuum-capacitance factor.
+- The `k_b` moves differ between the two branches of one model (no common
+  `cb` or `vi` factor). No `(l_b, r_b)` within ±1e-6 fits all models, nor
+  `f32` `L`, `R`, τ or `ω_p²` forms.
+
+These mismatches look like round-off at the 1e-7 level in how openEMS
+derives the sheet parameters, not like a missing physical term (no
+smooth dependence on `t/dt²`, `dt`, `t`).
+
+**Series lumped elements (not reproduced).** The branch current of a
+series R, L, C or RLC element (1 m cells, one edge) follows
+`J_n = Y(z)·ū_n`, with `Y` the bilinear transform of `1/(R + sL + 1/(sC))`
+and `ū_n = (u^{n+1} + u^n)/2`. A least-squares fit of the observed
+`J_n = (u* − u^{n+1})/vi` on an RLC element gives `b0 = −b2 = 5.4510e-4`,
+`b1 ≈ 0`, `a1 = −1.91786`, `a2 = 0.930220`, the bilinear values to 1e-6.
+The L-only and C-only elements fit the same form. The update is solved
+implicitly in `u^{n+1}`. On the first non-zero step `u^{n+1} = f32(u*·f32(1/(1 + vi·b0/2)))`
+fits, the plain division does not. From the second step on no
+realization fits: direct-form-I filters on `ū` or `u` sums with
+normalised, raw (`2/dt`) or `dt`-scaled coefficients, state in amperes
+or volts, the `b0` term folded into the edge coefficients, `vi` from the
+`f32` or the `f64` capacitance. With `R` = 64 Ω and `vi` = 128 every
+normalised coefficient is dyadic, yet openEMS's current departs from
+`ū/R` by up to 32 ulps of `u` from step 7. So openEMS's states are held
+at a larger scale (`2/dt`-scaled or charge-like quantities) whose form
+was not found. Missing capacitors behave as `C` = 1 F or 1e10 F (bit
+identical), missing inductors as `L` = 1e-20 H. `lumped_series_rlc` stays
+at 8.8e-5.
+
+Feature sweep (169 models, fresh be30220 outputs, before → after): 146 →
+146 exact; `sheet_thin_resistive` 1.54e-4 → 1.52e-4 (its operator dump is
+now openEMS's on every edge; the branch coefficients carry the ulp moves
+above). Sheet fixtures (worst probe, before → after): `adv_sheet_copper`
+`ut_a` 2.2e-7 → 8.6e-12, `rs_99` 4.8e-4 → 2.0e-4, `sheet_full`
+4.6e-6 → 4.3e-6, `sheet_graded` 2.0e-5 → 1.6e-5, `sheet_resistive`
+6.0e-5 → 7.4e-5, `sheet_copper` 5.5e-5 → 5.7e-5, `sheet_triangle(_r)`
+≈ 5e-5 (unchanged at round-off level). Tolerances unchanged.
+
 ## 6. Engine architecture
 
 ```

@@ -154,6 +154,7 @@ pub mod medium;
 mod multigrid;
 pub mod oblique_wire;
 pub(crate) mod openems_cyl;
+pub(crate) mod openems_sheet;
 mod operator;
 pub mod planewave;
 mod pool;
