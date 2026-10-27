@@ -209,10 +209,16 @@ fn xml_round_trip_is_bit_identical() {
         ..Default::default()
     };
     let mut settings = fdtd.to_csx();
-    settings.coord_system = Some(1); // as openEMS writes cylindrical files
+    // As openEMS's scripts write cylindrical files: openEMS's cylindrical
+    // solver needs `CylinderCoords="1"` (without it the mesh runs as a
+    // Cartesian one, design §5.16.11).
+    settings.coord_system = Some(1);
+    settings
+        .extra_attributes
+        .push(("CylinderCoords".into(), "1".into()));
     doc.set_fdtd_settings(&settings);
     let xml = doc.to_xml_string();
-    assert!(xml.contains("CoordSystem=\"1\""), "{xml}");
+    assert!(xml.contains("CylinderCoords=\"1\""), "{xml}");
     let mut from_file = Simulation::from_xml_str(&xml).unwrap();
     assert!(from_file.grid().is_cylindrical());
     assert_eq!(from_file.engine().dt(), direct.engine().dt());

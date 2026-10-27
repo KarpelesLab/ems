@@ -43,7 +43,7 @@ impl Fdtd {
     /// | `time_step_factor` (`TimeStepFactor`) | [`timestep_factor`](Fdtd::timestep_factor); absent → 1 (openEMS default); outside `(0, 1]` → 1 with a warning (openEMS ignores it) |
     /// | `cell_constant_material` (`CellConstantMaterial`) | [`cell_constant_material`](Fdtd::cell_constant_material) |
     /// | `coord_system` | `0` (Cartesian) or `1` (cylindrical) accepted: the coordinate system is that of the model's grid; anything else → [`Error::Unsupported`] |
-    /// | extra attribute `CylinderCoords` | `0` / `1` accepted silently (openEMS's switch for its cylindrical solver; ems follows the grid) |
+    /// | extra attribute `CylinderCoords` | `0` / `1` accepted silently (openEMS's switch for its cylindrical solver; without `1` a cylindrical mesh of a file runs as a Cartesian one, as in openEMS, `io::openems::parse_model`) |
     /// | `multi_grid` (`MultiGrid`) | [`multigrid`](Fdtd::multigrid): comma-separated radii in drawing units; unparsable → [`Error::Invalid`] |
     /// | `excitation` (`<Excitation>`) | [`waveform`](Fdtd::waveform) via [`Waveform::from_csx`] |
     /// | `boundary.faces` (`<BoundaryCond>`) | PEC / PMC / Mur / `PML_n` → [`Boundary`] with [`Cpml::cells`]`(n)` and default grading; absent → all PEC |

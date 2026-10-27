@@ -35,6 +35,10 @@
 //!   "Primitives other than boxes are not supported for lumped
 //!   elements").
 //!
+//! * **Cylindrical meshes** without `CylinderCoords="1"` on `<FDTD>`
+//!   become Cartesian meshes, and their primitives' coordinates Cartesian
+//!   ones (openEMS's solver choice).
+//!
 //! Each rewrite that changes the meaning of the file adds a warning.
 
 use std::path::Path;
@@ -113,6 +117,27 @@ pub fn parse_model(xml: &str) -> Result<(OpenEmsDocument, Vec<String>)> {
                 "unexpected root element <{other}>"
             ))));
         }
+    }
+    // openEMS runs its cylindrical solver only with `CylinderCoords="1"`
+    // on `<FDTD>`; without it a cylindrical mesh runs as a Cartesian one
+    // (black box: rectilinear debug dumps, the α lines as y lines in
+    // drawing units; boxes of materials, excitations and probes taken at
+    // their literal corners as Cartesian boxes, the probes of such a
+    // model bit for bit; design §5.16.11).
+    if let Some(f) = &doc.fdtd
+        && doc.structure.grid.coord_system == csx::CoordSystem::Cylindrical
+        && !f
+            .attr("CylinderCoords")
+            .and_then(int_prefix)
+            .is_some_and(|v| v != 0)
+    {
+        doc.structure.grid.coord_system = csx::CoordSystem::Cartesian;
+        doc.structure.coord_system = csx::CoordSystem::Cartesian;
+        warnings.push(
+            "cylindrical mesh without CylinderCoords=\"1\" on <FDTD>: run as a Cartesian \
+             mesh (rho, alpha, z and the primitives' coordinates as x, y, z), as openEMS does"
+                .into(),
+        );
     }
     Ok((doc, warnings))
 }

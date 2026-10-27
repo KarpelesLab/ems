@@ -358,3 +358,21 @@ fn cylindrical_current_boxes_at_the_seam_match_openems() {
     let mut sim = Simulation::from_xml_str(&xml).unwrap();
     assert!(sim.run().unwrap().probe("i_first").is_none());
 }
+
+/// openEMS runs a cylindrical mesh without `CylinderCoords="1"` as a
+/// Cartesian mesh, the primitive boxes at their literal corners
+/// (`cyl_no_cylinder_coords`, design §5.16.11); ems follows for files and
+/// warns. Identical to the printed digits.
+#[test]
+fn cylindrical_mesh_without_cylinder_coords_runs_cartesian() {
+    let sim = Simulation::from_xml(fixture("cyl_no_cylinder_coords").join("model.xml")).unwrap();
+    assert!(!sim.grid().is_cylindrical());
+    assert!(
+        sim.warnings()
+            .iter()
+            .any(|w| w.contains("without CylinderCoords"))
+    );
+    for (n, e) in probe_l2_sim("cyl_no_cylinder_coords", "model.xml", sim) {
+        assert!(e < 1e-6, "{n}: {e:e}");
+    }
+}
