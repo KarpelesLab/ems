@@ -666,7 +666,8 @@ impl Compiled {
                 None => SheetVelocity::Local(&self.materials),
             };
             let op = AbsorbingSheet::new(engine, &a.sheet, v)
-                .map_err(|e| Error::Invalid(format!("AbsorbingBC {:?}: {e}", a.name)))?;
+                .map_err(|e| Error::Invalid(format!("AbsorbingBC {:?}: {e}", a.name)))?
+                .openems_order(self.openems_pmc);
             h.abc.push(engine.add_operator(op));
         }
         Ok(h)
@@ -682,7 +683,8 @@ impl Compiled {
                 None => MurBoundary::with_faces_in(engine, &self.mur, &self.materials)?,
             }
             .count_energy(self.openems_pmc)
-            .openems_corners(self.openems_pmc);
+            .openems_corners(self.openems_pmc)
+            .openems_order(self.openems_pmc);
             // openEMS holds a Mur face carrying an E excitation while the
             // excitation runs (`MurBoundary::hold_faces`).
             let op = match self.excitation_duration.filter(|_| self.openems_pmc) {

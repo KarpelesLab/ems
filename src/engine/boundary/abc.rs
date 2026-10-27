@@ -87,6 +87,8 @@ struct Edge {
     node: [usize; 3],
     inner: [usize; 3],
     k: f32,
+    /// `k` with openEMS's `f32` `v·dt` ([`AbsorbingSheet::openems_order`]).
+    k_openems: f32,
     /// `u_b^n`, `u_1^n` saved in `pre_e`.
     saved: [f32; 2],
 }
@@ -112,6 +114,7 @@ struct Edge {
 pub struct AbsorbingSheet {
     sheet: AbcSheet,
     edges: Vec<Edge>,
+    openems_order: bool,
 }
 
 impl AbsorbingSheet {
@@ -206,13 +209,35 @@ impl AbsorbingSheet {
                         axis: t,
                         node,
                         inner,
-                        k: ((v * dt - delta) / (v * dt + delta)) as f32,
+                        k: Self::coefficient(v, dt, delta),
+                        k_openems: Self::coefficient(f64::from((v * dt) as f32), 1.0, delta),
                         saved: [0.0; 2],
                     });
                 }
             }
         }
-        Ok(Self { sheet: s, edges })
+        Ok(Self {
+            sheet: s,
+            edges,
+            openems_order: false,
+        })
+    }
+
+    /// openEMS's operation order of the update (default off), as
+    /// [`MurBoundary::openems_order`](super::mur::MurBoundary::openems_order):
+    /// `(u_1^n − k·u_b^n) + k·u_1^{n+1}` in `f32`, with `v·dt` rounded to
+    /// `f32` inside `k = (v·dt − Δ)/(v·dt + Δ)` (unlike the Mur faces,
+    /// whose `k` is the correctly rounded value). Black box: per-step
+    /// dumps of `AbsorbingBC` sheets with 1 m, 1 mm and 0.7 mm cells,
+    /// every update bit for bit (design §5.16.8).
+    pub fn openems_order(mut self, on: bool) -> Self {
+        self.openems_order = on;
+        self
+    }
+
+    /// The coefficient `(v·dt − Δ)/(v·dt + Δ)`, rounded to `f32`.
+    fn coefficient(v: f64, dt: f64, delta: f64) -> f32 {
+        ((v * dt - delta) / (v * dt + delta)) as f32
     }
 
     /// The sheet geometry.
@@ -242,7 +267,13 @@ impl Operator for AbsorbingSheet {
         let u = &mut fields.u;
         for e in &self.edges {
             let [b, i] = e.saved;
-            u.set(e.axis, e.node, i + e.k * (u.get(e.axis, e.inner) - b));
+            let x = u.get(e.axis, e.inner);
+            let v = if self.openems_order {
+                (i - e.k_openems * b) + e.k_openems * x
+            } else {
+                i + e.k * (x - b)
+            };
+            u.set(e.axis, e.node, v);
         }
     }
 }

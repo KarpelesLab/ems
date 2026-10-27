@@ -206,6 +206,7 @@ pub struct MurBoundary {
     count: usize,
     count_energy: bool,
     openems_corners: bool,
+    openems_order: bool,
     /// Whether slab mode is allowed (no face merges in the engine).
     slab_ok: bool,
     /// Slab mode: the edges and corners of each x-slab.
@@ -234,6 +235,7 @@ struct MurSlab {
 struct MurSlabs {
     slabs: Vec<Mutex<MurSlab>>,
     openems_corners: bool,
+    openems_order: bool,
 }
 
 /// Locks a slab's state (uncontended: only its own worker locks it during
@@ -242,12 +244,25 @@ fn lock(m: &Mutex<MurSlab>) -> std::sync::MutexGuard<'_, MurSlab> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The 1-D Mur update `u_b^{n+1}` from `u_1^n` (`i`), `u_b^n` (`b`) and
+/// `u_1^{n+1}` (`x`), in ems's order `u_1^n + k·(u_1^{n+1} − u_b^n)` or in
+/// openEMS's (`openems`, [`MurBoundary::openems_order`]).
+#[inline]
+fn mur_1d(i: f32, k: f32, x: f32, b: f32, openems: bool) -> f32 {
+    if openems {
+        (i - k * b) + k * x
+    } else {
+        i + k * (x - b)
+    }
+}
+
 /// The 1-D updates of `edges`, then the corner updates of `corners`, on
 /// a field accessed through `get`/`set` (shared by both modes).
 fn update(
     edges: &mut [Edge],
     corners: &mut [Corner],
     openems_corners: bool,
+    openems_order: bool,
     step: u64,
     get: &dyn Fn(Axis, [usize; 3]) -> f32,
     set: &mut dyn FnMut(Axis, [usize; 3], f32),
@@ -257,7 +272,7 @@ fn update(
             continue;
         }
         let [b, i] = e.saved;
-        let v = i + e.k * (get(e.axis, e.inner) - b);
+        let v = mur_1d(i, e.k, get(e.axis, e.inner), b, openems_order);
         set(e.axis, e.node, v);
         e.last = v;
     }
@@ -272,8 +287,8 @@ fn update(
             // taken as 0.
             i0 - c.k[0] * b
         } else {
-            let v0 = i0 + c.k[0] * (get(c.axis, c.inner[0]) - b);
-            let v1 = i1 + c.k[1] * (get(c.axis, c.inner[1]) - b);
+            let v0 = mur_1d(i0, c.k[0], get(c.axis, c.inner[0]), b, openems_order);
+            let v1 = mur_1d(i1, c.k[1], get(c.axis, c.inner[1]), b, openems_order);
             0.5 * (v0 + v1)
         };
         set(c.axis, c.node, v);
@@ -311,6 +326,7 @@ impl SlabHooks for MurSlabs {
             edges,
             corners,
             self.openems_corners,
+            self.openems_order,
             ctx.step,
             &get,
             &mut set,
@@ -570,6 +586,7 @@ impl MurBoundary {
             corners,
             count_energy: false,
             openems_corners: false,
+            openems_order: false,
             // Slab hooks run before every serial hook: only when no operator
             // registered before this one touches E serially around the E
             // update (the serial order would change).
@@ -625,6 +642,19 @@ impl MurBoundary {
     /// the updated neighbours.
     pub fn openems_corners(mut self, on: bool) -> Self {
         self.openems_corners = on;
+        self
+    }
+
+    /// openEMS's operation order of the 1-D update (default off):
+    /// `u_b^{n+1} = (u_1^n − k·u_b^n) + k·u_1^{n+1}` in `f32` instead of
+    /// ems's `u_1^n + k·(u_1^{n+1} − u_b^n)`. The same value up to
+    /// round-off; this order reproduces openEMS's face edges bit for bit
+    /// (fitted from openEMS's per-step field dumps of a box with Mur
+    /// faces and 1 m cells, black box; design §5.16.8). With
+    /// [`openems_corners`](Self::openems_corners) it is the part before
+    /// the interior neighbour's new value of the same expression.
+    pub fn openems_order(mut self, on: bool) -> Self {
+        self.openems_order = on;
         self
     }
 
@@ -736,6 +766,7 @@ impl Operator for MurBoundary {
         let sl = Arc::new(MurSlabs {
             slabs: per.into_iter().map(Mutex::new).collect(),
             openems_corners: self.openems_corners,
+            openems_order: self.openems_order,
         });
         self.slabs = Some(Arc::clone(&sl));
         Some(sl)
@@ -782,7 +813,7 @@ impl Operator for MurBoundary {
                 continue;
             }
             let [b, i] = e.saved;
-            let v = i + e.k * (u.at(e.axis, l[1]) - b);
+            let v = mur_1d(i, e.k, u.at(e.axis, l[1]), b, self.openems_order);
             u.set_at(e.axis, l[0], v);
             e.last = v;
         }
@@ -796,8 +827,8 @@ impl Operator for MurBoundary {
                 // As the slab update: the lower axis's face alone.
                 i0 - c.k[0] * b
             } else {
-                let v0 = i0 + c.k[0] * (u.at(c.axis, l[1]) - b);
-                let v1 = i1 + c.k[1] * (u.at(c.axis, l[2]) - b);
+                let v0 = mur_1d(i0, c.k[0], u.at(c.axis, l[1]), b, self.openems_order);
+                let v1 = mur_1d(i1, c.k[1], u.at(c.axis, l[2]), b, self.openems_order);
                 0.5 * (v0 + v1)
             };
             u.set_at(c.axis, l[0], v);
