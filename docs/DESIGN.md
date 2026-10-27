@@ -4671,8 +4671,8 @@ scheme is unchanged.
   bounding box), native path too; fixed (every α line a candidate,
   `tests/validation_dispersive.rs`). On the seam openEMS updates the two
   copies apart (the `α = 0` copy of a Drude-filled ring steps as the
-  static medium at first, then gets half the pole's correction): not
-  reproduced, `adv_cyl_drude` stays at 3.8e-3.
+  static medium at first, then gets half the pole's correction):
+  reproduced since, §5.16.12 (`adv_cyl_drude` 3.8e-3 → exact).
 - **`CylinderCoords`.** Without `CylinderCoords="1"` on `<FDTD>` openEMS
   runs a `CoordSystem="1"` mesh as a Cartesian one (rectilinear debug
   dumps, the α lines as y lines in drawing units) and takes the boxes at
@@ -4699,7 +4699,7 @@ before `cyl_planewave`, `sweep_prim_cs_cyl_box`; with I's time step,
 keeps on purpose (`cyl_wrap_ring` 0.89, `adv_cyl_lumped_ring` 4.5e-2:
 openEMS's lumped elements on the α = 0 line only; `cyl_current_seam`
 0.11 and `e2e_coax_monopole`'s `port_it` 0.33: its `(N − 1)/N` ring
-current, §5.16.2), `adv_cyl_drude` 3.8e-3 (above), the conducting
+current, §5.16.2), `adv_cyl_drude` 3.8e-3 (above; exact since §5.16.12), the conducting
 sheets (`cyl_sheet_fin` 2.4e-5, `cyl_sheet_tube` 2.8e-5, as on
 Cartesian grids), `cyl_wrap_lumped` 1.6e-5 (its weak `uz_c`; the same
 resistor on a sector is exact), `cyl_radial_port` 1.4e-6 and the other
@@ -4756,10 +4756,10 @@ every step of eleven models is openEMS's: Drude and Lorentz, lossless
 (`τ = 0`) and lossy, `ε∞` 1…2.2 with `κ` 0.005 S/m (the interface and
 corner edges included), `ω_0·dt` 0.14…0.66, a magnetic Lorentz pole,
 a two-pole material (Lorentz + Drude), a pole box touching a Mur face and
-`τ = 2·dt`. On openEMS files with Cartesian grids and the leapfrog scheme
-(`Compiled::dispersive_openems`); the native path keeps the `f64`
-schemes, cylindrical files too (`adv_cyl_drude` is 3.8e-3 either way:
-the cylindrical pole edges, not the arithmetic, agent L's area). The
+`τ = 2·dt`; on a cylindrical sector (the `adv_cyl_drude` coax cut to
+half the ring, 600 steps) the probes are identical too. On openEMS files
+with the leapfrog scheme (`Compiled::dispersive_openems`); the native
+path keeps the `f64` schemes. The
 look-ahead H sample after the last step (dumps and current probes,
 `Operator::lookahead_current`) now includes the magnetic poles; it
 missed their correction entirely before (the last H dump of a magnetic
@@ -4777,6 +4777,36 @@ exactly 0 at every step; `τ` = 2.999997 ns vs 3.000003 ns at
 openEMS files, with a warning (`Compiled::openems_debye_cutoff`,
 `BoundaryHandles::debye_poles_ignored`); the model is then the static
 medium, bit for bit with openEMS's dumps.
+
+**The seam of a closed cylindrical grid.** openEMS's operator dump of a
+closed grid has `N + 2` α planes: plane 0 and `N + 1` with `vv = vi = 0`,
+planes 1…`N` updated, the seam on plane `N` (`α = 2π`) with its whole
+dual face (§5.16.11). Plane 0, the one dumps and probes read, is a copy
+of plane `N` taken right after the main update and before the poles: an
+`f32` model of a hidden `α = 2π` plane (its `E_ρ`, `E_z` with the poles
+of the rule above, `vi` and `C` of the whole dual face, and its own
+`H_α` from its own E), driven by the dumped H of the α cells on either
+side, reproduces every `E_ρ` and `E_z` of the `α = 0` plane at every one
+of 60 steps of a closed 4 × 8 × 4 grid with 1 m cells filled with a lossy
+Drude medium as `u*`, the uncorrected value (720 of 720; with the
+corrected value 74; with `C = dt/vi` instead of the face's `f32` `C` 610). So the `α = 0` copy
+steps as the static medium first and sees the pole's correction one step
+late, through the `α = 2π` copy's next update. ems now keeps the two
+copies apart for seam ρ and z edges whose copies carry the same openEMS
+poles (`OpenemsSeam`, design §5.16.11): the `α = 0` copy gets `u*`, the
+`α = 2π` copy `u* − ΣV` (the poles run by the seam operator, not
+`Dispersive`), the seam `H_α` next to them is updated once from each
+copy's E with its own whole current, the `α = 2π` E update reads the
+`α = 2π` `H_α`, the axis ring sum takes the `α = 0` one first and the
+`α = 2π` one last, and the periodic merge leaves these edges alone
+(`Engine::exempt_from_periodic_merge`). Seam edges whose copies differ
+in their poles, magnetic poles and Debye poles on the seam keep the
+periodic merge. Without poles nothing changes (a grid of a plain
+dielectric: identical dumps before and after). The closed Drude grid is
+identical to openEMS's at every step (E and H), and `adv_cyl_drude`
+3.8e-3 → exact (the `ems` binary reproduces every printed digit of a
+fresh openEMS run; the test's interpolation of sample times leaves
+1.8e-10; tolerance 4e-3 → 1e-6).
 
 **Not reproduced: the Debye arithmetic.** The structure is ems's
 trapezoidal rule (§5.16.2) exactly: the correction obeys
@@ -4805,7 +4835,7 @@ digits; tolerances 2e-5 → 1e-6), `sweep_lorentz_weight` exact (1e-4 →
 1.8e-6) and `rs_1` (a Lorentz box at a Mur face with series lumped
 elements, 1.6e-5: a 1 m model of a Lorentz box touching a Mur face is
 exact, the rest is §5.16.9's series elements), `e2e_drude_slab` (the plane
-wave, §5.16.2), `adv_cyl_drude`.
+wave, §5.16.2).
 
 #### 5.16.13 Round-off: conducting-sheet branches and series lumped elements
 
