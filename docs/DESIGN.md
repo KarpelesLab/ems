@@ -5104,6 +5104,39 @@ dumps), with the probes of the wave-18 brief. What they showed:
   incomplete, and no update of `S` from the previous admissible values and
   the voltages holds at more than 84 % of the steps.
 
+Second round (same data, constraints from above):
+
+- *Realisations excluded.* A DF-II-transposed bilinear filter (`f32`
+  states `s1`, `s2`, `f64` coefficients, missing `C` as ∞ or 1 F, two
+  orders each) fails at the second or third step of every model, as does a
+  direct-form-I filter on `ū` with each term subtracted from `u*` in any
+  of the 120 orders. Its delay states would also be residues that are
+  subnormal in the low-amplitude runs, and so would lose the persistent
+  offsets. Area P's Debye first update `u* − f32(u* − f32(F·u*))` fails at
+  the first step (`f32(α·u*)` is exact there). Neither `vi` in `f64`
+  (`dt/ε0` = 128.0000058 instead of 128) nor fused multiply-adds
+  (any of the products in `X` unrounded) improves the fits.
+- *Best realisation so far.* An `f32` history `S`, integrated as
+  `S ← (S − u^{n−2}/(2R)) + u^{n−1}/(2R)`, with
+  `X = ((u* + k·u^{n−1}) − k·u^n) − vi·S`. All equivalent spellings tried
+  (`S` as `J − u^n/(2R)` of a stored current updated by `J ← J + D/2` or
+  by the single products, 16 × 15 × 127 constrained programs) are
+  equivalent or worse. It still disagrees with the lost-increment
+  fingerprint: on the low-amplitude run it fails at the first lost
+  increment.
+- *The `X` shape is incomplete.* With `S` left free (a centred ±32-ulp
+  search), every summation tree of `{u*, +k·u^{n−1}, −k·u^n, −vi·S}` still
+  has 9 or more of 1314 dyadic steps where no `f32` `S` reproduces
+  `u^{n+1}`. All of them are steps where `u*` is small against
+  `k·u^{n−1}`, so the partial sums cancel. In some the required
+  `X` is an exact tie of `f32(A − vi·S)` (to-even picks the other value);
+  in the others the needed `X` lies between the values `A − vi·S`
+  can reach. So the subtracted history is finer than one `f32` number
+  near `k·u^{n−1}`: a second state, or a further small term such as the
+  `f64` 1/C (1 F) or `a1·J` contribution, enters before the last
+  rounding. Adding `vi·J_{n−2} − k·u^{n−2}` as two terms instead (the
+  direct-form-I two-chain grouping) makes it worse (128+ empty steps).
+
 Not implemented: none of these partial forms reproduces a whole run, and
 the sweep cases are long resonant runs where any residual rounding
 difference grows to the observed 1e-5…1e-4. Tolerances of
