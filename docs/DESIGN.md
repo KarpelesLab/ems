@@ -5758,9 +5758,10 @@ per-property `OverSampling` and openEMS's vacuum constants (§5.16.9:
 openEMS's f32 Lorentz/Drude pole arithmetic, its Debye cutoff
 (τ < 3·dt dropped) and its seam with poles on cylindrical grids
 (§5.16.12; `adv_cyl_drude` 3.8e-3 → exact), openEMS's single-precision
-sheet branch update (§5.16.13). Feature sweep: 148 of 169 exact, 164 to
-the printed digits (≤ 4e-13); left: `sheet_thin_resistive` 1.5e-4,
-`lumped_series_rlc` 8.8e-5, `debye_weight` 6.4e-5, and `param_term`,
+sheet branch update (§5.16.13). Wave 18: openEMS's Debye update in
+polarisation form (§5.16.12), also on the seam and axis. Feature sweep:
+149 of 169 exact, 165 to the printed digits (≤ 4e-13); left:
+`sheet_thin_resistive` 1.5e-4, `lumped_series_rlc` 8.8e-5, and `param_term`,
 `prim_userdefined`, which openEMS rejects. Cylindrical grids (§5.16.11):
 openEMS's curl order there too, the per-operation subnormal flush, its
 seam and axis updates, its multigrid and the α weights of z-edge
@@ -5769,7 +5770,9 @@ materials; 14 of 24 cylindrical fixtures exact (were 2), among them
 `CylinderCoords="1"` runs Cartesian, as in openEMS.
 
 Remaining:
-- Cylindrical (§5.16.11): magnetic or Debye poles on the α seam, box α faces in closed grids, conducting
+- Cylindrical (§5.16.11): magnetic poles and several poles on one edge at
+  the α seam; Lorentz/Drude poles on grids with the axis (rejected at
+  setup); primitives spanning α = 0 on closed grids; box α faces in closed grids, conducting
   sheets (2.5e-5), `cyl_wrap_lumped` 1.6e-5, `e2e_coax_monopole` probes
   3e-7…8e-5, the last H dump with the multigrid; kept on purpose:
   openEMS's lumped elements on the α = 0 line and its (N−1)/N ring
@@ -5777,7 +5780,7 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: Debye-pole rounding (§5.16.12); the last
+- From the feature sweep: the last
   bits of conducting-sheet coefficients (openEMS's single-precision
   branch update is matched, §5.16.13; `sheet_thin_resistive` 1.5e-4) and
   series lumped elements (~1e-4: the bilinear branch is confirmed, its
