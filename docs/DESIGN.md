@@ -4825,6 +4825,82 @@ and of the correction recursion in 10 orders reproduce at most two thirds
 of the updates.
 `debye_weight` stays at 6.4e-5, the Debye fixtures at 0.4e-6…1.1e-6.
 
+**Wave 18 (area P): structure probes of the Debye update.** Black box
+only. These probes fix the coefficients, the first update and the scale
+and kind of the state. The later updates are still not reproduced.
+
+- *Overflow.* A Debye box makes every E value NaN from the first step
+  on, including edges whose field is still exactly 0 (so `inf·0`), once
+  `Δε·dt/((2τ + dt)·ε_e)` exceeds `FLT_MAX`. With `dt` = 1 ns,
+  `τ` = 3.5 ns, `ε∞` = 1, `Δε` = 2.715e39 runs and 2.73e39 gives NaN
+  (`8·FLT_MAX` = 2.722e39). With `τ` = 10 ns the bounds are 7.13e39 and
+  7.16e39 (`21·FLT_MAX` = 7.146e39). With `ε∞` = 4 the corner edges
+  (`ε_e` = 1.75) fail first, between 4.75e39 and 4.78e39
+  (4.764e39). So an `f32` coefficient equal to `β` exists and multiplies
+  a field or state at run time. No coefficient proportional to `1/Δε`
+  exists (no NaN for `Δε` down to 1e-44), and none proportional to
+  `τ/dt` either (none for `τ` up to 1e40 s).
+- *Coefficients.* The β of the overflow probe is `β = vi·ε0·Δε/(2τ + dt)`,
+  in `f64` with the edge's `f32` `vi` (the dumped `vi = f32(dt/f32(C))`),
+  and `F = f32(1/(1 + β))`. This explains the two runs above where the
+  plain `1/(1 + β)` was one `f32` step off (`β` 1.33 and 2.09). On every
+  one of 18 runs × 300 edges (`β` 0.21…7, 5 400 first updates) the first
+  update of an edge is `u' = u* − f32(u* − f32(F·u*))`. So openEMS
+  computes the new value `F·u*` in `f32`, derives the correction
+  `V = f32(u* − u_new)` from it, and subtracts `V`. For `β < 1` this is
+  `f32(F·u*)`. For `β` = 3 or 7 it is `u* − f32(k·u*)`. Neither of the
+  earlier forms fit the other `β`.
+- *Scale.* Scaling a Dirac source by `2^k` (k = −80…+60) scales every
+  value in the pole box exactly, down to 2e-33, until the vacuum around
+  it flushes subnormals. So the state is in volts, not at a charge
+  (`ε0`) or current scale: a state at 1e-5 of the field or below would
+  underflow first.
+- *A zero-curl cell.* The cell has 4³ 1 m cells, PMC on x and y, PEC on z,
+  and the Debye material everywhere. A soft `E_z` excitation drives
+  every z edge with a Dirac pulse. `H` stays exactly 0 and the curl
+  exactly 0, so each edge runs the pole on its own: after the injection
+  `u* = u` at every step, and a vacuum cell keeps the injected value
+  unchanged. The excitation is added after the pole's update of that
+  step. There are 210 such sequences (8 parameter sets, random
+  amplitudes, 40–60 steps). The first pole update after the injection
+  is `fin(f32(F·f32(u − f32(b·u))))` on 150 of 150 sequences, where
+  `fin(x) = u* − f32(u* − x)` and `b = f32(β)`: the pole reads the field
+  `u` and multiplies it by `f32(β)`.
+- *Memory where the physics has none.* With `τ` = 1e3 s (`g` = 1e-12)
+  the trapezoidal rule is memoryless, `u' = F·(1 − β)·u`, but openEMS's
+  sequences are not. From the 2nd or 3rd update on, the value the β term
+  needs differs from the field by up to ±1.5 ulps of the injected
+  amplitude `u0`. That difference does not shrink as the field decays,
+  and it jumps from step to step. Once the field is below about
+  `ulp(u0)`, the β term drops out: the update becomes exactly `F·u`
+  (`β` = 0.6: ratio 0.625 instead of 0.25). The x1 box run (`β` = 1,
+  `g` ≈ 0) does the same on zero-curl edges: the field halves every step
+  where the trapezoidal rule gives 0. The needed `β·u` always lies on
+  the grid of `ulp(f32(b·u0))` at every step checked (9 to 15 per
+  sequence) for `β` 0.3 and 0.6, and on half that grid for `β` 1.7, even
+  when `β·u` is 1e-4 of `u0`. So
+  openEMS forms the β term as the difference of two `f32` numbers at the
+  scale of `β` times the injected amplitude. It reconstructs the field
+  from a state of that size and does not read the field array, except
+  at the first update.
+- *Excluded.* The polarisation, capacitor-voltage and `P`-recursion
+  forms (`Q`, `W`, `P`) carry memory only through `g`, so the `g ≈ 0`
+  sequences rule them out with any rounding. The correction recursions
+  in `(V^{n−1}, u^{n−1})` (§ above) and in increments fail the first
+  update after the injection. No `f32` expression of up to three
+  coefficient × history terms fits more than 56 of 60 second updates.
+  No single rounding of an exact expression (`f32`/`f64` coefficients,
+  state = `V1`, `u_new` rounded or exact) fits more than 34 of 60.
+  The free-running state models also fail: the field rebuilt as `D − Q`
+  (`D` = injected amplitude or field + `Q`; `Q` a running `f32` sum or
+  `D − u_new`) and accumulators scaled by `b` all diverge after 3 to 4
+  updates (median).
+
+`debye_weight` therefore stays at 6.4e-5, and nothing changed in ems.
+The zero-curl cell gives later work clean, noise-free sequences: it
+isolates the pole map from the curl and, unlike the box runs, lets the
+state run free from a known zero.
+
 Feature sweep (169 models, be30220, before → after): 146 → 148 exact
 (`drude_kappa` 6.0e-5 → 0, `lorentz_weight` 2.2e-5 → 0, both on 1 mm
 cells); no model changed otherwise. Fixtures: `adv_drude_slab`,
