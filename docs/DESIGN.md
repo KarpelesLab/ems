@@ -4800,106 +4800,139 @@ copy's E with its own whole current, the `α = 2π` E update reads the
 `α = 2π` `H_α`, the axis ring sum takes the `α = 0` one first and the
 `α = 2π` one last, and the periodic merge leaves these edges alone
 (`Engine::exempt_from_periodic_merge`). Seam edges whose copies differ
-in their poles, magnetic poles and Debye poles on the seam keep the
-periodic merge. Without poles nothing changes (a grid of a plain
+in their poles and magnetic poles on the seam keep the periodic merge
+(Debye poles on the seam: since wave 18, below). Without poles nothing changes (a grid of a plain
 dielectric: identical dumps before and after). The closed Drude grid is
 identical to openEMS's at every step (E and H), and `adv_cyl_drude`
 3.8e-3 → exact (the `ems` binary reproduces every printed digit of a
 fresh openEMS run; the test's interpolation of sample times leaves
 1.8e-10; tolerance 4e-3 → 1e-6).
 
-**Not reproduced: the Debye arithmetic.** The structure is ems's
-trapezoidal rule (§5.16.2) exactly: the correction obeys
+**The Debye physics.** The structure is ems's trapezoidal rule (§5.16.2)
+exactly: the correction obeys
 `r' = (1 − g)/(1 + β)·r + β/(1 + β)·(u^n − u^{n−1} + vi·∮i)` with
 `β = (Δε/ε_e)·dt/(2τ + dt)`, `g = dt/(τ + dt/2)` (least squares to
-1e-16 of the signal), and `β` contains neither `vi` nor `ε0` (with
-`β = 1` the first update is exactly `u*/2` on all 300 edges). The
-rounding was not found: on the first update of an edge (`u^n = 0`, no
-state) openEMS gives `f32(F·u*)`, `F = 1/(1 + β)`, on every edge when
-`β < 1` (4 runs, `β` 0.21…0.91), `u* − f32(β/(1 + β)·u*)` when `β` is 3
-or 7 (`F` a power of two), and neither when `β` is 1.33, 1.43 or 2.09
-(at most 262 of 300; some 14 000 one- and two-rounding expressions of
-`u*`, the curl and the coefficients tried, `f32`/`f64` coefficients, ±12
-`f32` steps on each). The full updates of 7 state forms × 5 `W` updates
-and of the correction recursion in 10 orders reproduce at most two thirds
-of the updates.
-`debye_weight` stays at 6.4e-5, the Debye fixtures at 0.4e-6…1.1e-6.
+1e-16 of the signal). Wave 17 did not find the rounding: some 14 000
+one- and two-rounding expressions of the first update, 7 state forms ×
+5 `W` updates and the correction recursion in 10 orders reproduced at
+most two thirds of the updates.
 
-**Wave 18 (area P): structure probes of the Debye update.** Black box
-only. These probes fix the coefficients, the first update and the scale
-and kind of the state. The later updates are still not reproduced.
+**Debye poles: openEMS's arithmetic** (wave 18, area P; `Kind::OpenEmsDebye`,
+`Dispersive::with_openems_debye`). Black box only. With the edge's `f32`
+`vi` (`cb`, read as `f64`), `g* = A*/l` of its whole dual face,
+openEMS's `ε0`, the pole's `Δε` and `τ` at the edge's midpoint (not
+scaled by the filled share of the dual face; the static `ε_e` enters
+through `vi`):
+
+```text
+β = vi·ε0·Δε·g*/(2τ + dt),   b = f32(β),   F = f32(1/(1 + β)),   ω = f32(1 − dt/(τ + dt/2))
+P = ω·Q + b·u^n                    (u^n the edge's value before the E update)
+u_new = F·(u* − (P − Q))           (u* the plain kernel result)
+Q ← P + b·u_new
+u^{n+1} = u* − (u* − u_new)        (every operation f32, flushed, in this order)
+```
+
+`Q` is the polarisation in volts. The scheme is the trapezoidal rule in
+polarisation form, `Q^{n+1} = (1 − g)·Q^n + β·(u^{n+1} + u^n)`, with the
+explicit half `P` formed first at the scale of `Q`. The field enters the
+`β` term only through the rounding of `P − Q`. With this rule every E and
+H value at every step is openEMS's in all of these cases:
+
+- 18 Debye box models: `β` 0.05…7, `τ` 1.5 ns…1e3 s, the exact-coefficient
+  runs (`β` = 1, 3, 7, 1/3, `g` = 1/4 or ≈ 0), face and corner edges;
+- 210 zero-curl cell sequences (below);
+- box variants: `ε∞` = 3, lossy (`κ` 0.01 S/m), a box off the mesh lines,
+  anisotropic (`Isotropy="0"`, three `ε∞`, `Δε`, `τ`), weighted `Δε`, `τ`
+  and `ε∞`, two overlapping Debye boxes, a Debye box overlapped by a
+  Lorentz box, a box at a Mur face and one in a PML;
+- on a graded mesh H is identical; E differs in the dump's
+  field conversion only, as for a plain dielectric on that mesh;
+- the closed cylindrical grids below.
+
+How it was found:
 
 - *Overflow.* A Debye box makes every E value NaN from the first step
   on, including edges whose field is still exactly 0 (so `inf·0`), once
-  `Δε·dt/((2τ + dt)·ε_e)` exceeds `FLT_MAX`. With `dt` = 1 ns,
-  `τ` = 3.5 ns, `ε∞` = 1, `Δε` = 2.715e39 runs and 2.73e39 gives NaN
-  (`8·FLT_MAX` = 2.722e39). With `τ` = 10 ns the bounds are 7.13e39 and
-  7.16e39 (`21·FLT_MAX` = 7.146e39). With `ε∞` = 4 the corner edges
-  (`ε_e` = 1.75) fail first, between 4.75e39 and 4.78e39
-  (4.764e39). So an `f32` coefficient equal to `β` exists and multiplies
-  a field or state at run time. No coefficient proportional to `1/Δε`
-  exists (no NaN for `Δε` down to 1e-44), and none proportional to
-  `τ/dt` either (none for `τ` up to 1e40 s).
-- *Coefficients.* The β of the overflow probe is `β = vi·ε0·Δε/(2τ + dt)`,
-  in `f64` with the edge's `f32` `vi` (the dumped `vi = f32(dt/f32(C))`),
-  and `F = f32(1/(1 + β))`. This explains the two runs above where the
-  plain `1/(1 + β)` was one `f32` step off (`β` 1.33 and 2.09). On every
-  one of 18 runs × 300 edges (`β` 0.21…7, 5 400 first updates) the first
-  update of an edge is `u' = u* − f32(u* − f32(F·u*))`. So openEMS
-  computes the new value `F·u*` in `f32`, derives the correction
-  `V = f32(u* − u_new)` from it, and subtracts `V`. For `β < 1` this is
-  `f32(F·u*)`. For `β` = 3 or 7 it is `u* − f32(k·u*)`. Neither of the
-  earlier forms fit the other `β`.
+  `β` exceeds `FLT_MAX`. With `dt` = 1 ns, `τ` = 3.5 ns, `ε∞` = 1,
+  `Δε` = 2.715e39 runs and 2.73e39 gives NaN (`8·FLT_MAX` = 2.722e39).
+  With `τ` = 10 ns the bounds are 7.13e39 and 7.16e39 (`21·FLT_MAX` =
+  7.146e39). With `ε∞` = 4 the corner edges (`ε_e` = 1.75) fail first,
+  between 4.75e39 and 4.78e39 (4.764e39). No coefficient proportional
+  to `1/Δε` exists (no NaN down to `Δε` = 1e-44), and none to `τ/dt`
+  (none up to `τ` = 1e40 s).
+- *Coefficients.* `β` is formed in `f64` with the `f32` `vi`. This
+  explains the wave-17 runs where `1/(1 + β)` seemed one `f32` step off
+  (`β` 1.33 and 2.09). On the first update (`Q = 0`, `u^n = 0`) the rule
+  is `u* − f32(u* − f32(F·u*))` on all of 18 × 300 edges.
 - *Scale.* Scaling a Dirac source by `2^k` (k = −80…+60) scales every
-  value in the pole box exactly, down to 2e-33, until the vacuum around
-  it flushes subnormals. So the state is in volts, not at a charge
-  (`ε0`) or current scale: a state at 1e-5 of the field or below would
-  underflow first.
-- *A zero-curl cell.* The cell has 4³ 1 m cells, PMC on x and y, PEC on z,
-  and the Debye material everywhere. A soft `E_z` excitation drives
+  value in the pole box exactly, so the state is in volts.
+- *A zero-curl cell.* The cell has 4³ 1 m cells, PMC on x and y, PEC on
+  z, and the Debye material everywhere. A soft `E_z` excitation drives
   every z edge with a Dirac pulse. `H` stays exactly 0 and the curl
-  exactly 0, so each edge runs the pole on its own: after the injection
-  `u* = u` at every step, and a vacuum cell keeps the injected value
-  unchanged. The excitation is added after the pole's update of that
-  step. There are 210 such sequences (8 parameter sets, random
-  amplitudes, 40–60 steps). The first pole update after the injection
-  is `fin(f32(F·f32(u − f32(b·u))))` on 150 of 150 sequences, where
-  `fin(x) = u* − f32(u* − x)` and `b = f32(β)`: the pole reads the field
-  `u` and multiplies it by `f32(β)`.
-- *Memory where the physics has none.* With `τ` = 1e3 s (`g` = 1e-12)
-  the trapezoidal rule is memoryless, `u' = F·(1 − β)·u`, but openEMS's
-  sequences are not. From the 2nd or 3rd update on, the value the β term
-  needs differs from the field by up to ±1.5 ulps of the injected
-  amplitude `u0`. That difference does not shrink as the field decays,
-  and it jumps from step to step. Once the field is below about
-  `ulp(u0)`, the β term drops out: the update becomes exactly `F·u`
-  (`β` = 0.6: ratio 0.625 instead of 0.25). The x1 box run (`β` = 1,
-  `g` ≈ 0) does the same on zero-curl edges: the field halves every step
-  where the trapezoidal rule gives 0. The needed `β·u` always lies on
-  the grid of `ulp(f32(b·u0))` at every step checked (9 to 15 per
-  sequence) for `β` 0.3 and 0.6, and on half that grid for `β` 1.7, even
-  when `β·u` is 1e-4 of `u0`. So
-  openEMS forms the β term as the difference of two `f32` numbers at the
-  scale of `β` times the injected amplitude. It reconstructs the field
-  from a state of that size and does not read the field array, except
-  at the first update.
-- *Excluded.* The polarisation, capacitor-voltage and `P`-recursion
-  forms (`Q`, `W`, `P`) carry memory only through `g`, so the `g ≈ 0`
-  sequences rule them out with any rounding. The correction recursions
-  in `(V^{n−1}, u^{n−1})` (§ above) and in increments fail the first
-  update after the injection. No `f32` expression of up to three
-  coefficient × history terms fits more than 56 of 60 second updates.
-  No single rounding of an exact expression (`f32`/`f64` coefficients,
-  state = `V1`, `u_new` rounded or exact) fits more than 34 of 60.
-  The free-running state models also fail: the field rebuilt as `D − Q`
-  (`D` = injected amplitude or field + `Q`; `Q` a running `f32` sum or
-  `D − u_new`) and accumulators scaled by `b` all diverge after 3 to 4
-  updates (median).
+  exactly 0, so each edge runs the pole on its own (`u* = u`) from a
+  known zero state; the excitation is added after the pole's update. The
+  210 sequences cover 8 parameter sets with random amplitudes, 40–60
+  steps each. The first update after the injection,
+  `u* − f32(u* − f32(F·f32(u − f32(b·u))))` on 150 of 150 sequences,
+  showed that the pole reads the field `u^n`.
+- *The grid fingerprint.* With `τ` = 1e3 s the trapezoidal rule is
+  memoryless (`u' = F·(1 − β)·u`), but openEMS's sequences were not. The
+  value the `β` term needs differed from `b·u` by up to ±2 grid steps,
+  where the grid is `ulp(f32(b·u0))` for the injected amplitude `u0`. The
+  needed values always lay on that grid (on the grid of `ulp(u0)` once
+  `Q` reaches `u0`), even when `b·u` was 1e-4 of `u0`. Once the field
+  fell below that grid, the term vanished (`u' = F·u`; ratio 0.625
+  instead of 0.25 for `β` = 0.6). So the term is the difference of two
+  `f32` numbers at the scale of `Q`. That is `P − Q` with `P` formed
+  first, which the integrator's hint of an incrementally updated state
+  pointed to. Forms that compute `b·u` directly and add `g·Q`, with any
+  state (`Q`, `W`, polarisation recursions, correction recursions, the
+  field rebuilt as `D − Q`), fail after 2 to 4 updates.
 
-`debye_weight` therefore stays at 6.4e-5, and nothing changed in ems.
-The zero-curl cell gives later work clean, noise-free sequences: it
-isolates the pole map from the curl and, unlike the box runs, lets the
-state run free from a known zero.
+**The seam and the axis of a closed cylindrical grid.** A seam ρ or z
+edge whose copies carry the same single Debye pole is run by the seam
+operator (`OpenemsSeam`, §5.16.11) as for Lorentz poles. The `α = 0`
+copy keeps `u*` and the `α = 2π` copy gets the corrected value, from the
+`α = 2π` copy's previous value and the whole dual face's `vi` and `g*`.
+openEMS updates the axis z edge once, and so does ems: all α copies
+take the corrected value. That pole takes the whole disc's `vi` but
+twice the first α sector's `A*/l`, i.e. `ρ_½·Δα*·ρ_½/Δz`, the face of
+an ordinary z edge evaluated at `ρ = 0` (black box: the first value of
+the axis edge needs one N-th of the disc's `β`, which the sector itself
+gives only to a factor 2; exact also on a non-uniform ρ mesh). Seam or
+axis edges with several poles, or with different poles on their copies,
+keep the periodic merge.
+
+Results, before → after:
+
+- `debye_weight` (`ε∞` = 2, weighted `Δε`, 1 mm cells): 6.4e-5 → exact;
+  the `ems` binary reproduces every dumped value of its probes.
+- Fixtures `adv_debye_slab`, `adv_debye_offgrid`: 0.4e-6…1.1e-6 →
+  0.8e-12…2.1e-12, the 12 printed digits (tolerances 2e-5 → 1e-6).
+- New fixtures (about 80 kB): `adv_cyl_debye` (the closed coax of
+  `adv_cyl_drude` filled with Debye) 3.3e-3…2.3e-2 → 1.7e-11…2.2e-11,
+  and `adv_cyl_axis_debye` (the axis cavity with a lossy Debye cylinder
+  over the axis and the seam) 5.0e-3…1.5e-2 → 1.9e-11…2.0e-11; the
+  residue is the tests' interpolation of sample times. Tolerance 1e-6.
+- `sweep_debye_weight` tolerance 1e-4 → 1e-6.
+- Feature sweep (169 models, be30220): 148 → 149 exact, no other model
+  changed.
+
+The native path keeps the `f64` trapezoidal rule. A Debye pole on an
+edge that also carries another pole keeps it as well (openEMS's order
+for several poles is not measured).
+
+Not covered:
+
+- A Lorentz or Drude pole on a grid with the axis is rejected at setup:
+  the degenerate α edges at `ρ = 0` get an infinite circuit (`ems:
+  error: … circuit: inf`). This was found here and is not fixed, being
+  the Lorentz path's.
+- A closed cylindrical model whose material primitive spans
+  `α < 0 … α > 0` (for example `α` −0.5…2) differs from openEMS even
+  for a plain dielectric (§8.1, csx's α normalisation).
+- A closed grid with a non-uniform α mesh next to the axis differs for a
+  plain dielectric too.
 
 Feature sweep (169 models, be30220, before → after): 146 → 148 exact
 (`drude_kappa` 6.0e-5 → 0, `lorentz_weight` 2.2e-5 → 0, both on 1 mm
@@ -4907,7 +4940,8 @@ cells); no model changed otherwise. Fixtures: `adv_drude_slab`,
 `adv_lorentz_slab`, `adv_lorentz_mag_slab`, `adv_lorentz2_slab`,
 `adv_lorentz_coarse` 0.5e-6…1.5e-6 → 1.0e-12…1.8e-12 (the 12 printed
 digits; tolerances 2e-5 → 1e-6), `sweep_lorentz_weight` exact (1e-4 →
-1e-6). Unchanged: the Debye fixtures, `rs_0` (a Drude box in a PML,
+1e-6). Unchanged then (wave 17): the Debye fixtures (exact since
+wave 18, above), `rs_0` (a Drude box in a PML,
 1.8e-6) and `rs_1` (a Lorentz box at a Mur face with series lumped
 elements, 1.6e-5: a 1 m model of a Lorentz box touching a Mur face is
 exact, the rest is §5.16.9's series elements), `e2e_drude_slab` (the plane
