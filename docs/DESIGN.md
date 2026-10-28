@@ -5037,6 +5037,78 @@ was not found. Missing capacitors behave as `C` = 1 F or 1e10 F (bit
 identical), missing inductors as `L` = 1e-20 H. `lumped_series_rlc` stays
 at 8.8e-5.
 
+**Series lumped elements, wave 18 (area Q): structure probes (still not
+reproduced).** Black box only, the same 1 m single-edge models (`vi` =
+128, `dt` = 1.1333 ns, one series edge between PEC walls, per-step E and H
+dumps), with the probes of the wave-18 brief. What they showed:
+
+- *openEMS flushes subnormals.* With the soft source scaled down to
+  1e-28…1e-32 the vacuum edges reproduce openEMS's update only if every
+  `f32` operation result below 2⁻¹²⁶ is flushed to 0, the curl's partial
+  sums included (0 mismatches on the control edge at 300 steps of each
+  run; 11–31 mismatches without the flush). ems's kernel already flushes
+  (§6); the element arithmetic has to flush as well. The default (SSE) and
+  the basic engine give identical element voltages.
+- *The element's state is held in amperes, in `f32`.* Shrinking the source
+  until the element's correction degrades (relative error 3e-8 → 4e-6 and
+  more) happens at the same current amplitude, `max |u|/R` ≈ 4e-33 A, for
+  `R` = 1, 16 and 64 Ω, i.e. at voltages 64 times apart; a state in volts
+  (`vi·j`) or in charge (`j·dt`) would set in elsewhere.
+- *A current integrator, increments formed as `b0·(u^{n+1} − u^{n−1})`.*
+  Below the onset the element current `j = (u* − u^{n+1})/vi` carries a
+  persistent offset from `ū/R` (the same on consecutive steps, so one
+  chain, not the two chains `J_n = J_{n−2} + b0(ū_n − ū_{n−2})` that the
+  bilinear RLC filter reduces to for `R` alone). The offset changes by
+  exactly `−b0·(u^{n+1} − u^{n−1})/2` one step after
+  `|b0·(u^{n+1} − u^{n−1})|` falls below 2⁻¹²⁶ — the threshold is on the
+  doubled increment: with `|b0·(u^{n+1} − u^{n−1})/2|` or the fourfold
+  value as threshold the prediction fails more often. This rule accounts
+  for 297, 293, 299, 281 of 300 steps (`R` = 64 Ω, four amplitudes), 300,
+  299, 284 (`R` = 1 Ω), 299, 293 (`R` = 16 Ω). The remaining events follow
+  steps whose curl was flushed, where the edge voltage is pure offset; the
+  offset is then halved or multiplied by 1.5, not modelled.
+- *Coefficients carry `f64` precision.* `C` = 0.1 and 0.01 F are bit
+  identical to no capacitor, 1e-3 F departs at step 23, 3e-4 F at step 11;
+  `L` = 1e-18 and 1e-17 H are identical to no inductor, 1e-16 H departs at
+  step 118, 1e-15 H at step 10. The perturbations (`2/(K·R·C)` = 1.8e-8,
+  `2L·K/R` = 5.5e-9 relative) are below an `f32` ulp of any coefficient.
+- *A series inductor has an uncancelled double pole.* On a 1 µH element at
+  the source amplitude 1e-28, after the flushed products of the first
+  three steps, the residual of the first-order bilinear recursion
+  `J_n − J_{n−1} − (dt/4L)(u^{n+1} + 2u^n + u^{n−1})` is a constant
+  9.795e-39 per step from step 8 on: the current drifts linearly, as a
+  second-order recursion `J_n = 2J_{n−1} − J_{n−2} + …` does after one
+  rounding error, so the inductor is not realised as the first-order filter.
+- *One edge, one circuit.* A two-edge series resistor gets `R/2` per edge
+  and both edges follow the single-edge rules below independently. The
+  console names the extension "Series/Parallel Lumped RLC load" (priority
+  0, before the excitation's −1000) and counts the element's edges as
+  "Active cells".
+- *Step-by-step bit fits.* On 48 resistors (`R` = 1…60 Ω, random) and 40
+  dyadic ones (`R` = 64 Ω, random excitation: `k = vi/(2R)` = 1, `α` = 1/2,
+  every coefficient a power of two), with `u*` the `f32` update of §5.16.6
+  and `X` the value multiplied by `α = f32(1/(1 + k))`:
+  step 1 `u^{n+1} = f32(α·u*)` (48/48), step 2
+  `f32(α·f32(u* − f32(k·u^n)))` (48/48), step 3 on the dyadic set
+  `X = ((u* + k·u^{n−1}) − k·u^n) − k·u^{n−1}` evaluated left to right
+  (40/40; a vectorised search over all pairs of depth-2 expressions in the
+  step's voltages, earlier `u*` and coefficients finds only this form and
+  its rewritings), on the random set at most 42/48. Later steps keep the
+  shape `X = ((u* + k·u^{n−1}) − k·u^n) − vi·S` with a current-scale
+  history `S ≈ u^{n−1}/(2R)`; integrating it as
+  `S ← (S − u^{n−2}/(2R)) + u^{n−1}/(2R)` in `f32` reproduces 7…75 steps of
+  the dyadic models and 4…20 of the random ones, the best of all
+  summation trees for `X` and `S`. Inferring `S` from the data step by step
+  (every `f32` value within ±48 ulps that reproduces `u^{n+1}`) leaves 17 of
+  1192 steps with no admissible `S` at all, so this shape is still
+  incomplete, and no update of `S` from the previous admissible values and
+  the voltages holds at more than 84 % of the steps.
+
+Not implemented: none of these partial forms reproduces a whole run, and
+the sweep cases are long resonant runs where any residual rounding
+difference grows to the observed 1e-5…1e-4. Tolerances of
+`lumped_series_rlc`, `cyl_wrap_lumped`, `rs_1` unchanged.
+
 Feature sweep (169 models, fresh be30220 outputs, before → after): 146 →
 146 exact; `sheet_thin_resistive` 1.54e-4 → 1.52e-4 (its operator dump is
 now openEMS's on every edge; the branch coefficients carry the ulp moves
