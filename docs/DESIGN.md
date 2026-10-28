@@ -5137,6 +5137,34 @@ Second round (same data, constraints from above):
   rounding. Adding `vi·J_{n−2} − k·u^{n−2}` as two terms instead (the
   direct-form-I two-chain grouping) makes it worse (128+ empty steps).
 
+Third round (area P's Debye form, §5.16.12 on P's branch):
+
+- *The Debye form does not carry over.* A series R–C branch is a Debye
+  pole with `τ = RC` and `β = vi·C/(2RC + dt)`; for `C` → ∞ it is the
+  series resistor (`β = vi/(2R)`, `ω` → 1). Run in P's two-scale shape
+  (`P = ω·Q + b·u^n`, `u_new = F·(u* − (P − Q))`, `Q ← P + b·u_new`, with or
+  without P's two-rounding finish), it fails at steps 2–7 of the
+  resistors and 1–5 of 40 random series RC elements (`R` 10…100 Ω, `τ`
+  3…40 `dt`). The finish `u* − (u* − u_new)` is wrong for these elements:
+  their first step is `f32(α·u*)`.
+- *The correction is not a difference at the scale of an integrated
+  state.* On the dyadic resistors the subtracted correction
+  `D = u* − u^{n+1}/α` must lie, at most steps, on a grid two to five
+  binades finer than the `ulp` of the polarisation-like integral
+  `Q = Σ b·(u^n + u^{n+1})` (`Q` grows to 7e-5, `D` stays below 6e-6). So
+  openEMS does not form it as `f32(P − Q)` at `Q`'s scale. The grid fits
+  terms of the voltages' own size (`k·u`, and a history `≈ k·u^{n−1}`), as
+  in the best form above.
+- *Series RC first and second step (exact).* `vi` enters as `dt/C_e` in
+  `f64`, with `C_e` the edge's `f32` capacitance (`f32(dt/vi)`):
+  `β = (dt/C_e)·C/(2RC + dt)` reproduces the first step `f32(α·u*)` of
+  all 40 elements, and the `f32` `vi` fails on two of five. The second
+  step is `f32(α·f32(u* − f32(ω·f32(b·u^n))))`, `ω = f32(1 − dt/(RC + dt/2))`
+  (40/40). For a resistor (`C_e` = `f32(ε0)`, `dt/C_e` = 128 exactly) this
+  is the resistor's `f32(α·f32(u* − f32(k·u^n)))`. From the third step on
+  the best RC skeleton, `((u* + k·u^{n−1}) − ω·k·u^n) − Z` with `Z` free,
+  still has 61 of 1120 steps with no admissible `Z`.
+
 Not implemented: none of these partial forms reproduces a whole run, and
 the sweep cases are long resonant runs where any residual rounding
 difference grows to the observed 1e-5…1e-4. Tolerances of
