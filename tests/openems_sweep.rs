@@ -246,13 +246,14 @@ cases! {
     abc_line_s1_t1: 1e-6;           // (exact)
     lumped_on_cyl: 1e-6;            // (exact)
     // Conducting sheets: openEMS's sheet model (compile/openems_sheet.rs).
-    sheet_copper: 2e-4;
-    sheet_resistive: 2e-4;
-    sheet_full: 2e-4;
-    sheet_graded: 2e-4;
+    // (exact since openEMS's sheet arithmetic, §5.16.13; before: 2e-6…7e-5)
+    sheet_copper: 1e-6;             // (exact; 5.7e-5)
+    sheet_resistive: 1e-6;          // (exact; 7.4e-5)
+    sheet_full: 1e-6;               // (exact; 4.3e-6)
+    sheet_graded: 1e-6;             // (exact; 1.6e-5)
     // Polygon sheets with three oblique sides (copper, σt = 0.1 S).
-    sheet_triangle: 2e-4;
-    sheet_triangle_r: 2e-4;
+    sheet_triangle: 1e-6;           // (exact; 5.4e-5)
+    sheet_triangle_r: 1e-6;         // (exact; 5.9e-5)
     fdtd_odd: 1e-6;                 // (exact; 1.3e-4: openEMS's computed time step, §5.16.10)
     fdtd_ts_and_steps0: 1e-30;      // (the t = 0 row of E-type files)
 }

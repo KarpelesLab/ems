@@ -18,18 +18,18 @@
 //!   `L_b·di_b/dt + R_b·i_b = u`, integrated like openEMS's Drude poles
 //!   (branch currents at half steps driven by `u^n`, the leapfrog scheme
 //!   of [`Scheme::Leapfrog`](crate::engine::dispersive::Scheme::Leapfrog)).
-//!   On Cartesian grids the branches keep openEMS's single-precision state
-//!   and operation order ([`crate::engine::openems_sheet`], design
-//!   §5.16.13); on cylindrical grids they are poles of the general
-//!   dispersive operator (`f64` state). The medium around the sheet does
-//!   not enter (the vacuum capacitance of the cell is replaced, not
-//!   added).
+//!   The branches keep openEMS's single-precision state and operation
+//!   order ([`crate::engine::openems_sheet`]; on the seam of a closed
+//!   azimuth openEMS's seam update, design §5.16.13). The medium around
+//!   the sheet does not enter (the vacuum capacitance of the cell is
+//!   replaced, not added).
 //! * **Scaling.** Per square of sheet, `G = g·σt`, `R_b = r_b/(σt)`,
 //!   `L_b = l_b·μ0·t` and `C = dt²/(c·μ0·t)` (the capacitance depends on
 //!   the time step: it is no physical sheet capacitance; in every bin
 //!   `1/c = (1/l_1 + 17/l_2)/4` to 2e-7, i.e. `C = dt²·(1/(4L_1) +
-//!   17/(4L_2))`, design §5.16.13); an edge of
-//!   length `l` with sheet width `w` gets `w/l` squares. The table
+//!   17/(4L_2))`); an edge of length `l` with sheet width `w` gets `w/l`
+//!   squares. All in openEMS's single-precision arithmetic
+//!   ([`edge_circuit`], design §5.16.13). The table
 //!   [`TABLE`] lists `(g, c, l_1, r_1, l_2, r_2)` for 30 bins `k` of the
 //!   normalised thickness `ν = (t/δ)²/80` at the excitation's highest
 //!   frequency: `k = 0` for `ν < 1`, `k = ⌊log_1.5 ν⌋ + 1` above, `k = 29`
@@ -66,9 +66,14 @@
 //!   that a point past 2π (cell `N`) also matches as `α − 2π` in a box of
 //!   nonzero α extent: a fin drawn at `α = 0` has no effect (it is not on
 //!   the `2π` copy), boxes past 2π do not reach the first α cells. ems
-//!   stores the seam edge twice (`j = 0` and `j = N`, joined by the
-//!   periodic merge) and splits the edge's `C`, `G` and branches between
-//!   the copies by their halves of the dual face.
+//!   stores the seam edge twice (`j = 0` and `j = N`) and splits the
+//!   edge's `C` and `G` between the copies by their halves of the dual
+//!   face; openEMS's seam update (`OpenemsSeam`) recombines them and runs
+//!   the branches of the whole edge on the `α = 2π` copy, the `α = 0` copy
+//!   holding the uncorrected value (as for dispersive poles, design
+//!   §5.16.12). Without that update (other curl orders, multigrid, …) each
+//!   copy carries its share of the branches and the periodic merge joins
+//!   them.
 //! * **Boundaries.** The "first mesh line" above is the last line an
 //!   absorbing boundary claims on a lower face: line 0 for PEC and PMC,
 //!   lines 0…1 for Mur, 0…n for `PML_n`; on an upper face the last 2
@@ -77,7 +82,10 @@
 //!   start node lies on one (along either in-plane axis) is PEC (black
 //!   box, wave 14: `--debug-PEC` and `--debug-operator` dumps of sheets
 //!   starting and ending at every line near Mur, `PML_3` and PMC faces;
-//!   design §5.16.3; Cartesian grids).
+//!   design §5.16.3; Cartesian grids). Next to an upper PMC face openEMS
+//!   keeps the H edge of the same direction and node as a sheet edge in
+//!   the dual layer it otherwise zeroes (`pmc_half_cell`, design
+//!   §5.16.13).
 //! * **Priorities.** A material or metal of higher priority at the edge
 //!   midpoint removes the sheet edge (it keeps its material); the sheet
 //!   wins ties. Edges on the outer mesh planes are left to the boundary.
@@ -92,8 +100,6 @@ use csx::{CoordSystem, Vec3};
 
 use crate::Result;
 use crate::axis::Axis;
-use crate::constants::{EPS0, MU0};
-use crate::engine::dispersive::{EdgePole, Field, Pole};
 use crate::engine::{EdgeMaterials, Grid, OPENEMS_EPS0, OPENEMS_MU0, SheetEdge, TimeStep};
 use crate::fdtd::Fdtd;
 use crate::waveform::Waveform;
@@ -102,42 +108,47 @@ use crate::waveform::Waveform;
 /// `(g, c, l_1, r_1, l_2, r_2)` per square, `G = g·σt`,
 /// `C = dt²/(c·μ0·t)`, `L_b = l_b·μ0·t`, `R_b = r_b/(σt)`. Measured with
 /// openEMS v0.37 (σ = 1e6 S/m, 1 mm cells, `dt` = 1.8 ps, 1500 steps;
-/// reproduced with other `σ`, `t` and `dt` to 7 digits). `c` of bin 0 is
-/// refined to the value that reproduces the most `f32` coefficients of
-/// openEMS (operator dumps of 1 523 random models; design §5.16.13):
-/// 0.02222457325 instead of the measured 0.022224575.
+/// reproduced with other `σ`, `t` and `dt` to 7 digits). The capacitance
+/// is formed from `l_1`, `l_2` ([`edge_circuit`]); `c` is the measured
+/// `(1/l_1 + 17/l_2)/4` (to 2e-7, unused). `g`, `l_1` and `l_2` of every
+/// bin and `r_1`, `r_2` of bin 0 are refined to 11–13 digits, to the
+/// values that reproduce openEMS's `f32` rounding steps (operator dumps
+/// and per-step dumps of single-edge models, design §5.16.13; e.g. bin 0
+/// `l_2` 0.0990690603 instead of the measured 0.099069049). `r_b` of the
+/// other bins is the measured value: there the branches are inductive at
+/// any frequency an excitation can carry (`R·dt/2L` < 0.05).
 #[rustfmt::skip]
 pub(crate) const TABLE: [[f64; 6]; 30] = [
-    [0.13708436, 0.02222457325, 0.11928209, 1.3027544, 0.099069049, 10.62245],
-    [0.12443278, 0.019525936, 0.11765065, 1.2992612, 0.086577439, 10.219529],
-    [0.10874258, 0.016475925, 0.11249568, 1.3200334, 0.072683973, 10.247559],
-    [0.09215452, 0.013604945, 0.10237379, 1.4182922, 0.059808052, 10.991476],
-    [0.076392499, 0.011153572, 0.087753569, 1.6743265, 0.048958344, 12.704509],
-    [0.062392063, 0.0091246982, 0.07148522, 2.1387697, 0.040058271, 15.598306],
-    [0.050687011, 0.0074560144, 0.057215781, 2.7691268, 0.032755173, 19.55715],
-    [0.041241612, 0.0060890102, 0.046112844, 3.4988017, 0.026761739, 24.325811],
-    [0.03364926, 0.004971778, 0.037551334, 4.311448, 0.021853402, 29.887339],
-    [0.027482566, 0.0040593582, 0.030693937, 5.2662049, 0.017842195, 36.556805],
-    [0.022441566, 0.0033144285, 0.025070413, 6.4439781, 0.014567805, 44.753744],
-    [0.018323172, 0.0027062229, 0.020468708, 7.8934045, 0.011894602, 54.815747],
-    [0.014960806, 0.0022096219, 0.016712625, 9.6674121, 0.0097119032, 67.135337],
-    [0.01221545, 0.0018041488, 0.01364581, 11.8401, 0.0079297354, 82.223603],
-    [0.0099738759, 0.0014730814, 0.011141759, 14.501103, 0.0064746017, 100.7029],
-    [0.008143637, 0.0012027661, 0.0090972116, 17.760148, 0.0052864913, 123.33532],
-    [0.006649251, 0.0009820545, 0.0074278444, 21.751641, 0.0043164022, 151.05424],
-    [0.0054290922, 0.00080184417, 0.0060648135, 26.640202, 0.0035243278, 185.00275],
-    [0.0044328367, 0.0006547032, 0.004951903, 32.627421, 0.0028776024, 226.58098],
-    [0.0036193982, 0.00053456309, 0.0040432162, 39.960208, 0.002349553, 277.50354],
-    [0.0029552275, 0.00043646901, 0.003301277, 48.941, 0.0019184023, 339.87044],
-    [0.0024129352, 0.0003563757, 0.0026954871, 59.940125, 0.0015663698, 416.2535],
-    [0.0019701562, 0.00029097973, 0.0022008634, 73.411114, 0.0012789365, 509.8022],
-    [0.0016086298, 0.00023758431, 0.0017970087, 89.909314, 0.0010442485, 624.37284],
-    [0.0013134234, 0.00019398532, 0.0014672034, 110.11961, 0.00085261976, 764.72806],
-    [0.0010724224, 0.00015838974, 0.001198013, 134.86311, 0.00069616658, 936.55255],
-    [0.00090313827, 0.00012996173, 0.0010938562, 149.27697, 0.00056924546, 1000.0],
-    [0.0007674973, 0.00010602016, 0.0010684632, 153.52594, 0.00046204756, 1000.0],
-    [0.00064825789, 8.5842202e-05, 0.0010676593, 148.93717, 0.00037231309, 1000.0],
-    [0.00054507, 6.9225859e-05, 0.0011001749, 119.35233, 0.00029891198, 1000.0],
+    [0.137084340054, 0.02222457325, 0.119282088951, 1.302754546, 0.0990690603255, 10.62245057],
+    [0.124432770979, 0.019525936, 0.117650643055, 1.2992612, 0.0865774432243, 10.219529],
+    [0.10874259256, 0.016475925, 0.112495689579, 1.3200334, 0.0726839782207, 10.247559],
+    [0.0921545029514, 0.013604945, 0.102373790897, 1.4182922, 0.0598080542444, 10.991476],
+    [0.0763924952568, 0.011153572, 0.0877535678803, 1.6743265, 0.0489583437563, 12.704509],
+    [0.0623920685841, 0.0091246982, 0.0714852202949, 2.1387697, 0.0400582737111, 15.598306],
+    [0.0506870193634, 0.0074560144, 0.0572157790471, 2.7691268, 0.0327551749758, 19.55715],
+    [0.0412416168046, 0.0060890102, 0.0461128464864, 3.4988017, 0.026761739013, 24.325811],
+    [0.0336492594616, 0.004971778, 0.0375513332623, 4.311448, 0.0218534019281, 29.887339],
+    [0.0274825647083, 0.0040593582, 0.030693935758, 5.2662049, 0.017842192351, 36.556805],
+    [0.0224415656409, 0.0033144285, 0.0250704153117, 6.4439781, 0.0145678049496, 44.753744],
+    [0.0183231737407, 0.0027062229, 0.0204687079875, 7.8934045, 0.0118946020796, 54.815747],
+    [0.0149608078551, 0.0022096219, 0.0167126250576, 9.6674121, 0.00971190254458, 67.135337],
+    [0.0122154505375, 0.0018041488, 0.0136458082892, 11.8401, 0.00792973544699, 82.223603],
+    [0.00997387466324, 0.0014730814, 0.0111417587353, 14.501103, 0.00647460224422, 100.7029],
+    [0.00814363571331, 0.0012027661, 0.00909721105062, 17.760148, 0.00528649098115, 123.33532],
+    [0.0066492519176, 0.0009820545, 0.00742784502358, 21.751641, 0.00431640220756, 151.05424],
+    [0.00542909273748, 0.00080184417, 0.00606481357423, 26.640202, 0.00352432807109, 185.00275],
+    [0.00443283701916, 0.0006547032, 0.00495190327264, 32.627421, 0.00287760227497, 226.58098],
+    [0.00361939779282, 0.00053456309, 0.0040432162758, 39.960208, 0.00234955292005, 277.50354],
+    [0.00295522765367, 0.00043646901, 0.00330127701783, 48.941, 0.00191840249878, 339.87044],
+    [0.00241293536167, 0.0003563757, 0.00269548714004, 59.940125, 0.00156636976862, 416.2535],
+    [0.00197015616651, 0.00029097973, 0.00220086344996, 73.411114, 0.00127893644741, 509.8022],
+    [0.00160862981206, 0.00023758431, 0.00179700862248, 89.909314, 0.00104424855814, 624.37284],
+    [0.0013134233954, 0.00019398532, 0.00146720336246, 110.11961, 0.000852619746587, 764.72806],
+    [0.00107242246864, 0.00015838974, 0.0011980129395, 134.86311, 0.000696166544835, 936.55255],
+    [0.000903138344057, 0.00012996173, 0.00109385610511, 149.27697, 0.000569245491525, 1000.0],
+    [0.000767497363702, 0.00010602016, 0.00106846334836, 153.52594, 0.000462047579022, 1000.0],
+    [0.000648257956771, 8.5842202e-05, 0.00106765935995, 148.93717, 0.000372313090849, 1000.0],
+    [0.000545069956667, 6.9225859e-05, 0.00110017492041, 119.35233, 0.000298911971364, 1000.0],
 ];
 
 /// The highest frequency openEMS's sheet model is chosen for (module
@@ -174,20 +185,59 @@ pub(crate) fn bin(sigma: f64, t: f64, f: f64) -> usize {
     if k >= 29.0 { 29 } else { k as usize }
 }
 
-/// The emulated sheet edges: edge materials, poles and PEC edges.
+/// The circuit of one sheet edge in openEMS's model (module docs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EdgeCircuit {
+    /// The two branches `(L, R)` \[H, Ω\].
+    pub branches: [(f64, f64); 2],
+    /// The capacitance per `dt²` \[F/s²\].
+    pub c_per_dt2: f64,
+    /// The conductance \[S\].
+    pub g: f64,
+}
+
+/// The circuit of a sheet edge with `l/w` (edge length over sheet width:
+/// the inverse number of squares) in bin `row`, with openEMS's
+/// single-precision arithmetic (black box, design §5.16.13): per square
+/// `L_b = f32(l_b·8/(G·X))`, `R_b = f32(r_b/G)` and `G_s = f32(g·G)`
+/// (`G = f32(σt)`, `X` as in [`bin`]); per edge, with `k = f32(l/w)`,
+/// `L_b,e = f32(L_b·k)`, `R_b,e = f32(R_b·k)`, `G_e = f32(G_s/k)` and
+/// `C/dt² = f32(1/L_1,e)/4 + f32(1/L_2,e)/4 + 4/L_2,e` (mathematically
+/// `dt²/(c·μ0·t)` per square with `1/c = (1/l_1 + 17/l_2)/4`). With the
+/// table's refined constants this reproduces every `vi` and `vv` of
+/// several hundred single-edge models and random meshes per bin and every
+/// step of the branch currents of 200 single-edge models.
+pub(crate) fn edge_circuit(sigma: f64, t: f64, l_over_w: f64, row: &[f64; 6]) -> EdgeCircuit {
+    let r32 = |x: f64| x as f32 as f64;
+    let t = r32(t);
+    let g = r32(r32(sigma) * t);
+    let x = r32(8.0 / (g * OPENEMS_MU0 * t));
+    let q = 8.0 / (g * x);
+    let k = r32(l_over_w);
+    let branches = [(row[2], row[3]), (row[4], row[5])]
+        .map(|(lb, rb)| (r32(r32(lb * q) * k), r32(r32(rb / g) * k)));
+    let (l1, l2) = (branches[0].0, branches[1].0);
+    EdgeCircuit {
+        branches,
+        c_per_dt2: r32(1.0 / l1) / 4.0 + r32(1.0 / l2) / 4.0 + 4.0 / l2,
+        g: r32(r32(row[0] * g) / k),
+    }
+}
+
+/// The emulated sheet edges: edge materials, branches and PEC edges.
 #[derive(Debug, Default)]
 pub(super) struct Emulation {
     /// Native sheet edges that are not emulated (kept for the slab
     /// operator): those of cylindrical grids with an azimuthal multigrid.
     pub rest: Vec<SheetEdge>,
-    /// Branch poles of the emulated edges on cylindrical grids (the
-    /// general dispersive operator).
-    pub poles: Vec<EdgePole>,
-    /// Branches `(L, R)` of the emulated edges on Cartesian grids, with
-    /// openEMS's single-precision update
-    /// ([`OpenEmsSheetBranches`](crate::engine::openems_sheet)), and the
-    /// time step they are formed with.
+    /// Branches `(L, R)` of the emulated edges (all but the seam edges of
+    /// a closed azimuth), with openEMS's single-precision update
+    /// ([`OpenEmsSheetBranches`](crate::engine::openems_sheet)).
     pub branches: Vec<super::OpenEmsSheetBranch>,
+    /// The branches `(L, R)` of the whole edge of the emulated seam edges
+    /// of a closed azimuth (by their `α = 0` node), run by openEMS's seam
+    /// update (`OpenemsSeam`).
+    pub seam_branches: Vec<super::OpenEmsSheetBranch>,
     /// The emulated edges with the `[ε_r, κ]` they had.
     pub edges: Vec<(Axis, [usize; 3], [f64; 2])>,
     /// Number of edges made PEC (in the first cell of their axis).
@@ -397,13 +447,11 @@ pub(super) fn emulate(
         let w = if interior { dual } else { 0.5 * dual };
         let (sigma, th) = (e.conductivity, e.thickness);
         let row = TABLE[bin(sigma, th, f)];
-        let sq = w / grid.edge_length(e.axis, node);
-        let (st, lt) = (sigma * th, MU0 * th);
+        let circuit = edge_circuit(sigma, th, grid.edge_length(e.axis, node) / w, &row);
         for (p, share) in copies {
             let idx = grid.index(p);
-            let s = sq * share;
-            let c = dt * dt * s / (row[1] * lt);
-            let g_e = row[0] * st * s;
+            let c = circuit.c_per_dt2 * share * dt * dt;
+            let g_e = circuit.g * share;
             let geo = grid.dual_face_area(e.axis, p) / grid.edge_length(e.axis, p);
             out.edges.push((
                 e.axis,
@@ -414,20 +462,15 @@ pub(super) fn emulate(
             // ε0 (`CoeffRounding::OpenEms`): the edge gets `C = c`.
             materials.eps_r_mut(e.axis)[idx] = c / (OPENEMS_EPS0 * geo);
             materials.kappa_mut(e.axis)[idx] = g_e / geo;
-            let lr =
-                [(row[2], row[3]), (row[4], row[5])].map(|(lb, rb)| (lb * lt / s, rb / (st * s)));
-            if !cyl {
+            // A seam copy carries its share of the edge: `share` of the
+            // conductance and capacitance, `L/share` and `R/share`.
+            let lr = circuit.branches.map(|(l, r)| (l / share, r / share));
+            if !seam {
                 out.branches.push((e.axis, p, lr));
-                continue;
-            }
-            let m = EPS0 * geo;
-            for (lb, rb) in lr {
-                out.poles.push(EdgePole {
-                    field: Field::Electric,
-                    axis: e.axis,
-                    node: p,
-                    pole: Pole::drude((1.0 / (m * lb)).sqrt(), rb / lb),
-                });
+            } else if p[1] == 0 {
+                // openEMS updates the seam edge once, with its whole dual
+                // face (`OpenemsSeam`): the branches of the whole edge.
+                out.seam_branches.push((e.axis, p, circuit.branches));
             }
         }
     }
@@ -437,6 +480,7 @@ pub(super) fn emulate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::MU0;
 
     #[test]
     fn bins() {
@@ -496,6 +540,26 @@ mod tests {
         ] {
             assert_eq!(bin(s, t, f_lo), k - 1, "{s} {t} {f_lo}");
             assert_eq!(bin(s, t, f_hi), k, "{s} {t} {f_hi}");
+        }
+    }
+
+    #[test]
+    fn capacitance_is_openems() {
+        // openEMS's `vi = f32(dt/f32(C))` of a 1 m-cell sheet edge (bin 0,
+        // `G·dt` negligible), operator dumps; the single rounding of
+        // `dt²/(c·μ0·t)` gives the neighbouring `f32` value in all three.
+        let (s, t) = (9.536741259755848e-07, 6.090221230296086e-05);
+        for (dt, vi) in [
+            (1.8108346533866837e-09, 0x3a763a62),
+            (3.5948730289534073e-10, 0x3b9b0a27),
+            (1.807569004847039e-09, 0x3a76ac43),
+        ] {
+            let c = edge_circuit(s, t, 1.0, &TABLE[bin(s, t, 1e6)]).c_per_dt2 * dt * dt;
+            assert_eq!(
+                (dt / f64::from(c as f32)) as f32,
+                f32::from_bits(vi),
+                "{dt}"
+            );
         }
     }
 

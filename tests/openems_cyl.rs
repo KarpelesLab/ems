@@ -114,14 +114,10 @@ fn cylindrical_conducting_sheets_match_openems() {
         "cyl_sheet_fin",
         "cyl_sheet_seam",
     ] {
-        // Without a sheet, identical to the printed digits.
-        let tol = if case.ends_with("none") || case.ends_with("seam") {
-            1e-6
-        } else {
-            1e-4
-        };
+        // Identical to the printed digits, with openEMS's sheet arithmetic
+        // (design §5.16.13; tube and fin were 2.8e-5 and 2.4e-5 before).
         for (n, e) in probe_l2(case, "model.xml") {
-            assert!(e < tol, "{case}/{n}: {e:e}");
+            assert!(e < 1e-6, "{case}/{n}: {e:e}");
         }
     }
 }

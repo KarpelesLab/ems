@@ -148,9 +148,11 @@ impl OpenemsSeam {
     /// The seam of `grid` (closed, without multigrid) with the edge
     /// materials `mats`, time step `dt` and the engine's coefficients `co`;
     /// `skip(axis, node, h)` leaves an edge (E, or `H_α` with `h`) to the
-    /// periodic merge (e.g. inside an absorbing layer); `poles` and `debye`
-    /// give the openEMS poles of a seam E edge (low node): its Lorentz and
-    /// Drude poles, or its single Debye pole `(Δε, τ)`.
+    /// periodic merge (e.g. inside an absorbing layer); `poles`, `debye`
+    /// and `sheets` give a seam E edge (low node) its openEMS poles: its
+    /// Lorentz and Drude poles, its single Debye pole `(Δε, τ)`, or the
+    /// conducting-sheet branches `(L, R)` of the whole edge (design
+    /// §5.16.13).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         grid: &Grid,
@@ -161,6 +163,7 @@ impl OpenemsSeam {
         skip: impl Fn(Axis, [usize; 3], bool) -> bool,
         poles: impl Fn(Axis, [usize; 3]) -> Vec<OpenEmsPole>,
         debye: impl Fn(Axis, [usize; 3]) -> Option<(f64, f64)>,
+        sheets: impl Fn(Axis, [usize; 3]) -> Option<[(f64, f64); 2]>,
     ) -> Self {
         let layer = |e_side: bool, axis: Axis, node: [usize; 3], geo: f64, rel: f64| {
             pml.and_then(|p| upml::layer_update(p, dt, e_side, axis, node, geo, rel))
@@ -215,13 +218,27 @@ impl OpenemsSeam {
                     // openEMS's layer replaces the update: no poles there.
                     let circuit = f64::from((EPS0 * ep * geo) as f32);
                     let poles = if layer.is_none() {
-                        poles(axis, lo)
-                            .into_iter()
-                            .map(|p| {
-                                let p = OpenEmsPole { circuit, ..p };
-                                (p.coefficients(f64::from(vi), dt), [0.0; 2])
-                            })
-                            .collect()
+                        match sheets(axis, lo) {
+                            // A conducting-sheet edge: its two branches as
+                            // poles without restoring term (`K = 0`), the
+                            // coefficients of `OpenEmsSheetBranches` with
+                            // the whole dual face's `vi`.
+                            Some(branches) => branches
+                                .iter()
+                                .map(|&(l, r)| {
+                                    let d = l / dt + 0.5 * r;
+                                    let a = ((l / dt - 0.5 * r) / d) as f32;
+                                    ([a, (f64::from(vi) / d) as f32, 0.0], [0.0; 2])
+                                })
+                                .collect(),
+                            None => poles(axis, lo)
+                                .into_iter()
+                                .map(|p| {
+                                    let p = OpenEmsPole { circuit, ..p };
+                                    (p.coefficients(f64::from(vi), dt), [0.0; 2])
+                                })
+                                .collect(),
+                        }
                     } else {
                         Vec::new()
                     };

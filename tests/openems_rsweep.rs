@@ -222,10 +222,11 @@ fn sheet_material_tie() {
 }
 
 /// Conducting-sheet border edges on a graded mesh (half the dual width).
-/// 4.8e-6…2.4e-4 (the H probe beside the sheet corner; was 74).
+/// Exact (openEMS's sheet arithmetic, design §5.16.13; was 3.5e-6…2.9e-4,
+/// and 74 before openEMS's sheet model).
 #[test]
 fn sheet_borders() {
-    case("rs_99", 6e-4, 1e-4);
+    case("rs_99", 1e-6, 1e-4);
 }
 
 /// A passive series RLC over several columns: openEMS limits the edge
@@ -237,9 +238,9 @@ fn series_rlc_columns() {
 }
 
 /// A conducting sheet starting on the second line of a Mur face's axis:
-/// openEMS leaves out the lines the boundary claims. 1e-6…6e-5 (was
-/// unstable).
+/// openEMS leaves out the lines the boundary claims. Exact (openEMS's
+/// sheet arithmetic, design §5.16.13; was 3e-7…6e-5, unstable before).
 #[test]
 fn sheet_at_mur_lines() {
-    case("rs_116", 2e-4, 1e-4);
+    case("rs_116", 1e-6, 1e-4);
 }

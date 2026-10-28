@@ -522,10 +522,14 @@ pub struct Compiled {
     /// coarse operator and interpolation; other multigrid models keep the
     /// zones in the grid (ems's embedding, §5.15.1).
     pub openems_multigrid: Option<usize>,
-    /// The branches `(L, R)` of the openEMS sheet edges on Cartesian
-    /// grids, updated as openEMS does (single precision; design §5.16.13)
-    /// by an operator registered after the dispersive poles.
+    /// The branches `(L, R)` of the openEMS sheet edges, updated as openEMS
+    /// does (single precision; design §5.16.13) by an operator registered
+    /// after the dispersive poles.
     pub openems_sheet_branches: Vec<OpenEmsSheetBranch>,
+    /// The branches `(L, R)` of the whole edge of the openEMS sheet edges on
+    /// the seam of a closed azimuth (by their `α = 0` node), updated by
+    /// openEMS's seam update (design §5.16.11, §5.16.13).
+    pub openems_seam_sheets: Vec<OpenEmsSheetBranch>,
     /// Conformal PEC geometry ([`CompileOptions::conformal`]); applied to
     /// the coefficients by [`build`](Self::build) before any operator.
     pub conformal: Option<ConformalPec>,
@@ -613,6 +617,9 @@ impl Compiled {
         // operator runs itself (low node; design §5.16.12).
         let mut seam_debye: std::collections::HashMap<(crate::axis::Axis, [usize; 3]), (f64, f64)> =
             std::collections::HashMap::new();
+        // Whether the seam operator runs the openEMS sheet branches of the
+        // seam edges (else they are split between the copies, below).
+        let mut seam_sheets_run = false;
         // openEMS's seam update of a closed azimuth (design §5.16.11),
         // first among the post-E hooks: it replaces the periodic merge.
         if self.curl_order == CurlOrder::OpenEms
@@ -675,7 +682,17 @@ impl Compiled {
             for e in &self.sheets {
                 touched.insert((e.axis, e.node, false));
             }
+            // openEMS sheet edges on the seam: run by the seam operator.
+            let seam_sheets: std::collections::HashMap<_, _> = self
+                .openems_seam_sheets
+                .iter()
+                .map(|&(a, p, b)| ((a, p), b))
+                .collect();
             for &(a, p, _) in &self.openems_sheets {
+                let lo = [p[0], 0, p[2]];
+                if (p[1] == 0 || p[1] == last) && seam_sheets.contains_key(&(a, lo)) {
+                    continue;
+                }
                 touched.insert((a, p, false));
             }
             // openEMS poles on both copies of a seam ρ or z edge, the same
@@ -765,12 +782,18 @@ impl Compiled {
                 skip,
                 |a, p| seam_poles.get(&(a, p)).cloned().unwrap_or_default(),
                 |a, p| seam_debye.get(&(a, p)).copied(),
+                |a, p| seam_sheets.get(&(a, p)).copied(),
             );
             engine.add_operator(op);
             // The seam operator keeps the two copies of these apart.
-            for &(a, p) in seam_poles.keys().chain(seam_debye.keys()) {
+            for &(a, p) in seam_poles
+                .keys()
+                .chain(seam_debye.keys())
+                .chain(seam_sheets.keys())
+            {
                 engine.exempt_from_periodic_merge(a, p);
             }
+            seam_sheets_run = true;
             if let Some(ring) = self.openems_multigrid {
                 let op = crate::engine::openems_cyl::OpenemsMultigrid::new(
                     &self.grid,
@@ -789,7 +812,12 @@ impl Compiled {
             {
                 engine.add_operator(crate::engine::cylindrical::OpenemsAxisSeam);
             }
-            pmc_half_cell(engine, &self.faces);
+            let keep = self
+                .openems_sheets
+                .iter()
+                .map(|&(a, p, _)| (a, self.grid.index(p)))
+                .collect();
+            pmc_half_cell(engine, &self.faces, &keep);
             let upper: Vec<Face> = self
                 .mur
                 .iter()
@@ -901,7 +929,7 @@ impl Compiled {
                 h.dispersive = Some(d.add_to(engine)?);
             }
         }
-        if !self.openems_sheet_branches.is_empty() {
+        if !self.openems_sheet_branches.is_empty() || !self.openems_seam_sheets.is_empty() {
             let dt = engine.dt();
             let mut b = OpenEmsSheetBranches::default();
             {
@@ -909,6 +937,23 @@ impl Compiled {
                 for &(axis, node, lr) in &self.openems_sheet_branches {
                     let cb = co.cb(axis)[engine.grid().index(node)];
                     b.push(axis, node, lr, dt, cb);
+                }
+                if !seam_sheets_run {
+                    // Without openEMS's seam update each copy of a seam
+                    // edge carries its share (by α width) of the edge.
+                    let last = self.grid.nodes()[1] - 1;
+                    let (lo_w, hi_w) = (
+                        self.grid.delta(crate::axis::Axis::Y, 0),
+                        self.grid.delta(crate::axis::Axis::Y, last - 1),
+                    );
+                    for &(axis, node, lr) in &self.openems_seam_sheets {
+                        let hi = [node[0], last, node[2]];
+                        for (p, share) in [(node, lo_w / (lo_w + hi_w)), (hi, hi_w / (lo_w + hi_w))]
+                        {
+                            let cb = co.cb(axis)[engine.grid().index(p)];
+                            b.push(axis, p, lr.map(|(l, r)| (l / share, r / share)), dt, cb);
+                        }
+                    }
                 }
             }
             if !b.is_empty() {
@@ -1069,8 +1114,16 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
 /// H layer, so this only removes the fields (and excitations, lumped
 /// elements, probe contributions) on the face outside openEMS's magnetic
 /// wall. Not on the faces of a cylindrical grid that are not boundaries
-/// (the axis, the α faces of a closed azimuth).
-fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
+/// (the axis, the α faces of a closed azimuth). The H dual edges
+/// `(axis, index)` in `keep` stay: openEMS keeps the H edge of the same
+/// direction and node as a conducting-sheet E edge (black box,
+/// `--debug-operator` of sheets ending in and before the last cell of a
+/// PMC face, design §5.16.13).
+fn pmc_half_cell(
+    engine: &mut Engine,
+    faces: &FaceConditions,
+    keep: &std::collections::HashSet<(Axis, usize)>,
+) {
     let grid = engine.grid();
     let n = grid.nodes();
     let (axis, closed) = (grid.has_axis(), grid.is_closed());
@@ -1112,6 +1165,9 @@ fn pmc_half_cell(engine: &mut Engine, faces: &FaceConditions) {
                             continue;
                         }
                         let idx = (i * n[1] + j) * n[2] + k;
+                        if !e_side && keep.contains(&(a, idx)) {
+                            continue;
+                        }
                         c0[idx] = 0.0;
                         c1[idx] = 0.0;
                     }
@@ -1824,28 +1880,28 @@ pub fn compile(
     let mur_media = (fdtd.get_openems_run() && !cyl).then(|| mur_point_media(model, &grid, &mur));
     // openEMS's sheet model replaces the slab on files (last: it pins the
     // time step resolved with the final materials).
-    let (sheet_edges, openems_sheets, openems_sheet_branches) = if fdtd.get_openems_run() {
-        let emu = openems_sheet::emulate(
-            model,
-            &grid,
-            fdtd,
-            sheet_map.edges,
-            sheet_map.names,
-            &mut materials,
-            &mut timestep,
-        )?;
-        if emu.pec > 0 {
-            warnings.push(format!(
-                "{} conducting-sheet edge(s) in the first mesh cell of their axis made PEC \
+    let (sheet_edges, openems_sheets, openems_sheet_branches, openems_seam_sheets) =
+        if fdtd.get_openems_run() {
+            let emu = openems_sheet::emulate(
+                model,
+                &grid,
+                fdtd,
+                sheet_map.edges,
+                sheet_map.names,
+                &mut materials,
+                &mut timestep,
+            )?;
+            if emu.pec > 0 {
+                warnings.push(format!(
+                    "{} conducting-sheet edge(s) in the first mesh cell of their axis made PEC \
                  (openEMS's rule)",
-                emu.pec
-            ));
-        }
-        dispersive.extend(emu.poles);
-        (emu.rest, emu.edges, emu.branches)
-    } else {
-        (sheet_map.edges, Vec::new(), Vec::new())
-    };
+                    emu.pec
+                ));
+            }
+            (emu.rest, emu.edges, emu.branches, emu.seam_branches)
+        } else {
+            (sheet_map.edges, Vec::new(), Vec::new(), Vec::new())
+        };
     // openEMS's multigrid (files, design §5.16.11): the plain fine grid
     // with `OpenemsMultigrid`, the time step resolved on the zoned grid.
     let openems_multigrid = openems_multigrid_ring(
@@ -1908,6 +1964,7 @@ pub fn compile(
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,
         openems_sheet_branches,
+        openems_seam_sheets,
         conformal,
         excitation_duration: match fdtd.get_waveform() {
             Some(

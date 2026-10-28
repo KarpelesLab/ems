@@ -472,15 +472,16 @@ fn at_oe_times(name: &str, f: &str, res: &Results) -> (Vec<f64>, Vec<f64>, Vec<f
 /// `1 − |Γ|` equal to 0.48–0.52 of the exact slab's `≈ 2R_s/η0` (ems's
 /// native slab: 1, design §5.9), because openEMS leaves the sheet's
 /// first cell row next to the lower mesh boundary out, so only half the
-/// sheet width carries current. The probes agree to 3e-7 (reflected) and
-/// 1.4e-6 (transmitted, −80 dB). The incident wave is the same in both
-/// codes (sheet removed: ems's reference run).
+/// sheet width carries current. The probes are identical to the printed
+/// digits (openEMS's sheet arithmetic and its H edges at the PMC face,
+/// design §5.16.13; 8e-12 and 1.3e-6 before). The incident wave is the
+/// same in both codes (sheet removed: ems's reference run).
 #[test]
 fn conducting_sheet_copper_loss_is_half_in_openems() {
     let name = "adv_sheet_copper";
     let res = run(name, &CompileOptions::default());
     for (f, e) in compare(name, &res) {
-        assert!(e < 1e-5, "{name}/{f}: relative L2 {e:.3e}");
+        assert!(e < 1e-9, "{name}/{f}: relative L2 {e:.3e}");
     }
     let xml = std::fs::read_to_string(fixture_dir(name).join("model.xml")).unwrap();
     let (a, b) = (

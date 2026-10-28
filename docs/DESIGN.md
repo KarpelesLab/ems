@@ -5073,7 +5073,39 @@ depend on `f` (60 frequencies within bin 0) nor on a factor 2 in `σ`.
   `L_b,e = f32(L_b·f32(l/w))` in the same `F` reproduces all 120 random
   meshes (`l` 0.6…1.6 m, `w` 0.6…1.6 m); `F·w/l` 9, `f32(l_b·8/(G·X)·l/w)`
   74.
-- *Bin selection (implemented).* The bin is chosen from
+- *Conductance.* `G_s = f32(g·G)` per square (`G = f32(σt)`), per edge
+  `G_e = f32(G_s/f32(l/w))`: `vv` and `vi` of 200 random bin-0 meshes
+  with `G·dt/2C` ≈ 1 (199 of 200; `f32(G_s·f32(w/l))` 134, `g·σt·w/l`
+  in `f64` 120), and of 200 single-edge models in each of the 30 bins
+  (197–200 per bin) once `g` is refined (e.g. bin 0 0.13708434 instead of
+  0.13708436).
+- *Branches.* Per square `R_b = f32(r_b/G)`, per edge
+  `R_b,e = f32(R_b·f32(l/w))`, and wave 17's update with
+  `k_a = f32((L/dt − R/2)/(L/dt + R/2))`, `k_b = f32(vi/(L/dt + R/2))`
+  formed in `f64` from the `f32` `L_b,e`, `R_b,e` reproduces every step
+  (400) of the sheet edge in all 120 single-edge bin-0 models (σ 1…1e6,
+  `t` 10 µm…10 mm, `R·dt/2L` 1e-3…1e7), with `r_1` = 1.302754546 and
+  `r_2` = 10.62245057 (scanned: the table's 1.3027544 gives 96 of 120)
+  and the refined `l_b`. The 1–3 `f32` steps wave 17 found in `k_b·cb`
+  and `k_a` were these roundings of `L` and `R`.
+- *All bins.* `l_1`, `l_2` of each bin from the steps of 924 pinned models
+  at 8 thicknesses (one value each, all 924 reproduced; bin 21 923), `g`
+  from the conductance fit. `r_b` of bins ≥ 1 stays the measured value:
+  `R·dt/2L = (r/l)·π·f·dt/(160·ν)` is below 0.05 for any excitation an
+  FDTD run can carry, so `R` is far below an `f32` step of `k_a`, `k_b`
+  (80 bin-3 models pass with any `r_1` within ±3e-7).
+- *Cylindrical grids.* The same arithmetic with the physical lengths and
+  the single-precision branch update off the seam; on the seam of a
+  closed azimuth the branches of the whole edge as poles of openEMS's
+  seam update (`OpenemsSeam`, `α = 2π` copy, §5.16.12).
+- *H edges next to an upper PMC face.* openEMS zeroes the tangential H
+  edges in the last cell before an upper PMC face, except the H edge of
+  the same direction and node as a conducting-sheet E edge (the sheet's
+  plane; 20 `--debug-operator` dumps of 3×3-cell sections with sheets
+  ending in and before the last cell of a `ymax` or `zmax` PMC face, and
+  of the `adv_sheet_copper` line). ems keeps those edges too
+  (`pmc_half_cell`).
+- *Bin selection.* The bin is chosen from
   `(t/δ)² = f32(4·f32(2π·f)/X)`, `ν = (t/δ)²/80`, bin `⌊log_1.5 ν⌋ + 1`
   from `ν = 1` on (`compile::openems_sheet::bin`). Measured at 119 bin
   edges (bins 1, 2, 3, 6, 9, 12, 20; 25 consecutive `f32` values of
@@ -5081,6 +5113,21 @@ depend on `f` (60 frequencies within bin 0) nor on a factor 2 in `σ`.
   (`ν = π·f·μ0·σt²/80`, `⌈log_1.5 ν⌉`) misses 60 of them. The 10 misses
   are `ν` exactly `1.5^11`, which openEMS puts in bin 11 (exactly `1.5^5`
   and `1.5^8` go up; no `log` variant reproduces both).
+
+ems uses all of this on openEMS files (`compile::openems_sheet::edge_circuit`,
+refined `TABLE`). Before → after (worst probe): feature sweep 149 → 150
+of 169 exact with the Debye update of §5.16.12 (`sheet_thin_resistive`
+1.5e-4 → exact); fixtures
+`sweep_sheet_copper` 5.7e-5, `sweep_sheet_resistive` 7.4e-5,
+`sweep_sheet_full` 4.3e-6, `sweep_sheet_graded` 1.6e-5,
+`sweep_sheet_triangle` 5.4e-5, `sweep_sheet_triangle_r` 5.9e-5, `rs_99`
+2.9e-4, `rs_116` 6.3e-5, `cyl_sheet_tube` 2.8e-5, `cyl_sheet_fin` 2.4e-5,
+`adv_sheet_copper` 1.3e-6 → all identical to the printed digits;
+tolerances 1e-4…6e-4 → 1e-6 (`adv_sheet_copper` 1e-9). Not covered:
+`r_b` of bins ≥ 1 (unmeasurable, see above), the exact tie `ν = 1.5^11`,
+seam sheet edges the seam update leaves to the periodic merge (in a PML
+layer or next to another operator: their branches are dropped), and
+azimuthal multigrids (ems's slab model, as before).
 
 **Series lumped elements (not reproduced).** The branch current of a
 series R, L, C or RLC element (1 m cells, one edge) follows
