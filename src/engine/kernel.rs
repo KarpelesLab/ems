@@ -97,6 +97,7 @@ fn h_row(
 /// the main kernel follows the setting; boundary and other operators keep
 /// their own expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum CurlOrder {
     /// `(a − b) − (c − d)` (default).
     #[default]

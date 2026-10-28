@@ -212,6 +212,7 @@ use crate::{Error, Result};
 /// rad/s, times in s; the susceptibility is relative (multiplies `ε0` or
 /// `μ0`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum Pole {
     /// `χ(ω) = ω_p² / (ω_0² − ω² + jωγ)`.
     Lorentz {
@@ -426,6 +427,7 @@ impl Pole {
 /// integrated with the trapezoidal rule, which is also what openEMS does;
 /// [`Dispersive::with_openems_debye`] adds openEMS's `f32` rounding).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Scheme {
     /// Semi-implicit trapezoidal rule coupled with the E update (module
     /// docs): unconditionally stable, exact discrete energy balance,
@@ -888,6 +890,7 @@ impl SlabHooks for Parts {
 /// assert!(e.operator(&h).edges() > 0);
 /// ```
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct Dispersive {
     entries: Vec<EdgePole>,
     openems: Vec<OpenEmsPole>,

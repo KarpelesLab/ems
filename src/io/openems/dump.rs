@@ -721,6 +721,7 @@ pub fn write_vtk_freq(
 /// of the dump with their conductivity and density; see the
 /// [module docs](self#sar-dumps).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OpenEmsSar {
     pub(crate) fd: FreqDump,
     pub(crate) sigma: Vec<f64>,
@@ -741,6 +742,7 @@ pub struct OpenEmsSar {
 /// One frequency of an [`OpenEmsSar`]: SAR per cell and the openEMS
 /// statistics.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarFrequency {
     /// SAR per cell \[W/kg\] (z fastest over the dump cells).
     pub sar: Vec<f64>,

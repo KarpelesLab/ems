@@ -71,6 +71,7 @@ pub const ANCHOR_INTERVAL: u64 = 1024;
 /// assert!((dft.result()[0].re - 0.5e-9).abs() < 1e-18);
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RunningDft {
     freqs: Vec<f64>,
     t0: f64,

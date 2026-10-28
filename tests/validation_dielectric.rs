@@ -153,10 +153,8 @@ fn slab_reflection_vs_analytic() {
 #[test]
 fn anisotropic_half_space_per_polarisation() {
     let _t = Timer::start("anisotropic_half_space_per_polarisation");
-    let m = Material {
-        eps_r: [2.0, 6.0, 1.0],
-        ..Material::VACUUM
-    };
+    let mut m = Material::VACUUM;
+    m.eps_r = [2.0, 6.0, 1.0];
     let (ex, yx) = check_half_space(m, Axis::X, "anisotropic, E ∥ x (ε_x = 2)");
     let (ey, yy) = check_half_space(m, Axis::Y, "anisotropic, E ∥ y (ε_y = 6)");
     assert!(ex < 0.01 && ey < 0.01, "{ex} {ey}");

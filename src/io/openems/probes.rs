@@ -94,6 +94,7 @@ pub enum ProbeDomain {
 
 /// What an openEMS probe file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ProbeFileKind {
     /// `voltage integration` \[V\].
     Voltage,
@@ -179,6 +180,7 @@ impl From<ProbeKind> for ProbeFileKind {
 
 /// The contents of one openEMS probe file.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ProbeFile {
     /// Time or frequency domain.
     pub domain: ProbeDomain,

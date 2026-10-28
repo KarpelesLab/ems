@@ -145,6 +145,7 @@ struct Corner {
 /// Keyed by face, edge axis and node (engine indices); edges without an
 /// entry fall back to the averaged medium.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct MurMedia {
     v: std::collections::BTreeMap<(usize, usize, [usize; 3]), f64>,
 }
@@ -197,6 +198,7 @@ impl MurMedia {
 /// # Ok::<(), ems::Error>(())
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MurBoundary {
     faces: Vec<(Face, Option<f64>)>,
     /// The edges and corners (empty once handed to `slabs`).

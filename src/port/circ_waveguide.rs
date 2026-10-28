@@ -16,6 +16,7 @@ use crate::{Error, Result};
 /// A mode of a circular waveguide: `n` azimuthal periods, `m`-th radial
 /// root (`m ≥ 1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CircMode {
     /// TE_nm (`H_z ∝ J_n(k_c ρ)`, `k_c·a = p'_nm`, the `m`-th zero of `J_n'`).
     Te(u32, u32),
@@ -57,6 +58,7 @@ impl core::fmt::Display for CircMode {
 
 /// The csx property names and ids of an added [`CircWaveguidePort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CircWaveguidePortProperties {
     /// The mode `Excitation` (if excited): `port_excite_<n>`.
     pub excitation: Option<(String, PropertyId)>,
@@ -158,6 +160,7 @@ pub struct CircWaveguidePortProperties {
 /// cylindrical grid they use the `rho` and `a` weight variables and give
 /// the `(ρ, α)` components directly.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CircWaveguidePort {
     number: u32,
     start: [f64; 3],

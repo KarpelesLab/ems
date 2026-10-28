@@ -28,6 +28,7 @@ use crate::engine::CellBox;
 
 /// How a SAR dump evaluates its field.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum SarKind {
     /// Local SAR (`SARLocal`).
     Local,
@@ -53,6 +54,7 @@ impl SarKind {
 
 /// A SAR dump: its cells, frequencies and per-cell materials.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarSpec {
     /// Property name.
     pub name: String,
@@ -82,6 +84,7 @@ pub struct SarSpec {
 /// node `j` standing for the cell starting there; `j = n − 1` is the
 /// virtual cell beyond the mesh (no material).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct OpenEmsSarCells {
     /// Cell indices per axis.
     pub indices: [Vec<usize>; 3],

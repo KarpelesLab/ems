@@ -122,6 +122,7 @@ pub struct SheetCutEdge {
 
 /// One part of a cut face outside the sheet(s).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SheetRegion {
     /// Area fraction of the face.
     pub fraction: f64,
@@ -1677,6 +1678,7 @@ struct SheetPml {
 /// owned faces hold the current of their largest region, and uncut edges
 /// on another region are corrected after the E kernel.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ConformalSheets {
     pieces: Vec<Piece>,
     cut: Vec<(Axis, Vec<[usize; 3]>, Vec<usize>)>,

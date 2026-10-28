@@ -125,6 +125,7 @@ impl FieldStore {
 /// (`ny·nz` values, z contiguous) are available as slices for bulk
 /// operators.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct FieldArrays<'a> {
     layout: &'a Layout,
     blocks: Vec<RwLockWriteGuard<'a, Block>>,
@@ -222,6 +223,7 @@ impl FieldArrays<'_> {
 /// `u` and `i` are separate public fields so an operator can read one while
 /// writing the other.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Fields<'a> {
     /// E edge voltages `u = ∫E·dl` \[V\] (three components).
     pub u: FieldArrays<'a>,

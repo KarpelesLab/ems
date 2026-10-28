@@ -16,6 +16,7 @@ use crate::axis::Axis;
 /// Combine with `|`. The engine skips undeclared hooks and the phases (and
 /// barriers) in which no registered operator has work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Hooks(u8);
 
 impl Hooks {
@@ -74,6 +75,7 @@ impl core::ops::BitAnd for Hooks {
 /// `t = (n − ½)·dt` to `(n + ½)·dt` and then the E voltages from `n·dt` to
 /// `(n + 1)·dt`.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct StepContext<'a> {
     /// Index `n` of the step in progress (0 for the first step).
     pub step: u64,
@@ -247,6 +249,7 @@ pub trait Operator: Any + Send {
 /// [`Engine::add_operator`](super::Engine::add_operator), used to read its
 /// state (e.g. probe data) back.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct OperatorHandle<T> {
     pub(crate) engine: u64,
     pub(crate) index: usize,

@@ -44,6 +44,7 @@ pub const STATS_FILE: &str = "openEMS_stats.txt";
 
 /// The summary of a run (`openEMS_stats.txt`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct RunStats {
     /// Mesh nodes (openEMS's "number of cells").
     pub cells: u64,
@@ -56,6 +57,17 @@ pub struct RunStats {
 }
 
 impl RunStats {
+    /// The statistics of a run of `iterations` steps of `dt` on `cells`
+    /// mesh nodes that took `wall_time` seconds.
+    pub fn new(cells: u64, dt: f64, iterations: u64, wall_time: f64) -> Self {
+        Self {
+            cells,
+            dt,
+            iterations,
+            wall_time,
+        }
+    }
+
     /// Simulated time `iterations · dt` \[s\].
     pub fn numerical_time(&self) -> f64 {
         self.iterations as f64 * self.dt
@@ -96,6 +108,7 @@ impl RunStats {
 /// `openEMS_run_stats.txt`, written while the run goes: the header when
 /// created, a row per [`report`](Self::report).
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RunStatsLog {
     path: PathBuf,
     file: std::fs::File,

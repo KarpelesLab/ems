@@ -258,10 +258,8 @@ fn dielectric_background() {
 fn lossy_background() {
     let _t = Timer::start("lossy_background");
     // tan δ ≈ 0.2 at 5.7 GHz: about 2.4 dB per 10 mm.
-    let m = Medium {
-        kappa: 0.13,
-        ..Medium::lossless(2.0, 1.0)
-    };
+    let mut m = Medium::lossless(2.0, 1.0);
+    m.kappa = 0.13;
     let g = || Grid::uniform([36; 3], [1e-3; 3]).unwrap();
     let f0 = 8e9 / 2f64.sqrt();
     let (l0, line) = leakage_in(g(), 13, 23, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], m, f0);

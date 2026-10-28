@@ -191,6 +191,7 @@ use csx::{CoordSystem, PropertyKind, Vec3};
 
 /// Options of [`compile`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CompileOptions {
     /// Sub-samples per axis in each quarter / half cell used by csx to
     /// average materials (`N`, `N³` samples; default 1).
@@ -257,6 +258,7 @@ impl Default for CompileOptions {
 /// the same object in both crates (E edge from `n` along `a`; H face normal
 /// to `a` with lowest corner `n`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NodeMap {
     nodes: [usize; 3],
 }
@@ -327,6 +329,7 @@ impl NodeMap {
 /// [`crate::Simulation`] (not by [`Compiled::build`]). Edges/faces are in
 /// csx indexing; convert with [`Compiled::node_map`] / [`NodeMap::edge`].
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct ModelSources {
     /// Enabled excitations, with amplitudes per E edge (E types, field
     /// value along the edge in V/m) or per H face (H types, A/m).
@@ -354,6 +357,7 @@ pub struct ModelSources {
 /// A ProbeBox or DumpBox property (`T`) with its box snapped to mesh
 /// nodes (see the [module docs](self) on snapping).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ProbeSpec<T> {
     /// Property name.
     pub name: String,
@@ -399,6 +403,7 @@ pub struct ProbeSpec<T> {
 /// An absorbing sheet from a csx `AbsorbingBC` primitive (see
 /// [Absorbing sheets](self#absorbing-sheets)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct AbcSpec {
     /// Property name.
     pub name: String,
@@ -415,6 +420,7 @@ pub type OpenEmsSheetBranch = (Axis, [usize; 3], [(f64, f64); 2]);
 /// Engine inputs produced by [`compile`]; [`build`](Self::build) turns
 /// them into an [`Engine`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Compiled {
     /// Mesh in metres.
     pub grid: Grid,
@@ -545,6 +551,7 @@ pub struct Compiled {
 
 /// The boundary operators created by [`Compiled::build`].
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct BoundaryHandles {
     /// The Mur operator covering every Mur face, if any.
     pub mur: Option<OperatorHandle<MurBoundary>>,

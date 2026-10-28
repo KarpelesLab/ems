@@ -10,6 +10,7 @@ use crate::{Error, Result};
 
 /// What a model probe measures (csx `ProbeBox` type).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ProbeKind {
     /// Line integral of E \[V\], sampled at the E times `(n + 1)·dt`.
     Voltage,
@@ -32,6 +33,7 @@ pub enum ProbeKind {
 /// the primary node with the same indices, in metres (openEMS prints
 /// them the same way).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ProbeLocation {
     /// Indices of the first corner.
     pub start: [usize; 3],
@@ -45,6 +47,7 @@ pub struct ProbeLocation {
 
 /// Recorded values of a probe.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ProbeValues {
     /// Voltage or current samples.
     Scalar(Vec<f64>),
@@ -68,6 +71,7 @@ pub enum ProbeValues {
 /// [`spectrum`](Self::spectrum)) return the spectrum of the complex series,
 /// `X(f) = DFT[x_re](f) + j·DFT[x_im](f)`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ProbeResult {
     pub(crate) name: String,
     pub(crate) id: u32,
@@ -262,6 +266,7 @@ impl ProbeResult {
 
 /// The recorded data of one csx `DumpBox`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum DumpData {
     /// Time-domain snapshots (`EField` / `HField` dumps).
     Time {
@@ -281,6 +286,7 @@ pub enum DumpData {
 /// the real part, with the imaginary part's snapshots in
 /// [`imag_snapshots`](Self::imag_snapshots).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DumpResult {
     pub(crate) name: String,
     pub(crate) id: u32,
@@ -424,6 +430,7 @@ impl DumpResult {
 /// density (W/m³·s²); normalise it to the accepted port power at the same
 /// frequency ([`SarVolume::scaled`]) for SAR per watt.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SarResult {
     pub(crate) name: String,
     pub(crate) id: u32,
@@ -520,6 +527,7 @@ impl SarResult {
 /// are copied too (use [`Simulation::time_dump`](crate::Simulation::time_dump)
 /// to avoid that for large dumps).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Results {
     pub(crate) outcome: Option<RunOutcome>,
     pub(crate) dt: f64,
@@ -540,6 +548,7 @@ pub struct Results {
 /// `F(r)` measured elsewhere relates to it through the Bloch phase
 /// `e^{−j k_t·(r − r_0)}` and the propagation along the normal.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct IncidentWave {
     pub(crate) name: String,
     pub(crate) dt: f64,

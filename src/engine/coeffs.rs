@@ -34,6 +34,7 @@ use crate::{Error, Result};
 ///   plane); the engine merges the two copies after every E update (see
 ///   [`boundary::periodic`](super::boundary::periodic)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum FaceCondition {
     /// Perfect electric conductor: tangential E forced to zero.
     #[default]
@@ -59,6 +60,7 @@ pub enum FaceCondition {
 /// assert_eq!(f[Face::YMin], FaceCondition::Pec);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct FaceConditions([FaceCondition; 6]);
 
 impl FaceConditions {
@@ -122,6 +124,7 @@ impl IndexMut<Face> for FaceConditions {
 
 /// How the time step is chosen.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum TimeStep {
     /// `dt = S · dt_max` with Courant number `S` in `(0, 1]`, see
     /// [`courant_limit`].
@@ -149,6 +152,7 @@ pub enum TimeStep {
 /// physical cell geometry, Gershgorin with the axis, one grid per
 /// multigrid zone).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct OpenEmsTimestep {
     /// The criterion.
     pub method: super::timestep::TimestepMethod,
@@ -354,6 +358,7 @@ pub fn dual_edge_lr(grid: &Grid, mats: &CellMaterials, axis: Axis, node: [usize;
 /// da = (L − R·dt/2)/(L + R·dt/2),  db = dt/(L + R·dt/2)
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Coefficients {
     /// ca (0–2), cb (3–5), da (6–8), db (9–11).
     pub(crate) data: [Vec<f32>; 12],
@@ -366,6 +371,7 @@ pub struct Coefficients {
 /// forming `ca = (C − G·dt/2)/(C + G·dt/2)`, `cb = dt/(C + G·dt/2)` and
 /// the H analogues in `f64`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CoeffRounding {
     /// No intermediate rounding: each coefficient is the `f64` value
     /// rounded once to `f32` (default).

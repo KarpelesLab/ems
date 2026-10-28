@@ -525,10 +525,8 @@ fn run_uses_settings_and_maps_sources() {
         "{:?}",
         sim.warnings()
     );
-    let opts = CompileOptions {
-        mesh_check: false,
-        ..CompileOptions::default()
-    };
+    let mut opts = CompileOptions::default();
+    opts.mesh_check = false;
     let quiet = Simulation::with_options(&model, &fdtd, &opts).unwrap();
     assert!(quiet.warnings().is_empty(), "{:?}", quiet.warnings());
     // Discretised and mapped onto a soft source.

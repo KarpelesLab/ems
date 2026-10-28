@@ -369,6 +369,7 @@ impl Periodic {
 /// assert_eq!(pair.real().operator(&h).values().len(), 10);
 /// # Ok::<(), ems::Error>(())
 /// ```
+#[non_exhaustive]
 pub struct BlochPair {
     re: Engine,
     im: Engine,

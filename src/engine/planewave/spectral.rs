@@ -60,6 +60,7 @@ const MAX_FFT: usize = 1 << 18;
 
 /// How the stratified column ends at a domain face.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LayerEnd {
     /// The end medium continues to infinity (an absorbing boundary).
     #[default]

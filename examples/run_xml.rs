@@ -194,6 +194,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .column("z", &c[2])
                     .write(&path)?;
             }
+            _ => {
+                println!("skipped {}: unsupported probe values", p.name());
+                continue;
+            }
         }
         println!("wrote {}", path.display());
     }

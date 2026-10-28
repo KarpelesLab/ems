@@ -254,6 +254,7 @@ struct SpectralInput<'a> {
 
 /// Geometry and physics of a [`PlaneWave`] (see the [module docs](self)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PlaneWaveSpec {
     /// First node of the total-field box.
     pub start: [usize; 3],
@@ -453,6 +454,7 @@ const AUX_TAPER: usize = 256;
 /// # let _ = h;
 /// # Ok::<(), ems::Error>(())
 /// ```
+#[non_exhaustive]
 pub struct PlaneWave {
     spec: PlaneWaveSpec,
     /// The spectral incident field (layered or dispersive background).

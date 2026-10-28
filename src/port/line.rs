@@ -215,6 +215,7 @@ pub(crate) fn choose_probes(
 /// [`s_param`](crate::post::s_param) directly) plus the extracted line
 /// parameters.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct LinePortResult {
     port: PortResult,
     gamma: Vec<Complex64>,

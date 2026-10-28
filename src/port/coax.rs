@@ -31,6 +31,7 @@ use crate::{Error, Result};
 
 /// The csx property names and ids of an added [`CoaxPort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CoaxPortProperties {
     /// The conductors (the given property, or `port_metal_<n>`).
     pub metal: (String, PropertyId),
@@ -199,6 +200,7 @@ pub struct CoaxPortProperties {
 /// keep **about eight times `b − a`** between the feed and the middle of
 /// the port.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CoaxPort {
     number: u32,
     start: [f64; 3],

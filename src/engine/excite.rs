@@ -9,6 +9,7 @@ pub type Amplitude = Box<dyn Fn(f64) -> f64 + Send>;
 
 /// What an [`EdgeSource`] drives and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SourceKind {
     /// Additive ("soft") source on E edges (default): after the E update
     /// of step `n`, `u += w·a(t)` with `t = (n + ½)·dt`, the centre of
@@ -50,6 +51,7 @@ impl SourceKind {
 ///
 /// A soft source on a PEC edge (`ca = cb = 0`) behaves like a hard source:
 /// the kernel clears the edge and the source writes the amplitude.
+#[non_exhaustive]
 pub struct EdgeSource {
     kind: SourceKind,
     edges: Vec<(Axis, [usize; 3], f32)>,

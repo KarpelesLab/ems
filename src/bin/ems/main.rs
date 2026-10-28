@@ -365,6 +365,7 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
         let (what, n) = match sig.span {
             SignalSpan::Length(n) => ("length", n),
             SignalSpan::Period(n) => ("period", n),
+            _ => unreachable!("signal span {:?}", sig.span),
         };
         println!(
             "Excitation signal {what} is: {n} timesteps ({}s)",
@@ -522,13 +523,7 @@ fn run(opts: &Options, file: &Path) -> Res<ExitCode> {
         g(cells as f64 * o.steps as f64 / secs.max(1e-9) / 1e6)
     );
     if opts.dump_statistics {
-        RunStats {
-            cells,
-            dt,
-            iterations: o.steps,
-            wall_time: secs,
-        }
-        .write(cwd)?;
+        RunStats::new(cells, dt, o.steps, secs).write(cwd)?;
     }
 
     // ---- files.

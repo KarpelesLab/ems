@@ -221,6 +221,7 @@ pub struct ConformalFace {
 
 /// Options of [`ConformalPec::apply`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ConformalOptions {
     /// Faces with an open area fraction below this lose their own current:
     /// interpolated from neighbours, or merged with one (default 0.5; see
@@ -257,6 +258,7 @@ impl Default for ConformalOptions {
 /// merge fallback, `interpolated` and `hosts` the interpolation (see the
 /// [module docs](self#small-cut-faces-interpolation)).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ConformalReport {
     /// Cut edges scaled (including fully covered ones made PEC).
     pub edges: usize,
@@ -316,6 +318,7 @@ impl ConformalReport {
 /// Conformal PEC geometry (cut edges and faces) to be applied to an
 /// engine; see the [module docs](self).
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct ConformalPec {
     edges: Vec<ConformalEdge>,
     faces: Vec<ConformalFace>,
@@ -1656,6 +1659,7 @@ type Driven = (Axis, [usize; 3], Vec<(usize, f64)>);
 /// group, hosts, interpolated small faces) and reports their energy; see
 /// the [module docs](self#small-cut-faces-interpolation).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MergedFaces {
     /// Merge groups (`..scalar`, own `da`, `db`) and hosts (in `blocks`).
     groups: Vec<Group>,

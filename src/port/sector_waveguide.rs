@@ -18,6 +18,7 @@ use crate::{Error, Result};
 /// across the opening (azimuthal order `ν = mπ/φ_s`), `n`-th radial root
 /// (`n ≥ 1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SectorMode {
     /// TE_mn (`H_z ∝ J_ν(k_c ρ)·cos(ν(α − α_0))`, `k_c·b = j'_{ν,n}`).
     Te(u32, u32),
@@ -118,6 +119,7 @@ impl core::fmt::Display for SectorMode {
 /// (the reference impedance of [`analyze`](Self::analyze)) is
 /// `Z_TE = ωμ/β` or `Z_TM = β/(ωε)`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SectorWaveguidePort {
     number: u32,
     start_z: f64,

@@ -77,6 +77,7 @@ fn invalid(m: impl Into<String>) -> Error {
 
 /// A raw SAR dump file (see the [module docs](self#input-raw-dump)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RawSar {
     /// `/Mesh/{x,y,z}` as stored (cell centres).
     pub mesh: [Vec<f64>; 3],
@@ -218,6 +219,7 @@ impl RawSar {
 
 /// Options of [`run`] (the `sar_calc` command line).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarCalcOptions {
     /// Input raw dump (`-i`).
     pub input: PathBuf,
@@ -240,8 +242,29 @@ pub struct SarCalcOptions {
     pub autorange: Option<f64>,
 }
 
+impl SarCalcOptions {
+    /// Options for averaging `input` over `mass_g` grams into `output`,
+    /// with the `sar_calc` defaults for everything else (the default
+    /// [`AveragingMethod`], all cores, quiet, no cube statistics, current
+    /// HDF5 layout, every cell written).
+    pub fn new(input: impl Into<PathBuf>, output: impl Into<PathBuf>, mass_g: f64) -> Self {
+        Self {
+            input: input.into(),
+            output: output.into(),
+            mass_g,
+            method: AveragingMethod::default(),
+            threads: 0,
+            verbose: false,
+            export_cube_stats: false,
+            legacy: false,
+            autorange: None,
+        }
+    }
+}
+
 /// The averaged SAR of one frequency.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarCalcFrequency {
     /// Frequency \[Hz\].
     pub frequency: f64,
@@ -264,6 +287,7 @@ pub struct SarCalcFrequency {
 /// extended to the cells that contain the widened box's faces. The
 /// averages themselves see the whole domain.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct AutoRange {
     /// The `-a` value \[dB\].
     pub db: f64,
@@ -572,6 +596,7 @@ pub fn output_bytes(
 
 /// The result of [`run`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarCalcRun {
     /// The input.
     pub raw: RawSar,

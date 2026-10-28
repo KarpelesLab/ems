@@ -14,6 +14,7 @@ use crate::{Error, Result};
 
 /// The csx property names and ids of an added [`RectWaveguidePort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WaveguidePortProperties {
     /// The mode `Excitation` (if excited): `port_excite_<n>`.
     pub excitation: Option<(String, PropertyId)>,
@@ -94,6 +95,7 @@ pub struct WaveguidePortProperties {
 /// propagation constant `β = √(k² − k_c²)` and the wave impedance
 /// `Z_TE = ωμ/β`, the reference impedance of [`analyze`](Self::analyze).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RectWaveguidePort {
     number: u32,
     start: [f64; 3],

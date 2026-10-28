@@ -89,6 +89,7 @@ use crate::{Error, Result};
 
 /// A mirror plane of an nf2ff job (`<Mirror Dir Type Pos/>`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Nf2ffMirror {
     /// Normal axis of the mirror plane (0 = x, 1 = y, 2 = z).
     pub axis: usize,
@@ -100,6 +101,7 @@ pub struct Nf2ffMirror {
 
 /// One box face: an E and an H dump file (`<Planes E_Field H_Field/>`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Nf2ffPlaneFiles {
     /// The E-field dump.
     pub e_file: PathBuf,
@@ -107,9 +109,20 @@ pub struct Nf2ffPlaneFiles {
     pub h_file: PathBuf,
 }
 
+impl Nf2ffPlaneFiles {
+    /// The face dumped to `e_file` (E) and `h_file` (H).
+    pub fn new(e_file: impl Into<PathBuf>, h_file: impl Into<PathBuf>) -> Self {
+        Self {
+            e_file: e_file.into(),
+            h_file: h_file.into(),
+        }
+    }
+}
+
 /// An nf2ff job as described by an openEMS nf2ff XML file (see the
 /// [module docs](self#the-xml-file)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Nf2ffJob {
     /// Frequencies \[Hz\].
     pub frequencies: Vec<f64>,
@@ -295,6 +308,7 @@ impl Nf2ffJob {
 /// The near field of one plane at one frequency: E and H at the plane's
 /// mesh nodes (x fastest-varying last: index `(i·ny + j)·nz + k`).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NearFieldPlane {
     /// Mesh lines \[m\] (one along the normal).
     pub lines: [Vec<f64>; 3],
@@ -497,6 +511,7 @@ fn cross(a: [Complex64; 3], b: [Complex64; 3]) -> [Complex64; 3] {
 /// The far field of an nf2ff job (one entry per frequency; angle arrays
 /// `[ntheta][nphi]` flattened theta-major).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Nf2ffFarField {
     /// Frequencies \[Hz\].
     pub frequencies: Vec<f64>,

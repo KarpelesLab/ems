@@ -130,17 +130,13 @@ fn main_inner(args: &[String]) -> Result<(), String> {
             .map_err(|_| format!("ems-sar-calc: invalid thread count {n}"))?,
         None => 0,
     };
-    let o = SarCalcOptions {
-        input: input.into(),
-        output: output.into(),
-        mass_g,
-        method,
-        threads,
-        verbose: get("verbose").is_some(),
-        export_cube_stats: get("export_cube_stats").is_some(),
-        legacy: get("legacyHDF5Dumps").is_some(),
-        autorange,
-    };
+    let mut o = SarCalcOptions::new(input, output, mass_g);
+    o.method = method;
+    o.threads = threads;
+    o.verbose = get("verbose").is_some();
+    o.export_cube_stats = get("export_cube_stats").is_some();
+    o.legacy = get("legacyHDF5Dumps").is_some();
+    o.autorange = autorange;
     if o.verbose {
         println!("Averaging method: {}", method.name());
         println!("Input file: {input}");

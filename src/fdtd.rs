@@ -108,6 +108,7 @@ impl fmt::Display for Face {
 /// face, tuned for waves leaving at normal incidence with the given phase
 /// velocity.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Mur {
     /// Phase velocity the boundary is tuned for \[m/s\]; `None` means the
     /// local medium speed `c0/√(ε_r·μ_r)` of each boundary edge when the
@@ -174,6 +175,7 @@ impl Mur {
 /// to that optimum. The defaults (`m = 3`, `κ_max = 1`, `α_max = 0`) give a
 /// classic graded PML; `κ_max > 1` and `α_max > 0` enable the CFS terms.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Cpml {
     /// Number of mesh cells the layer occupies (default 8).
     pub cells: usize,
@@ -266,6 +268,7 @@ impl Cpml {
 
 /// Boundary condition of one domain face.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum Boundary {
     /// Perfect electric conductor: tangential E is zero on the face.
     #[default]
@@ -316,6 +319,7 @@ impl Boundary {
 
 /// Boundary conditions of all six faces (default: all PEC).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Boundaries([Boundary; 6]);
 
 impl Boundaries {
@@ -396,6 +400,7 @@ impl IndexMut<Face> for Boundaries {
 /// excitation is over and the total field energy has decayed below
 /// `energy_ratio` times its maximum.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct EndCriteria {
     /// Threshold as a linear energy ratio `W/W_max` in `(0, 1]`.
     pub energy_ratio: f64,
@@ -467,6 +472,7 @@ impl EndCriteria {
 /// # Ok::<(), ems::Error>(())
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Fdtd {
     waveform: Option<Waveform>,
     boundaries: Boundaries,

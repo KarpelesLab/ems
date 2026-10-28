@@ -20,6 +20,7 @@ use crate::{Error, Result};
 
 /// The coordinate system of a [`Grid`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum Coordinates {
     /// `(x, y, z)` in metres.
     #[default]
@@ -39,6 +40,7 @@ const CLOSED_TOL: f64 = 1e-6;
 /// [`Axis::index`] (`[x, y, z]`, or `[ρ, α, z]`). The grid has `n[a]` node
 /// lines along axis `a` (at least 2) and therefore `n[a] − 1` cells.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Grid {
     lines: [Vec<f64>; 3],
     coords: Coordinates,

@@ -70,6 +70,7 @@ pub use radial::{RadialLinePort, RadialLinePortProperties, RadialLinePortResult}
 
 /// The csx property names and ids of an added [`LumpedPort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PortProperties {
     /// The `LumpedElement` (the port resistance): `port_resist_<n>`.
     pub element: (String, PropertyId),
@@ -156,6 +157,7 @@ pub struct PortProperties {
 /// half-step times as `port_it<n>`). Equivalently, add the port cell's
 /// displacement current back, `I = I_loop + jω̃·C_p·V`, if `C_p` is known.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct LumpedPort {
     number: u32,
     resistance: f64,

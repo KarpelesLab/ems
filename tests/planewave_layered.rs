@@ -401,6 +401,7 @@ fn dispersive_backgrounds() {
                     let chi = match scheme {
                         Scheme::Trapezoidal => pole.discrete_susceptibility(f, out.dt),
                         Scheme::Leapfrog => pole.leapfrog_susceptibility(f, out.dt),
+                        _ => unreachable!("scheme {scheme:?}"),
                     };
                     let k =
                         yee_k_complex(yee_omega(f, out.dt), 1e-3, chi + eps_inf, Complex64::ONE);

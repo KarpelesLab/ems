@@ -9,6 +9,7 @@ use crate::{Error, Result};
 
 /// Which field a [`Probe`] samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProbeQuantity {
     /// E edge voltages `u`, sampled after the E update at `(n + 1)·dt`.
     Voltage,
@@ -42,6 +43,7 @@ pub struct ModeSample {
 /// With [`mode_purity`](Self::mode_purity) it also records, at the same
 /// samples, how much of the sampled transverse field is the mode.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Probe {
     quantity: ProbeQuantity,
     entries: Vec<(Axis, [usize; 3], f64)>,
@@ -314,6 +316,7 @@ impl Operator for Probe {
 /// several points the recorded vector is their mean ([`new`](Self::new))
 /// or a weighted sum ([`at`](Self::at)).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FieldProbe {
     sampler: FieldSampler,
     /// Weight per sample point (empty: mean).

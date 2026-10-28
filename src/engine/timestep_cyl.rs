@@ -342,6 +342,7 @@ fn shift(n: [isize; 3], a: usize, k: isize) -> [isize; 3] {
 /// `α` lines of [`alpha_lines`](Self::alpha_lines), averaged as openEMS
 /// does at those literal angles.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct SeamMaterials {
     /// One per `α` stride 1, 2, 4, ….
     pub levels: Vec<EdgeMaterials>,

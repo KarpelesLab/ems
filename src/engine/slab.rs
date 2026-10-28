@@ -10,6 +10,7 @@ use crate::axis::Axis;
 /// The x-slab partition of an engine, passed to
 /// [`Operator::slab_hooks`](super::Operator::slab_hooks) at registration.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct SlabPartition<'a> {
     pub(crate) grid: &'a Grid,
     pub(crate) dt: f64,
@@ -41,6 +42,7 @@ impl SlabPartition<'_> {
 
 /// Information passed to the [`SlabHooks`] half-step calls.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct SlabContext<'a> {
     /// Index of the slab (in `0..`[`SlabPartition::slabs`]).
     pub slab: usize,
@@ -56,6 +58,7 @@ pub struct SlabContext<'a> {
 /// Write access to one field type (all three components) in the x-planes
 /// of one slab.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SlabMut<'a> {
     pub(crate) n: [usize; 3],
     pub(crate) planes: Range<usize>,
@@ -108,6 +111,7 @@ impl SlabMut<'_> {
 /// half-step (for `u`), the last plane of the previous slab during the E
 /// half-step (for `i`).
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SlabRef<'a> {
     pub(crate) n: [usize; 3],
     pub(crate) planes: Range<usize>,
@@ -157,6 +161,7 @@ impl SlabRef<'_> {
 /// How the [`SlabHooks`] of an operator can run in a fused step
 /// ([`SlabHooks::fusion`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Fusion {
     /// Not at all: steps run unfused while the operator is registered.
     None,

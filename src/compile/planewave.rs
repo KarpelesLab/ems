@@ -59,6 +59,7 @@ use crate::{Error, Result};
 
 /// A plane-wave excitation of the model (see the [module docs](self)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PlaneWaveSource {
     /// Property name.
     pub name: String,

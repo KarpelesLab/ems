@@ -90,6 +90,7 @@ pub enum WavePart {
 /// Geometry and physics of a [`PeriodicPlaneWave`] (see the
 /// [module docs](self)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PeriodicPlaneWaveSpec {
     /// Normal axis of the injection planes.
     pub axis: Axis,
@@ -299,6 +300,7 @@ impl Aux {
 /// assert_eq!(e.operator(&h).incident().len(), 20);
 /// # Ok::<(), ems::Error>(())
 /// ```
+#[non_exhaustive]
 pub struct PeriodicPlaneWave {
     spec: PeriodicPlaneWaveSpec,
     part: WavePart,

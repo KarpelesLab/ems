@@ -230,6 +230,7 @@ use crate::{Error, Result};
 
 /// Recursive-convolution coefficients at one depth position.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct CpmlCoefficients {
     /// Normalised depth `ρ ∈ [0, 1]` (0 at the interface).
     pub rho: f64,
@@ -532,6 +533,7 @@ struct Layer {
 /// Registering it ([`Engine::add_operator`]) panics if the engine's grid
 /// or time step differ from those it was built for.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CpmlBoundary {
     nodes: [usize; 3],
     dt: f64,

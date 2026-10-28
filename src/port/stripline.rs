@@ -37,6 +37,7 @@ use crate::{Error, Result};
 
 /// The csx property names and ids of an added [`StriplinePort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StriplinePortProperties {
     /// The strip metal (the given property, or `port_metal_<n>`).
     pub metal: (String, PropertyId),
@@ -147,6 +148,7 @@ impl StriplinePortProperties {
 /// At `stop[dir]`, moved by [`reference_shift`](Self::reference_shift)
 /// along the propagation direction.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct StriplinePort {
     number: u32,
     start: [f64; 3],

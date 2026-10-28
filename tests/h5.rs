@@ -203,6 +203,7 @@ fn probes_round_trip() {
                     .unwrap();
                 assert_eq!(fr, [2e9]);
             }
+            other => panic!("unexpected probe values {other:?}"),
         }
     }
 }

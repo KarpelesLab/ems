@@ -265,6 +265,7 @@ impl PmlProfile {
 /// update the layer replaces; the interface planes are outside), from
 /// [`OpenEmsPml::layers`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PmlLayers(Profile);
 
 impl PmlLayers {
@@ -567,6 +568,7 @@ impl SlabHooks for Parts {
 /// Registering it ([`Engine::add_operator`]) panics if the engine's grid
 /// or time step differ from those it was built for.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OpenEmsPml {
     nodes: [usize; 3],
     dt: f64,

@@ -106,6 +106,7 @@ use crate::constants::{OPENEMS_EPS0, OPENEMS_MU0};
 
 /// The openEMS time-step criterion (`TimeStepMethod`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum TimestepMethod {
     /// Method 1 ("CFL"): Gershgorin bound per E edge.
     Cfl,

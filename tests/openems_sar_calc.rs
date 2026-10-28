@@ -140,17 +140,10 @@ fn edge_cases_match_openems() {
 fn library_matches_binary() {
     let raw = fixture("sar_calc_block").join("raw.h5");
     let out = tmp_dir("lib");
-    let o = SarCalcOptions {
-        input: raw.clone(),
-        output: out.join("lib.h5"),
-        mass_g: 0.05,
-        method: AveragingMethod::IeeeC95_3,
-        threads: 3,
-        verbose: false,
-        export_cube_stats: false,
-        legacy: false,
-        autorange: Some(3.0),
-    };
+    let mut o = SarCalcOptions::new(&raw, out.join("lib.h5"), 0.05);
+    o.method = AveragingMethod::IeeeC95_3;
+    o.threads = 3;
+    o.autorange = Some(3.0);
     let r = run(&o).unwrap();
     assert!(r.range.is_some());
     let exe = env!("CARGO_BIN_EXE_ems-sar-calc");

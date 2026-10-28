@@ -191,6 +191,7 @@ pub fn lattice_radius(hx: f64, hy: f64) -> f64 {
 
 /// A straight thin wire along a mesh axis; see the [module docs](self).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct ThinWire {
     axis: Axis,
     start: [usize; 3],

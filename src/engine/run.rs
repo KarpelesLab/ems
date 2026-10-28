@@ -20,6 +20,7 @@ use crate::{Error, Result};
 /// assert_eq!(limits.max_timesteps, 100_000);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct RunLimits {
     /// Maximum number of steps this call runs (counted from the engine's
     /// [`timestep`](Engine::timestep) at the start of the call).
@@ -157,6 +158,7 @@ pub enum StopReason {
 /// Snapshot passed to the progress callback of
 /// [`Engine::run_until_with`] after every energy check.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Progress {
     /// Engine [`timestep`](Engine::timestep) `n` of the energy sample.
     pub timestep: u64,
@@ -181,6 +183,7 @@ pub struct Progress {
 
 /// Result of [`Engine::run_until`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct RunOutcome {
     /// Why the run stopped.
     pub reason: StopReason,

@@ -56,7 +56,7 @@
 //!
 //! let grid = Grid::uniform([4, 4, 4], [1e-3; 3])?;
 //! let s = FieldSampler::new(&grid, DumpRegion::whole(&grid), DumpQuantity::E, DumpPosition::Nodes)?;
-//! let snap = Snapshot { step: 10, time: 1e-11, data: vec![[0.0, 0.0, 1.0]; s.len()] };
+//! let snap = Snapshot::new(10, 1e-11, vec![[0.0, 0.0, 1.0]; s.len()]);
 //! let bytes = h5::time_dump_bytes("Et", 0, &s, &[snap], &h5::H5Options::default())?;
 //! assert_eq!(&bytes[..8], b"\x89HDF\r\n\x1a\n");
 //! # Ok(())

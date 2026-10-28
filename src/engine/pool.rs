@@ -134,6 +134,7 @@ pub(crate) struct Shared {
 /// ([`Engine::set_fused_steps`](super::Engine::set_fused_steps)). Results
 /// are bit-identical either way; this only affects speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum FusedSteps {
     /// Where the operators allow it and the fields of a slab exceed
     /// [`FUSE_MIN_BYTES`] (the default).

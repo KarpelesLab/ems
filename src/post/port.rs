@@ -49,6 +49,7 @@ use crate::{Error, Result};
 /// Frequency-domain voltage and current of one port, with derived
 /// quantities; see the [module documentation](self).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PortResult {
     freqs: Vec<f64>,
     v: Vec<Complex64>,

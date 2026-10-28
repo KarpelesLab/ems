@@ -182,6 +182,7 @@ const WINDOW: f64 = 5.0;
 /// A feed in one segment of an [`ObliqueWire`]: a series resistance and an
 /// optional voltage source (a delta-gap source with internal resistance).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct WireFeed {
     segment: usize,
     resistance: f64,
@@ -191,6 +192,7 @@ pub struct WireFeed {
 /// A thin wire: a polyline with a radius, optionally with a feed (see the
 /// [module docs](self)).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ObliqueWire {
     points: Vec<[f64; 3]>,
     radius: f64,
@@ -401,6 +403,7 @@ struct Solver {
 /// `pre_e` and `post_e` hooks. Register it before operators that must see
 /// the final E field of a step (e.g. absorbing sheets).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ObliqueWires {
     nodes: Vec<[f64; 3]>,
     segs: Vec<(usize, usize)>,

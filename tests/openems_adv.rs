@@ -188,10 +188,8 @@ fn lorentz_coarse() {
 /// few percent: the formulation-level difference of the two schemes.
 #[test]
 fn lorentz_coarse_trapezoidal_differs() {
-    let opts = CompileOptions {
-        dispersive_scheme: ems::engine::dispersive::Scheme::Trapezoidal,
-        ..CompileOptions::default()
-    };
+    let mut opts = CompileOptions::default();
+    opts.dispersive_scheme = ems::engine::dispersive::Scheme::Trapezoidal;
     let res = run("adv_lorentz_coarse", &opts);
     for (f, e) in compare("adv_lorentz_coarse", &res) {
         assert!(e > 1e-2 && e < 0.2, "{f}: {e}");

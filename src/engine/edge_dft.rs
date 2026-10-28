@@ -40,6 +40,7 @@ use crate::{Error, Result};
 
 /// A box of primary cells: `lo[a] ≤ cell[a] < hi[a]` (node indices).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct CellBox {
     lo: [usize; 3],
     hi: [usize; 3],
@@ -116,6 +117,7 @@ impl CellBox {
 /// Memory: 16 bytes per edge per frequency (about 48 bytes per cell and
 /// frequency).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EdgeDft {
     cells: CellBox,
     freqs: Vec<f64>,

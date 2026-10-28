@@ -45,6 +45,7 @@ use crate::{Error, Result};
 /// `mu_r` the average over the dual edge (length-weighted *harmonic* mean,
 /// the series combination). See [`Coefficients`](super::Coefficients).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct EdgeMaterials {
     nodes: [usize; 3],
     eps_r: [Vec<f64>; 3],

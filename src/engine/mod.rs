@@ -217,6 +217,7 @@ use pool::{GAP_A, GAP_B, GAP_M, Gap, Plan, Pool, Shared};
 
 /// Configures and builds an [`Engine`]; see [`Engine::builder`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EngineBuilder {
     grid: Grid,
     materials: Option<Materials>,
@@ -427,6 +428,7 @@ fn smt_width() -> usize {
 /// A ready-to-run FDTD engine.
 ///
 /// Stepping is infallible. Dropping the engine stops its worker threads.
+#[non_exhaustive]
 pub struct Engine {
     id: u64,
     grid: Grid,

@@ -93,11 +93,7 @@ fn run_line(
     if let Some((m, r)) = &medium {
         l.layers.push((
             r.clone(),
-            Material {
-                eps_r: [m.eps_inf; 3],
-                mu_r: [m.mu_inf; 3],
-                ..Material::VACUUM
-            },
+            Material::VACUUM.with_eps_r(m.eps_inf).with_mu_r(m.mu_inf),
         ));
     }
     let (mut e, hs) = l.build(sine_pulse(F0, BW));
@@ -576,13 +572,7 @@ fn csx_lorentz_material_matches_engine_setup() {
     l.probes = vec![PRB, IFACE + 5];
     let want = {
         let mut ll = l.clone();
-        ll.layers = vec![(
-            IFACE..cells,
-            Material {
-                eps_r: [2.0; 3],
-                ..Material::VACUUM
-            },
-        )];
+        ll.layers = vec![(IFACE..cells, Material::dielectric(2.0))];
         let (mut e, hs) = ll.build(sine_pulse(F0, BW));
         let mut d = Dispersive::new().with_scheme(Scheme::Leapfrog);
         for k in IFACE..=cells {

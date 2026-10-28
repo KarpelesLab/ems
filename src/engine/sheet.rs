@@ -423,6 +423,7 @@ struct EdgeState {
 /// assert_eq!(e.operator(&h).edges(), 2 * 4 * 5);
 /// ```
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct ConductingSheet {
     f_max: Option<f64>,
     entries: Vec<SheetEdge>,

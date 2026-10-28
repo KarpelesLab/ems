@@ -99,6 +99,7 @@ use crate::{Error, Result};
 ///
 /// The writer always emits VTK order and reorders `ZFastest` input on the fly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
 pub enum Layout {
     /// z varies fastest, then y, then x (C order over `[i][j][k]`); the
     /// native layout of `ems` field arrays.
@@ -124,6 +125,7 @@ impl Layout {
 
 /// How data arrays are encoded in the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
 pub enum Encoding {
     /// Human-readable decimal text (`format="ascii"`), shortest round-trip
     /// representation in exponent notation. Large and slow; handy for
@@ -145,6 +147,7 @@ pub enum Encoding {
 
 /// Integer type of the byte-count header that precedes binary data blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
 pub enum HeaderType {
     /// 32-bit header: arrays are limited to `u32::MAX` bytes.
     UInt32,
@@ -183,6 +186,7 @@ impl HeaderType {
 
 /// How a complex array is split into two real VTK arrays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
 pub enum ComplexForm {
     /// `name_re` and `name_im`: real and imaginary parts (the default).
     #[default]
@@ -196,6 +200,7 @@ pub enum ComplexForm {
 ///
 /// The slices are tuples in the order given by the [`Layout`] passed alongside.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum Field<'a, T> {
     /// One value per tuple.
     Scalar(&'a [T]),
@@ -247,6 +252,7 @@ mod imp {
 
     /// Which real quantity of an array is written.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[non_exhaustive]
     pub enum Part {
         Real,
         Re,
@@ -266,6 +272,7 @@ mod imp {
 
     /// Typed array data: a real field, or a complex one with the part to write.
     #[derive(Debug, Clone, Copy)]
+    #[non_exhaustive]
     pub struct ArrayData<'a, T> {
         pub re: Field<'a, T>,
         pub im: Option<Field<'a, T>>,
@@ -274,6 +281,7 @@ mod imp {
 
     /// Type-erased [`ArrayData`].
     #[derive(Debug, Clone, Copy)]
+    #[non_exhaustive]
     pub enum Store<'a> {
         F32(ArrayData<'a, f32>),
         F64(ArrayData<'a, f64>),
@@ -367,6 +375,7 @@ impl Entry<'_> {
 /// as [`Error::Invalid`] by [`write`](Self::write) / [`write_to`](Self::write_to)
 /// before anything is written.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct VtrWriter<'a> {
     coords: [&'a [f64]; 3],
     entries: Vec<Entry<'a>>,
@@ -949,6 +958,7 @@ pub(crate) fn escape(s: &str) -> String {
 
 /// One dataset of a [`PvdCollection`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PvdEntry {
     /// Time step (or frequency) of the dataset.
     pub timestep: f64,
@@ -978,6 +988,7 @@ pub struct PvdEntry {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct PvdCollection {
     entries: Vec<PvdEntry>,
 }

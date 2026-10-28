@@ -57,6 +57,7 @@ use crate::{Error, Result};
 
 /// The csx property names and ids of an added [`CpwPort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CpwPortProperties {
     /// The metal of the centre strip and the coplanar grounds (the given
     /// property, or `port_metal_<n>`).
@@ -190,6 +191,7 @@ impl CpwPortProperties {
 /// At `stop[dir]`, moved by [`reference_shift`](Self::reference_shift)
 /// along the propagation direction.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CpwPort {
     number: u32,
     start: [f64; 3],

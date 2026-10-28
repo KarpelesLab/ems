@@ -178,6 +178,7 @@ use crate::{Error, Result};
 
 /// Kind of an infinite mirror plane (see the [module docs](self#ground-planes-and-symmetry-mirror)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MirrorKind {
     /// Perfect electric conductor (ground plane): tangential `J` and normal
     /// `M` images are reversed.
@@ -189,6 +190,7 @@ pub enum MirrorKind {
 
 /// An infinite PEC or PMC plane normal to `axis` at `position` \[m\].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Mirror {
     /// Normal of the plane.
     pub axis: Axis,
@@ -224,6 +226,7 @@ struct FaceDft {
 /// the dumps). Sampling runs on the stepping thread in a fixed order, so
 /// the result is bit-identical for any engine thread count.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Nf2ff {
     lo: [usize; 3],
     hi: [usize; 3],
@@ -502,6 +505,7 @@ impl Operator for Nf2ff {
 /// An NF2FF box for [`Simulation::add_nf2ff`](crate::Simulation::add_nf2ff),
 /// in csx drawing units.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Nf2ffBox {
     start: [f64; 3],
     stop: [f64; 3],
@@ -678,6 +682,7 @@ impl Nf2ffBox {
 /// Handle to an NF2FF box added with
 /// [`Simulation::add_nf2ff`](crate::Simulation::add_nf2ff).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Nf2ffHandle {
     pub(crate) op: OperatorHandle<Nf2ff>,
     pub(crate) mirrors: Vec<Mirror>,
@@ -883,6 +888,7 @@ impl FaceData {
 /// Far field in one direction: `r·E·e^{jkr}` components (V·s for a
 /// transient excitation, see the [module docs](self#units-and-normalisation)).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct FarField {
     /// Polar angle θ \[rad\] (from +z).
     pub theta: f64,
@@ -920,6 +926,7 @@ impl FarField {
 /// The direction of maximum directivity found by
 /// [`Nf2ffResult::max_directivity`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct MaxDirectivity {
     /// Directivity (linear).
     pub directivity: f64,
@@ -940,6 +947,7 @@ impl MaxDirectivity {
 /// [module docs](self)). Frequencies are addressed by index into
 /// [`freqs`](Self::freqs).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Nf2ffResult {
     freqs: Vec<f64>,
     center: [f64; 3],

@@ -233,6 +233,7 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 /// reflection and transmission coefficients. The energy end criterion uses
 /// the energy of both engines.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Simulation {
     engine: Engine,
     fdtd: Fdtd,

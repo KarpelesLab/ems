@@ -121,6 +121,7 @@ mod openems;
 ///
 /// Cells are indexed `(i·ny + j)·nz + k` (z fastest).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarVolume {
     lines: [Vec<f64>; 3],
     power: Vec<f64>,
@@ -135,6 +136,7 @@ pub struct SarVolume {
 /// How a voxel's value in a [`SarField`] was obtained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum VoxelClass {
     /// Not tissue (`ρ = 0`): SAR 0.
     #[default]
@@ -153,6 +155,7 @@ pub enum VoxelClass {
 
 /// Options for [`SarVolume::averaged_with`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct AveragingOptions {
     /// Largest non-tissue volume fraction of a valid cube (default 0.1).
     /// 1 makes every centred cube valid: each tissue voxel gets the
@@ -206,6 +209,7 @@ impl Default for AveragingOptions {
 /// [`options`](Self::options) maps a method to ems's own cube procedure
 /// instead (exact masses, 10 % air rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum AveragingMethod {
     /// `SIMPLE`: centred cubes only (openEMS's default and in-run method).
     #[default]
@@ -245,6 +249,7 @@ impl AveragingMethod {
 
 /// The largest value of a [`SarField`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct SarMax {
     /// SAR \[W/kg\].
     pub value: f64,
@@ -256,6 +261,7 @@ pub struct SarMax {
 
 /// Local or mass-averaged SAR per voxel.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SarField {
     lines: [Vec<f64>; 3],
     values: Vec<f64>,

@@ -118,7 +118,8 @@ fn normal_reflection(pml_cells: &[f64], p: Cpml, eps_r: f64) -> f64 {
     // Window: the incident pulse and both PML echoes pass the probe, but
     // the reference's PEC ends (≥ 1800 cells of round trip away) do not.
     let steps = (900.0 * eps_r.sqrt()) as u64;
-    let p = Cpml { cells: n, ..p };
+    let mut p = p;
+    p.cells = n;
     let test = line_run(z, eps_r, Some(p), n, src, prb, steps);
     let pad = 1000;
     let zr = line(0.0, DZ, interior + 2 * pad);
@@ -197,7 +198,15 @@ fn box_run(
     let g = Grid::uniform([n; 3], [d; 3]).unwrap();
     let mut e = Engine::builder(g).threads(threads).build().unwrap();
     if let Some(p) = cpml {
-        let b = CpmlBoundary::new(&e, Face::ALL.map(|f| (f, Cpml { cells: pml, ..p }))).unwrap();
+        let b = CpmlBoundary::new(
+            &e,
+            Face::ALL.map(|f| {
+                let mut p = p;
+                p.cells = pml;
+                (f, p)
+            }),
+        )
+        .unwrap();
         e.add_operator(b);
     }
     let c = n / 2;

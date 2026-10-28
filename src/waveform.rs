@@ -162,6 +162,7 @@ pub enum Waveform {
 /// [`ExcitationSignal::evaluator`](csx::fdtd::ExcitationSignal::evaluator),
 /// so the values are exactly those of csx.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ExpressionWaveform {
     function: String,
     f0: f64,

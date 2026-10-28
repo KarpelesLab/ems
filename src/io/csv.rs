@@ -53,6 +53,7 @@ use crate::{Error, Result};
 
 /// How the header row (column names) is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[non_exhaustive]
 pub enum HeaderStyle {
     /// A plain row of names, e.g. `t,u` (the default; what spreadsheet and
     /// CSV readers expect).
@@ -68,6 +69,7 @@ pub enum HeaderStyle {
 /// Builder for a delimited table of `f64` columns. See the
 /// [module documentation](self).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CsvWriter<'a> {
     columns: Vec<(String, &'a [f64])>,
     comments: Vec<String>,

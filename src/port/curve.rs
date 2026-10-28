@@ -12,6 +12,7 @@ use crate::{Error, Result};
 
 /// The csx property names and ids of an added [`CurvePort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CurvePortProperties {
     /// The feed: the resistor, excitation and probes of the
     /// [`LumpedPort`] on the feed edge (`port_resist_<n>`,
@@ -96,6 +97,7 @@ pub struct CurvePortProperties {
 /// the terminals, while a single edge keeps the port a
 /// [`LumpedPort`] with its second-order reference plane (design §5.5).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CurvePort {
     number: u32,
     resistance: f64,

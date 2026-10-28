@@ -53,6 +53,7 @@ use crate::{Error, Result};
 
 /// One layer of a [`Ground`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct GroundLayer {
     /// Thickness \[m\].
     pub thickness: f64,
@@ -62,6 +63,7 @@ pub struct GroundLayer {
 
 /// What lies beyond the last layer of a [`Ground`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum GroundBase {
     /// A half-space of this medium (lossless: the far field is computed
     /// in it too; lossy: no far field there).
@@ -76,6 +78,7 @@ pub enum GroundBase {
 /// position` (the side away from the NF2FF box): layers from the plane
 /// outwards, then a [`GroundBase`]. See [`Nf2ffResult::with_ground`](super::Nf2ffResult::with_ground).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Ground {
     /// Normal of the interface.
     pub axis: Axis,

@@ -59,6 +59,7 @@ use crate::{Error, Result};
 
 /// The csx property names and ids of an added [`RadialLinePort`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RadialLinePortProperties {
     /// The plates, if written (the given property, or `port_metal_<n>`).
     pub metal: Option<(String, PropertyId)>,
@@ -166,6 +167,7 @@ pub struct RadialLinePortProperties {
 /// [`reference_shift`](Self::reference_shift) along the propagation
 /// direction.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RadialLinePort {
     number: u32,
     plates: [f64; 2],
@@ -767,6 +769,7 @@ impl RadialLinePort {
 /// The analysis of a [`RadialLinePort`] at its reference radius (see the
 /// [module documentation](super::radial) for the definitions).
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct RadialLinePortResult {
     freqs: Vec<f64>,
     v: Vec<Complex64>,

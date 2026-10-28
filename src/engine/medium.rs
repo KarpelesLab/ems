@@ -28,6 +28,7 @@ use crate::{Error, Result};
 
 /// A homogeneous, isotropic (possibly lossy) medium.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Medium {
     /// Relative permittivity.
     pub eps_r: f64,

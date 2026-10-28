@@ -90,6 +90,7 @@ use crate::{Error, Result};
 
 /// A lumped port operator; see the [module documentation](self).
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct LumpedPort {
     region: LumpedBox,
     element: LumpedElement,

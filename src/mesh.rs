@@ -82,6 +82,7 @@ use csx::{BoundingBox, ContinuousStructure, CoordSystem, Primitive, PropertyKind
 
 /// Severity of a [`MeshIssue`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum Severity {
     /// Informational (statistics, settings that were not checked).
     Info,
@@ -103,6 +104,7 @@ impl fmt::Display for Severity {
 
 /// Where a [`MeshIssue`] is located. Coordinates are drawing units.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Location {
     /// The model or mesh as a whole.
     Global,
@@ -148,6 +150,7 @@ impl fmt::Display for Location {
 
 /// One finding of a mesh check.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MeshIssue {
     /// Severity.
     pub severity: Severity,
@@ -175,6 +178,7 @@ impl fmt::Display for MeshIssue {
 /// additionally holds the csx and engine material arrays (about 210 bytes
 /// per node) at its peak.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct MeshStats {
     /// Mesh lines per axis.
     pub nodes: [usize; 3],
@@ -213,6 +217,7 @@ pub struct MeshStats {
 
 /// Result of a mesh check: issues plus [`MeshStats`].
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct MeshReport {
     /// All findings, in check order.
     pub issues: Vec<MeshIssue>,
@@ -336,6 +341,7 @@ impl fmt::Display for MeshReport {
 
 /// Thresholds of the mesh checks.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CheckOptions {
     /// Required cells per local wavelength at `f_max` (default 20); fewer
     /// gives a [`Severity::Warning`].

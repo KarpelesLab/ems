@@ -73,6 +73,7 @@ pub struct AbcSheet {
 
 /// Phase velocity choice of an [`AbsorbingSheet`].
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum SheetVelocity<'a> {
     /// The same velocity \[m/s\] for every edge.
     Fixed(f64),
@@ -111,6 +112,7 @@ struct Edge {
 /// # Ok::<(), ems::Error>(())
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AbsorbingSheet {
     sheet: AbcSheet,
     edges: Vec<Edge>,

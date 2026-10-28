@@ -36,6 +36,7 @@ use crate::{Error, Result, Waveform};
 
 /// How openEMS describes the excitation's extent in time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SignalSpan {
     /// "Excitation signal length is: `n` timesteps".
     Length(u64),
@@ -55,6 +56,7 @@ impl SignalSpan {
 /// The sampled excitation signal of a run, as openEMS writes it to `et`
 /// and `ht` (see the [module docs](self)).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ExcitationSignal {
     /// The length (or period) openEMS reports.
     pub span: SignalSpan,

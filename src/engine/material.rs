@@ -18,6 +18,7 @@ use crate::{Error, Result};
 /// e.g. x-directed E edges see `eps_r[0]` and `kappa[0]`, x-directed H edges
 /// see `mu_r[0]` and `sigma_m[0]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Material {
     /// Relative permittivity ε_r (> 0).
     pub eps_r: [f64; 3],
@@ -106,6 +107,7 @@ impl Material {
 /// de-duplicated on insertion (recent and small tables only; a model with
 /// continuously varying materials simply grows the table).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CellMaterials {
     cells: [usize; 3],
     nodes: [usize; 3],

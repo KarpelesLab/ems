@@ -161,6 +161,7 @@ use crate::{Error, Result};
 /// up to and including `hi[a]` (`hi[a]` itself is sampled only if
 /// `hi[a] − lo[a]` is a multiple of `s[a]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct DumpRegion {
     lo: [usize; 3],
     hi: [usize; 3],
@@ -226,6 +227,7 @@ impl DumpRegion {
 /// (H) edges; see the [module docs](self#quantities) for their
 /// definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DumpQuantity {
     /// Electric field E \[V/m\].
     E,
@@ -275,6 +277,7 @@ impl DumpQuantity {
 /// Where a dump places its sample points; see the
 /// [module docs](self#interpolation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum DumpPosition {
     /// At the primary nodes of the region (default).
     #[default]
@@ -293,6 +296,7 @@ pub enum DumpPosition {
 /// Which state a dump samples at "step `n`"; see the
 /// [module docs](self#time-stamps).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum DumpTiming {
     /// The state after `n` completed steps: E at `n·dt`, H at
     /// `(n − ½)·dt` (default).
@@ -479,6 +483,7 @@ impl Factors {
 ///
 /// A sampler is tied to the grid it was built for.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FieldSampler {
     region: DumpRegion,
     quantity: DumpQuantity,
@@ -976,6 +981,7 @@ impl FieldSampler {
 
 /// One time-domain sample of a dump.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Snapshot {
     /// Number of completed engine steps `m` of the sampled state.
     pub step: u64,
@@ -985,9 +991,17 @@ pub struct Snapshot {
     pub data: Vec<[f32; 3]>,
 }
 
+impl Snapshot {
+    /// The values `data` sampled after `step` steps, at `time` \[s\].
+    pub fn new(step: u64, time: f64, data: Vec<[f32; 3]>) -> Self {
+        Self { step, time, data }
+    }
+}
+
 /// When a [`TimeDump`] records a snapshot, in terms of the state index `m`
 /// (completed steps).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Schedule {
     /// Every state with `m % k == 0` (`k ≥ 1`; 0 is treated as 1).
     Every(u64),
@@ -1092,6 +1106,7 @@ where
 
 /// Keeps every snapshot in memory (`4·3·points` bytes per snapshot).
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct MemorySink {
     snapshots: Vec<Snapshot>,
 }
@@ -1130,6 +1145,7 @@ fn snapshot_file(basename: &str, step: u64) -> String {
 /// every snapshot, so it is valid even if the run stops early). The
 /// directory is created on the first snapshot.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct VtrSeries {
     dir: PathBuf,
     basename: String,
@@ -1213,6 +1229,7 @@ impl Cursor {
 /// The default sink is a [`MemorySink`]; read it back with
 /// [`Engine::operator`]`(&handle).`[`sink`](Self::sink)`()`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TimeDump<S = MemorySink> {
     sampler: FieldSampler,
     window: Window,
@@ -1428,6 +1445,7 @@ impl<S: DumpSink> Operator for TimeDump<S> {
 /// many frequencies. The cost per sample is one interpolation per point
 /// plus three complex multiply-adds per point and frequency.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FreqDump {
     sampler: FieldSampler,
     freqs: Vec<f64>,
@@ -1641,6 +1659,7 @@ impl FreqDump {
 /// The look-ahead sample of the last openEMS step of a run, see
 /// [`FreqDump::final_sample`] and [`TimeDump::final_sample`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct FinalSample {
     /// The openEMS step `N` (completed engine steps).
     pub step: u64,

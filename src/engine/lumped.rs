@@ -133,6 +133,7 @@ use crate::{Error, Result};
 /// A closed box of grid nodes with a direction, the support of a lumped
 /// element or port (see the [module documentation](self)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LumpedBox {
     axis: Axis,
     lo: [usize; 3],
@@ -221,6 +222,7 @@ impl LumpedBox {
 
 /// How the R, L and C of a [`LumpedElement`] are connected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Topology {
     /// `R ∥ L ∥ C` (default).
     #[default]
@@ -398,6 +400,7 @@ struct Installed {
 /// values directly (e.g. as distributed by `csx::discretize`), with the
 /// same physics per edge as the box form; sources are given with a voltage
 /// weight per edge ([`edge_source`](Self::edge_source)).
+#[non_exhaustive]
 pub struct LumpedElement {
     support: Support,
     r: Option<f64>,

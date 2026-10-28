@@ -347,17 +347,13 @@ fn cylindrical_sar_dumps() {
     eprintln!("cyl_sar 1 g: {d:e} of the peak");
     assert!(d < 6e-3, "{d}");
     // ems-sar-calc on openEMS's raw dump: the same average.
-    let o = ems::io::openems::sar_calc::SarCalcOptions {
-        input: fixture("cyl_sar").join("sar_raw.h5"),
-        output: out.join("sar_calc_1g.h5"),
-        mass_g: 1.0,
-        method: ems::post::sar::AveragingMethod::Simple,
-        threads: 1,
-        verbose: false,
-        export_cube_stats: false,
-        legacy: false,
-        autorange: None,
-    };
+    let mut o = ems::io::openems::sar_calc::SarCalcOptions::new(
+        fixture("cyl_sar").join("sar_raw.h5"),
+        out.join("sar_calc_1g.h5"),
+        1.0,
+    );
+    o.method = ems::post::sar::AveragingMethod::Simple;
+    o.threads = 1;
     ems::io::openems::sar_calc::run(&o).unwrap();
     let d = sar_values(&want, &o.output);
     eprintln!("cyl_sar sar_calc 1 g: {d:e} of the peak");
