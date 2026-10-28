@@ -26,12 +26,15 @@
 //!   added).
 //! * **Scaling.** Per square of sheet, `G = g·σt`, `R_b = r_b/(σt)`,
 //!   `L_b = l_b·μ0·t` and `C = dt²/(c·μ0·t)` (the capacitance depends on
-//!   the time step: it is no physical sheet capacitance); an edge of
+//!   the time step: it is no physical sheet capacitance; in every bin
+//!   `1/c = (1/l_1 + 17/l_2)/4` to 2e-7, i.e. `C = dt²·(1/(4L_1) +
+//!   17/(4L_2))`, design §5.16.13); an edge of
 //!   length `l` with sheet width `w` gets `w/l` squares. The table
 //!   [`TABLE`] lists `(g, c, l_1, r_1, l_2, r_2)` for 30 bins `k` of the
 //!   normalised thickness `ν = (t/δ)²/80` at the excitation's highest
-//!   frequency: `k = 0` for `ν ≤ 1`, `k = ⌈log_1.5 ν⌉` above, `k = 29`
-//!   from `ν > 1.5^28` on (all bins measured; the model of a bin is
+//!   frequency: `k = 0` for `ν < 1`, `k = ⌊log_1.5 ν⌋ + 1` above, `k = 29`
+//!   from `ν ≥ 1.5^28` on, `ν` in openEMS's single precision (`bin`)
+//!   (all bins measured; the model of a bin is
 //!   independent of `σ`, `t`, `dt` and the mesh to 7 digits). At DC every
 //!   bin conducts `≈ σt` per square (`g + 1/r_1 + 1/r_2` = 0.9988 for
 //!   `k = 0`).
@@ -91,7 +94,7 @@ use crate::Result;
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0};
 use crate::engine::dispersive::{EdgePole, Field, Pole};
-use crate::engine::{EdgeMaterials, Grid, OPENEMS_EPS0, SheetEdge, TimeStep};
+use crate::engine::{EdgeMaterials, Grid, OPENEMS_EPS0, OPENEMS_MU0, SheetEdge, TimeStep};
 use crate::fdtd::Fdtd;
 use crate::waveform::Waveform;
 
@@ -149,14 +152,26 @@ pub(crate) fn sheet_frequency(fdtd: &Fdtd) -> f64 {
 }
 
 /// The table bin of a sheet of conductivity `sigma`, thickness `t` at
-/// frequency `f` (module docs).
+/// frequency `f` (module docs), with openEMS's single-precision
+/// arithmetic (black box, design §5.16.13): `σ` and `t` are read as `f32`,
+/// the per-square conductance `G = f32(σt)`, the normalised frequency
+/// `X = f32(8/(G·μ0·t))` (openEMS's `μ0`), `(t/δ)² = f32(4·f32(2πf)/X)`
+/// and `ν = (t/δ)²/80`; bin `⌊log_1.5 ν⌋ + 1` from `ν = 1` on (`ν = 1.5^k`
+/// is bin `k + 1`). This reproduces 2965 of 2975 bin boundaries measured to
+/// one `f32` step of `f0` (the formula in `f64` misses 60); the others are
+/// `ν` exactly `1.5^11`, which openEMS puts in bin 11.
 pub(crate) fn bin(sigma: f64, t: f64, f: f64) -> usize {
-    let nu = core::f64::consts::PI * f * MU0 * sigma * t * t / 80.0;
-    if nu.is_nan() || nu <= 1.0 {
+    let r32 = |x: f64| x as f32 as f64;
+    let t = r32(t);
+    let g = r32(r32(sigma) * t);
+    let x = r32(8.0 / (g * OPENEMS_MU0 * t));
+    let w = r32(2.0 * core::f64::consts::PI * f);
+    let nu = r32(4.0 * w / x) / 80.0;
+    if nu.is_nan() || nu < 1.0 {
         return 0;
     }
-    let k = (nu.ln() / 1.5f64.ln()).ceil();
-    if k >= 29.0 { 29 } else { k.max(1.0) as usize }
+    let k = (nu.log10() / 1.5f64.log10()).floor() + 1.0;
+    if k >= 29.0 { 29 } else { k as usize }
 }
 
 /// The emulated sheet edges: edge materials, poles and PEC edges.
@@ -439,6 +454,49 @@ mod tests {
         let f = 80.0 / (core::f64::consts::PI * MU0 * 1e6 * 4e-10);
         assert_eq!(bin(1e6, 2e-5, f * 0.9999), 0);
         assert_eq!(bin(1e6, 2e-5, f * 1.0001), 1);
+        // Bin edges measured to one f32 step of f0 = fc (f = f0 + fc), each
+        // pair one step apart (design §5.16.13); with the formula in f64
+        // one side of every pair is one bin off.
+        for (s, t, f_lo, f_hi, k) in [
+            (
+                4613344.0,
+                1.526974870103004e-06,
+                1883868758016.0,
+                1883868889088.0,
+                1,
+            ),
+            (
+                22566374.0,
+                2.323430271644611e-05,
+                1663447680.0,
+                1663447808.0,
+                1,
+            ),
+            (
+                27018.404296875,
+                7.05397324054502e-05,
+                3863073521664.0,
+                3863073783808.0,
+                9,
+            ),
+            (
+                10959826.0,
+                4.6812994696665555e-05,
+                72978948096.0,
+                72978956288.0,
+                12,
+            ),
+            (
+                10243358.0,
+                3.557360469130799e-05,
+                3465501474816.0,
+                3465501736960.0,
+                20,
+            ),
+        ] {
+            assert_eq!(bin(s, t, f_lo), k - 1, "{s} {t} {f_lo}");
+            assert_eq!(bin(s, t, f_hi), k, "{s} {t} {f_hi}");
+        }
     }
 
     #[test]

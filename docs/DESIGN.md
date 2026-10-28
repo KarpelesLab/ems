@@ -3433,7 +3433,9 @@ keeps the slab):
   fc` of a Gaussian, `f0` of a sine, the `<FDTD f_max>` attribute for
   custom, Dirac and step signals; a Gaussian ignores `f_max`): `k = 0`
   for `ν ≤ 1` (the bin edge measured at `t/δ = √80` within 1e-5 for
-  three `σ`, `t`), `k = ⌈log_1.5 ν⌉` above, constant from `k = 29` on.
+  three `σ`, `t`), `k = ⌈log_1.5 ν⌉` above, constant from `k = 29` on
+  (wave 18: `ν` in openEMS's single precision, `k = ⌊log_1.5 ν⌋ + 1`
+  from `ν = 1` on, §5.16.13).
   All 30 bins were measured (σ = 1e6 S/m) and reproduce with other `σ`,
   `t`, `dt` and positions in the bin to 7 digits. Bin 0 conducts
   `0.9988·σt` at DC; from bin 26 on `r_2` is clamped at 1000.
@@ -5016,6 +5018,69 @@ was measured:
 These mismatches look like round-off at the 1e-7 level in how openEMS
 derives the sheet parameters, not like a missing physical term (no
 smooth dependence on `t/dt²`, `dt`, `t`).
+
+**Wave 18 (area R): the structure of the sheet parameters.** Black box
+only, on single-edge models (6³ cells of 1 m, PEC box, one sheet at
+`x = 3`, the `y` edge at node 3,3,3, so `w/l = 1`), operator dumps only.
+Two techniques carried it. (1) *Overflow thresholds*: `σ` and `t` chosen
+so that a hypothesised `f32` intermediate exceeds `FLT_MAX` (or turns 0)
+while the coefficients stay normal; openEMS then dumps `vi = 0`
+(`vv = 1`: `C = ∞`) or `vi = vv = 0` (NaN), and the threshold, located to
+one `f32` step of `σ` or `t` (inputs are `f32`), is an exact inequality on
+the intermediate. (2) *Pinning `C/dt²`*: `vi = f32(dt/f32(C))` with
+`C = f32(F·dt²)` holds for 24–48 random `dt` per model (no empty
+intersection while `G·dt/2C` stays below 1e-9, i.e. `σt² ≲ 1e-10`), so the
+intersection of the `dt` intervals pins the real number `F(σ, t)` to
+1e-9…4e-9, about 30 times finer than one `f32` step of `C`. `F` does not
+depend on `f` (60 frequencies within bin 0) nor on a factor 2 in `σ`.
+
+- *Intermediates found.* `G = f32(σ·t)` (underflow below 1.4e-45 and
+  overflow above 3.4e38 give NaN on a whole diagonal of the
+  `(log σ, log t)` plane); `X = f32(8/(G·μ0·t))` with openEMS's `μ0`
+  (overflow at `σt² = 1.8708574e-32`; the exact `f32` thresholds of 40
+  random `t` give the constant 8 to 3.5e-10, while `8/(μ0·σ·t²)` and
+  eighteen other groupings are excluded); `X` is `4ω` at the frequency
+  where `δ = t`. A third quantity, `≈ 1/(l_2·μ0·t)`, overflows at
+  `t = 2.3605474e-32` (`C = ∞`); its exact thresholds for 300 `f32` `σ`
+  (a period-4 pattern in `σ`) fit `f32(G·X·a)` with
+  `a` = 1.26174635808…1.26174635831 = `1/(8·0.099069042)` and nothing
+  else tried.
+- *`C` is built from the two branch inductances.* In all 30 table bins
+  `1/c = (1/l_1 + 17/l_2)/4` to 1.8e-7 (least squares gives 0.25000008
+  and 4.25000008), i.e. `C = dt²·(1/(4L_1) + 17/(4L_2))` per square.
+- *`F` at fixed `t`.* `F` depends on `σ` only through `X`'s rounding error
+  (`G·X = (8/(μ0t))·(1 + e_X)`): sorted by `e_X` it is a monotone step
+  function (759 pinned models at `t` = 1e-5). Its steps are those of
+  `L_b = f32(l_b·8/(G·X))` (inductance per square): heights
+  `0.25·ulp(L_1)/L_1²` and `4.25·ulp(L_2)/L_2²` (12 644 and 296 769
+  against 12 063 and 297 312), spacings the relative `ulp` of `L_1` and
+  `L_2` (7.234e-8 and 8.710e-8; mantissas 1.6489 and 1.3696 against
+  1.6481 and 1.3688). Each step fixes `l_b` up to a lattice of spacing
+  `ulp(L_b)/(8/(G·X))`; the steps at 17 thicknesses across a binade
+  leave one value each: `l_1` = 0.11928208895 and `l_2` = 0.09906906033
+  (the table's 0.099069049 is 1.1e-7 low; a first value from one
+  thickness, 0.09906904307, was a wrong lattice point and looked like a
+  drift with `t`).
+- *The capacitance (bin 0, 1 m cells).*
+  `C = f32(F·dt²)`, `F = f32(1/L_1)/4 + f32(1/L_2)/4 + 4/L_2` (the last
+  quotient in `f64`) reproduces all 1284 pinned models (σ 1e-7…1e3,
+  `t` 1e-7…1e-4, random and consecutive `f32` values); `0.25/L_1 +
+  4.25/L_2` in `f64` 1076, other placements of the roundings ≤ 480. All
+  11 280 `vi` of 470 of these models at 24 `dt` each are openEMS's with
+  this `C` (with `f32(dt²/(c·μ0·t))`, wave 17: 72 %).
+- *Geometry.* On meshes with `w/l ≠ 1` the steps stay at the same `e_X`
+  (the per-square `L_b` is rounded first). The edge's
+  `L_b,e = f32(L_b·f32(l/w))` in the same `F` reproduces all 120 random
+  meshes (`l` 0.6…1.6 m, `w` 0.6…1.6 m); `F·w/l` 9, `f32(l_b·8/(G·X)·l/w)`
+  74.
+- *Bin selection (implemented).* The bin is chosen from
+  `(t/δ)² = f32(4·f32(2π·f)/X)`, `ν = (t/δ)²/80`, bin `⌊log_1.5 ν⌋ + 1`
+  from `ν = 1` on (`compile::openems_sheet::bin`). Measured at 119 bin
+  edges (bins 1, 2, 3, 6, 9, 12, 20; 25 consecutive `f32` values of
+  `f0 = fc` each): 2965 of 2975 points reproduced. The formula in `f64`
+  (`ν = π·f·μ0·σt²/80`, `⌈log_1.5 ν⌉`) misses 60 of them. The 10 misses
+  are `ν` exactly `1.5^11`, which openEMS puts in bin 11 (exactly `1.5^5`
+  and `1.5^8` go up; no `log` variant reproduces both).
 
 **Series lumped elements (not reproduced).** The branch current of a
 series R, L, C or RLC element (1 m cells, one edge) follows
