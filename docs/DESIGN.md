@@ -6004,9 +6004,11 @@ openEMS's f32 Lorentz/Drude pole arithmetic, its Debye cutoff
 (τ < 3·dt dropped) and its seam with poles on cylindrical grids
 (§5.16.12; `adv_cyl_drude` 3.8e-3 → exact), openEMS's single-precision
 sheet branch update (§5.16.13). Wave 18: openEMS's Debye update in
-polarisation form (§5.16.12), also on the seam and axis. Feature sweep:
-149 of 169 exact, 165 to the printed digits (≤ 4e-13); left:
-`sheet_thin_resistive` 1.5e-4, `lumped_series_rlc` 8.8e-5, and `param_term`,
+polarisation form (§5.16.12), also on the seam and axis; openEMS's
+single-precision ConductingSheet circuit and table bins (§5.16.13), all
+sheet fixtures exact, Cartesian and cylindrical. Feature sweep: 150 of
+169 exact, 166 to the printed digits (≤ 4e-13); left:
+`lumped_series_rlc` 8.8e-5, and `param_term`,
 `prim_userdefined`, which openEMS rejects. Cylindrical grids (§5.16.11):
 openEMS's curl order there too, the per-operation subnormal flush, its
 seam and axis updates, its multigrid and the α weights of z-edge
@@ -6025,12 +6027,12 @@ Remaining:
 - From the random sweep (§5.16.3): series elements over several columns,
   H probes next to held Mur faces, conducting sheets near Mur/PML faces in
   lossy or dispersive media, two slow-growth cases.
-- From the feature sweep: the last
-  bits of conducting-sheet coefficients (openEMS's single-precision
-  branch update is matched, §5.16.13; `sheet_thin_resistive` 1.5e-4) and
-  series lumped elements (~1e-4: the bilinear branch is confirmed, its
-  internal scaling not found, §5.16.9, §5.16.13); `endCriteria="0"` with
-  a sinusoid runs all steps in openEMS.
+- From the feature sweep: series lumped elements (`lumped_series_rlc`
+  8.8e-5, `cyl_wrap_lumped`, `rs_1` 1.6e-5): the first two steps are
+  exact, later ones need a history term not yet identified (§5.16.13);
+  sheet bins ≥ 1 keep the table's `r` values (not measurable), the exact
+  tie `ν = 1.5^11`; `endCriteria="0"` with a sinusoid runs all steps in
+  openEMS.
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
