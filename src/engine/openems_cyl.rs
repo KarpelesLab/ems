@@ -34,11 +34,15 @@
 //! E (each with its own whole current); the `α = 2π` E update reads the
 //! `α = 2π` current. Black box: a closed grid filled with a lossy Drude
 //! medium, every seam `E_ρ`, `E_z` at every step reproduced by an `f32`
-//! model of this.
+//! model of this. A Debye pole alone on a seam edge is run the same way,
+//! with openEMS's Debye update
+//! ([`Dispersive::with_openems_debye`](super::dispersive::Dispersive::with_openems_debye))
+//! and the whole dual face's `vi` and `ε0·A*/l` (black box: a closed grid
+//! with a Debye ring reproduced bit for bit).
 
 use super::boundary::upml::{self, PmlProfile};
 use super::coeffs::Coefficients;
-use super::dispersive::OpenEmsPole;
+use super::dispersive::{OpenEmsPole, openems_debye_coefficients};
 use super::edge_material::EdgeMaterials;
 use super::fields::Fields;
 use super::grid::Grid;
@@ -65,6 +69,16 @@ struct SeamE {
     /// openEMS's poles of the edge: `[A, B, K]` and the state `[V, W]`
     /// (module docs); with poles `old` is the `α = 2π` copy's value.
     poles: Vec<([f32; 3], [f32; 2])>,
+    /// openEMS's Debye pole of the edge instead: `[F, b, 1 − g]` and the
+    /// polarisation `Q` (module docs).
+    debye: Option<([f32; 3], f32)>,
+}
+
+impl SeamE {
+    /// Whether the edge carries openEMS poles (run on the `α = 2π` copy).
+    fn has_poles(&self) -> bool {
+        !self.poles.is_empty() || self.debye.is_some()
+    }
 }
 
 /// One seam `H_α` dual edge (low node), `ii`, `iv` of the whole dual edge,
@@ -134,7 +148,10 @@ impl OpenemsSeam {
     /// The seam of `grid` (closed, without multigrid) with the edge
     /// materials `mats`, time step `dt` and the engine's coefficients `co`;
     /// `skip(axis, node, h)` leaves an edge (E, or `H_α` with `h`) to the
-    /// periodic merge (e.g. inside an absorbing layer).
+    /// periodic merge (e.g. inside an absorbing layer); `poles` and `debye`
+    /// give the openEMS poles of a seam E edge (low node): its Lorentz and
+    /// Drude poles, or its single Debye pole `(Δε, τ)`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         grid: &Grid,
         mats: &EdgeMaterials,
@@ -143,6 +160,7 @@ impl OpenemsSeam {
         pml: Option<&PmlProfile>,
         skip: impl Fn(Axis, [usize; 3], bool) -> bool,
         poles: impl Fn(Axis, [usize; 3]) -> Vec<OpenEmsPole>,
+        debye: impl Fn(Axis, [usize; 3]) -> Option<(f64, f64)>,
     ) -> Self {
         let layer = |e_side: bool, axis: Axis, node: [usize; 3], geo: f64, rel: f64| {
             pml.and_then(|p| upml::layer_update(p, dt, e_side, axis, node, geo, rel))
@@ -207,6 +225,14 @@ impl OpenemsSeam {
                     } else {
                         Vec::new()
                     };
+                    let debye = debye(axis, lo)
+                        .filter(|_| layer.is_none())
+                        .map(|(de, tau)| {
+                            (
+                                openems_debye_coefficients(f64::from(vi), EPS0 * geo, de, tau, dt),
+                                0.0,
+                            )
+                        });
                     e.push(SeamE {
                         axis,
                         node: lo,
@@ -217,6 +243,7 @@ impl OpenemsSeam {
                         layer,
                         flux: 0.0,
                         poles,
+                        debye,
                     });
                 }
             }
@@ -285,6 +312,16 @@ impl OpenemsSeam {
                 };
                 let geo = area / grid.delta(Axis::Z, k);
                 let (vv, vi) = coeffs_f64(EPS0 * avg(eps) * geo, avg(kap) * geo, dt);
+                // The pole takes the whole disc's `vi` but the first α
+                // sector's `A*/l` (black box: `β` one N-th of the whole
+                // disc's).
+                let sector = 2.0 * parts[0] / grid.delta(Axis::Z, k);
+                let debye = debye(Axis::Z, [0, 0, k]).map(|(de, tau)| {
+                    (
+                        openems_debye_coefficients(f64::from(vi), EPS0 * sector, de, tau, dt),
+                        0.0,
+                    )
+                });
                 axis.push(SeamE {
                     axis: Axis::Z,
                     node: [0, 0, k],
@@ -295,12 +332,13 @@ impl OpenemsSeam {
                     layer: None,
                     flux: 0.0,
                     poles: Vec::new(),
+                    debye,
                 });
             }
         }
         // The H_α dual edges whose E neighbours on the seam have poles.
         let mut split = vec![false; n[0] * n[2]];
-        for s in e.iter().filter(|s| !s.poles.is_empty()) {
+        for s in e.iter().filter(|s| s.has_poles()) {
             let [i, _, k] = s.node;
             let mut mark = |i: usize, k: usize| {
                 if i + 1 < n[0] && k + 1 < n[2] {
@@ -425,7 +463,7 @@ impl Operator for OpenemsSeam {
         }
         for s in self.e.iter_mut() {
             // With poles the α = 2π copy holds the corrected state.
-            let j = if s.poles.is_empty() { 0 } else { last };
+            let j = if s.has_poles() { last } else { 0 };
             s.old = f.u.get(s.axis, [s.node[0], j, s.node[2]]);
         }
         for s in &mut self.axis {
@@ -438,6 +476,7 @@ impl Operator for OpenemsSeam {
         let last = self.last;
         let mut fluxes = Vec::new();
         let mut states = Vec::new();
+        let mut debye_states = Vec::new();
         for (q, s) in self.e.iter().enumerate() {
             let cb = ctx.coefficients.cb(s.axis);
             let hi = self.hi(s.node);
@@ -482,7 +521,13 @@ impl Operator for OpenemsSeam {
                 }
             };
             f.u.set(s.axis, s.node, v);
-            if s.poles.is_empty() {
+            if let Some(([fc, bc, om], pol)) = s.debye {
+                // openEMS's Debye update on the α = 2π copy only.
+                let p = flush(flush(om * pol) + flush(bc * s.old));
+                let un = flush(fc * flush(v - flush(p - pol)));
+                f.u.set(s.axis, hi, flush(v - flush(v - un)));
+                debye_states.push((q, flush(p + flush(bc * un))));
+            } else if s.poles.is_empty() {
                 f.u.set(s.axis, hi, v);
             } else {
                 // openEMS's poles on the α = 2π copy only, driven by its
@@ -507,9 +552,15 @@ impl Operator for OpenemsSeam {
                 p.1 = x;
             }
         }
+        for (q, pol) in debye_states {
+            if let Some(d) = &mut self.e[q].debye {
+                d.1 = pol;
+            }
+        }
         // The axis: openEMS adds the ring of H_α at ρ_½ term by term over
         // all N + 1 α lines, the seam's at both ends.
-        for s in &self.axis {
+        let mut axis_states = Vec::new();
+        for (q, s) in self.axis.iter().enumerate() {
             let cb = ctx.coefficients.cb(Axis::Z);
             let k = s.node[2];
             let (lo, hi) = ([0, 0, k], [0, last, k]);
@@ -527,8 +578,20 @@ impl Operator for OpenemsSeam {
                 v = flush(v + flush(s.vi * cur.get(Axis::Y, [0, j, k])));
             }
             v = flush(v + flush(s.vi * seam_hi));
+            if let Some(([fc, bc, om], pol)) = s.debye {
+                // openEMS's Debye update of the (single) axis edge.
+                let p = flush(flush(om * pol) + flush(bc * s.old));
+                let un = flush(fc * flush(v - flush(p - pol)));
+                axis_states.push((q, flush(p + flush(bc * un))));
+                v = flush(v - flush(v - un));
+            }
             for j in 0..=last {
                 f.u.set(Axis::Z, [0, j, k], v);
+            }
+        }
+        for (q, pol) in axis_states {
+            if let Some(d) = &mut self.axis[q].debye {
+                d.1 = pol;
             }
         }
     }

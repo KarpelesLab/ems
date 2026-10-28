@@ -482,10 +482,11 @@ pub struct Compiled {
     /// [`dispersive`](Self::dispersive), which then holds the Debye poles
     /// and the conducting-sheet branches only.
     pub dispersive_openems: Vec<crate::engine::dispersive::OpenEmsPole>,
-    /// openEMS's rule for Debye poles (openEMS files): a pole is dropped
+    /// openEMS's rules for Debye poles (openEMS files): a pole is dropped
     /// unless its relaxation time is at least three time steps,
     /// `τ ≥ 3·dt` (black box, design §5.16.12; the static medium
-    /// remains).
+    /// remains), and the kept ones run openEMS's `f32` update
+    /// ([`Dispersive::with_openems_debye`]).
     pub openems_debye_cutoff: bool,
     /// Time integration of the Lorentz/Drude poles of
     /// [`dispersive`](Self::dispersive) ([`CompileOptions::dispersive_scheme`]).
@@ -608,6 +609,10 @@ impl Compiled {
             (crate::axis::Axis, [usize; 3]),
             Vec<crate::engine::dispersive::OpenEmsPole>,
         > = std::collections::HashMap::new();
+        // Seam E edges whose single openEMS Debye pole `(Δε, τ)` the seam
+        // operator runs itself (low node; design §5.16.12).
+        let mut seam_debye: std::collections::HashMap<(crate::axis::Axis, [usize; 3]), (f64, f64)> =
+            std::collections::HashMap::new();
         // openEMS's seam update of a closed azimuth (design §5.16.11),
         // first among the post-E hooks: it replaces the periodic merge.
         if self.curl_order == CurlOrder::OpenEms
@@ -621,7 +626,46 @@ impl Compiled {
             let last = n[1] - 1;
             // Edges other operators act on keep the periodic merge.
             let mut touched = std::collections::HashSet::new();
+            // Debye poles of both copies of a seam ρ or z edge (openEMS
+            // files): the seam operator runs a single one, alike on both.
+            type DebyeCopies = (Vec<(f64, f64)>, Vec<(f64, f64)>);
+            let mut debye_copies: std::collections::HashMap<_, DebyeCopies> =
+                std::collections::HashMap::new();
+            let dt = engine.dt();
+            // The same for the axis z edges (all α copies).
+            let mut axis_debye: std::collections::HashMap<usize, Vec<(f64, f64)>> =
+                std::collections::HashMap::new();
             for p in &self.dispersive {
+                if let crate::engine::Pole::Debye { delta_eps, tau } = p.pole
+                    && self.openems_debye_cutoff
+                    && p.field == crate::engine::dispersive::Field::Electric
+                    && p.axis == crate::axis::Axis::Z
+                    && p.node[0] == 0
+                    && self.grid.has_axis()
+                {
+                    if tau >= 3.0 * dt {
+                        axis_debye
+                            .entry(p.node[2])
+                            .or_default()
+                            .push((delta_eps, tau));
+                    }
+                    continue;
+                }
+                if let crate::engine::Pole::Debye { delta_eps, tau } = p.pole
+                    && self.openems_debye_cutoff
+                    && p.field == crate::engine::dispersive::Field::Electric
+                    && p.axis != crate::axis::Axis::Y
+                    && (p.node[1] == 0 || p.node[1] == last)
+                {
+                    if tau < 3.0 * dt {
+                        // Dropped (`openems_debye_cutoff`).
+                        continue;
+                    }
+                    let lo = [p.node[0], 0, p.node[2]];
+                    let e = debye_copies.entry((p.axis, lo)).or_default();
+                    if p.node[1] == 0 { &mut e.0 } else { &mut e.1 }.push((delta_eps, tau));
+                    continue;
+                }
                 touched.insert((
                     p.axis,
                     p.node,
@@ -667,10 +711,40 @@ impl Compiled {
                 if params(&a) == params(&b)
                     && !touched.contains(&(axis, lo, false))
                     && !touched.contains(&(axis, hi, false))
+                    && !debye_copies.contains_key(&(axis, lo))
                 {
                     seam_poles.insert((axis, lo), b);
                 } else {
                     touched.insert((axis, lo, false));
+                }
+            }
+            for ((axis, lo), (a, b)) in debye_copies {
+                let hi = [lo[0], last, lo[2]];
+                let same = |x: (f64, f64), y: (f64, f64)| {
+                    x.0.to_bits() == y.0.to_bits() && x.1.to_bits() == y.1.to_bits()
+                };
+                if let ([x], [y]) = (a.as_slice(), b.as_slice())
+                    && same(*x, *y)
+                    && !touched.contains(&(axis, lo, false))
+                    && !touched.contains(&(axis, hi, false))
+                {
+                    seam_debye.insert((axis, lo), *y);
+                } else {
+                    touched.insert((axis, lo, false));
+                    touched.insert((axis, hi, false));
+                }
+            }
+            for (k, v) in axis_debye {
+                let same = v.len() == n[1]
+                    && v.iter().all(|x| {
+                        x.0.to_bits() == v[0].0.to_bits() && x.1.to_bits() == v[0].1.to_bits()
+                    });
+                if same {
+                    seam_debye.insert((crate::axis::Axis::Z, [0, 0, k]), v[0]);
+                } else {
+                    for j in 0..n[1] {
+                        touched.insert((crate::axis::Axis::Z, [0, j, k], false));
+                    }
                 }
             }
             let skip = |a: crate::axis::Axis, p: [usize; 3], h: bool| {
@@ -690,10 +764,11 @@ impl Compiled {
                 profile.as_ref(),
                 skip,
                 |a, p| seam_poles.get(&(a, p)).cloned().unwrap_or_default(),
+                |a, p| seam_debye.get(&(a, p)).copied(),
             );
             engine.add_operator(op);
             // The seam operator keeps the two copies of these apart.
-            for &(a, p) in seam_poles.keys() {
+            for &(a, p) in seam_poles.keys().chain(seam_debye.keys()) {
                 engine.exempt_from_periodic_merge(a, p);
             }
             if let Some(ring) = self.openems_multigrid {
@@ -771,10 +846,22 @@ impl Compiled {
                 .openems_pml
                 .as_ref()
                 .map(|p| engine.operator(p).layers().clone());
-            let mut d = Dispersive::new().with_scheme(self.dispersive_scheme);
+            let mut d = Dispersive::new()
+                .with_scheme(self.dispersive_scheme)
+                .with_openems_debye(self.openems_debye_cutoff);
             let mut any = false;
             let dt = engine.dt();
             for &e in &self.dispersive {
+                let last = self.grid.nodes()[1] - 1;
+                let on_axis =
+                    e.axis == crate::axis::Axis::Z && e.node[0] == 0 && self.grid.has_axis();
+                if e.field == DispersiveField::Electric
+                    && (on_axis || e.node[1] == 0 || e.node[1] == last)
+                    && seam_debye.contains_key(&(e.axis, [e.node[0], 0, e.node[2]]))
+                {
+                    // Run by the seam operator.
+                    continue;
+                }
                 if let Some(l) = &layers
                     && l.contains(e.field == DispersiveField::Electric, e.axis, e.node)
                 {

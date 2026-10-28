@@ -130,13 +130,14 @@ fn check(name: &str, tol: f64) {
 // of 1 mm, a soft Ez plane source at x = 10 mm, a dispersive slab on
 // 30 ≤ x ≤ 70 mm (faces on mesh lines), voltage probes at x = 20, 50,
 // 80 mm, 1.8 ps time step. Measured agreement ~1.5e-6 for every case;
-// the Lorentz and Drude cases are bit-identical since openEMS's pole
-// arithmetic (design §5.16.12: 1.0e-12…1.8e-12, the 12 printed digits).
+// all are bit-identical since openEMS's pole arithmetic (design
+// §5.16.12: Lorentz and Drude 1.0e-12…1.8e-12, Debye 0.8e-12…2.1e-12,
+// the 12 printed digits).
 
 /// Debye slab (`Epsilon = 2`, `EpsilonDelta_1 = 3`, `τ = 30 ps`).
 #[test]
 fn debye_slab() {
-    check("adv_debye_slab", 2e-5);
+    check("adv_debye_slab", 1e-6);
 }
 
 /// Drude slab (`Epsilon = 1.5`, `f_plasma = 3 GHz`, `τ = 0.2 ns`):
@@ -173,7 +174,7 @@ fn lorentz_two_poles() {
 /// their midpoints only): poles on an edge iff its midpoint is inside.
 #[test]
 fn debye_offgrid() {
-    check("adv_debye_offgrid", 2e-5);
+    check("adv_debye_offgrid", 1e-6);
 }
 
 /// Filled Lorentz line on a coarse mesh (4 mm, 7 ps, `ω_0·dt = 0.33`):
@@ -332,6 +333,25 @@ fn cylindrical_multigrid() {
 #[test]
 fn cylindrical_drude() {
     check("adv_cyl_drude", 1e-6);
+}
+
+/// The same closed coax filled with a Debye medium (`Epsilon = 2`,
+/// `EpsilonDelta = 3`, `τ = 30 ps`): openEMS's Debye arithmetic, on the
+/// seam with the `α = 2π` copy corrected (design §5.16.12): 1.7e-11…2.2e-11,
+/// the test's sample-time interpolation (3.3e-3…2.3e-2 before).
+#[test]
+fn cylindrical_debye() {
+    check("adv_cyl_debye", 1e-6);
+}
+
+/// The axis cavity (`adv_cyl_axis`) with a lossy Debye cylinder over the
+/// axis and the seam (`ρ ≤ 6.2 mm`, `3 ≤ z ≤ 12 mm`, `κ` = 0.02 S/m): the
+/// axis edge's pole takes the whole disc's `vi` and openEMS's `A*/l` of
+/// one α sector (design §5.16.12): 1.9e-11…2.0e-11, the sample-time
+/// interpolation (5.0e-3…1.5e-2 before).
+#[test]
+fn cylindrical_debye_axis() {
+    check("adv_cyl_axis_debye", 1e-6);
 }
 
 /// A radial 20 Ω lumped resistor over the whole ring of a closed-azimuth

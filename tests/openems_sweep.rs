@@ -219,7 +219,7 @@ cases! {
     mat_sigma_graded: 1e-6;         // (exact; 8.8e-5; 9e-2 with csx's average; identical material dumps)
     bg_material: 1e-6;              // (exact)
     lorentz_weight: 1e-6;           // (exact; 2.2e-5 before openEMS's pole arithmetic, §5.16.12)
-    debye_weight: 1e-4;
+    debye_weight: 1e-6;             // (exact; 6.4e-5 before openEMS's Debye arithmetic, §5.16.12)
     // Parameters, mesh.
     param_set: 1e-6;                // (exact)
     grid_unsorted: 1e-6;            // (exact)
