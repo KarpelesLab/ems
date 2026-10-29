@@ -336,6 +336,22 @@ impl Simulation {
             layers.as_ref(),
             Some((&compiled.materials, compiled.coefficient_rounding)),
         )?;
+        // openEMS forms the coefficients of its poles from the edge's
+        // final circuit, after the lumped elements (design §5.16.3).
+        if let Some(h) = &boundaries.dispersive
+            && !mapped.circuits.is_empty()
+        {
+            let circuits = mapped
+                .circuits
+                .iter()
+                .map(|&(a, p, c)| ((a, p), c))
+                .collect();
+            let co = engine.coefficients();
+            let grid = engine.grid();
+            engine
+                .operator(h)
+                .rebase_openems(|a, p| co.cb(a)[grid.index(p)], &circuits);
+        }
         mapped.lumped_ids = mapped
             .lumped
             .iter()

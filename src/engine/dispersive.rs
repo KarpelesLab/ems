@@ -640,6 +640,8 @@ struct Side {
     oe_coef: Vec<[f32; 3]>,
     /// openEMS poles: `(V, W)` per pole.
     oe_state: Vec<[f32; 2]>,
+    /// openEMS poles: what `oe_coef` was computed from.
+    oe_src: Vec<Option<OeSource>>,
     /// Whether the edge has poles other than openEMS ones.
     mixed: Vec<bool>,
     /// `cb` / `db` of the edge at installation (look-ahead only).
@@ -836,6 +838,19 @@ struct Branch {
     /// A trapezoidal Debye pole `(Δε, τ, ε0·A*/l)` that becomes
     /// [`Kind::OpenEmsDebye`] if every pole of its edge is one.
     debye_oe: Option<(f64, f64, f64)>,
+    /// What `oe` was computed from (openEMS Lorentz/Drude poles).
+    oe_src: Option<OeSource>,
+}
+
+/// What the `f32` coefficients of an openEMS pole were computed from
+/// (for [`Dispersive::rebase_openems`]).
+#[derive(Debug, Clone, Copy)]
+enum OeSource {
+    /// A Lorentz/Drude pole ([`OpenEmsPole::coefficients`]).
+    Pole(OpenEmsPole),
+    /// A Debye pole of an edge whose poles are all openEMS Debye poles:
+    /// `cp = ε0·A*/l`, `Δε`, `τ` ([`openems_debye_coefficients`]).
+    Debye([f64; 3]),
 }
 
 /// The slab hooks: per-slab state.
@@ -1288,6 +1303,7 @@ impl Dispersive {
                     kind: Kind::OpenEms,
                     oe: p.coefficients(f64::from(coef), dt),
                     debye_oe: None,
+                    oe_src: Some(OeSource::Pole(p)),
                 },
                 Ok(pole) => {
                     let leap = match self.scheme {
@@ -1303,6 +1319,7 @@ impl Dispersive {
                             kind: Kind::Leapfrog,
                             oe: [0.0; 3],
                             debye_oe: None,
+                            oe_src: None,
                         },
                         None => {
                             let (a, inv_c, z) = pole.branch(m, dt);
@@ -1322,6 +1339,7 @@ impl Dispersive {
                                 kind: Kind::Trapezoidal,
                                 oe: [0.0; 3],
                                 debye_oe,
+                                oe_src: None,
                             }
                         }
                     }
@@ -1381,6 +1399,69 @@ impl Dispersive {
     pub fn add_to(mut self, engine: &mut Engine) -> Result<OperatorHandle<Dispersive>> {
         self.install(engine)?;
         Ok(engine.add_operator(self))
+    }
+
+    /// Recomputes the coefficients of the openEMS poles
+    /// ([`push_openems`](Self::push_openems), and the Debye poles of
+    /// [`with_openems_debye`](Self::with_openems_debye)) on the E edges of
+    /// `circuits` from the engine's current `cb` (`coef(axis, node)`) and
+    /// the edge capacitance given there (`(axis, node) → C`): openEMS forms
+    /// them from the edge's final coefficients, after a lumped element
+    /// changed them (design §5.16.3). Call it after registration, before
+    /// the first step; returns the number of poles updated.
+    pub(crate) fn rebase_openems(
+        &self,
+        coef: impl Fn(Axis, [usize; 3]) -> f32,
+        circuits: &std::collections::HashMap<(Axis, [usize; 3]), f64>,
+    ) -> usize {
+        let Some(p) = &self.parts else { return 0 };
+        let nz = self.nodes[2];
+        let mut n = 0;
+        for slab in &p.slabs {
+            let mut st = slab
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let side = &mut st.e;
+            for e in 0..side.edges() {
+                let axis = Axis::ALL[side.axis[e] as usize];
+                let off = side.off[e] as usize;
+                let node = [side.plane[e] as usize, off / nz, off % nz];
+                let Some(&c) = circuits.get(&(axis, node)) else {
+                    continue;
+                };
+                let cb = f64::from(coef(axis, node));
+                let poles = side.pole_start(e)..side.pole_end[e] as usize;
+                // The Debye poles of an edge share one update.
+                let mut debye = Vec::new();
+                let mut cp = 0.0;
+                for q in poles.clone() {
+                    match side.oe_src[q] {
+                        Some(OeSource::Pole(mut pole)) if side.kind[q] == Kind::OpenEms => {
+                            pole.circuit = c;
+                            side.oe_coef[q] = pole.coefficients(cb, p.dt);
+                            side.oe_src[q] = Some(OeSource::Pole(pole));
+                            n += 1;
+                        }
+                        Some(OeSource::Debye([c_p, delta_eps, tau]))
+                            if side.kind[q] == Kind::OpenEmsDebye =>
+                        {
+                            cp = c_p;
+                            debye.push((q, (delta_eps, tau)));
+                        }
+                        _ => {}
+                    }
+                }
+                if !debye.is_empty() {
+                    let params: Vec<(f64, f64)> = debye.iter().map(|d| d.1).collect();
+                    let coefs = openems_debye_coefficients(cb, cp, &params, p.dt);
+                    for ((q, _), oe) in debye.into_iter().zip(coefs) {
+                        side.oe_coef[q] = oe;
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
     }
 
     fn sum_energy(&self, field: Field) -> f64 {
@@ -1453,6 +1534,11 @@ impl Operator for Dispersive {
                 side.q.push(0.0);
                 side.oe_coef.push(b.oe);
                 side.oe_state.push([0.0; 2]);
+                side.oe_src.push(b.oe_src.or_else(|| {
+                    b.debye_oe
+                        .filter(|_| b.kind == Kind::OpenEmsDebye)
+                        .map(|(delta_eps, tau, cp)| OeSource::Debye([cp, delta_eps, tau]))
+                }));
                 if b.kind == Kind::Trapezoidal {
                     sum += b.inv_z;
                 }

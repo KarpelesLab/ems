@@ -95,6 +95,10 @@ pub(crate) struct Mapped {
     pub probes: Vec<ProbeEntry>,
     pub dumps: Vec<DumpEntry>,
     pub sar: Vec<SarEntry>,
+    /// openEMS files: the E edges whose circuit a parallel R/C lumped
+    /// element replaced, with their capacitance (`(axis, node, C)`), for
+    /// the openEMS poles on them (`Dispersive::rebase_openems`).
+    pub circuits: Vec<(Axis, [usize; 3], f64)>,
 }
 
 /// A csx lumped element being assembled.
@@ -758,7 +762,15 @@ pub(crate) fn map_sources(
                 .and_then(|w| w.nyquist_frequency())
                 .filter(|_| !parallel || (no_c && g.edges.iter().any(|e| e.l.is_some())))
                 .map(|f| 2.0 * core::f64::consts::PI * f);
-            let kept = replace_medium(engine, g.axis, &g.edges, g.topology, medium, omega);
+            let kept = replace_medium(
+                engine,
+                g.axis,
+                &g.edges,
+                g.topology,
+                medium,
+                omega,
+                &mut mapped.circuits,
+            );
             if omega.is_some() && kept < 0.2 {
                 warnings.push(if parallel {
                     format!(
@@ -1388,6 +1400,7 @@ fn replace_medium(
     topology: Topology,
     medium: Option<(&EdgeMaterials, CoeffRounding)>,
     omega: Option<f64>,
+    circuits: &mut Vec<(Axis, [usize; 3], f64)>,
 ) -> f64 {
     let grid = engine.grid().clone();
     let dt = engine.dt();
@@ -1430,6 +1443,12 @@ fn replace_medium(
             }
         }
         (ca[i], cb[i]) = e_coefficients(cap, cond, dt);
+        // openEMS folds a parallel R/C element into the edge before its
+        // poles take the edge's coefficients; an element with an
+        // inductor or in series comes after them (design §5.16.3).
+        if !series && e.l.is_none() {
+            circuits.push((axis, e.node, cap));
+        }
     }
     kept
 }

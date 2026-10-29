@@ -4051,6 +4051,20 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   up to 9e-2). This was the "sheets with dispersive or lossy media near
   Mur/PML faces" of seeds 56 and 77 (the media did not matter):
   `rs_77` 6e-5…6.3e-2 → exact, seed 56 3.1e-3 → 1.2e-6 (dumps).
+- **Lumped elements in dispersive media** (wave 19): openEMS forms the
+  `f32` coefficients of its Lorentz/Drude poles (`vi` and the edge
+  capacitance, §5.16.12) and of its Debye update (`vi`) from the edge
+  with a parallel R, C or R‖C element already folded in; ems took them
+  from the medium (the element is installed after the poles). Probe
+  files of R, C, R‖C elements in Drude, Lorentz and Debye boxes: all
+  bit-identical now (were 2.4e-2…4e-2 in Drude media, 4e-2…0.59 in a
+  Debye medium; a lossless C cancels out of the Lorentz coefficients,
+  not out of the Debye ones) (`Dispersive::rebase_openems`, called by
+  `Simulation` after the lumped elements). Elements with an inductor or
+  in series still differ (R‖L‖C 2e-2, series R 4e-2 in a Drude box):
+  neither the medium's nor the element's `vi` reproduces them. `rs_51`
+  (resistors in Lorentz media next to a sheet) 2.6e-5…2.4e-4 → exact,
+  `rs_51_debye` (hand-written, C in a Debye box) 0.59 → exact.
 
 Not resolved (18 of 230): series elements (9 with an excitation over a
 csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an

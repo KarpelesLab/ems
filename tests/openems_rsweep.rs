@@ -292,3 +292,18 @@ fn sheet_over_metal() {
 fn sheet_in_layer() {
     case("rs_77", 1e-6, 1e-4);
 }
+
+/// Lumped resistors in Lorentz media: openEMS forms the pole
+/// coefficients from the edge with the element folded in. Exact (was
+/// 2.6e-5…2.4e-4, the dumps 7.2e-4).
+#[test]
+fn lumped_in_lorentz() {
+    case("rs_51", 1e-6, 1e-5);
+}
+
+/// A lumped capacitor in a Debye medium (hand-written): the same for
+/// openEMS's Debye update. Exact (was 5.0e-2…5.9e-1).
+#[test]
+fn lumped_in_debye() {
+    case("rs_51_debye", 1e-6, 1e-5);
+}

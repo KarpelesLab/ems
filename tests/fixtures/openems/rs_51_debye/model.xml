@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, hand-written companion of seed 51: a lumped capacitor in a Debye medium (openEMS forms the Debye coefficients from the edge with the element folded in) -->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="1e-30">
+    <Excitation Type="0" f0="5e9" fc="3e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LumpedElement Name="le0" Direction="2" Caps="0" C="1e-12"><Primitives><Box Priority="5"><P1 X="3" Y="3" Z="4"/><P2 X="5" Y="5" Z="6"/></Box></Primitives></LumpedElement>
+      <DebyeMaterial Name="d"><Property Epsilon="2" EpsilonDelta="3" EpsilonRelaxTime="2e-11"/><Primitives><Box Priority="1"><P1 X="2" Y="2" Z="3"/><P2 X="6" Y="6" Z="7"/></Box></Primitives></DebyeMaterial>
+      <Excitation Name="src" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="7" Y="7" Z="3"/><P2 X="7" Y="7" Z="6"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u0" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="4"/><P2 X="4" Y="4" Z="6"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e1" Type="2"><Primitives><Box Priority="0"><P1 X="6" Y="4" Z="5"/><P2 X="6" Y="4" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h1" Type="3"><Primitives><Box Priority="0"><P1 X="5" Y="4" Z="5"/><P2 X="5" Y="4" Z="5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

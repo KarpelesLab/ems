@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 51; lumped resistors in Lorentz media (openEMS forms the poles from the edge with the element folded in); tags: PEC PML csheet graded hardsource lorentz lumpedR lumpedRC material metalsheet -->
+<openEMS>
+  <FDTD NumberOfTimesteps="600" endCriteria="1e-30">
+    <Excitation Type="0" f0="7.52072e+09" fc="3.83521e+09"/>
+    <BoundaryCond xmin="PEC" xmax="PML_3" ymin="PML_4" ymax="PML_3" zmin="PML_4" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LorentzMaterial Name="lor0"><Property Epsilon="2.04747" EpsilonPlasmaFrequency="3.93194e+09" EpsilonLorPoleFrequency="8.31412e+09" EpsilonRelaxTime="1.68355e-09"/><Primitives><Box Priority="4"><P1 X="5.25" Y="4.5" Z="7"/><P2 X="7.75" Y="7.25" Z="9.75"/></Box></Primitives></LorentzMaterial>
+      <LorentzMaterial Name="lor1"><Property Epsilon="1.55658" EpsilonPlasmaFrequency="3.226e+09" EpsilonLorPoleFrequency="1.11586e+10" EpsilonRelaxTime="1.84e-09"/><Primitives><Box Priority="4"><P1 X="7.75" Y="4.5" Z="6.5"/><P2 X="10.5" Y="8.75" Z="8.5"/></Box></Primitives></LorentzMaterial>
+      <Material Name="mat2"><Property Epsilon="3.21672" Mue="1" Kappa="0" Sigma="0"/><Primitives><Box Priority="4"><P1 X="4" Y="4.5" Z="6.5"/><P2 X="7.75" Y="7.25" Z="9.75"/></Box></Primitives></Material>
+      <Metal Name="pec0"><Primitives><Box Priority="5"><P1 X="0.75" Y="5" Z="4.5"/><P2 X="0.75" Y="7.25" Z="6.5"/></Box></Primitives></Metal>
+      <ConductingSheet Name="cs" Conductivity="100000" Thickness="1e-05"><Primitives><Box Priority="5"><P1 X="5.25" Y="5" Z="6.5"/><P2 X="7.75" Y="7.25" Z="6.5"/></Box></Primitives></ConductingSheet>
+      <LumpedElement Name="le0" Direction="1" Caps="1" R="80.5261" C="4.61362e-13"><Primitives><Box Priority="5"><P1 X="6.25" Y="5" Z="9.75"/><P2 X="6.25" Y="7.25" Z="9.75"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="le1" Direction="1" Caps="1" R="189.642"><Primitives><Box Priority="5"><P1 X="5.25" Y="5" Z="7"/><P2 X="5.25" Y="7.25" Z="7"/></Box></Primitives></LumpedElement>
+      <Excitation Name="src" Type="1" Excite="1,0,0"><Primitives><Box Priority="0"><P1 X="4" Y="4.5" Z="7"/><P2 X="6.25" Y="4.5" Z="7"/></Box></Primitives></Excitation>
+      <ProbeBox Name="e0" Type="2"><Primitives><Box Priority="0"><P1 X="9.25" Y="4.5" Z="1.5"/><P2 X="9.25" Y="4.5" Z="1.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e1" Type="2"><FD_Samples>7.52072e+09,9.02486e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="4" Y="4.5" Z="7"/><P2 X="4" Y="4.5" Z="7"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h2" Type="3"><Primitives><Box Priority="0"><P1 X="7.75" Y="7.25" Z="6.5"/><P2 X="7.75" Y="7.25" Z="6.5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,0.75,2,3,4,5.25,6.25,7.75,9.25,10.5,11.75,13.25</XLines>
+      <YLines>0,1,2,3.5,4,4.5,5,6.25,7.25,7.75,8.75,10.25,11</YLines>
+      <ZLines>0,1.5,2.25,2.75,3.75,4.5,5.5,6,6.5,7,8.5,9.75,10.25</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
