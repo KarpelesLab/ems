@@ -95,14 +95,16 @@ command line in the case's `meta.txt`:
   interfaces (`cyl_radial`), the radial-line port's properties
   (`cyl_radial_port`), sources and lumped
   elements at α > π, a lumped ring ending at α = 2π and current boxes at
-  the α = 0 seam (`cyl_current_seam`);
+  the α = 0 seam (`cyl_current_seam`), boxes whose α range leaves the
+  grid's lines (`cyl_alpha_wrap`), a graded α mesh (`cyl_alpha_graded`),
+  sources on the seam (`cyl_seam_source`);
   `tests/openems_cyl.rs`, `tests/openems_dumps.rs`), copying back the
   files listed on the `keep:` line of the case's `meta.txt` (shell
   patterns) and listing the structure of kept HDF5 files
   (`structure.txt`).
 - `gen-dumps.sh [CASE...]` regenerates the `dump_*` cases (field dumps and SAR files,
-  also on a closed cylindrical grid with the axis,
-  in VTK and HDF5; `tests/openems_dumps.rs`): all HDF5 files, a subset of
+  also on a closed cylindrical grid with the axis and with openEMS's
+  azimuthal multigrid (`dump_cyl_multigrid`), in VTK and HDF5; `tests/openems_dumps.rs`): all HDF5 files, a subset of
   the VTK files, and `structure.txt`, the HDF5 structure listing of
   `h5ls.py`.
 - `gen-cli.sh [CASE...]` regenerates the `cli_*` cases (the `ems`

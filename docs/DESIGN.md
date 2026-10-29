@@ -4648,8 +4648,8 @@ scheme is unchanged.
   the last coarse cell's unwrapped centre (13/12 and −1/12; `H_ρ` and
   `H_z` wrap). The coarse H on `ρ_{I−½}` reads `E_z` of the even fine
   lines on `ρ_I` and, for `E_α`, the sum of the coarse arc's two fine
-  edges. Exact on the fit model for 38 steps but the last H dump (ems's
-  look-ahead H does not see the operator) and on `adv_cyl_multigrid`
+  edges. Exact on the fit model for 38 steps (the last H dump too since
+  wave 19, below) and on `adv_cyl_multigrid`
   (3.0e-3…2.0e-2 with ems's embedding). Used for files with one zone
   boundary, a closed grid with the axis, uniform α, vacuum inside the
   zone and no PML or Mur faces; other multigrid files keep ems's
@@ -4665,9 +4665,8 @@ scheme is unchanged.
   lines). Random sectors with one or two material boxes: 58 of 60
   material dumps identical (11 of 30 before; the two left differ on PEC
   boundary edges, where openEMS samples the out-of-domain quarter).
-  Closed grids still differ on some edges near α faces of boxes (not
-  resolved; the dump's α index is shifted against the lines there, which
-  made the cases hard to read).
+  Closed grids differed on some edges near α faces of boxes: openEMS's α
+  index ranges (wave 19, below).
 - **Dispersive poles on cylindrical grids** were all missing for a
   primitive at negative x (the candidate edges came from its Cartesian
   bounding box), native path too; fixed (every α line a candidate,
@@ -4683,6 +4682,94 @@ scheme is unchanged.
   lossy box and a source, identical to the printed digits). Not
   checked: other primitives (a `Cylinder` there differs from both
   readings).
+
+**Wave 19 (closed grids, the α = 0 crossing).** Fitted on
+`--debug-material`/`--debug-operator` dumps and per-step E/H dumps of
+hand-written 1 m-cell models (closed and sector grids, with and without
+the axis, uniform, finely graded and randomly graded α meshes) and
+checked on random models; all rules on the openEMS-file path only.
+
+- **α index ranges of boxes** (`compile::cylavg::AlphaRanges`). Both
+  codes test a point against a cylindrical box with its angle modulo
+  2π, but openEMS also limits each untransformed cylindrical box (here:
+  materials) to a range of α *indices*: from the last line strictly
+  below the box's lower angle to the first line strictly above its upper
+  one (line 0 / the last line if none; a box wholly below the first line
+  or above `α_1 + 2π` has no effect). An edge or face counts a sample in
+  the box only if its own α index (line, or cell) lies in the range; the
+  seam has the index of the `α = 2π` line; the axis z edge is not
+  limited (black box: its single samples, the effective axis ε from the
+  axis `E_z` of a soft-driven ring against a vacuum run). Bisected with
+  bounds on lines and 1e-9 off them, on `[0, 2π]` and `[−π, π]` meshes.
+  So a box over α −0.5…2 fills only `[0, 2]` (not the seam, not the
+  cells below 2π: csx's periodic reading wraps it), one over `[π, 3π]`
+  (any span ≥ 2π) covers from the cell below π up to 2π, and one over
+  `[0, a]` leaves out the seam's upper half unless `a ≥ α_{N−1}` (agent
+  S's coax with a lossy box over α 0…3: 0.42 → exact). ems re-samples
+  every edge and face with a sample where the range changes the winning
+  primitive, csx's own averages included (its weights). The native path
+  keeps the periodic reading (a box means the same region whatever
+  multiple of 2π its corners are given in); the warning about such boxes
+  is no longer given for materials. The "differ near α faces of boxes"
+  of closed grids above were these ranges.
+- **Graded α meshes** (`Grid::with_openems_alpha_widths`, files with a
+  graded α mesh only): openEMS gives the dual face of a z edge on an
+  inner line `j` the width `Δα_j` of the cell above (not the dual
+  width), the `H_z` face of cell `j` the dual width of its lower line
+  (`Δα_0` for the first cell, also on a closed grid), and a seam z edge
+  `Δα_0` (vacuum operator dumps: z-component `vi`, `iv` off by the
+  ratios of these widths, every other coefficient equal). The z-edge
+  material weights (above) use `Δα_0` as the dual width of line 0 on a
+  closed grid too; the seam's two halves weigh `(Δα_{N−1} + Δα_0)/2`
+  (upper) and `(Δα_{N−2} + Δα_{N−1})/2` (lower), on the axis `Δα_0`
+  and the line's own z-edge average (openEMS's axis capacitance is the
+  sum of the lines' z-edge capacitances: black box, single samples on
+  each line, every weight to 6 digits).
+- **The α = 0 line of the seam `H_α`** (`engine::openems_cyl`). openEMS
+  updates its own copy on that line from that line's E, with the dual
+  length `ρ_½·Δα_0` and the material sampled at α index 0 (the seam
+  halves `α_0 ∓ Δα/4`, the material dump of line 0); the axis ring sum
+  reads it as its first term, dumps and probes at α = 0 read it; the
+  `2π` line keeps the whole edge. On a uniform vacuum mesh both are the
+  same; a magnetic box ending at the seam (`[π, 3π]` over the axis) or a
+  graded mesh shows it (axis `E_z` 0.4 % at the first steps).
+- **Sources on the seam** (`sim::map`,
+  `compile::cylindrical::openems_sources_on_tau`). openEMS keeps the
+  seam's state on the `2π` copy: a soft source drawn on the `α = 0`
+  line only adds to that copy each step (dumps there show `v + s(n)`,
+  not the accumulated source), one drawn on `2π` accumulates and reaches
+  the `α = 0` copy a step later, a ring over `[0, 2π]` drives both.
+  Files drive the copy the source is drawn on, out of the periodic merge
+  (agent S's case: 0.6 of the nearby field → exact). The seam operator
+  now takes its E state from the `2π` copy.
+- **Look-ahead H** (`Operator::lookahead_current_in`, new defaulted
+  trait method with the current fields): the seam operator and openEMS's
+  multigrid give the H of the step after the last (the final H sample
+  of dumps and probes); the last H dump with the multigrid was 6.6e-4 of
+  the peak off (inside the zone), the seam probes of `cyl_alpha_wrap`
+  1.4e-2.
+
+Measured: material and operator dumps of 289 hand-written and random
+closed-grid models (α crossing 0, spans ≥ 2π, `[0, a]` boxes, μ, κ;
+uniform and graded) all identical (the random 120 with crossing boxes:
+43 → 120 identical; the material dump now shows the seam `H_α` with the
+copies' halves in series, as openEMS's `2π` line); 140 random
+simulations (closed, sector, uniform, graded, E and H probes, 200 steps)
+identical to every printed digit. Fixtures (≈ 190 kB): `cyl_alpha_wrap`
+(boxes over α −0.5…2, π…3π over the axis, 0…2: probes on and next to
+the seam ring, E and H) and `cyl_alpha_graded` (graded closed mesh with
+the axis, a lossy dielectric and a magnetic box across the seam) to the
+printed digits (were 0.1…1 and 1e-3…2e-2), `cyl_seam_source` (sources
+on `α = 0` and `2π`, 1 m cells) exact, `dump_cyl_multigrid` (E/H dumps
+in the zone ending on the run's last step) 3e-16.
+
+Not reproduced: `e2e_coax_monopole` stays at 3e-7…2e-6 (its tests'
+first column; the α component of `ez_far`, which is 1e-4 of the field,
+8e-5): its mesh is uniform to 1e-9 (`6.283185307`), openEMS applies
+the z widths above there as well, which changes some `f32`
+coefficients by an ulp, but with them a few others still differ by an
+ulp (a seam z edge, `H_ρ` of the last cell, a seam `H_α`); the mesh is
+treated as uniform (bit-identical to before).
 
 Dump formula (not changed): openEMS's raw dumps divide by the edge
 length computed from the drawing-unit deltas times the unit
@@ -5008,15 +5095,9 @@ dumps of the 0.5 m-spaced variant still differ on a few values of about
 
 Not covered:
 
-- A closed cylindrical model whose material primitive spans
-  `α < 0 … α > 0` (for example `α` −0.5…2) differs from openEMS even
-  for a plain dielectric (§8.1, csx's α normalisation).
-- A closed grid with a non-uniform α mesh next to the axis differs for a
-  plain dielectric too.
-- Found in wave 19, not analysed: a soft `E_ρ` excitation on the
-  `α = 0` seam of a closed grid with the axis (1 m cells, vacuum) differs
-  from openEMS from the second step on, by 0.6 of the field next to it.
-  The same source one α line off the seam is exact.
+- (Resolved in wave 19, §5.16.11: boxes spanning `α < 0 … α > 0` or
+  `[0, a]` on closed grids, graded α meshes next to the axis, sources on
+  the seam.)
 
 Feature sweep (169 models, be30220, before → after): 146 → 148 exact
 (`drude_kappa` 6.0e-5 → 0, `lorentz_weight` 2.2e-5 → 0, both on 1 mm
@@ -5868,6 +5949,15 @@ These are reported here, not fixed in csx from this repo.
     among `extra_attributes`, where ems reads it
     (`compile::ProbeSpec::oversampling`). A typed
     `Option<u32>` on `ProbeBox` would also write it back.
+23. **α of cylindrical boxes beyond the lines.** csx tests a point
+    against a cylindrical box with its angle modulo 2π (a sensible
+    reading, ems's native one), and normalises bounding boxes to
+    `[−π, π)` (item 14). openEMS limits each box to a range of α line
+    indices around its literal angles (§5.16.11) and drops a box wholly
+    outside the α lines; ems re-samples the affected edges for files
+    (`compile::cylavg`). A documented option for the literal reading,
+    or the per-sample primitive list (`properties_at` is O(primitives)
+    per point), would let solvers do this without a second sampler.
 
 ### 8.2 Feedback for hdf5rs
 
