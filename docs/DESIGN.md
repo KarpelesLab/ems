@@ -4924,12 +4924,37 @@ The native path keeps the `f64` trapezoidal rule. A Debye pole on an
 edge that also carries another pole keeps it as well (openEMS's order
 for several poles is not measured).
 
+**Lorentz and Drude poles on grids with the axis** (wave 19, area S).
+ems rejected these files at setup: the α edges on the axis have no
+length, so their `OpenEmsPole` got an infinite capacitance (`ems: error:
+… circuit: inf`). It was the only valid openEMS file ems refused. Now
+an α edge at `ρ = 0` gets no pole on either path: it has no field and
+no circuit, so a pole has nothing to act on (`compile::dispersive`). The
+axis z edge is the other question. ems first ran openEMS's poles on it
+through the seam operator, as for a Debye pole, with candidate
+capacitances: the whole disc's (`f32` or `f64`), the Debye rule's
+`A*/l` (one α sector), half of it, `1/N` of the disc. Measured on the
+closed axis cavity of `adv_cyl_axis_debye` (24 α cells, 1 mm ρ and z
+cells) with a lossy Drude cylinder over the axis and the seam. The
+probes differ by 4e-2 with the disc's capacitance, by 1.6e-3 with the
+sector's and by 8e-4 with half of it. The difference scales with the
+capacitance, and the probes are identical to every printed digit only
+with no pole at all. A strong Lorentz cylinder of `ρ ≤ 1.2 mm` (`f_p` =
+20 GHz, `f_Lor` = 6 GHz) around the axis behaves the same way (3.2e-3
+with the sector's capacitance, 0 without).
+So openEMS gives the axis z edge no Lorentz or Drude pole, silently,
+although it gives it a Debye pole (above). Files now drop these poles on
+the openEMS path, with a warning ("the Lorentz/Drude poles of N axis z
+edge(s) ignored"). The native path keeps the pole on the axis edge (the
+disc is in the medium): on the Drude cavity it differs from openEMS by
+7.6e-3…3.9e-2, which is the axis pole's effect. A sector with the axis
+(α 0…π/2, PEC α faces) was exact too. New fixtures (48 kB):
+`adv_cyl_axis_drude` (the Drude cavity) and `adv_cyl_axis_lorentz`,
+2.2e-11…2.3e-11, the tests' interpolation of sample times (before:
+refused). Tolerance 1e-6.
+
 Not covered:
 
-- A Lorentz or Drude pole on a grid with the axis is rejected at setup:
-  the degenerate α edges at `ρ = 0` get an infinite circuit (`ems:
-  error: … circuit: inf`). This was found here and is not fixed, being
-  the Lorentz path's.
 - A closed cylindrical model whose material primitive spans
   `α < 0 … α > 0` (for example `α` −0.5…2) differs from openEMS even
   for a plain dielectric (§8.1, csx's α normalisation).

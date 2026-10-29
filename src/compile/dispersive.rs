@@ -312,6 +312,7 @@ pub(super) fn dispersive_poles(
     let mut oe = Vec::new();
     let mut raw = Vec::new();
     let mut bad = 0usize;
+    let mut axis_dropped = 0usize;
     let fields: &[Field] = if magnetic {
         &[Field::Electric, Field::Magnetic]
     } else {
@@ -329,7 +330,14 @@ pub(super) fn dispersive_poles(
                             Field::Electric => n[d] + 1 < dims[d],
                             Field::Magnetic => n[t1] + 1 < dims[t1] && n[t2] + 1 < dims[t2],
                         };
-                        if !exists {
+                        // An α edge on the axis has no length (no
+                        // field, no circuit): a pole there has nothing to
+                        // act on (openEMS runs such files, black box).
+                        let degenerate = cyl
+                            && field == Field::Electric
+                            && axis == Axis::Y
+                            && s.lines[0][i] == 0.0;
+                        if !exists || degenerate {
                             continue;
                         }
                         let idx = node_map.engine_index(n);
@@ -345,14 +353,39 @@ pub(super) fn dispersive_poles(
                             edge_inf,
                             openems.is_some().then_some(&mut raw),
                         );
-                        let circuit = openems.filter(|_| !raw.is_empty()).map(|g| match field {
-                            Field::Electric => {
-                                e_edge_circuit(g, materials, axis, n, CoeffRounding::OpenEms).0
-                            }
-                            Field::Magnetic => {
-                                h_edge_inductance(g, materials, axis, n, CoeffRounding::OpenEms)
-                            }
-                        });
+                        // openEMS gives the axis z edge no Lorentz or
+                        // Drude pole (black box: a strong Lorentz cylinder
+                        // over the axis is bit for bit the static medium
+                        // there, design §5.16.12).
+                        let on_axis = field == Field::Electric
+                            && axis == Axis::Z
+                            && openems.is_some_and(|g| g.has_axis())
+                            && i == 0;
+                        if on_axis && j == 0 && !raw.is_empty() {
+                            axis_dropped += 1;
+                        }
+                        let circuit =
+                            openems
+                                .filter(|_| !raw.is_empty() && !on_axis)
+                                .map(|g| match field {
+                                    Field::Electric => {
+                                        e_edge_circuit(
+                                            g,
+                                            materials,
+                                            axis,
+                                            n,
+                                            CoeffRounding::OpenEms,
+                                        )
+                                        .0
+                                    }
+                                    Field::Magnetic => h_edge_inductance(
+                                        g,
+                                        materials,
+                                        axis,
+                                        n,
+                                        CoeffRounding::OpenEms,
+                                    ),
+                                });
                         for (q, pole) in poles.into_iter().enumerate() {
                             if pole.validate().is_err() {
                                 bad += 1;
@@ -385,6 +418,12 @@ pub(super) fn dispersive_poles(
     if bad > 0 {
         warnings.push(format!(
             "dispersive materials: {bad} edge pole(s) with negative or non-finite parameters ignored"
+        ));
+    }
+    if axis_dropped > 0 {
+        warnings.push(format!(
+            "dispersive materials: the Lorentz/Drude poles of {axis_dropped} axis z edge(s) \
+             ignored (openEMS gives the axis none)"
         ));
     }
     (out, oe)

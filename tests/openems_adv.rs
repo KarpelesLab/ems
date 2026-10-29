@@ -352,6 +352,42 @@ fn cylindrical_debye_axis() {
     check("adv_cyl_axis_debye", 1e-6);
 }
 
+/// The axis cavity with a lossy Drude cylinder over the axis and the seam
+/// (`ρ ≤ 6.2 mm`, `f_p = 8 GHz`, `τ = 0.2 ns`, `κ` = 0.02 S/m). ems
+/// rejected it at setup (the α edges on the axis have no length, so their
+/// circuit was infinite); openEMS gives the axis z edge no pole (design
+/// §5.16.12): identical to the printed digits (1.6e-3…4.6e-2 with the
+/// pole on the axis).
+#[test]
+fn cylindrical_drude_axis() {
+    check("adv_cyl_axis_drude", 1e-6);
+}
+
+/// A strong Lorentz cylinder (`f_p = 20 GHz`, `f_Lor = 6 GHz`, `τ` =
+/// 0.1 ns) of `ρ ≤ 1.2 mm` over the axis: identical to the printed digits
+/// with no pole on the axis z edge (1.5e-3…3.2e-3 with one).
+#[test]
+fn cylindrical_lorentz_axis() {
+    check("adv_cyl_axis_lorentz", 1e-6);
+}
+
+/// ems's native scheme runs the Drude axis cavity as well (the pole on
+/// the axis edge kept): finite and within a few % of openEMS's.
+#[test]
+fn cylindrical_drude_axis_native() {
+    let name = "adv_cyl_axis_drude";
+    let path = fixture_dir(name).join("model.xml");
+    let doc = csx::OpenEmsDocument::read_file(&path).expect("fixture model");
+    let mut sim = Simulation::from_document_with(&doc, &CompileOptions::default(), |f| {
+        f.threads(2).openems_run(false)
+    })
+    .expect("compile");
+    let res = sim.run().expect("run");
+    for (f, e) in compare(name, &res) {
+        assert!(e.is_finite() && e < 0.1, "{name}/{f}: native, {e:.3e}");
+    }
+}
+
 /// A radial 20 Ω lumped resistor over the whole ring of a closed-azimuth
 /// coax (16 α cells, 12 radial edges): openEMS spreads it like a
 /// homogeneous conductivity (`R_e ∝ 1/ρ`, which ems now does for files)
