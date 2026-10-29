@@ -860,6 +860,13 @@ impl Compiled {
                         .filter(|_| self.openems_pml)
                         .map(|&(f, _)| f),
                 )
+                // PEC faces too: a source on the face plane drives their
+                // tangential E (wave 19, random sweep seed 451).
+                .chain(Face::ALL.into_iter().filter(|&f| {
+                    self.faces[f] == FaceCondition::Pec
+                        && !self.pml.iter().any(|&(p, _)| p == f)
+                        && !(self.grid.is_closed() && f == Face::YMax)
+                }))
                 .filter(|f| f.is_max())
                 .collect();
             upper_face_normal_h(engine, &upper);
@@ -1284,8 +1291,9 @@ fn mur_point_media(
 
 /// openEMS does not update the H component normal to an upper (max) face
 /// in that face's plane: it stays 0 (observed on Mur faces, where the
-/// tangential E of the face is not zero, and on openEMS's PML faces with a
-/// source on the face plane; on PEC faces it is 0 anyway).
+/// tangential E of the face is not zero, on openEMS's PML faces with a
+/// source on the face plane, and on PEC faces with a soft source on the
+/// face plane, which drives the face's E there).
 /// That H feeds no E update (the face's tangential E is set by the
 /// boundary operator), so it only shows in the end-criterion energy and
 /// in probes and dumps on the face; for files ems holds it at 0 too.

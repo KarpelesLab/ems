@@ -3937,8 +3937,8 @@ signal: a vacuum PEC box showed 1e-3 on probes at 1e-6 of the field
 maximum while the whole field agreed to 1e-6); runs where both codes
 diverge count as agreeing. 230 models: before 77 of the first 100 and,
 after the fixes of the first 130, 90 of 100 fresh ones agreed to 1e-4;
-now 212 of 230 (19 of them unstable in both codes, from R‖L elements with
-openEMS's capacitance limit). Found and fixed (files; each with a
+212 of 230 after wave 14 (19 of them unstable in both codes, from R‖L
+elements with openEMS's capacitance limit); wave 19: 547 of 560 (below). Found and fixed (files; each with a
 fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
 
 - **Thin metal under materials**: a material of higher priority (or
@@ -4085,16 +4085,37 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   and the source adds to it like a soft source (openEMS's probe files of
   a hard and a soft source there are identical); ems overwrote the edge
   (`rs_316_sheet`, hand-written, 0.85 → exact).
+- **The H normal to an upper PEC face** stays 0 in openEMS too (as on
+  Mur and PML faces, above): a soft E source on the face plane drives
+  the face's tangential E, and ems updated that H (seed 451, `rs_451`
+  with a raw H dump of the last cells: 1.8 → 8.9e-9).
 
-Not resolved (18 of 230): series elements (9 with an excitation over a
-csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an
-excitation, 2e-4…3.6e-2), the H probe next to a held Mur face (162,
-3e-2), conducting sheets with dispersive or lossy media near Mur/PML
-faces (56, 63, 71, 77, 152: 2e-4…5e-2 in the H dumps), a Lorentz layer
-with a hard source and a port (185, 0.99) and a Drude/PMC model with an H
-source (157, 2.0) that look like a slow growth in one code, an R‖L
-element where openEMS keeps a few % of an edge's capacitance (55, both
-growing at different rates), and 51 and 85 (6e-4, 3e-3; not analysed).
+Wave 19 (area U; the fixes above marked "wave 19"): re-run with the
+same generator and the wave-18 binary (`fba1870`) as the reference,
+seeds 0…229 agree in 213 → 227 of 230 and the fresh seeds 230…419 in
+169 → 187 of 190; seeds 420…559 (fixed binary only) 133 of 140, i.e.
+547 of 560. The leftovers of wave 18 were: 157, 185, 85 (lumped
+elements over metal), 162 (the held Mur face), 55 (lumped elements at a
+PMC face), 56, 63, 77, 152 (sheet priorities, sheets in an absorbing
+layer), 51 (resistors in Lorentz media), and 9, 61, 160, 190, 219, 225
+(series elements, now ≤ 1e-4: the sheet and metal rules above, plus
+earlier waves' series work; 71 already agreed).
+
+Not resolved (13 of 560): 101 and 356 (series elements, 4.1e-4 and
+2.8e-4, the series-branch round-off of §5.16.13); 55 (an R‖L element
+left with 9 % of its capacitance grows unstably in both codes at the
+same rate, the round-off of the inductor update seeds it; agrees to
+4e-6 over the first 320 steps, `rs_55`); 1, 278, 371, 480, 521, 555
+(openEMS diverges, ems does not: R‖L elements left with a few % of
+their capacitance or inside a PML layer, §5.16.2 — openEMS's run blows
+up, ems's stays bounded); 443 and 535 (an H source inside metal: every
+probe and dump agrees, but the energy end criterion stops at another
+step, 484 vs 855); 454 (an R‖L element on a Lorentz box next to a
+metal sheet, 1.5e-2) and 507 (an R‖L element on a sheet next to a PMC
+face, 0.93), not analysed; both have inductor elements where the order of the
+inductor update against poles or sheet branches is not reproduced
+(above). Inductor and series elements in dispersive media or on sheets
+are the remaining open item of this area.
 ems's `--debug-PEC` dump does not list lumped caps (openEMS's does).
 
 Not reproduced (documented differences):

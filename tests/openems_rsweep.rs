@@ -332,3 +332,10 @@ fn excitation_priority() {
 fn hard_source_on_sheet() {
     case("rs_316_sheet", 1e-6, 1e-4);
 }
+
+/// A soft E source on an upper PEC face: openEMS leaves the H normal to
+/// the face 0 (raw H dump of the last cells). Dump 8.9e-9 (was 1.8).
+#[test]
+fn pec_face_normal_h() {
+    case("rs_451", 1e-6, 1e-6);
+}
