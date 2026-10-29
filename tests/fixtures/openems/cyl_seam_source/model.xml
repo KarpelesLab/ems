@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Soft E sources on the seam of a closed cylindrical grid with the axis
+  (1 m cells, 8 alpha cells, vacuum): an E_rho source drawn on the
+  alpha = 0 line, an E_z source drawn on the alpha = 2 pi line, an E_z
+  source off the seam. openEMS keeps the seam's state on the 2 pi copy:
+  the alpha = 0 source only reaches the alpha = 0 copy (and the H next to
+  it) each step, the 2 pi one accumulates.
+  Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="0" TimeStep="3e-10" CylinderCoords="1">
+    <Excitation Type="0" f0="2e8" fc="2e8"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1" CoordSystem="1"><XLines>0,1,2,3,4,5,6</XLines><YLines>0.0,0.7853981633974483,1.5707963267948966,2.356194490192345,3.141592653589793,3.9269908169872414,4.71238898038469,5.497787143782138,6.283185307179586</YLines><ZLines>0,1,2,3,4,5,6</ZLines></RectilinearGrid>
+    <Properties>
+      <Excitation Name="exc" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="2" Y="0.7853981633974483" Z="2"/><P2 X="2" Y="0.7853981633974483" Z="4"/></Box></Primitives></Excitation>
+      <Excitation Name="exc0" Type="0" Excite="0.7,0,0"><Primitives><Box Priority="0"><P1 X="1" Y="0" Z="3"/><P2 X="2" Y="0" Z="3"/></Box></Primitives></Excitation>
+      <Excitation Name="exc2pi" Type="0" Excite="0,0,0.5"><Primitives><Box Priority="0"><P1 X="3" Y="6.283185307179586" Z="1"/><P2 X="3" Y="6.283185307179586" Z="2"/></Box></Primitives></Excitation>
+      <ProbeBox Name="ur_seam" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="1" Y="0" Z="3"/><P2 X="4" Y="0" Z="3"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="uz_seam" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="3" Y="0" Z="1"/><P2 X="3" Y="0" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="uz_next" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="2" Y="5.497787143782138" Z="1"/><P2 X="2" Y="5.497787143782138" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="uz_axis" Type="0" Weight="1"><Primitives><Box Priority="0"><P1 X="0" Y="0" Z="1"/><P2 X="0" Y="0" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e_seam" Type="2"><Primitives><Box Priority="0"><P1 X="2" Y="0" Z="3"/><P2 X="2" Y="0" Z="3"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_seam" Type="3"><Primitives><Box Priority="0"><P1 X="2" Y="0" Z="3"/><P2 X="2" Y="0" Z="3"/></Box></Primitives></ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

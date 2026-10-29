@@ -373,3 +373,14 @@ fn sar_values(want: &Path, got: &Path) -> f64 {
         .fold(0.0f64, |d, (u, v)| d.max((u - v).abs()))
         / m
 }
+
+/// openEMS's azimuthal multigrid (`dump_cyl_multigrid`, one zone
+/// boundary, E and H dumps over the zone, the last H sample on the step
+/// the run ends on): the look-ahead H of that sample runs through
+/// openEMS's coarse operator (`engine::openems_cyl::OpenemsMultigrid`;
+/// it took the fine kernel's update there before, 6.6e-4 of the peak).
+#[test]
+fn multigrid_cylindrical_dumps() {
+    let e = check("dump_cyl_multigrid", "", DumpFileOptions::new(), &[]);
+    assert_close("dump_cyl_multigrid", &e, 1e-6);
+}

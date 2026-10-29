@@ -557,6 +557,14 @@ impl Engine {
         op.downcast_ref().expect("operator type matches its handle")
     }
 
+    /// The first registered operator of type `T`, if any.
+    pub(crate) fn find_operator<T: Operator>(&self) -> Option<&T> {
+        self.ops.iter().find_map(|r| {
+            let op: &dyn core::any::Any = &*r.op;
+            op.downcast_ref()
+        })
+    }
+
     /// Mutable access to the operator behind `h`.
     ///
     /// # Panics

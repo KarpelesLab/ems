@@ -608,6 +608,57 @@ pub(super) fn wrapped_sources(
     }
 }
 
+/// openEMS's E sources drawn on the `α = 2π` line of a closed grid
+/// (files): csx's bounding boxes put their seam edges on the `α = 0`
+/// copy; openEMS drives the `α = 2π` copy, which holds the seam's state
+/// (the `α = 0` copy follows a step later; black box, a soft `E_ρ` source
+/// on either line, design §5.16.11). Moves the seam edges (ρ and z) of
+/// every excitation whose primitives are all untransformed cylindrical
+/// boxes on that line (flat in α) to the `α = 2π` copy.
+pub(super) fn openems_sources_on_tau(
+    model: &csx::ContinuousStructure,
+    mg: &mut csx::discretize::MaterialGrid,
+) {
+    use csx::primitives::Shape;
+    use csx::{CoordSystem, PropertyKind};
+    let al = model.grid.lines(1);
+    let n = al.len();
+    if n < 3 {
+        return;
+    }
+    let last = n - 1;
+    let tol = 1e-9 * core::f64::consts::TAU;
+    let map = super::NodeMap::new([0, 1, 2].map(|a| model.grid.lines(a).len()));
+    for p in model.properties() {
+        if !matches!(p.kind, PropertyKind::Excitation(_)) {
+            continue;
+        }
+        let on_tau = !p.primitives.is_empty()
+            && p.primitives.iter().all(|q| {
+                let Shape::Box(b) = &q.shape else {
+                    return false;
+                };
+                let (s, e) = (b.start.value()[1], b.stop.value()[1]);
+                q.shape_cs(model.coord_system) == CoordSystem::Cylindrical
+                    && q.transform.is_empty()
+                    && (s - al[last]).abs() <= tol
+                    && (e - al[last]).abs() <= tol
+            });
+        if !on_tau {
+            continue;
+        }
+        if let Some(f) = mg.excitations.iter_mut().find(|f| f.name == p.name) {
+            for (e, _) in &mut f.amplitudes {
+                let mut node = map.csx_node(e.index);
+                if e.dir != 1 && node[1] == 0 {
+                    node[1] = last;
+                    e.index = map.csx_index(node);
+                }
+            }
+        }
+    }
+}
+
 /// Whether the α mesh of the cylindrical `grid` is graded (cell widths
 /// differing by more than a relative 1e-9).
 pub(super) fn graded_alpha(grid: &Grid) -> bool {
@@ -630,9 +681,11 @@ pub(super) fn graded_alpha(grid: &Grid) -> bool {
 /// * reduces each α bound of a lumped element modulo 2π into `[0, 2π)`
 ///   separately, so `[0, 2π]` becomes the α = 0 line, `[π, 2π]` and
 ///   `[3π/2, 5π/2]` become empty and `[−π, π]` the α = π line;
-/// * ignores what lies on the α = 0 line of a closed grid only (sources,
-///   lumped elements, sheets: it updates the α = 2π copy of that line),
-///   e.g. a lumped ring over `[0, 2π]` has no effect at all.
+/// * ignores what lies on the α = 0 line of a closed grid only (lumped
+///   elements, sheets: it updates the α = 2π copy of that line), e.g. a
+///   lumped ring over `[0, 2π]` has no effect at all; a source there
+///   only drives that copy each step, which files reproduce
+///   (`sim::map`, [`openems_sources_on_tau`]).
 ///
 /// Only identity-transformed `Box` primitives in cylindrical coordinates
 /// are checked. Called for models read from openEMS files; with
@@ -705,12 +758,15 @@ pub(super) fn openems_alpha_warnings(
             if closed
                 && hi < g0 + eps
                 && lo > g0 - eps
-                && !matches!(p.kind, PropertyKind::Material(_))
+                && !matches!(
+                    p.kind,
+                    PropertyKind::Material(_) | PropertyKind::Excitation(_)
+                )
             {
                 warnings.push(format!(
                     "{tag}: lies on the alpha = {g0} line of a closed grid only; openEMS \
-                         ignores sources, lumped elements and sheets there (it updates the \
-                         alpha = {g1} copy of the line), ems applies them"
+                         ignores lumped elements and sheets there (it updates the alpha = {g1} \
+                         copy of the line), ems applies them"
                 ));
             }
         }

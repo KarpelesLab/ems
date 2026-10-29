@@ -466,3 +466,19 @@ fn cylindrical_graded_alpha_mesh_matches_openems() {
         assert!(e < 1e-6, "{n}: {e:e}");
     }
 }
+
+/// Soft E sources on the seam of a closed grid with the axis
+/// (`cyl_seam_source`: `E_ρ` drawn on the `α = 0` line, `E_z` on the
+/// `α = 2π` line): openEMS keeps the seam's state on the `α = 2π` copy,
+/// so the source on `α = 0` only reaches that copy (and the H cells next
+/// to it) each step while the one on `2π` accumulates; files drive the
+/// copy the source is drawn on and leave the two apart (`sim::map`,
+/// `compile::cylindrical::openems_sources_on_tau`, design §5.16.11).
+/// Every probe matches to the printed digits (the seam voltage differed
+/// by 0.6 before).
+#[test]
+fn cylindrical_seam_sources_match_openems() {
+    for (n, e) in probe_l2("cyl_seam_source", "model.xml") {
+        assert!(e < 1e-6, "{n}: {e:e}");
+    }
+}

@@ -72,4 +72,5 @@ rm -f "$FIX/dump_cyl/native/"*.h5 "$FIX/dump_cyl/native/structure.txt" 2> /dev/n
 run dump_sar "" "$ALL"
 run dump_cyl_closed "" '_00000000(30|60)\.vts$'
 run dump_dirac "" "$ALL"
+run dump_cyl_multigrid "" "$ALL"
 echo "fixtures written to $FIX"

@@ -634,7 +634,28 @@ pub(crate) fn map_sources(
         let mut seen = std::collections::HashSet::new();
         for &(edge, a) in &ex.amplitudes {
             let (axis, node) = node_map.edge(edge);
-            let copies = if grid.is_cylindrical() && !kind.is_magnetic() {
+            let last = grid.nodes()[1] - 1;
+            // openEMS (files): a seam ρ or z edge of a closed grid is
+            // driven on the copy whose line the source lies on; the seam
+            // update keeps its state on the α = 2π copy, so a source on
+            // the α = 0 line only reaches that copy (and the H next to
+            // it) each step (black box, design §5.16.11).
+            let lo = [node[0], 0, node[2]];
+            let literal = openems
+                && grid.is_closed()
+                && !kind.is_magnetic()
+                && axis != Axis::Y
+                && (node[1] == 0 || node[1] == last)
+                && engine
+                    .find_operator::<crate::engine::openems_cyl::OpenemsSeam>()
+                    .is_some_and(|s| s.runs_e(axis, lo));
+            let copies = if literal {
+                if !seen.insert((axis, node)) {
+                    continue;
+                }
+                engine.exempt_from_periodic_merge(axis, lo);
+                vec![node]
+            } else if grid.is_cylindrical() && !kind.is_magnetic() {
                 let c = cylindrical::e_edge_copies(&grid, axis, node);
                 if !seen.insert((axis, c[0])) {
                     continue;

@@ -129,6 +129,9 @@ pub(crate) struct OpenemsSeam {
     whole_hi: Vec<Option<(f32, f32)>>,
     /// Whether the seam `H_α` at `(i, k)` is split.
     split: Vec<bool>,
+    /// The multigrid zone boundary (`OpenemsMultigrid` owns the `H_α`
+    /// inside it), 0 without.
+    zone: usize,
 }
 
 /// `(vv, vi)` (or `(ii, iv)`) from the circuit quantities, rounded as
@@ -316,8 +319,7 @@ impl OpenemsSeam {
                     })
                     .collect();
                 // openEMS's α = 0 line: its own material and dual length
-                // `ρ_½·Δα_0` (module docs); kept apart where its
-                // coefficients differ from the whole edge's.
+                // `ρ_½·Δα_0`, and the E of that line (module docs).
                 let lo_copy = {
                     let [m0, s0] = alpha0
                         .get(i * n[2] + k)
@@ -326,7 +328,7 @@ impl OpenemsSeam {
                         .unwrap_or([m, s]);
                     let geo = area / (grid.dual_line(Axis::X, i) * da0);
                     let (ii0, iv0) = coeffs(MU0 * m0 * geo, s0 * geo, dt);
-                    ((ii0, iv0) != (ii, iv)).then_some((ii0, iv0, 0.0))
+                    Some((ii0, iv0, 0.0))
                 };
                 h.push(SeamH {
                     node: lo,
@@ -438,8 +440,22 @@ impl OpenemsSeam {
             nz: n[2],
             whole: vec![None; n[0] * n[2]],
             whole_hi: vec![None; n[0] * n[2]],
+            zone: 0,
             split,
         }
+    }
+
+    /// Whether the seam update runs the seam E edge along `axis` with
+    /// low node `lo` (with its state on the `α = 2π` copy).
+    pub(crate) fn runs_e(&self, axis: Axis, lo: [usize; 3]) -> bool {
+        self.e.iter().any(|s| s.axis == axis && s.node == lo)
+    }
+
+    /// The operator next to openEMS's multigrid with zone boundary line
+    /// `ring` ([`OpenemsMultigrid`] writes the fields inside it).
+    pub(crate) fn with_zone(mut self, ring: usize) -> Self {
+        self.zone = ring;
+        self
     }
 
     fn hi(&self, p: [usize; 3]) -> [usize; 3] {
@@ -503,22 +519,34 @@ impl Operator for OpenemsSeam {
         cur: &dyn Fn(Axis, [usize; 3]) -> f32,
     ) -> Option<f32> {
         let [i, j, k] = node;
-        if axis != Axis::Y || (j != 0 && j != self.last) {
+        if axis != Axis::Y || (j != 0 && j != self.last) || i < self.zone {
             return None;
         }
         let s = self.h.iter().find(|s| s.node == [i, 0, k])?;
         if s.layer.is_some() || s.split {
             return None;
         }
-        let (a, b) = (u(Axis::X, [i, 0, k + 1]), u(Axis::X, s.node));
-        let (c, d) = (u(Axis::Z, [i + 1, 0, k]), u(Axis::Z, s.node));
-        let v = oe_h(s.ii, self.whole_in(cur, i, k), s.iv, a, b, c, d);
+        let e = |jj: usize| {
+            [
+                u(Axis::X, [i, jj, k + 1]),
+                u(Axis::X, [i, jj, k]),
+                u(Axis::Z, [i + 1, jj, k]),
+                u(Axis::Z, [i, jj, k]),
+            ]
+        };
+        let old = self.whole_in(cur, i, k);
         Some(match s.lo {
-            Some((ii, iv, old)) => {
-                let lo = 0.5 * oe_h(ii, old, iv, a, b, c, d);
+            Some((ii, iv, lo_old)) => {
+                let [a, b, c, d] = e(self.last);
+                let v = oe_h(s.ii, old, s.iv, a, b, c, d);
+                let [a, b, c, d] = e(0);
+                let lo = 0.5 * oe_h(ii, lo_old, iv, a, b, c, d);
                 if j == 0 { lo } else { flush(v - lo) }
             }
-            None => 0.5 * v,
+            None => {
+                let [a, b, c, d] = e(0);
+                0.5 * oe_h(s.ii, old, s.iv, a, b, c, d)
+            }
         })
     }
 
@@ -557,9 +585,19 @@ impl Operator for OpenemsSeam {
             };
             let mut v = v;
             if let (Some((ii, iv, old)), None, false) = (s.lo, s.layer, s.split) {
-                // Graded α: the α = 0 copy holds openEMS's own update of
-                // that line (half of it on the copy, the rest on the 2π
-                // copy, so that their sum stays the whole edge's).
+                // openEMS's two lines of the seam: the whole edge from
+                // the α = 2π line's E, the α = 0 line's own update from
+                // its E; the α = 0 copy holds half of the latter, the 2π
+                // copy the rest, so that their sum stays the whole edge.
+                let v = oe_h(
+                    s.ii,
+                    s.old,
+                    s.iv,
+                    u.get(Axis::X, [i, last, k + 1]),
+                    u.get(Axis::X, hi),
+                    u.get(Axis::Z, [i + 1, last, k]),
+                    u.get(Axis::Z, hi),
+                );
                 let v0 = oe_h(ii, old, iv, a, b, c, d);
                 s.lo = Some((ii, iv, v0));
                 let (l, h) = (0.5 * v0, flush(v - 0.5 * v0));
@@ -597,9 +635,10 @@ impl Operator for OpenemsSeam {
             }
         }
         for s in self.e.iter_mut() {
-            // With poles the α = 2π copy holds the corrected state.
-            let j = if s.has_poles() { last } else { 0 };
-            s.old = f.u.get(s.axis, [s.node[0], j, s.node[2]]);
+            // openEMS keeps the state on the α = 2π copy (with poles the
+            // corrected one; a source on the α = 0 line only reaches that
+            // copy and the H cells next to it).
+            s.old = f.u.get(s.axis, [s.node[0], last, s.node[2]]);
         }
         for s in &mut self.axis {
             s.old = f.u.get(s.axis, s.node);
@@ -706,9 +745,14 @@ impl Operator for OpenemsSeam {
             );
             // On a graded α mesh the α = 0 line holds openEMS's own `H_α`
             // (module docs).
-            let first = match self.axis_h[q].and_then(|h| self.h[h].lo) {
-                Some((_, _, lo)) => lo,
-                None => seam,
+            let first = match self.axis_h[q].map(|h| &self.h[h]) {
+                Some(SeamH {
+                    lo: Some((_, _, lo)),
+                    split: false,
+                    layer: None,
+                    ..
+                }) => *lo,
+                _ => seam,
             };
             let mut v = flush(s.vv * s.old);
             v = flush(v + flush(s.vi * first));
@@ -781,6 +825,8 @@ pub(crate) struct OpenemsMultigrid {
     w_lo: (f32, f32),
     w_hi: (f32, f32),
     w_first_ea: (f32, f32),
+    /// The coarse H of the look-ahead H update (computed once per state).
+    lookahead: std::sync::OnceLock<[Vec<f32>; 3]>,
 }
 
 impl OpenemsMultigrid {
@@ -880,6 +926,7 @@ impl OpenemsMultigrid {
             w_lo,
             w_hi,
             w_first_ea,
+            lookahead: std::sync::OnceLock::new(),
         }
     }
 
@@ -902,26 +949,22 @@ impl OpenemsMultigrid {
     fn lerp((own, nb): (f32, f32), a: f32, b: f32) -> f32 {
         flush(flush(own * a) + flush(nb * b))
     }
-}
 
-impl Operator for OpenemsMultigrid {
-    fn hooks(&self) -> Hooks {
-        Hooks::POST_H | Hooks::POST_E
-    }
-
-    fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        let (ring, nc, nz) = (self.ring, self.nc, self.nz);
-        // The fine E on ρ_I onto the coarse grid's line I.
-        for jc in 0..nc {
-            for k in 0..nz {
+    /// The fine E on `ρ_I` (`u`) onto the coarse grid's line I of `e`.
+    fn ring_e(&self, e: &mut [Vec<f32>; 3], u: &dyn Fn(Axis, [usize; 3]) -> f32) {
+        let ring = self.ring;
+        for jc in 0..self.nc {
+            for k in 0..self.nz {
                 let q = self.idx(ring, jc, k);
-                self.e[2][q] = f.u.get(Axis::Z, [ring, 2 * jc, k]);
-                self.e[1][q] = flush(
-                    f.u.get(Axis::Y, [ring, 2 * jc, k]) + f.u.get(Axis::Y, [ring, 2 * jc + 1, k]),
-                );
+                e[2][q] = u(Axis::Z, [ring, 2 * jc, k]);
+                e[1][q] = flush(u(Axis::Y, [ring, 2 * jc, k]) + u(Axis::Y, [ring, 2 * jc + 1, k]));
             }
         }
-        // The coarse H update inside the zone.
+    }
+
+    /// The coarse H update inside the zone from the coarse E `e`.
+    fn next_h(&self, e: &[Vec<f32>; 3]) -> [Vec<f32>; 3] {
+        let (ring, nc, nz) = (self.ring, self.nc, self.nz);
         let mut next = self.h.clone();
         for (c, out) in next.iter_mut().enumerate() {
             let (ca, cb) = ((c + 1) % 3, (c + 2) % 3);
@@ -937,7 +980,7 @@ impl Operator for OpenemsMultigrid {
                         let (mut pa, mut pb) = (p, p);
                         pa[ca] += 1;
                         pb[cb] += 1;
-                        let g = |c: usize, p: [isize; 3]| self.get(&self.e, c, p);
+                        let g = |c: usize, p: [isize; 3]| self.get(e, c, p);
                         out[q] = oe_h(
                             ii,
                             self.h[c][q],
@@ -951,7 +994,71 @@ impl Operator for OpenemsMultigrid {
                 }
             }
         }
-        self.h = next;
+        next
+    }
+
+    /// The fine current of the H dual edge along component `c` at fine
+    /// node `[i, j, k]` inside the zone from the coarse H `h` (`post_h`'s
+    /// values; `None` for edges that do not exist).
+    fn fine_h(&self, h: &[Vec<f32>; 3], c: usize, [i, j, k]: [usize; 3]) -> Option<f32> {
+        let nc = self.nc;
+        let last = 2 * nc;
+        if i >= self.ring || k >= self.nz || j > last || (j == last && c != 1) {
+            return None;
+        }
+        let jc = (j / 2) % nc;
+        let (nx, pv) = ((jc + 1) % nc, (jc + nc - 1) % nc);
+        let v = |c: usize, jc: usize| h[c][self.idx(i, jc, k)];
+        Some(match (c, j % 2) {
+            (1, 0) if jc == 0 => 0.5 * flush(0.5 * v(1, 0)),
+            (1, 0) => flush(0.5 * v(1, jc)),
+            (1, _) => flush(0.25 * flush(v(1, jc) + v(1, nx))),
+            (_, 0) => Self::lerp(self.w_lo, v(c, jc), v(c, pv)),
+            _ => Self::lerp(self.w_hi, v(c, jc), v(c, nx)),
+        })
+    }
+}
+
+impl Operator for OpenemsMultigrid {
+    fn hooks(&self) -> Hooks {
+        Hooks::POST_H | Hooks::POST_E
+    }
+
+    fn has_lookahead_currents(&self) -> bool {
+        true
+    }
+
+    /// The fine H inside the zone after the next H update (the look-ahead
+    /// H of the last dumps and probes): `post_h`'s values from the
+    /// current state.
+    fn lookahead_current_in(
+        &self,
+        axis: Axis,
+        node: [usize; 3],
+        _kernel: f32,
+        u: &dyn Fn(Axis, [usize; 3]) -> f32,
+        _i: &dyn Fn(Axis, [usize; 3]) -> f32,
+    ) -> Option<f32> {
+        if node[0] >= self.ring {
+            return None;
+        }
+        let h = self.lookahead.get_or_init(|| {
+            let mut e = self.e.clone();
+            self.ring_e(&mut e, u);
+            self.next_h(&e)
+        });
+        self.fine_h(h, axis.index(), node)
+    }
+
+    fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
+        let (ring, nc, nz) = (self.ring, self.nc, self.nz);
+        self.lookahead = std::sync::OnceLock::new();
+        // The fine E on ρ_I onto the coarse grid's line I, then the
+        // coarse H update inside the zone.
+        let mut e = core::mem::take(&mut self.e);
+        self.ring_e(&mut e, &|a, p| f.u.get(a, p));
+        self.e = e;
+        self.h = self.next_h(&self.e);
         // Into the fine arrays.
         let last = 2 * nc;
         for i in 0..ring {
@@ -983,6 +1090,7 @@ impl Operator for OpenemsMultigrid {
 
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         let (ring, nc, nz) = (self.ring, self.nc, self.nz);
+        self.lookahead = std::sync::OnceLock::new();
         let mut next = self.e.clone();
         for (c, out) in next.iter_mut().enumerate() {
             let (ca, cb) = ((c + 1) % 3, (c + 2) % 3);

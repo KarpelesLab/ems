@@ -1,0 +1,8 @@
+openEMS oracle:
+  openEMS-Project be30220 (2026-10-21)
+   openEMS ec4d2db (v0.37.0-32)
+   CSXCAD 626b99f (v0.7.0-8)
+   fparser 4b9c845
+command: openEMS model.xml --engine=basic 
+VTK files kept: .
+Time for 1000 iterations with 1582 cells

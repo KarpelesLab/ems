@@ -798,6 +798,10 @@ impl Compiled {
                 |a, p| seam_sheets.get(&(a, p)).copied(),
                 &self.openems_seam_alpha0,
             );
+            let op = match self.openems_multigrid {
+                Some(ring) => op.with_zone(ring),
+                None => op,
+            };
             engine.add_operator(op);
             // The seam operator keeps the two copies of these apart.
             for &(a, p) in seam_poles
@@ -1754,6 +1758,9 @@ pub fn compile(
 
     if cyl {
         cylindrical::wrapped_sources(model, &mut mg, opts.snap_tolerance, &mut warnings);
+        if fdtd.get_openems_run() && grid.is_closed() {
+            cylindrical::openems_sources_on_tau(model, &mut mg);
+        }
         if fdtd.get_openems_run() {
             let material_ranges = opts.subsampling == 1 && !fdtd.get_cell_constant_material();
             cylindrical::openems_alpha_warnings(model, &grid, material_ranges, &mut warnings);
