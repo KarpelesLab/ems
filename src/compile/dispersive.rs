@@ -364,27 +364,17 @@ pub(super) fn dispersive_poles(
                         if on_axis && j == 0 && !raw.is_empty() {
                             axis_dropped += 1;
                         }
+                        let rounding = CoeffRounding::OpenEms;
                         let circuit =
                             openems
                                 .filter(|_| !raw.is_empty() && !on_axis)
                                 .map(|g| match field {
                                     Field::Electric => {
-                                        e_edge_circuit(
-                                            g,
-                                            materials,
-                                            axis,
-                                            n,
-                                            CoeffRounding::OpenEms,
-                                        )
-                                        .0
+                                        e_edge_circuit(g, materials, axis, n, rounding).0
                                     }
-                                    Field::Magnetic => h_edge_inductance(
-                                        g,
-                                        materials,
-                                        axis,
-                                        n,
-                                        CoeffRounding::OpenEms,
-                                    ),
+                                    Field::Magnetic => {
+                                        h_edge_inductance(g, materials, axis, n, rounding)
+                                    }
                                 });
                         for (q, pole) in poles.into_iter().enumerate() {
                             if pole.validate().is_err() {

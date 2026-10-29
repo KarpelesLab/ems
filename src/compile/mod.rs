@@ -615,14 +615,16 @@ impl Compiled {
     pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
         // Seam E edges whose openEMS poles the seam operator runs itself
-        // (low node → poles; design §5.16.12).
+        // (low node → poles; design §5.16.12); under `Axis::Y` the
+        // magnetic poles of the seam `H_α` dual edges.
         let mut seam_poles: std::collections::HashMap<
             (crate::axis::Axis, [usize; 3]),
             Vec<crate::engine::dispersive::OpenEmsPole>,
         > = std::collections::HashMap::new();
-        // Seam E edges whose single openEMS Debye pole `(Δε, τ)` the seam
+        // Seam E edges whose openEMS Debye poles `(Δε, τ)` the seam
         // operator runs itself (low node; design §5.16.12).
-        let mut seam_debye: std::collections::HashMap<(crate::axis::Axis, [usize; 3]), (f64, f64)> =
+        type DebyePoles = Vec<(f64, f64)>;
+        let mut seam_debye: std::collections::HashMap<(crate::axis::Axis, [usize; 3]), DebyePoles> =
             std::collections::HashMap::new();
         // Whether the seam operator runs the openEMS sheet branches of the
         // seam edges (else they are split between the copies, below).
@@ -641,13 +643,13 @@ impl Compiled {
             // Edges other operators act on keep the periodic merge.
             let mut touched = std::collections::HashSet::new();
             // Debye poles of both copies of a seam ρ or z edge (openEMS
-            // files): the seam operator runs a single one, alike on both.
+            // files): the seam operator runs them if alike on both.
             type DebyeCopies = (Vec<(f64, f64)>, Vec<(f64, f64)>);
             let mut debye_copies: std::collections::HashMap<_, DebyeCopies> =
                 std::collections::HashMap::new();
             let dt = engine.dt();
-            // The same for the axis z edges (all α copies).
-            let mut axis_debye: std::collections::HashMap<usize, Vec<(f64, f64)>> =
+            // The same for the axis z edges (per α copy).
+            let mut axis_debye: std::collections::HashMap<usize, Vec<Vec<(f64, f64)>>> =
                 std::collections::HashMap::new();
             for p in &self.dispersive {
                 if let crate::engine::Pole::Debye { delta_eps, tau } = p.pole
@@ -660,7 +662,7 @@ impl Compiled {
                     if tau >= 3.0 * dt {
                         axis_debye
                             .entry(p.node[2])
-                            .or_default()
+                            .or_insert_with(|| vec![Vec::new(); n[1]])[p.node[1]]
                             .push((delta_eps, tau));
                     }
                     continue;
@@ -702,16 +704,17 @@ impl Compiled {
                 }
                 touched.insert((a, p, false));
             }
-            // openEMS poles on both copies of a seam ρ or z edge, the same
-            // on each: run by the seam operator; any other: the merge.
+            // openEMS poles on both copies of a seam ρ or z edge (magnetic:
+            // of a seam `H_α` dual edge), the same on each: run by the seam
+            // operator; any other: the merge.
             type Copies = (
                 Vec<crate::engine::dispersive::OpenEmsPole>,
                 Vec<crate::engine::dispersive::OpenEmsPole>,
             );
             let mut copies: std::collections::HashMap<_, Copies> = std::collections::HashMap::new();
             for p in &self.dispersive_openems {
-                let seam = p.field == crate::engine::dispersive::Field::Electric
-                    && p.axis != crate::axis::Axis::Y
+                let magnetic = p.field == crate::engine::dispersive::Field::Magnetic;
+                let seam = magnetic == (p.axis == crate::axis::Axis::Y)
                     && (p.node[1] == 0 || p.node[1] == last);
                 if !seam {
                     touched.insert((
@@ -732,39 +735,37 @@ impl Compiled {
             };
             for ((axis, lo), (a, b)) in copies {
                 let hi = [lo[0], last, lo[2]];
+                let h = axis == crate::axis::Axis::Y;
                 if params(&a) == params(&b)
-                    && !touched.contains(&(axis, lo, false))
-                    && !touched.contains(&(axis, hi, false))
+                    && !touched.contains(&(axis, lo, h))
+                    && !touched.contains(&(axis, hi, h))
                     && !debye_copies.contains_key(&(axis, lo))
                 {
                     seam_poles.insert((axis, lo), b);
                 } else {
-                    touched.insert((axis, lo, false));
+                    touched.insert((axis, lo, h));
                 }
             }
+            let bits = |v: &[(f64, f64)]| -> Vec<[u64; 2]> {
+                v.iter().map(|x| [x.0.to_bits(), x.1.to_bits()]).collect()
+            };
             for ((axis, lo), (a, b)) in debye_copies {
                 let hi = [lo[0], last, lo[2]];
-                let same = |x: (f64, f64), y: (f64, f64)| {
-                    x.0.to_bits() == y.0.to_bits() && x.1.to_bits() == y.1.to_bits()
-                };
-                if let ([x], [y]) = (a.as_slice(), b.as_slice())
-                    && same(*x, *y)
+                if !b.is_empty()
+                    && bits(&a) == bits(&b)
                     && !touched.contains(&(axis, lo, false))
                     && !touched.contains(&(axis, hi, false))
                 {
-                    seam_debye.insert((axis, lo), *y);
+                    seam_debye.insert((axis, lo), b);
                 } else {
                     touched.insert((axis, lo, false));
                     touched.insert((axis, hi, false));
                 }
             }
-            for (k, v) in axis_debye {
-                let same = v.len() == n[1]
-                    && v.iter().all(|x| {
-                        x.0.to_bits() == v[0].0.to_bits() && x.1.to_bits() == v[0].1.to_bits()
-                    });
+            for (k, mut v) in axis_debye {
+                let same = !v[0].is_empty() && v.iter().all(|x| bits(x) == bits(&v[0]));
                 if same {
-                    seam_debye.insert((crate::axis::Axis::Z, [0, 0, k]), v[0]);
+                    seam_debye.insert((crate::axis::Axis::Z, [0, 0, k]), v.swap_remove(0));
                 } else {
                     for j in 0..n[1] {
                         touched.insert((crate::axis::Axis::Z, [0, j, k], false));
@@ -788,7 +789,7 @@ impl Compiled {
                 profile.as_ref(),
                 skip,
                 |a, p| seam_poles.get(&(a, p)).cloned().unwrap_or_default(),
-                |a, p| seam_debye.get(&(a, p)).copied(),
+                |a, p| seam_debye.get(&(a, p)).cloned().unwrap_or_default(),
                 |a, p| seam_sheets.get(&(a, p)).copied(),
             );
             engine.add_operator(op);
@@ -797,6 +798,7 @@ impl Compiled {
                 .keys()
                 .chain(seam_debye.keys())
                 .chain(seam_sheets.keys())
+                .filter(|k| k.0 != crate::axis::Axis::Y)
             {
                 engine.exempt_from_periodic_merge(a, p);
             }
@@ -916,7 +918,7 @@ impl Compiled {
             for &e in &self.dispersive_openems {
                 let lo = [e.node[0], 0, e.node[2]];
                 let last = self.grid.nodes()[1] - 1;
-                if e.field == DispersiveField::Electric
+                if (e.field == DispersiveField::Electric) == (e.axis != crate::axis::Axis::Y)
                     && (e.node[1] == 0 || e.node[1] == last)
                     && seam_poles.contains_key(&(e.axis, lo))
                 {

@@ -140,6 +140,15 @@ fn debye_slab() {
     check("adv_debye_slab", 1e-6);
 }
 
+/// Two-pole Debye slab (`Epsilon = 2`, `Δε` 2 and 1, `τ` 30 ps and
+/// 150 ps): openEMS solves the poles of an edge together, `F` of `Σβ`
+/// (design §5.16.12): the 12 printed digits (6.9e-7…7.9e-7 with ems's
+/// `f64` trapezoidal rule before), hence the tighter tolerance.
+#[test]
+fn debye2_slab() {
+    check("adv_debye2_slab", 1e-9);
+}
+
 /// Drude slab (`Epsilon = 1.5`, `f_plasma = 3 GHz`, `τ = 0.2 ns`):
 /// explicit leapfrog scheme, full poles on the interface edges with the
 /// edge's averaged `ε∞` (trapezoidal scheme: 2.4e-2 off).
@@ -369,6 +378,24 @@ fn cylindrical_drude_axis() {
 #[test]
 fn cylindrical_lorentz_axis() {
     check("adv_cyl_axis_lorentz", 1e-6);
+}
+
+/// The axis cavity with a two-pole Debye cylinder (`Δε` 2 and 1, `τ`
+/// 40 ps and 150 ps) over the axis and the seam: both poles run by the
+/// seam operator, on the axis and the seam (design §5.16.12): identical
+/// to the printed digits (1.4e-2 before, the seam's periodic merge).
+#[test]
+fn cylindrical_debye2_axis() {
+    check("adv_cyl_axis_debye2", 1e-6);
+}
+
+/// A magnetic Lorentz cylinder (`μ∞ = 1.2`, `f_p = 4 GHz`, `f_Lor` =
+/// 8 GHz) over the axis and the seam: the seam `H_α` dual edges with their
+/// poles updated as whole edges, on each copy (design §5.16.12):
+/// identical to the printed digits (7.0e-7…4.1e-6 before).
+#[test]
+fn cylindrical_magnetic_axis() {
+    check("adv_cyl_axis_mag", 1e-6);
 }
 
 /// ems's native scheme runs the Drude axis cavity as well (the pole on

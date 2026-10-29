@@ -1,0 +1,10 @@
+# openEMS reference outputs for ems tests; regenerate with
+# scripts/openems-oracle/gen-adv.sh adv_cyl_axis_debye2
+revision: openEMS-Project be30220 (2026-10-21)
+revision:  openEMS ec4d2db (v0.37.0-32)
+revision:  CSXCAD 626b99f (v0.7.0-8)
+revision:  fparser 4b9c845
+command: openEMS model.xml --engine=basic 
+dt: 1.54044e-13
+keep: uz_a uz_b ur_a uz_axis
+args: 

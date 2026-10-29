@@ -536,19 +536,61 @@ impl OpenEmsPole {
     }
 }
 
-/// `(F, b, 1 − g)` of an openEMS Debye pole (see
+/// `[F, b, 1 − g]` of each openEMS Debye pole `(Δε, τ)` of one edge (see
 /// [`Dispersive::with_openems_debye`]): `cb` the edge's coefficient, `cp`
-/// `= ε0·A*/l` (without `Δε`), `Δε`, `τ` and the time step.
+/// `= ε0·A*/l` (without `Δε`) and the time step; `F = f32(1/(1 + Σβ))`
+/// of all the edge's poles, the same in each.
 pub(crate) fn openems_debye_coefficients(
     cb: f64,
     cp: f64,
-    delta_eps: f64,
-    tau: f64,
+    poles: &[(f64, f64)],
     dt: f64,
-) -> [f32; 3] {
-    let beta = cb * cp * delta_eps / (2.0 * tau + dt);
-    let g = dt / (tau + 0.5 * dt);
-    [(1.0 / (1.0 + beta)) as f32, beta as f32, (1.0 - g) as f32]
+) -> Vec<[f32; 3]> {
+    let betas: Vec<f64> = poles
+        .iter()
+        .map(|&(delta_eps, tau)| openems_debye_beta(cb, cp, delta_eps, tau, dt))
+        .collect();
+    let f = (1.0 / (1.0 + betas.iter().sum::<f64>())) as f32;
+    poles
+        .iter()
+        .zip(&betas)
+        .map(|(&(_, tau), &beta)| [f, beta as f32, (1.0 - dt / (tau + 0.5 * dt)) as f32])
+        .collect()
+}
+
+/// `β = cb·cp·Δε/(2τ + dt)` of an openEMS Debye pole (`f64`; see
+/// [`openems_debye_coefficients`]).
+fn openems_debye_beta(cb: f64, cp: f64, delta_eps: f64, tau: f64, dt: f64) -> f64 {
+    cb * cp * delta_eps / (2.0 * tau + dt)
+}
+
+/// openEMS's Debye update of one edge (see
+/// [`Dispersive::with_openems_debye`]): the poles' coefficients `coef`
+/// ([`openems_debye_coefficients`]) and polarisations `pol` (updated),
+/// the kernel result `u_star` and the edge's previous value `prev`;
+/// returns the new value. Every operation `f32`, flushed to zero.
+pub(crate) fn openems_debye_step(
+    coef: &[[f32; 3]],
+    pol: &mut [f32],
+    u_star: f32,
+    prev: f32,
+) -> f32 {
+    let Some(&[f, ..]) = coef.first() else {
+        return u_star;
+    };
+    // The explicit halves `P` first (kept in `pol`), their increments
+    // summed in pole order.
+    let mut sum = 0.0f32;
+    for (&[_, b, om], q) in coef.iter().zip(pol.iter_mut()) {
+        let p = flush(flush(om * *q) + flush(b * prev));
+        sum = flush(sum + flush(p - *q));
+        *q = p;
+    }
+    let un = flush(f * flush(u_star - sum));
+    for (&[_, b, _], q) in coef.iter().zip(pol.iter_mut()) {
+        *q = flush(*q + flush(b * un));
+    }
+    flush(u_star - flush(u_star - un))
 }
 
 /// How a pole is integrated.
@@ -667,6 +709,16 @@ impl Side {
         // openEMS's poles first, in f32 (`OpenEmsPole`).
         let mut u32_star = u_in;
         let prev32 = self.prev[e] as f32;
+        if p1 > p0 && self.kind[p0] == Kind::OpenEmsDebye {
+            // openEMS's Debye poles, all of the edge's (`with_openems_debye`,
+            // design §5.16.12).
+            let mut pol: Vec<f32> = self.oe_state[p0..p1].iter().map(|s| s[0]).collect();
+            let u = openems_debye_step(&self.oe_coef[p0..p1], &mut pol, u_in, prev32);
+            for (q, x) in (p0..p1).zip(pol) {
+                next.push((self.j[q], self.q[q], [x, 0.0]));
+            }
+            return u;
+        }
         for q in p0..p1 {
             let mut oe = self.oe_state[q];
             match self.kind[q] {
@@ -679,17 +731,8 @@ impl Side {
                     oe = [v, flush(w + flush(k * v))];
                     u32_star = flush(u32_star - v);
                 }
-                Kind::OpenEmsDebye => {
-                    // `Dispersive::with_openems_debye`, design §5.16.12.
-                    let [f, b, om] = self.oe_coef[q];
-                    let pol = oe[0];
-                    let p = flush(flush(om * pol) + flush(b * prev32));
-                    let x = flush(u32_star - flush(p - pol));
-                    let un = flush(f * x);
-                    oe = [flush(p + flush(b * un)), 0.0];
-                    u32_star = flush(u32_star - flush(u32_star - un));
-                }
-                Kind::Trapezoidal | Kind::Leapfrog => {}
+                // Handled above (only openEMS Debye poles on the edge).
+                Kind::OpenEmsDebye | Kind::Trapezoidal | Kind::Leapfrog => {}
             }
             next.push((self.j[q], self.q[q], oe));
         }
@@ -790,9 +833,9 @@ struct Branch {
     /// `(A, B, K)` of an openEMS pole; `(F, b, 1 − g)` of an openEMS
     /// Debye pole.
     oe: [f32; 3],
-    /// A trapezoidal Debye pole that becomes [`Kind::OpenEmsDebye`] if it
-    /// is the only pole of its edge (`oe` holds its coefficients).
-    debye_oe: bool,
+    /// A trapezoidal Debye pole `(Δε, τ, ε0·A*/l)` that becomes
+    /// [`Kind::OpenEmsDebye`] if every pole of its edge is one.
+    debye_oe: Option<(f64, f64, f64)>,
 }
 
 /// The slab hooks: per-slab state.
@@ -922,21 +965,24 @@ impl Dispersive {
     }
 
     /// Runs Debye poles with openEMS's `f32` arithmetic (the openEMS-file
-    /// path; default off) where a Debye pole is the only pole of its
-    /// edge; edges with several poles keep the trapezoidal rule. Black
-    /// box, design §5.16.12: with `β = cb·ε0·Δε·g/(2τ + dt)` (`cb` the
+    /// path; default off) on edges whose poles are all Debye poles; edges
+    /// with other poles keep the trapezoidal rule. Black box, design
+    /// §5.16.12: with `β_p = cb·ε0·Δε_p·g/(2τ_p + dt)` per pole (`cb` the
     /// edge's `f32` coefficient as `f64`, `g = A*/l`, openEMS's `ε0`),
-    /// `b = f32(β)`, `F = f32(1/(1 + β))`, `ω = f32(1 − dt/(τ + dt/2))`
-    /// and the polarisation `Q` (volts, `f32`), every update is
+    /// `b_p = f32(β_p)`, `F = f32(1/(1 + Σ_p β_p))` (`f64` sum),
+    /// `ω_p = f32(1 − dt/(τ_p + dt/2))` and the polarisations `Q_p`
+    /// (volts, `f32`), every update is
     ///
     /// ```text
-    /// P = ω·Q + b·u^n,  u_new = F·(u* − (P − Q)),  Q ← P + b·u_new,
+    /// P_p = ω_p·Q_p + b_p·u^n,  S = Σ_p (P_p − Q_p)    (summed from 0, in pole order)
+    /// u_new = F·(u* − S),  Q_p ← P_p + b_p·u_new,
     /// u^{n+1} = u* − (u* − u_new)                      (f32, in this order)
     /// ```
     ///
     /// the trapezoidal rule of the module docs in polarisation form,
-    /// `Q^{n+1} = (1 − g)·Q^n + β·(u^{n+1} + u^n)`. The pole's state then
-    /// holds no energy ([`energy`](Operator::energy) leaves it out).
+    /// `Q_p^{n+1} = (1 − g_p)·Q_p^n + β_p·(u^{n+1} + u^n)`, all poles of
+    /// the edge solved together. The poles' state then holds no energy
+    /// ([`energy`](Operator::energy) leaves it out).
     #[must_use]
     pub fn with_openems_debye(mut self, on: bool) -> Self {
         self.openems_debye = on;
@@ -1241,7 +1287,7 @@ impl Dispersive {
                     half_l: 0.0,
                     kind: Kind::OpenEms,
                     oe: p.coefficients(f64::from(coef), dt),
-                    debye_oe: false,
+                    debye_oe: None,
                 },
                 Ok(pole) => {
                     let leap = match self.scheme {
@@ -1256,21 +1302,15 @@ impl Dispersive {
                             half_l,
                             kind: Kind::Leapfrog,
                             oe: [0.0; 3],
-                            debye_oe: false,
+                            debye_oe: None,
                         },
                         None => {
                             let (a, inv_c, z) = pole.branch(m, dt);
-                            let debye = match pole {
+                            let debye_oe = match pole {
                                 Pole::Debye { delta_eps, tau }
                                     if self.openems_debye && field == Field::Electric =>
                                 {
-                                    Some(openems_debye_coefficients(
-                                        f64::from(coef),
-                                        OPENEMS_EPS0 * geo,
-                                        delta_eps,
-                                        tau,
-                                        dt,
-                                    ))
+                                    Some((delta_eps, tau, OPENEMS_EPS0 * geo))
                                 }
                                 _ => None,
                             };
@@ -1280,8 +1320,8 @@ impl Dispersive {
                                 inv_z: 1.0 / z,
                                 half_l: 0.25 * a * dt,
                                 kind: Kind::Trapezoidal,
-                                oe: debye.unwrap_or([0.0; 3]),
-                                debye_oe: debye.is_some(),
+                                oe: [0.0; 3],
+                                debye_oe,
                             }
                         }
                     }
@@ -1294,18 +1334,29 @@ impl Dispersive {
                 .push(branch);
         }
         drop(co);
-        // An openEMS Debye pole alone on its edge runs openEMS's update
-        // (`with_openems_debye`); several poles keep the trapezoidal rule.
+        // An edge whose poles are all openEMS Debye poles runs openEMS's
+        // update (`with_openems_debye`); edges with other poles keep the
+        // trapezoidal rule.
         for eb in &mut built {
-            if let [b] = eb.poles.as_mut_slice()
-                && b.debye_oe
-            {
+            let Some(poles) = eb
+                .poles
+                .iter()
+                .map(|b| b.debye_oe)
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let cp = poles[0].2;
+            let poles: Vec<(f64, f64)> = poles.iter().map(|p| (p.0, p.1)).collect();
+            let coefs = openems_debye_coefficients(eb.coef, cp, &poles, dt);
+            for (b, oe) in eb.poles.iter_mut().zip(coefs) {
                 *b = Branch {
                     a: 0.0,
                     inv_c: 0.0,
                     inv_z: 0.0,
                     half_l: 0.0,
                     kind: Kind::OpenEmsDebye,
+                    oe,
                     ..*b
                 };
             }

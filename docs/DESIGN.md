@@ -4802,8 +4802,8 @@ copy's E with its own whole current, the `α = 2π` E update reads the
 `α = 2π` `H_α`, the axis ring sum takes the `α = 0` one first and the
 `α = 2π` one last, and the periodic merge leaves these edges alone
 (`Engine::exempt_from_periodic_merge`). Seam edges whose copies differ
-in their poles and magnetic poles on the seam keep the periodic merge
-(Debye poles on the seam: since wave 18, below). Without poles nothing changes (a grid of a plain
+in their poles keep the periodic merge (Debye poles on the seam: since
+wave 18, below; magnetic poles on the seam: since wave 19, below). Without poles nothing changes (a grid of a plain
 dielectric: identical dumps before and after). The closed Drude grid is
 identical to openEMS's at every step (E and H), and `adv_cyl_drude`
 3.8e-3 → exact (the `ems` binary reproduces every printed digit of a
@@ -4902,8 +4902,8 @@ twice the first α sector's `A*/l`, i.e. `ρ_½·Δα*·ρ_½/Δz`, the face of
 an ordinary z edge evaluated at `ρ = 0` (black box: the first value of
 the axis edge needs one N-th of the disc's `β`, which the sector itself
 gives only to a factor 2; exact also on a non-uniform ρ mesh). Seam or
-axis edges with several poles, or with different poles on their copies,
-keep the periodic merge.
+axis edges with different poles on their copies keep the periodic merge
+(several Debye poles on one edge: since wave 19, below).
 
 Results, before → after:
 
@@ -4921,8 +4921,8 @@ Results, before → after:
   changed.
 
 The native path keeps the `f64` trapezoidal rule. A Debye pole on an
-edge that also carries another pole keeps it as well (openEMS's order
-for several poles is not measured).
+edge that also carries a Lorentz or Drude pole keeps it as well (a file
+cannot give an edge both: the poles come from one material).
 
 **Lorentz and Drude poles on grids with the axis** (wave 19, area S).
 ems rejected these files at setup: the α edges on the axis have no
@@ -4953,6 +4953,59 @@ disc is in the medium): on the Drude cavity it differs from openEMS by
 2.2e-11…2.3e-11, the tests' interpolation of sample times (before:
 refused). Tolerance 1e-6.
 
+**Several Debye poles on one edge** (wave 19, area S). A two-pole
+Debye material (`Order="2"`) ran ems's `f64` trapezoidal rule: 6.9e-7…
+7.9e-7 on a Cartesian slab, and 1.4e-2…1.7e-2 on closed cylindrical
+grids, where the seam edges fell back to the periodic merge. Measured
+on 1 m-cell PEC boxes with per-step dumps (§5.16.12's tooling). Running
+the single-pole rule once per pole, each pole on the previous pole's
+output, differs from the first step on (5e-3 of the field). openEMS
+solves the poles of an edge together:
+
+```text
+P_p = ω_p·Q_p + b_p·u^n                         (each pole p, in order)
+S = Σ_p (P_p − Q_p)                             (summed from 0, in pole order)
+u_new = F·(u* − S),   F = f32(1/(1 + Σ_p β_p))  (Σβ in f64)
+Q_p ← P_p + b_p·u_new,   u^{n+1} = u* − (u* − u_new)
+```
+
+With one pole this is the single-pole rule above, bit for bit. Every E
+and H value at every step is openEMS's on three boxes: two poles
+(`β` 0.3…3.4), three poles on a lossy (`κ` 0.01 S/m) off-grid box with
+`ε∞` = 2.2, and a strong pole (`Δε` = 30) beside a memoryless one
+(`τ` = 1e3 s). Other forms do not match: `S` accumulated as
+`(u* − d_1) − d_2` (from the fifth step on), or as `ΣP − ΣQ` (from the
+sixth). `Dispersive::with_openems_debye` now runs every edge whose
+poles are all Debye poles this way. The seam operator does the same on
+the seam and the axis (`openems_debye_step`). New fixtures: `adv_debye2_slab`
+(6.9e-7…7.9e-7 → 0.9e-12…1.5e-12, tolerance 1e-9) and
+`adv_cyl_axis_debye2` (the axis cavity with a two-pole Debye cylinder,
+1.4e-2 → 1.8e-11…2.0e-11, tolerance 1e-6). The coax of `adv_cyl_debye`
+with two poles is exact too (was 1.7e-2).
+
+**Magnetic poles on the seam** (wave 19, area S). The seam `H_α` dual
+edges with magnetic Lorentz poles kept ems's half copies, each with half
+the dual edge and its own pole. On a uniformly excited coax (the ring
+source of `adv_cyl_drude`) that is exact. With the off-centre source of
+the axis cavity it differs by 7.0e-7…4.1e-6 (`μ∞` = 1.2, `f_p` = 4 GHz,
+`f_Lor` = 8 GHz, a cylinder over the axis and the seam). Per-step dumps
+put the first differences next to the axis on the seam (`H_α`, ρ_½),
+from step 10. The seam operator now updates these dual edges as whole
+edges, like the other seam `H_α` (whole `ii`, `iv`). Each copy gets its
+own update from its own E and its own previous current, then the poles
+in openEMS's arithmetic (`OpenEmsPole`, the whole edge's `L` and `iv`),
+with a separate state per copy. Two alternatives were tried and do not
+match. Correcting only the `α = 2π` copy, as for E, gives 4.8e-3.
+Copying the `α = 2π` value to `α = 0` before the poles gives 3.7e-5.
+After the change the probes are identical to the printed digits with
+the cylinder over the axis, off the axis (`ρ` 1…6.2 mm) or only around
+it (`ρ` ≤ 1.2 mm), and with a two-pole material with a magnetic pole.
+New fixture `adv_cyl_axis_mag` (tolerance 1e-6). The probes are also
+exact at metre scale (the same model with 1 m cells). There, the H
+dumps of the 0.5 m-spaced variant still differ on a few values of about
+8.7e-39: ems writes subnormal dump values that openEMS flushes to zero
+(dump conversion only, not changed here).
+
 Not covered:
 
 - A closed cylindrical model whose material primitive spans
@@ -4960,6 +5013,10 @@ Not covered:
   for a plain dielectric (§8.1, csx's α normalisation).
 - A closed grid with a non-uniform α mesh next to the axis differs for a
   plain dielectric too.
+- Found in wave 19, not analysed: a soft `E_ρ` excitation on the
+  `α = 0` seam of a closed grid with the axis (1 m cells, vacuum) differs
+  from openEMS from the second step on, by 0.6 of the field next to it.
+  The same source one α line off the seam is exact.
 
 Feature sweep (169 models, be30220, before → after): 146 → 148 exact
 (`drude_kappa` 6.0e-5 → 0, `lorentz_weight` 2.2e-5 → 0, both on 1 mm
