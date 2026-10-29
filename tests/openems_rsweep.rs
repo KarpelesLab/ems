@@ -307,3 +307,12 @@ fn lumped_in_lorentz() {
 fn lumped_in_debye() {
     case("rs_51_debye", 1e-6, 1e-5);
 }
+
+/// A resistor with caps and an excitation across a conducting-sheet
+/// border: the element is spread over all its edges but not installed on
+/// the sheet edges, and its caps leave them alone. 2.8e-6…1.1e-4 (the
+/// weak current probe; was 0.14…0.56).
+#[test]
+fn lumped_on_sheet() {
+    case("rs_287", 3e-4, 1e-4);
+}

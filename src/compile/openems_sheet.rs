@@ -96,7 +96,9 @@
 //!   metal is a sheet edge, not PEC
 //!   ([`super::openems::sheet_over_metal`]). Lumped elements do not take
 //!   part in the priority: a parallel R, C or R‖C element leaves a sheet
-//!   edge alone (no effect on it), while an element with an inductor or a
+//!   edge alone (no effect on it; the element is still spread over all
+//!   its edges, and its caps leave sheet edges alone too, `sim::map`),
+//!   while an element with an inductor or a
 //!   series element is installed over the sheet's circuit, at any
 //!   priority: the sheet's capacitance is the medium the element replaces
 //!   or limits (§5.16.1), the sheet's conductance is dropped, the sheet's

@@ -1917,7 +1917,7 @@ pub fn compile(
     let mut timestep = fdtd.engine_timestep();
     let MaterialGrid {
         mut excitations,
-        mut lumped,
+        lumped,
         sheets,
         ..
     } = mg;
@@ -1954,26 +1954,12 @@ pub fn compile(
                     emu.pec
                 ));
             }
-            // openEMS's sheet edges keep the sheet's circuit: the other
-            // lumped elements and dispersive poles there have no effect
-            // (`compile::openems_sheet`).
+            // openEMS's sheet edges keep the sheet's circuit: dispersive
+            // poles there have no effect (`compile::openems_sheet`; the
+            // lumped elements: `sim::map`).
             let on_sheet: std::collections::HashSet<(Axis, [usize; 3])> =
                 emu.edges.iter().map(|&(a, p, _)| (a, p)).collect();
             if !on_sheet.is_empty() {
-                // An element with an inductor or in series stays: openEMS
-                // installs it over the sheet's circuit.
-                let branch = |le: &LumpedEdge| {
-                    le.le_type == Some(csx::properties::LumpedElementType::Series) || !le.l.is_nan()
-                };
-                let before = lumped.len();
-                lumped.retain(|le| branch(le) || !on_sheet.contains(&node_map.edge(le.edge)));
-                if lumped.len() < before {
-                    warnings.push(format!(
-                        "{} lumped-element edge(s) on conducting-sheet edges ignored (openEMS's \
-                         sheet keeps its edges)",
-                        before - lumped.len()
-                    ));
-                }
                 let electric = |f: crate::engine::dispersive::Field, a, p| {
                     f == crate::engine::dispersive::Field::Electric && on_sheet.contains(&(a, p))
                 };

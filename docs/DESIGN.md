@@ -4030,7 +4030,10 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   - dispersive poles at a sheet edge have no effect (ems kept the poles
     of the medium under the sheet);
   - lumped elements take no part in the priority: a parallel R, C or R‖C
-    element has no effect on a sheet edge (ems let it win), an element
+    element has no effect on a sheet edge (ems let it win; the element
+    is still spread over all its edges, and its caps leave sheet edges
+    alone too: seed 287, a resistor with caps and an excitation across a
+    sheet border, `rs_287` 0.14…0.56 → 2.8e-6…1.1e-4), an element
     with an inductor or a series element is installed over the sheet's
     circuit (the sheet's capacitance is the medium it replaces or
     limits, §5.16.1, the sheet's conductance is dropped, its branches
@@ -4040,7 +4043,7 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   The 30 priority models agree bit for bit (were up to 0.87);
   `rs_152` (a sheet touching a dielectric defined before it) 6e-3…1e-2
   → 5e-7…2e-5, `rs_63` (a sheet through a metal box) 1.3e-3 → exact,
-  and seed 9 (series elements over a sheet-sided box) 3.6 → 1.5e-4.
+  and seed 9 (series elements over a sheet-sided box) 3.6 → 3.3e-5.
 - **Sheets parallel to an absorbing face** (wave 19): the lines a
   boundary claims (above: 0…1 for Mur, 0…n for `PML_n` on a lower face,
   the last 2 or `n + 1` on an upper one) make a sheet edge PEC along the

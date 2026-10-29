@@ -326,6 +326,11 @@ impl Simulation {
             .openems_pml
             .as_ref()
             .map(|h| engine.operator(h).layers().clone());
+        let sheet_edges = compiled
+            .openems_sheets
+            .iter()
+            .map(|&(a, p, _)| (a, p))
+            .collect();
         let mut mapped = map::map_sources(
             &mut engine,
             &compiled.sources,
@@ -335,6 +340,7 @@ impl Simulation {
             part(WavePart::Real),
             layers.as_ref(),
             Some((&compiled.materials, compiled.coefficient_rounding)),
+            &sheet_edges,
         )?;
         // openEMS forms the coefficients of its poles from the edge's
         // final circuit, after the lumped elements (design §5.16.3).
@@ -372,6 +378,7 @@ impl Simulation {
                     part(WavePart::Imag),
                     layers.as_ref(),
                     Some((&compiled.materials, compiled.coefficient_rounding)),
+                    &sheet_edges,
                 )?;
                 Some(Box::new(BlochState {
                     imag,

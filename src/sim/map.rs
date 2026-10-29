@@ -115,8 +115,8 @@ struct Group {
     sources: Vec<(usize, Vec<f64>)>,
     /// Cylindrical grids: every edge csx listed, copies included.
     raw: Vec<[usize; 3]>,
-    /// Edges inside openEMS's PML layers, taken out of `edges` (their
-    /// caps stay).
+    /// Edges inside openEMS's PML layers or on its conducting-sheet
+    /// edges, taken out of `edges` (their caps stay).
     in_layer: Vec<EdgeValues>,
 }
 
@@ -450,6 +450,7 @@ pub(crate) fn map_sources(
     bloch: Option<BlochMap>,
     pml: Option<&PmlLayers>,
     medium: Option<(&EdgeMaterials, CoeffRounding)>,
+    sheet_edges: &std::collections::HashSet<(Axis, [usize; 3])>,
 ) -> Result<Mapped> {
     let mut mapped = Mapped::default();
     let dt = engine.dt();
@@ -582,6 +583,47 @@ pub(crate) fn map_sources(
         for (gi, g) in groups.iter().enumerate() {
             for (e, ev) in g.edges.iter().enumerate() {
                 lumped_edge.insert((g.axis, ev.node), (gi, e));
+            }
+        }
+    }
+    // openEMS's conducting-sheet edges keep the sheet's circuit against a
+    // parallel R/C element (black box, design §5.16.3): spread over all
+    // its edges, the element is not installed on the sheet edges (its
+    // caps stay). Elements with an inductor or in series are installed
+    // over the sheet.
+    if !sheet_edges.is_empty() {
+        let mut moved = false;
+        for g in &mut groups {
+            let material =
+                g.topology == Topology::Parallel && g.edges.iter().all(|e| e.l.is_none());
+            if !material {
+                continue;
+            }
+            let (on, keep): (Vec<EdgeValues>, Vec<EdgeValues>) = g
+                .edges
+                .iter()
+                .copied()
+                .partition(|e| sheet_edges.contains(&(g.axis, e.node)));
+            if on.is_empty() {
+                continue;
+            }
+            warnings.push(format!(
+                "lumped element {:?}: {} of its {} edge(s) lie on conducting-sheet edges and are \
+                 ignored there (openEMS's sheet keeps them)",
+                g.name,
+                on.len(),
+                on.len() + keep.len(),
+            ));
+            g.edges = keep;
+            g.in_layer.extend(on);
+            moved = true;
+        }
+        if moved {
+            lumped_edge.clear();
+            for (gi, g) in groups.iter().enumerate() {
+                for (e, ev) in g.edges.iter().enumerate() {
+                    lumped_edge.insert((g.axis, ev.node), (gi, e));
+                }
             }
         }
     }
@@ -739,15 +781,20 @@ pub(crate) fn map_sources(
                     g.name
                 ));
             } else if g.caps {
-                add_caps(engine, g.axis, &g.in_layer);
+                add_caps(engine, g.axis, &g.in_layer, sheet_edges);
             }
             continue;
         }
         if g.caps {
             if g.in_layer.is_empty() {
-                add_caps(engine, g.axis, &g.edges);
+                add_caps(engine, g.axis, &g.edges, sheet_edges);
             } else {
-                add_caps(engine, g.axis, &[&g.edges[..], &g.in_layer[..]].concat());
+                add_caps(
+                    engine,
+                    g.axis,
+                    &[&g.edges[..], &g.in_layer[..]].concat(),
+                    sheet_edges,
+                );
             }
         }
         // openEMS replaces the edge's medium by the element (design
@@ -1498,8 +1545,15 @@ fn capacitance_limit(e: &EdgeValues, omega: f64, topology: Topology) -> f64 {
 }
 
 /// PEC end caps of a lumped element: the transverse E edges of its two end
-/// planes, inside the transverse extent of its edges.
-fn add_caps(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
+/// planes, inside the transverse extent of its edges, except openEMS's
+/// conducting-sheet edges `sheet` (the sheet keeps them, black box,
+/// design §5.16.3).
+fn add_caps(
+    engine: &mut Engine,
+    axis: Axis,
+    edges: &[EdgeValues],
+    sheet: &std::collections::HashSet<(Axis, [usize; 3])>,
+) {
     let a = axis.index();
     let mut lo = [usize::MAX; 3];
     let mut hi = [0; 3];
@@ -1526,6 +1580,9 @@ fn add_caps(engine: &mut Engine, axis: Axis, edges: &[EdgeValues]) {
                     p[a] = plane;
                     p[ti] = pt;
                     p[oi] = po;
+                    if sheet.contains(&(t, p)) {
+                        continue;
+                    }
                     let i = idx(p);
                     ca[i] = 0.0;
                     cb[i] = 0.0;
