@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/KarpelesLab/ems/compare/v0.0.4...v0.0.5) - 2026-10-29
+
+### Other
+
+- Design status: wave 19 (poles on axis grids, closed cylindrical grids, random sweep 547 of 560)
+- openEMS files: the H normal to an upper PEC face stays 0; random sweep status (547 of 560)
+- openEMS files: each edge goes to one excitation by priority; hard E sources on sheet edges add like soft ones
+- openEMS files: lumped elements on sheet edges are spread over all edges, caps leave the sheet alone
+- openEMS files: dispersive poles take the edge coefficients with parallel lumped elements folded in
+- openEMS files: a conducting sheet on the lines an absorbing face claims is PEC
+- openEMS files: conducting-sheet priorities against materials, metal, poles and lumped elements
+- openEMS files: lumped elements keep their edges against PMC walls
+- openEMS files: a Mur face carrying an excitation is held through sample L + 10
+- openEMS files: lumped elements win their edges over metal at any priority
+- Design status: closed cylindrical grids, alpha index ranges, graded alpha meshes
+- openEMS files: seam sources on the copy they are drawn on, look-ahead H of the multigrid
+- openEMS files: alpha index ranges of cylindrical boxes, graded alpha widths, the alpha = 0 seam line
+- openEMS's arithmetic for several Debye poles and for magnetic poles on the seam
+- Lorentz/Drude poles on cylindrical grids with the axis
+
 ## [0.0.4](https://github.com/KarpelesLab/ems/compare/v0.0.3...v0.0.4) - 2026-10-28
 
 ### Other
