@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 77; a conducting sheet parallel to a PML face inside the layer (openEMS makes it PEC); tags: PEC PML csheet drude graded material -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1200" endCriteria="1e-4">
+    <Excitation Type="0" f0="5.88445e+09" fc="3.32749e+09"/>
+    <BoundaryCond xmin="PML_5" xmax="PML_3" ymin="PEC" ymax="PML_5" zmin="PML_3" zmax="PML_3"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LorentzMaterial Name="drude0"><Property Epsilon="2.06194" EpsilonPlasmaFrequency="5.75529e+09" EpsilonRelaxTime="2.84843e-09"/><Primitives><Box Priority="3"><P1 X="14" Y="1.125" Z="8"/><P2 X="15.5" Y="7.125" Z="10"/></Box></Primitives></LorentzMaterial>
+      <Material Name="mat1"><Property Epsilon="4.72918" Mue="2.52031" Kappa="0.00589488" Sigma="271.536"/><Primitives><Box Priority="0"><P1 X="8.375" Y="4.5" Z="1"/><P2 X="12.25" Y="9.975" Z="3"/></Box></Primitives></Material>
+      <LorentzMaterial Name="drude2"><Property Epsilon="1.05345" EpsilonPlasmaFrequency="5.80314e+09" EpsilonRelaxTime="2.31672e-09"/><Primitives><Box Priority="1"><P1 X="14" Y="19.125" Z="0"/><P2 X="15.5" Y="21" Z="2"/></Box></Primitives></LorentzMaterial>
+      <ConductingSheet Name="cs" Conductivity="1000" Thickness="1e-05"><Primitives><Box Priority="2"><P1 X="8" Y="9.375" Z="2"/><P2 X="10.75" Y="13.5" Z="2"/></Box></Primitives></ConductingSheet>
+      <Excitation Name="src" Type="0" Excite="1,0.424103,-0.165366"><Primitives><Box Priority="0"><P1 X="5.25" Y="5.625" Z="9"/><P2 X="6.5" Y="5.625" Z="9"/></Box></Primitives></Excitation>
+      <ProbeBox Name="e0" Type="2"><Primitives><Box Priority="0"><P1 X="8" Y="12" Z="5"/><P2 X="8" Y="12" Z="5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="6.5" Y="3" Z="2"/><P2 X="7.25" Y="3" Z="2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e2" Type="2"><Primitives><Box Priority="0"><P1 X="6.5" Y="9.375" Z="8"/><P2 X="6.5" Y="9.375" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h3" Type="3"><Primitives><Box Priority="0"><P1 X="13.5" Y="12" Z="8"/><P2 X="13.5" Y="12" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u4" Type="0"><FD_Samples>5.88445e+09,7.06134e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="10.75" Y="10.125" Z="9"/><P2 X="10.75" Y="13.5" Z="9"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,0.75,1.5,2,3,4,5.25,6.5,7.25,8,9.25,10.75,12.25,13.5,14,15,15.5</XLines>
+      <YLines>0,1.125,3,4.5,5.625,7.125,8.625,9.375,10.125,12,13.5,15.375,16.875,18,19.125,20.25,21</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

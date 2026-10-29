@@ -79,7 +79,8 @@
 //!   lines 0…1 for Mur, 0…n for `PML_n`; on an upper face the last 2
 //!   (Mur) or `n + 1` (`PML_n`) lines. A neighbouring cell whose lower
 //!   corner lies on such a line does not count, and a sheet edge whose
-//!   start node lies on one (along either in-plane axis) is PEC (black
+//!   start node lies on one (along any axis: a sheet parallel to the face
+//!   on one of those lines is PEC as a whole, wave 19) is PEC (black
 //!   box, wave 14: `--debug-PEC` and `--debug-operator` dumps of sheets
 //!   starting and ending at every line near Mur, `PML_3` and PMC faces;
 //!   design §5.16.3; Cartesian grids). Next to an upper PMC face openEMS
@@ -439,7 +440,11 @@ pub(super) fn emulate(
         } else {
             vec![(node, 1.0)]
         };
-        if node[d] == 0 || in_region(d, node[d]) || in_region(t, node[t]) {
+        if node[d] == 0
+            || in_region(d, node[d])
+            || in_region(t, node[t])
+            || in_region(nrm, node[nrm])
+        {
             for &(p, _) in &copies {
                 materials.pec_mask_mut(e.axis)[grid.index(p)] = true;
                 out.pec += 1;

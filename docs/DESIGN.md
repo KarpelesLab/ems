@@ -4041,6 +4041,16 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   `rs_152` (a sheet touching a dielectric defined before it) 6e-3…1e-2
   → 5e-7…2e-5, `rs_63` (a sheet through a metal box) 1.3e-3 → exact,
   and seed 9 (series elements over a sheet-sided box) 3.6 → 1.5e-4.
+- **Sheets parallel to an absorbing face** (wave 19): the lines a
+  boundary claims (above: 0…1 for Mur, 0…n for `PML_n` on a lower face,
+  the last 2 or `n + 1` on an upper one) make a sheet edge PEC along the
+  sheet's normal too, i.e. a sheet lying on one of those lines is PEC as
+  a whole (`--debug-PEC` of a sheet at every line of an 11-cell axis
+  with `PML_3`, Mur and PMC on either face: all 60 edges PEC in the
+  claimed lines, the probe files of the 50 models bit-identical, were
+  up to 9e-2). This was the "sheets with dispersive or lossy media near
+  Mur/PML faces" of seeds 56 and 77 (the media did not matter):
+  `rs_77` 6e-5…6.3e-2 → exact, seed 56 3.1e-3 → 1.2e-6 (dumps).
 
 Not resolved (18 of 230): series elements (9 with an excitation over a
 csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an

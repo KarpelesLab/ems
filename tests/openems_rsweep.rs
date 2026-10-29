@@ -285,3 +285,10 @@ fn sheet_material_tie_order() {
 fn sheet_over_metal() {
     case("rs_63", 1e-6, 1e-5);
 }
+
+/// A conducting sheet parallel to a PML face, inside the layer: openEMS
+/// makes it PEC. Exact (was 6e-5…6.3e-2).
+#[test]
+fn sheet_in_layer() {
+    case("rs_77", 1e-6, 1e-4);
+}
