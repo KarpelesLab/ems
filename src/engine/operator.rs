@@ -234,6 +234,22 @@ pub trait Operator: Any + Send {
         None
     }
 
+    /// [`lookahead_current`](Self::lookahead_current) for an operator that
+    /// needs the state the look-ahead starts from: `u` and `i` read the
+    /// current voltages and currents. Default:
+    /// [`lookahead_current`](Self::lookahead_current).
+    fn lookahead_current_in(
+        &self,
+        axis: Axis,
+        node: [usize; 3],
+        kernel: f32,
+        u: &dyn Fn(Axis, [usize; 3]) -> f32,
+        i: &dyn Fn(Axis, [usize; 3]) -> f32,
+    ) -> Option<f32> {
+        let _ = (u, i);
+        self.lookahead_current(axis, node, kernel)
+    }
+
     /// What a source operator's H hook would do in the look-ahead H update
     /// of step `step` (`ctx`), after the update itself
     /// ([`lookahead_current`](Self::lookahead_current)): the H dual edges

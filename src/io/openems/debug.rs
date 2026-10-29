@@ -57,8 +57,10 @@
 //!   edge on every point: on a closed grid the `2π` line and the extra
 //!   line repeat the `α = 0` and `α_1` lines, and an edge stored in
 //!   several copies (the seam of a closed grid, the axis z edge) shows
-//!   the merged edge (ε, κ weighted by the copies' dual-face parts; `vv`,
-//!   `vi` from `1/cb = Σ 1/cb_j`, `ca/cb = Σ ca_j/cb_j`). openEMS instead
+//!   the merged edge (ε, κ weighted by the copies' dual-face parts, the
+//!   μ of a seam `H_α` the copies' halves in series; `vv`, `vi` from
+//!   `1/cb = Σ 1/cb_j`, `ca/cb = Σ ca_j/cb_j`; `iv` of a seam `H_α` the
+//!   copies' sum, `ii` their `iv`-weighted mean). openEMS instead
 //!   evaluates materials at the literal angles (the extra line and the
 //!   halves past `2π` or below 0 are background), updates the seam's ρ
 //!   and z edges on the `2π` line only (`vv` = `vi` = 0 on `α = 0` and on
@@ -259,7 +261,22 @@ pub fn material_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
         }
     };
     let eps = lay.vectors(|a, p| edge(mats.eps_r(a), a, p));
-    let mu = lay.vectors(|a, p| mats.mu_r(a)[dual(a, p)]);
+    // The seam `H_α` of a closed grid: both copies' halves of the dual
+    // edge in series.
+    let seam = |vals: &[f64], a: Axis, p: [usize; 3]| -> f64 {
+        let own = vals[dual(a, p)];
+        if a != Axis::Y || p[1] != 0 || !grid.is_closed() {
+            return own;
+        }
+        let last = n[1] - 1;
+        let other = vals[dual(a, [p[0], last, p[2]])];
+        if own == other {
+            return own;
+        }
+        let (d0, d1) = (grid.delta(Axis::Y, 0), grid.delta(Axis::Y, last - 1));
+        (d0 + d1) / (d0 / own + d1 / other)
+    };
+    let mu = lay.vectors(|a, p| seam(mats.mu_r(a), a, p));
     let kappa = lay.vectors(|a, p| edge(mats.kappa(a), a, p));
     let sigma = lay.vectors(|a, p| mats.sigma_m(a)[dual(a, p)]);
     Ok(lay.file(&[
@@ -315,8 +332,25 @@ pub fn operator_dump(
     let exc = lay.vectors(|a, p| exc[a.index()][grid.index(p)]);
     let vv = lay.vectors(|a, p| merged(a, p).0);
     let vi = lay.vectors(|a, p| merged(a, p).1);
-    let iv = lay.vectors(|a, p| f64::from(coeffs.db(a)[grid.index(p)]));
-    let ii = lay.vectors(|a, p| f64::from(coeffs.da(a)[grid.index(p)]));
+    // The seam `H_α` of a closed grid: the copies hold half the dual edge
+    // each; the whole edge has `iv = Σ iv_j` (`ii` weighted by `iv_j`).
+    let h = |a: Axis, p: [usize; 3]| -> (f64, f64) {
+        let i = grid.index(p);
+        let (da, db) = (coeffs.da(a), coeffs.db(a));
+        let own = (f64::from(da[i]), f64::from(db[i]));
+        if a != Axis::Y || p[1] != 0 || !grid.is_closed() {
+            return own;
+        }
+        let o = grid.index([p[0], grid.nodes()[1] - 1, p[2]]);
+        let other = (f64::from(da[o]), f64::from(db[o]));
+        let iv = own.1 + other.1;
+        if own.1 == 0.0 || other.1 == 0.0 {
+            return own;
+        }
+        ((own.0 * own.1 + other.0 * other.1) / iv, iv)
+    };
+    let iv = lay.vectors(|a, p| h(a, p).1);
+    let ii = lay.vectors(|a, p| h(a, p).0);
     Ok(lay.file(&[
         ("exc_volt", &exc),
         ("vv", &vv),

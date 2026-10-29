@@ -608,6 +608,15 @@ pub(super) fn wrapped_sources(
     }
 }
 
+/// Whether the α mesh of the cylindrical `grid` is graded (cell widths
+/// differing by more than a relative 1e-9).
+pub(super) fn graded_alpha(grid: &Grid) -> bool {
+    use crate::Axis;
+    let a = grid.lines(Axis::Y);
+    let d0 = a[1] - a[0];
+    grid.is_cylindrical() && a.windows(2).any(|w| ((w[1] - w[0]) - d0).abs() > 1e-9 * d0)
+}
+
 /// Warns about boxes whose α range openEMS (CSXCAD) interprets
 /// differently from ems (black box, design §5.15): ems maps angles
 /// periodically, so a box means the same region whatever multiple of 2π
@@ -616,7 +625,8 @@ pub(super) fn wrapped_sources(
 /// * takes the α range of materials, metal, sheets and excitations
 ///   literally against the grid's α lines (nothing outside the grid's α
 ///   range: a box over `[−π, 0]` on a `[0, 2π]` grid is empty, one over
-///   `[π, 3π]` covers `[π, 2π]` only);
+///   `[π, 3π]` covers about `[π, 2π]` only; for materials the exact rule
+///   is the α index range of `compile::cylavg`, which files follow);
 /// * reduces each α bound of a lumped element modulo 2π into `[0, 2π)`
 ///   separately, so `[0, 2π]` becomes the α = 0 line, `[π, 2π]` and
 ///   `[3π/2, 5π/2]` become empty and `[−π, π]` the α = π line;
@@ -625,10 +635,13 @@ pub(super) fn wrapped_sources(
 ///   e.g. a lumped ring over `[0, 2π]` has no effect at all.
 ///
 /// Only identity-transformed `Box` primitives in cylindrical coordinates
-/// are checked. Called for models read from openEMS files.
+/// are checked. Called for models read from openEMS files; with
+/// `material_ranges` the materials follow openEMS's reading
+/// (`compile::cylavg`, design §5.16.11) and are not reported.
 pub(super) fn openems_alpha_warnings(
     model: &csx::ContinuousStructure,
     grid: &Grid,
+    material_ranges: bool,
     warnings: &mut Vec<String>,
 ) {
     use csx::primitives::Shape;
@@ -679,7 +692,9 @@ pub(super) fn openems_alpha_warnings(
                     ));
                     continue;
                 }
-            } else if lo < g0 - eps || hi > g1 + eps {
+            } else if (lo < g0 - eps || hi > g1 + eps)
+                && !(material_ranges && matches!(p.kind, PropertyKind::Material(_)))
+            {
                 warnings.push(format!(
                     "{tag}: alpha range [{lo}, {hi}] leaves the grid's [{g0}, {g1}]; ems wraps \
                      it periodically, openEMS takes it literally (nothing outside the grid's \

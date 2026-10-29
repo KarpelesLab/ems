@@ -528,6 +528,11 @@ pub struct Compiled {
     /// coarse operator and interpolation; other multigrid models keep the
     /// zones in the grid (ems's embedding, §5.15.1).
     pub openems_multigrid: Option<usize>,
+    /// openEMS's own `α = 0` line of the seam `H_α` dual edges of a closed
+    /// cylindrical grid (files): `[μ_r, σ_m]` per `(i, k)` at `i·n_z + k`
+    /// (NaN: none), sampled at that line's α index (design §5.16.11);
+    /// empty when not sampled.
+    pub openems_seam_alpha0: Vec<[f64; 2]>,
     /// The branches `(L, R)` of the openEMS sheet edges, updated as openEMS
     /// does (single precision; design §5.16.13) by an operator registered
     /// after the dispersive poles.
@@ -791,6 +796,7 @@ impl Compiled {
                 |a, p| seam_poles.get(&(a, p)).cloned().unwrap_or_default(),
                 |a, p| seam_debye.get(&(a, p)).cloned().unwrap_or_default(),
                 |a, p| seam_sheets.get(&(a, p)).copied(),
+                &self.openems_seam_alpha0,
             );
             engine.add_operator(op);
             // The seam operator keeps the two copies of these apart.
@@ -1656,6 +1662,13 @@ pub fn compile(
         model
     };
     let mut warnings: Vec<String> = model.validate().iter().map(ToString::to_string).collect();
+    // openEMS's α index ranges of boxes (files only, compile::cylavg), on
+    // the undilated corners.
+    let alpha_ranges = if fdtd.get_openems_run() {
+        cylavg::AlphaRanges::of(model, grid.is_closed())
+    } else {
+        cylavg::AlphaRanges::default()
+    };
     // openEMS's inside tolerance (files only, compile::openems).
     let dilated = fdtd
         .get_openems_run()
@@ -1663,6 +1676,13 @@ pub fn compile(
         .flatten();
     let model = dilated.as_ref().unwrap_or(model);
     let grid = cylindrical::multigrid(grid, &model.grid, fdtd.get_multigrid(), &mut warnings)?;
+    // openEMS's α widths of the z components on a graded α mesh (files
+    // only, `Grid::with_openems_alpha_widths`).
+    let grid = if fdtd.get_openems_run() && cylindrical::graded_alpha(&grid) {
+        grid.with_openems_alpha_widths()
+    } else {
+        grid
+    };
     // Oblique thin wires are not discretised by csx (see compile/wire.rs).
     let (oblique, stripped) = wire::oblique_wires(model, &grid, &mut warnings);
     let full_model = model;
@@ -1735,7 +1755,8 @@ pub fn compile(
     if cyl {
         cylindrical::wrapped_sources(model, &mut mg, opts.snap_tolerance, &mut warnings);
         if fdtd.get_openems_run() {
-            cylindrical::openems_alpha_warnings(model, &grid, &mut warnings);
+            let material_ranges = opts.subsampling == 1 && !fdtd.get_cell_constant_material();
+            cylindrical::openems_alpha_warnings(model, &grid, material_ranges, &mut warnings);
         }
     }
     let sheet_specs = if cyl {
@@ -1789,12 +1810,14 @@ pub fn compile(
             .pec_mask_mut(axis)
             .copy_from_slice(&node_map.reorder(&pec));
     }
+    let mut openems_seam_alpha0 = Vec::new();
     if fdtd.get_cell_constant_material() {
         cellconst::apply(model, &grid, &mut materials, fdtd.get_openems_run())?;
     } else if cyl && fdtd.get_openems_run() && opts.subsampling == 1 {
         // openEMS's radial weights (design §5.15).
-        cylavg::apply(
+        openems_seam_alpha0 = cylavg::apply(
             material_model.as_ref().unwrap_or(model),
+            &alpha_ranges,
             &grid,
             &mut materials,
         );
@@ -1940,6 +1963,7 @@ pub fn compile(
     };
     Ok(Compiled {
         openems_multigrid,
+        openems_seam_alpha0,
         grid,
         delta_unit: model.grid.delta_unit,
         materials,

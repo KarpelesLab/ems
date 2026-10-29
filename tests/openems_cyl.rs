@@ -171,32 +171,49 @@ fn probe_l2_xml(case: &str, model: &str, xml: &str) -> Vec<(String, f64)> {
     probe_l2_sim(case, model, Simulation::from_xml_str(xml).unwrap())
 }
 
-/// [`probe_l2`] for the simulation `sim` (labelled `model`).
+/// [`probe_l2`] for the simulation `sim` (labelled `model`); field
+/// probes (E, H) compare their three components together.
 fn probe_l2_sim(case: &str, model: &str, mut sim: Simulation) -> Vec<(String, f64)> {
     let res = sim.run().unwrap();
     kept(case)
         .into_iter()
         .map(|n| {
-            let (t, v) = read_probe(&fixture(case).join(&n));
+            let file = ems::io::openems::read_probe_file(fixture(case).join(&n)).unwrap();
+            let t = file.abscissa();
             let p = res.probe(&n).unwrap();
-            let (et, ev) = (p.times(), p.scalar().unwrap());
+            let et = p.times();
+            // The columns of the probe: ems's samples, openEMS's values.
+            let cols: Vec<(Vec<f64>, Vec<f64>)> = match (p.scalar(), p.vector()) {
+                (Some(v), _) => vec![(v.to_vec(), file.column(0))],
+                (_, Some(v)) => (0..3)
+                    .map(|c| (v.iter().map(|x| x[c]).collect(), file.column(c)))
+                    .collect(),
+                _ => unreachable!(),
+            };
             let (mut num, mut den) = (0.0, 0.0);
             // Both codes step with openEMS's time step (bit for bit since
             // §5.16.10); ems's samples are interpolated to openEMS's times
             // (printed with 12 digits: the last may lie just above ems's).
+            // openEMS's H probes end with the H of the step after the last
+            // (the look-ahead sample of the `ems` program, not in `Results`).
             let dt = et[1] - et[0];
-            for (&ti, &vi) in t.iter().zip(&v) {
-                let k = et.partition_point(|&x| x < ti - 1e-6 * dt);
-                let e = if k < et.len() && (et[k] - ti).abs() < 1e-6 * dt {
-                    ev[k]
-                } else if k > 0 && k < et.len() && et[k] - et[k - 1] < 1.5 * dt {
-                    let s = (ti - et[k - 1]) / (et[k] - et[k - 1]);
-                    ev[k - 1] + s * (ev[k] - ev[k - 1])
-                } else {
-                    0.0
-                };
-                num += (e - vi) * (e - vi);
-                den += vi * vi;
+            for (ev, v) in &cols {
+                for (&ti, &vi) in t.iter().zip(v) {
+                    if ti > et[et.len() - 1] + 0.5 * dt {
+                        break;
+                    }
+                    let k = et.partition_point(|&x| x < ti - 1e-6 * dt);
+                    let e = if k < et.len() && (et[k] - ti).abs() < 1e-6 * dt {
+                        ev[k]
+                    } else if k > 0 && k < et.len() && et[k] - et[k - 1] < 1.5 * dt {
+                        let s = (ti - et[k - 1]) / (et[k] - et[k - 1]);
+                        ev[k - 1] + s * (ev[k] - ev[k - 1])
+                    } else {
+                        0.0
+                    };
+                    num += (e - vi) * (e - vi);
+                    den += vi * vi;
+                }
             }
             let e = (num / den).sqrt();
             eprintln!("{case}/{model}/{n}: relative L2 {e:.2e}");
@@ -407,6 +424,45 @@ fn cylindrical_mesh_without_cylinder_coords_runs_cartesian() {
             .any(|w| w.contains("without CylinderCoords"))
     );
     for (n, e) in probe_l2_sim("cyl_no_cylinder_coords", "model.xml", sim) {
+        assert!(e < 1e-6, "{n}: {e:e}");
+    }
+}
+
+/// Boxes whose α range leaves the `[0, 2π]` lines of a closed grid with
+/// the axis (`cyl_alpha_wrap`: α −0.5…2, π…3π over the axis, and 0…2):
+/// besides the periodic inside test openEMS limits each box to a range
+/// of α indices (from the last line below its lower angle to the first
+/// above its upper one), and it keeps its own `α = 0` line of the seam
+/// `H_α` (material sampled at index 0, dual length `ρ·Δα_0`), which the
+/// axis and the probes there read (`compile::cylavg`,
+/// `engine::openems_cyl`, design §5.16.11). The probes (voltages, E and
+/// H on the seam ring, H next to it) match to the printed digits; ems's
+/// native periodic reading of the boxes differs by order 1.
+#[test]
+fn cylindrical_boxes_across_the_seam_match_openems() {
+    let case = "cyl_alpha_wrap";
+    for (n, e) in probe_l2(case, "model.xml") {
+        assert!(e < 1e-6, "{n}: {e:e}");
+    }
+    let xml = std::fs::read_to_string(fixture(case).join("model.xml")).unwrap();
+    let doc = csx::OpenEmsDocument::from_xml_str(&xml).unwrap();
+    let copts = ems::CompileOptions::default();
+    let sim = Simulation::from_document_with(&doc, &copts, |f| f.openems_run(false)).unwrap();
+    let worst = probe_l2_sim(case, "native", sim)
+        .into_iter()
+        .fold(0.0f64, |m, (_, e)| m.max(e));
+    assert!(worst > 0.1, "{worst:e}");
+}
+
+/// A graded α mesh on a closed grid with the axis (`cyl_alpha_graded`,
+/// cells of 0.3…0.7 rad, a lossy dielectric with its α faces inside
+/// cells and a magnetic box over the axis and the seam): openEMS's α
+/// widths of the z edges and `H_z` faces, its z-edge material weights on
+/// the axis and the seam, and its `α = 0` seam line (design §5.16.11);
+/// the probes match to the printed digits.
+#[test]
+fn cylindrical_graded_alpha_mesh_matches_openems() {
+    for (n, e) in probe_l2("cyl_alpha_graded", "model.xml") {
         assert!(e < 1e-6, "{n}: {e:e}");
     }
 }

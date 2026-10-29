@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Boxes whose alpha range leaves the grid's [0, 2 pi] lines, on a closed
+  cylindrical cavity with the axis (rho 0..6 mm, 12 alpha cells, z 0..8 mm):
+  a lossy dielectric over alpha -0.5..2 (openEMS: [0, 2] only, not the
+  cells below 2 pi nor the seam), a dielectric, magnetic box over the axis
+  with alpha pi..3 pi (openEMS: from the cell below pi up to 2 pi, its
+  alpha = 0 line of the seam H_alpha outside), and a box over alpha 0..2
+  (openEMS: not on the seam). Probes on the seam, next to it and on the
+  axis ring.
+  Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="1500" endCriteria="0" f_max="10e9" CylinderCoords="1">
+    <Excitation Type="10" f0="10e9" Function="exp(-((t-3e-10)/7e-11)^2)*cos(2*pi*1e10*(t-3e-10))"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>0,1,2,3,4,5,6</XLines>
+      <YLines>0,0.5235987755983,1.0471975511966,1.5707963267949,2.0943951023932,2.61799387799149,3.14159265358979,3.66519142918809,4.18879020478639,4.71238898038469,5.23598775598299,5.75958653158129,6.28318530717959</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Material Name="d1"><Property Epsilon="3" Kappa="0.02"/><Primitives><Box Priority="1"><P1 X="1.5" Y="-0.5" Z="2"/><P2 X="4.5" Y="2" Z="6"/></Box></Primitives></Material>
+      <Material Name="d2"><Property Epsilon="2" Mue="1.5"/><Primitives><Box Priority="2"><P1 X="0" Y="3.14159265358979" Z="1"/><P2 X="2.5" Y="9.42477796076938" Z="7"/></Box></Primitives></Material>
+      <Material Name="d3"><Property Epsilon="5"/><Primitives><Box Priority="3"><P1 X="3.2" Y="0" Z="0"/><P2 X="6" Y="2" Z="3.5"/></Box></Primitives></Material>
+      <Excitation Name="exc" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="3" Y="4.71238898038469" Z="3"/><P2 X="3" Y="4.71238898038469" Z="5"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="uz_seam" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="2" Y="0" Z="1"/><P2 X="2" Y="0" Z="7"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="uz_a" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="4" Y="0.5235987755983" Z="1"/><P2 X="4" Y="0.5235987755983" Z="7"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="uz_b" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="1" Y="5.75958653158129" Z="2"/><P2 X="1" Y="5.75958653158129" Z="6"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="ur_seam" Type="0" Weight="1">
+        <Primitives><Box Priority="0"><P1 X="1" Y="0" Z="4"/><P2 X="5" Y="0" Z="4"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="e_ring" Type="2">
+        <Primitives><Box Priority="0"><P1 X="1" Y="0" Z="4"/><P2 X="1" Y="0" Z="4"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="h_ring" Type="3">
+        <Primitives><Box Priority="0"><P1 X="1" Y="0" Z="4"/><P2 X="1" Y="0" Z="4"/></Box></Primitives>
+      </ProbeBox>
+      <ProbeBox Name="h_a" Type="3">
+        <Primitives><Box Priority="0"><P1 X="3" Y="0.5235987755983" Z="4"/><P2 X="3" Y="0.5235987755983" Z="4"/></Box></Primitives>
+      </ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

@@ -47,6 +47,9 @@ pub struct Grid {
     /// Azimuthal multigrid zone boundaries of a cylindrical grid: ρ line
     /// indices, strictly decreasing (outermost first); empty when off.
     multigrid: Vec<usize>,
+    /// openEMS's α widths of the z components (files with a non-uniform
+    /// α mesh, see [`with_openems_alpha_widths`](Self::with_openems_alpha_widths)).
+    openems_alpha: bool,
     /// Cached stability limit of a cylindrical grid (power iteration).
     courant: OnceLock<f64>,
 }
@@ -56,6 +59,7 @@ impl PartialEq for Grid {
         self.lines == other.lines
             && self.coords == other.coords
             && self.multigrid == other.multigrid
+            && self.openems_alpha == other.openems_alpha
     }
 }
 
@@ -93,6 +97,7 @@ impl Grid {
             lines,
             coords: Coordinates::Cartesian,
             multigrid: Vec::new(),
+            openems_alpha: false,
             courant: OnceLock::new(),
         })
     }
@@ -236,6 +241,80 @@ impl Grid {
         Ok(self)
     }
 
+    /// The grid with openEMS's α widths of the z components (models read
+    /// from openEMS files; black box, `--debug-operator` and per-step field
+    /// dumps of closed grids and sectors with graded α meshes, with and
+    /// without the axis, design §5.16.11): openEMS gives the dual face of
+    /// a z edge on an inner α line `j` the width of the cell above the
+    /// line, `Δα_j`, instead of the dual width `(Δα_{j−1} + Δα_j)/2`, and
+    /// the face of an `H_z` cell `j` the dual width of its lower line,
+    /// `(Δα_{j−1} + Δα_j)/2` (`Δα_0` for the first cell, also on a closed
+    /// grid), instead of `Δα_j`. A seam z edge of a closed grid has the
+    /// width `Δα_0`, split between its two copies in the ratio of openEMS's
+    /// α weights of their material halves (`compile::cylavg`): the upper
+    /// half (the `α = 0` copy) weighs the dual width of the seam
+    /// `(Δα_{N−1} + Δα_0)/2`, on the axis `Δα_0`; the lower half (the
+    /// `α = 2π` copy) the dual width of the line below,
+    /// `(Δα_{N−2} + Δα_{N−1})/2`. Both meshes agree on a uniform α mesh.
+    /// Off for multigrid grids; no effect on Cartesian grids.
+    pub(crate) fn with_openems_alpha_widths(mut self) -> Self {
+        if self.is_cylindrical() && self.multigrid.is_empty() {
+            self.openems_alpha = true;
+            self.courant = OnceLock::new();
+        }
+        self
+    }
+
+    /// Whether the z components use openEMS's α widths
+    /// ([`with_openems_alpha_widths`](Self::with_openems_alpha_widths)).
+    pub(crate) fn openems_alpha_widths(&self) -> bool {
+        self.openems_alpha
+    }
+
+    /// openEMS's α weights `(upper, lower)` of the two halves of a seam z
+    /// edge on `ρ` line `i` of a closed grid with at least three α cells
+    /// ([`with_openems_alpha_widths`](Self::with_openems_alpha_widths)).
+    pub(crate) fn openems_seam_z_weights(&self, i: usize) -> (f64, f64) {
+        let n = self.lines[1].len();
+        let d = |j: usize| self.delta(Axis::Y, j);
+        let up = if i == 0 && self.has_axis() {
+            d(0)
+        } else {
+            0.5 * (d(n - 2) + d(0))
+        };
+        (up, 0.5 * (d(n - 3) + d(n - 2)))
+    }
+
+    /// α width of the dual face of the z edges at node `[i, j, ·]`:
+    /// `Δα*_j`, or openEMS's
+    /// ([`with_openems_alpha_widths`](Self::with_openems_alpha_widths)).
+    fn z_dual_alpha(&self, i: usize, j: usize) -> f64 {
+        let n = self.lines[1].len();
+        if !self.openems_alpha {
+            return self.dual_delta(Axis::Y, j);
+        }
+        if j > 0 && j + 1 < n {
+            self.delta(Axis::Y, j)
+        } else if self.is_closed() && n >= 4 {
+            let (up, low) = self.openems_seam_z_weights(i);
+            self.delta(Axis::Y, 0) * if j == 0 { up } else { low } / (up + low)
+        } else if self.is_closed() {
+            0.5 * self.delta(Axis::Y, 0)
+        } else {
+            self.dual_delta(Axis::Y, j)
+        }
+    }
+
+    /// α width of the `H_z` faces of cell `j`: `Δα_j`, or openEMS's
+    /// ([`with_openems_alpha_widths`](Self::with_openems_alpha_widths)).
+    fn z_face_alpha(&self, j: usize) -> f64 {
+        if !self.openems_alpha || j == 0 {
+            self.delta(Axis::Y, j)
+        } else {
+            0.5 * (self.delta(Axis::Y, j - 1) + self.delta(Axis::Y, j))
+        }
+    }
+
     /// The multigrid zone boundaries (`ρ` line indices, outermost first);
     /// empty without multigrid (see [`with_multigrid`](Self::with_multigrid)).
     pub fn multigrid(&self) -> &[usize] {
@@ -376,6 +455,11 @@ impl Grid {
                 let hi = self.rho_dual(i);
                 let (inn, out) = self.ring_factors(i);
                 if inn == 1 || (i == 0 && self.has_axis()) {
+                    let dc = if self.openems_alpha {
+                        self.z_dual_alpha(i, j)
+                    } else {
+                        dc
+                    };
                     return dc * 0.5 * (hi * hi - lo * lo);
                 }
                 // Multigrid (§5.15.1): the inner and outer halves of the
@@ -414,7 +498,14 @@ impl Grid {
         match axis {
             Axis::X => r[i] * db * dc,
             Axis::Y => db * dc,
-            Axis::Z => dc * 0.5 * (r[i + 1] * r[i + 1] - r[i] * r[i]),
+            Axis::Z => {
+                let dc = if self.openems_alpha {
+                    self.z_face_alpha(node[1])
+                } else {
+                    dc
+                };
+                dc * 0.5 * (r[i + 1] * r[i + 1] - r[i] * r[i])
+            }
         }
     }
 

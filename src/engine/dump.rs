@@ -1782,9 +1782,13 @@ pub(crate) fn with_lookahead_currents<R>(
         } else {
             super::kernel::flush(da * i.get(c, p) - db * ((t0 - t1) - (t2 - t3)))
         };
+        let (ug, ig) = (
+            |c: Axis, p: [usize; 3]| u.get(c, p),
+            |c: Axis, p: [usize; 3]| i.get(c, p),
+        );
         let mut v = owners
             .iter()
-            .find_map(|o| o.lookahead_current(c, p, k))
+            .find_map(|o| o.lookahead_current_in(c, p, k, &ug, &ig))
             .unwrap_or(k);
         if let Some(list) = sources.get(&(c, p)) {
             for &(s, hard) in list {
