@@ -252,3 +252,11 @@ fn sheet_at_mur_lines() {
 fn lumped_over_metal() {
     case("rs_157", 1e-6, 1e-4);
 }
+
+/// A soft E source on a Mur face: openEMS holds the face (no Mur update)
+/// through E sample `L + 10` of an excitation of `L` steps. Exact (was
+/// 5e-4…2.9e-2 with the face held one sample longer).
+#[test]
+fn mur_face_hold() {
+    case("rs_162", 1e-6, 1e-4);
+}

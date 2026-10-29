@@ -1038,7 +1038,7 @@ impl Compiled {
                         }
                     }
                     let steps = (d / engine.dt()).floor().max(0.0) as u64 + 1;
-                    op.hold_faces(&held, steps + 11)
+                    op.hold_faces(&held, steps + 10)
                 }
                 None => op,
             };

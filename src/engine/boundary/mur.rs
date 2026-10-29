@@ -604,13 +604,17 @@ impl MurBoundary {
     }
 
     /// Holds the boundary edges of `faces` (and the domain edges on them)
-    /// before step `until`: they are not updated then and keep what the
-    /// other operators write (0 from their PEC coefficients, plus sources).
+    /// before step `until` (the step index, 0 for the step that computes
+    /// the first E): they are not updated then and keep what the other
+    /// operators write (0 from their PEC coefficients, plus sources).
     /// openEMS does this to a Mur face that carries an E excitation while
     /// the excitation runs (black box: such a face stays 0 except for the
-    /// source, which holds just the signal, up to step `L + 11` for an
-    /// excitation of `L` steps, measured for four signal lengths and two
-    /// time steps; the other Mur faces are not affected; design §5.16.3).
+    /// source, which holds just the signal, in the E samples `1 … L + 10`
+    /// for an excitation of `L` steps and is updated from sample `L + 11`
+    /// on, i.e. `until = L + 10`; per-step dumps of ten models, soft and
+    /// hard sources, five signal lengths and three time steps; openEMS
+    /// reports "switched on after excitation is done at `L + 10`
+    /// timesteps"; the other Mur faces are not affected; design §5.16.3).
     /// Call it before registering.
     pub fn hold_faces(mut self, faces: &[Face], until: u64) -> Self {
         let on = |node: [usize; 3], inner: [usize; 3]| {

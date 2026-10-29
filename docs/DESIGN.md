@@ -3962,10 +3962,15 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   1.5 → 3e-5).
 - **A Mur face carrying an E excitation** is not updated while the
   excitation runs: the face stays 0 except the source edges, which hold
-  just the signal, up to step `L + 11` (`L` the excitation length; four
-  lengths and two time steps; the other Mur faces are unaffected)
-  (`MurBoundary::hold_faces`; sweep case 134 12 → 2e-6, 162 12 → 3e-2:
-  the H probe beside the face is still off).
+  just the signal, in the E samples up to `L + 10` (`L` the excitation
+  length; openEMS's console: "switched on after excitation is done at
+  `L + 10` timesteps"), and is updated from sample `L + 11` on; the other
+  Mur faces are unaffected (`MurBoundary::hold_faces`; sweep case 134
+  12 → 2e-6). Wave 19: ems held one sample too long (through `L + 11`;
+  per-step dumps of ten models, soft and hard sources, five lengths,
+  three time steps: openEMS's first updated sample is `L + 11` in all);
+  this was the "H probe next to a held Mur face" of seed 162 (`rs_162`
+  5e-4…2.9e-2 → exact).
 - **The look-ahead H** of the last dump and probe sample includes H
   sources (`Operator::lookahead_sources`; a soft H source's dump was 0.4
   off at its last step).

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 162; a soft E source on a Mur face (openEMS holds the face through sample L + 10); tags: MUR PEC PML graded lumpedRC material -->
+<openEMS>
+  <FDTD NumberOfTimesteps="800" endCriteria="1e-30">
+    <Excitation Type="0" f0="7.76717e+09" fc="4.07478e+09"/>
+    <BoundaryCond xmin="PEC" xmax="MUR" ymin="PML_3" ymax="PML_3" zmin="PML_3" zmax="MUR"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Material Name="mat0"><Property Epsilon="2.7573" Mue="1" Kappa="0.00134794" Sigma="0"/><Primitives><Box Priority="4"><P1 X="2" Y="7.5" Z="9.75"/><P2 X="7" Y="13.5" Z="13.875"/></Box></Primitives></Material>
+      <LumpedElement Name="le0" Direction="1" Caps="1" R="91.1894" C="4.69356e-13"><Primitives><Box Priority="5"><P1 X="8" Y="10.5" Z="7.125"/><P2 X="9" Y="12" Z="9.75"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="le1" Direction="2" Caps="0" R="154.853" C="2.63973e-13"><Primitives><Box Priority="5"><P1 X="3" Y="6" Z="13.875"/><P2 X="3" Y="6" Z="16.125"/></Box></Primitives></LumpedElement>
+      <Excitation Name="src" Type="0" Excite="-0.677744,-0.661534,1"><Primitives><Box Priority="0"><P1 X="10" Y="4.5" Z="7.125"/><P2 X="10" Y="4.5" Z="9.75"/></Box></Primitives></Excitation>
+      <ProbeBox Name="e0" Type="2"><Primitives><Box Priority="0"><P1 X="7" Y="7.5" Z="9"/><P2 X="7" Y="7.5" Z="9"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="2" Y="9" Z="0"/><P2 X="2" Y="9" Z="1.875"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h2" Type="3"><FD_Samples>7.76717e+09,9.3206e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="9" Y="18" Z="7.125"/><P2 X="9" Y="18" Z="7.125"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u3" Type="0"><Primitives><Box Priority="0"><P1 X="1" Y="12" Z="9"/><P2 X="3" Y="12" Z="9"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u4" Type="0"><Primitives><Box Priority="0"><P1 X="3" Y="10.5" Z="9"/><P2 X="3" Y="10.5" Z="11.25"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i5" Type="1" NormDir="1"><Primitives><Box Priority="0"><P1 X="5" Y="10.5" Z="13.875"/><P2 X="8" Y="10.5" Z="16.125"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10</XLines>
+      <YLines>0,1.5,3,4.5,6,7.5,9,10.5,12,13.5,15,16.5,18,19.5</YLines>
+      <ZLines>0,1.125,1.875,3.375,4.875,7.125,9,9.75,11.25,13.125,13.875,16.125,17.625</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>
