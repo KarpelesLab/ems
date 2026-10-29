@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, hand-written companion of seed 316: a hard E source on conducting-sheet edges (openEMS excites them like a soft source), under a higher-priority sheet -->
+<openEMS>
+  <FDTD NumberOfTimesteps="300" endCriteria="1e-30">
+    <Excitation Type="0" f0="5e9" fc="3e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <Excitation Name="src" Type="1" Excite="0,0,1"><Primitives><Box Priority="2"><P1 X="5" Y="5" Z="3"/><P2 X="5" Y="5" Z="6"/></Box></Primitives></Excitation>
+      <ConductingSheet Name="m" Conductivity="1e5" Thickness="1e-5"><Primitives><Box Priority="3"><P1 X="5" Y="3" Z="2"/><P2 X="5" Y="7" Z="7"/></Box></Primitives></ConductingSheet>
+      <ProbeBox Name="e0" Type="2"><Primitives><Box Priority="0"><P1 X="7" Y="5" Z="4"/><P2 X="7" Y="5" Z="4"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h1" Type="3"><Primitives><Box Priority="0"><P1 X="6.5" Y="5.5" Z="4.5"/><P2 X="6.5" Y="5.5" Z="4.5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

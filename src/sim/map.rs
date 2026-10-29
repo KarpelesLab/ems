@@ -674,6 +674,19 @@ pub(crate) fn map_sources(
             dt,
         ))
         .kind(kind);
+        // openEMS's sheet edges keep their update under a hard E source:
+        // the source adds to them like a soft one (black box, design
+        // §5.16.3).
+        let mut on_sheet = (openems && kind == SourceKind::HardE).then(|| {
+            EdgeSource::new(openems_signal(
+                w.clone(),
+                ex.delay,
+                openems_lag(SourceKind::SoftE, dt),
+                dt,
+            ))
+            .kind(SourceKind::SoftE)
+        });
+        let mut sheet_count = 0usize;
         let mut thevenin = 0;
         let mut hard_on_lumped = 0usize;
         // Cylindrical grids: physical edges already handled (canonical copy).
@@ -745,12 +758,25 @@ pub(crate) fn map_sources(
                     ex.name
                 ));
             }
+            if let Some(soft) = on_sheet.take_if(|_| sheet_edges.contains(&(axis, node))) {
+                on_sheet = Some(soft.edge(axis, node, weight));
+                sheet_count += 1;
+                continue;
+            }
             if kind == SourceKind::HardE && lumped_edge.contains_key(&(axis, node)) {
                 hard_on_lumped += 1;
             }
             for &c in &copies {
                 op = op.edge(axis, c, weight);
             }
+        }
+        if let Some(soft) = on_sheet.filter(|_| sheet_count > 0) {
+            warnings.push(format!(
+                "excitation {:?}: hard E source on {sheet_count} conducting-sheet edge(s); \
+                 excited as a soft source there (openEMS's sheet keeps its update)",
+                ex.name
+            ));
+            soft_e.push((ex.name.clone(), soft));
         }
         if hard_on_lumped > 0 {
             warnings.push(format!(
@@ -767,7 +793,7 @@ pub(crate) fn map_sources(
             } else {
                 others.push((ex.name.clone(), op));
             }
-        } else if thevenin == 0 {
+        } else if thevenin == 0 && sheet_count == 0 {
             warnings.push(format!("excitation {:?}: no edges; ignored", ex.name));
         }
     }

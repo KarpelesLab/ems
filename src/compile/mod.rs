@@ -1736,6 +1736,7 @@ pub fn compile(
         openems::thin_metal_priority(model, mg.dims, &mut mg.pec);
         openems::lumped_over_metal(&mut mg);
         openems::sheet_over_metal(model, &mut mg);
+        openems::excitation_priority(model, &mut mg);
         openems::openems_sigma_m(model, &mut mg);
     }
     let node_map = NodeMap::new(grid.nodes());

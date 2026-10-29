@@ -316,3 +316,19 @@ fn lumped_in_debye() {
 fn lumped_on_sheet() {
     case("rs_287", 3e-4, 1e-4);
 }
+
+/// A hard E source inside the box of a higher-priority excitation (a
+/// lumped port's): openEMS gives each edge to one excitation, the hard
+/// source keeps none. 5.4e-7…7.6e-5 (was 1.6e-4…0.34).
+#[test]
+fn excitation_priority() {
+    case("rs_316", 3e-4, 1e-4);
+}
+
+/// A hard E source on conducting-sheet edges (hand-written): the sheet
+/// keeps its update and the source adds like a soft one. Exact (was
+/// 0.85).
+#[test]
+fn hard_source_on_sheet() {
+    case("rs_316_sheet", 1e-6, 1e-4);
+}

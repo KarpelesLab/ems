@@ -243,6 +243,60 @@ pub(crate) fn sheet_over_metal(model: &ContinuousStructure, mg: &mut MaterialGri
     cleared
 }
 
+/// Drops the excitation amplitudes (csx's [`MaterialGrid::excitations`])
+/// at whose position another excitation property wins the priority
+/// (ties to the property defined first; disabled excitations and those
+/// whose amplitude is zero there count too): openEMS gives each edge to
+/// one excitation only (black box, wave 19: soft and hard E sources under
+/// a second excitation box of higher, equal and lower priority, defined
+/// before and after; the losing source is reported as an "unused
+/// primitive" when it keeps no edge; materials, lumped elements, sheets
+/// and dump boxes do not take part; design §5.16.3). The position is the
+/// edge midpoint (E types) or the dual edge's (H types). Cartesian grids
+/// only; returns the number of amplitudes dropped.
+pub(crate) fn excitation_priority(model: &ContinuousStructure, mg: &mut MaterialGrid) -> usize {
+    if model.grid.coord_system != CoordSystem::Cartesian || mg.excitations.len() < 2 {
+        return 0;
+    }
+    let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
+    let mask = TypeMask::of(csx::properties::PropertyType::Excitation);
+    let dims = mg.dims;
+    let node = |idx: usize| {
+        [
+            idx % dims[0],
+            (idx / dims[0]) % dims[1],
+            idx / (dims[0] * dims[1]),
+        ]
+    };
+    let mut dropped = 0;
+    for ex in &mut mg.excitations {
+        let magnetic = ex.excitation_type.is_magnetic();
+        let before = ex.amplitudes.len();
+        ex.amplitudes.retain(|(e, _)| {
+            let n = node(e.index);
+            let mid = |b: usize| {
+                let half = if magnetic { b != e.dir } else { b == e.dir };
+                if half && n[b] + 1 < dims[b] {
+                    0.5 * (lines[b][n[b]] + lines[b][n[b] + 1])
+                } else {
+                    lines[b][n[b]]
+                }
+            };
+            let p = Vec3(core::array::from_fn(mid));
+            model
+                .properties_at(p, CoordSystem::Cartesian, mask)
+                .iter()
+                .find(|h| {
+                    !matches!(&h.property.kind, PropertyKind::Excitation(x)
+                        if x.excitation_type == ExcitationType::PlaneWave)
+                })
+                .is_none_or(|h| h.property.name == ex.name)
+        });
+        dropped += before - ex.amplitudes.len();
+    }
+    dropped
+}
+
 /// The model without its metal primitives, for openEMS's material
 /// averages (see the [module docs](self#material-samples-in-metal)), or
 /// `None` when the metal cannot change them: no metal primitive, or no

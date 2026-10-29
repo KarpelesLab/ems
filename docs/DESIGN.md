@@ -4068,6 +4068,23 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   neither the medium's nor the element's `vi` reproduces them. `rs_51`
   (resistors in Lorentz media next to a sheet) 2.6e-5…2.4e-4 → exact,
   `rs_51_debye` (hand-written, C in a Debye box) 0.59 → exact.
+- **Overlapping excitations** (wave 19): openEMS gives each edge to one
+  excitation property, the one of highest priority whose box contains
+  the edge midpoint (the dual edge's for H sources), ties to the one
+  defined first; disabled excitations and those with a zero amplitude
+  along the edge count too, E and H sources compete alike, and a source
+  left without edges is reported as an "Unused primitive". Materials,
+  lumped elements, sheets and dump boxes do not take part (48 soft/hard
+  sources under a material, lumped elements along and across, a sheet,
+  a second excitation and a dump box, priorities 2|3, 3|2, 2|2 both
+  orders, plus E/H and disabled variants: all bit-identical; were up to
+  3.2) (`compile::openems::excitation_priority`). Seed 316 (a hard source
+  inside a lumped port's excitation box; `rs_316`) 1.6e-4…0.34 →
+  5.4e-7…7.6e-5.
+- **Hard E sources on sheet edges** (wave 19): the sheet keeps its update
+  and the source adds to it like a soft source (openEMS's probe files of
+  a hard and a soft source there are identical); ems overwrote the edge
+  (`rs_316_sheet`, hand-written, 0.85 → exact).
 
 Not resolved (18 of 230): series elements (9 with an excitation over a
 csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an
