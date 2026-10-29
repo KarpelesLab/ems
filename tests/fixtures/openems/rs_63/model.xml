@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 63; a conducting sheet of higher priority through a metal box (its edges in the metal are sheet edges, not PEC); tags: MUR PEC PML csheet drude dump graded metal -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1200" endCriteria="1e-30">
+    <Excitation Type="0" f0="7.9261e+09" fc="4.33335e+09"/>
+    <BoundaryCond xmin="PML_4" xmax="PML_3" ymin="MUR" ymax="MUR" zmin="MUR" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LorentzMaterial Name="drude0"><Property Epsilon="2.07892" EpsilonPlasmaFrequency="4.01175e+09" EpsilonRelaxTime="1.15462e-09"/><Primitives><Box Priority="1"><P1 X="10.5" Y="3.625" Z="15"/><P2 X="13.5" Y="5.375" Z="18"/></Box></Primitives></LorentzMaterial>
+      <Metal Name="pec0"><Primitives><Box Priority="0"><P1 X="11.25" Y="3.125" Z="5.25"/><P2 X="13.5" Y="3.625" Z="7.875"/></Box></Primitives></Metal>
+      <ConductingSheet Name="cs" Conductivity="1000" Thickness="0.0001"><Primitives><Box Priority="3"><P1 X="10.5" Y="3.375" Z="7.125"/><P2 X="13.5" Y="3.375" Z="12"/></Box></Primitives></ConductingSheet>
+      <Excitation Name="src" Type="0" Excite="1,0,0"><Primitives><Box Priority="0"><P1 X="7.5" Y="3.625" Z="3"/><P2 X="10.5" Y="3.625" Z="3"/></Box></Primitives></Excitation>
+      <ProbeBox Name="e0" Type="2"><Primitives><Box Priority="0"><P1 X="10.5" Y="5.375" Z="7.125"/><P2 X="10.5" Y="5.375" Z="7.125"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="11.25" Y="3.125" Z="8.625"/><P2 X="11.25" Y="3.625" Z="8.625"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i2" Type="1" NormDir="1"><Primitives><Box Priority="0"><P1 X="11.25" Y="1.25" Z="10.125"/><P2 X="13.5" Y="1.25" Z="12"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i3" Type="1" NormDir="0"><Primitives><Box Priority="0"><P1 X="10.5" Y="3.375" Z="3"/><P2 X="10.5" Y="5" Z="7.125"/></Box></Primitives></ProbeBox>
+      <DumpBox Name="D1" DumpType="1" DumpMode="0" FileType="1"><Primitives><Box Priority="0"><P1 X="9.75" Y="2.375" Z="7.875"/><P2 X="13.5" Y="2.375" Z="7.875"/></Box></Primitives></DumpBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1.5,3,5.25,6,7.5,9.75,10.5,11.25,13.5,14.625,16.125,16.875,19.125</XLines>
+      <YLines>0,0.375,0.875,1.25,1.75,2.375,3.125,3.375,3.625,4.25,5,5.375,5.75</YLines>
+      <ZLines>0,1.5,3,5.25,6.375,7.125,7.875,8.625,10.125,12,13.5,14.25,15,16.875,18,19.875,20.625</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

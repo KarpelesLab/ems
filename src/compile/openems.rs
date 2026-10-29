@@ -195,6 +195,54 @@ pub(crate) fn lumped_over_metal(mg: &mut MaterialGrid) -> usize {
     cleared
 }
 
+/// Clears the PEC flag of the conducting-sheet edges (csx's
+/// [`MaterialGrid::sheet`]) whose midpoint lies in a sheet that wins the
+/// priority there over every metal and material (ties to the property
+/// defined first, lumped elements left out): openEMS makes them sheet
+/// edges (black box, `--debug-PEC` and `--debug-operator` dumps of a sheet
+/// on the face of a metal box at priorities above, equal to and below
+/// the metal's, defined before and after it; design §5.16.3). Cartesian
+/// grids only; returns the number of edges cleared.
+pub(crate) fn sheet_over_metal(model: &ContinuousStructure, mg: &mut MaterialGrid) -> usize {
+    if model.grid.coord_system != CoordSystem::Cartesian || mg.sheets.is_empty() {
+        return 0;
+    }
+    let lines: [&[f64]; 3] = core::array::from_fn(|a| model.grid.lines(a));
+    let mask = TypeMask::MATERIALS
+        | TypeMask::of(csx::properties::PropertyType::Metal)
+        | TypeMask::of(csx::properties::PropertyType::ConductingSheet);
+    let mut cleared = 0;
+    for a in 0..3 {
+        for idx in 0..mg.sheet[a].len() {
+            let sid = mg.sheet[a][idx];
+            if sid == 0 || !mg.pec[a][idx] {
+                continue;
+            }
+            let n = mg.node(idx);
+            if n[a] + 1 >= mg.dims[a] {
+                continue;
+            }
+            let m = Vec3(core::array::from_fn(|b| {
+                if b == a {
+                    0.5 * (lines[b][n[b]] + lines[b][n[b] + 1])
+                } else {
+                    lines[b][n[b]]
+                }
+            }));
+            let name = &mg.sheets[sid as usize - 1].name;
+            let hits = model.properties_at(m, CoordSystem::Cartesian, mask);
+            if hits.first().is_some_and(|h| {
+                matches!(h.property.kind, PropertyKind::ConductingSheet(_))
+                    && &h.property.name == name
+            }) {
+                mg.pec[a][idx] = false;
+                cleared += 1;
+            }
+        }
+    }
+    cleared
+}
+
 /// The model without its metal primitives, for openEMS's material
 /// averages (see the [module docs](self#material-samples-in-metal)), or
 /// `None` when the metal cannot change them: no metal primitive, or no

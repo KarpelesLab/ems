@@ -4018,6 +4018,29 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   the element (9 % of its capacitance left by openEMS's limit) grows
   unstably in both codes at the same rate, seeded by the round-off of
   the inductor update.
+- **Conducting sheets against other properties** (wave 19;
+  `--debug-operator`/`--debug-PEC` dumps and probe files of a sheet
+  against a dielectric, a dielectric sheet, a Drude medium, a metal box
+  and lumped elements, priorities 2|2, 2|3, 3|2, each defined before and
+  after the sheet; `compile::openems_sheet`):
+  - at equal priority the property defined first wins (the sheet won
+    every tie before; it had been measured with the sheet defined first);
+  - a sheet that wins over metal is a sheet edge, not PEC
+    (`compile::openems::sheet_over_metal`; csx makes it PEC);
+  - dispersive poles at a sheet edge have no effect (ems kept the poles
+    of the medium under the sheet);
+  - lumped elements take no part in the priority: a parallel R, C or R‖C
+    element has no effect on a sheet edge (ems let it win), an element
+    with an inductor or a series element is installed over the sheet's
+    circuit (the sheet's capacitance is the medium it replaces or
+    limits, §5.16.1, the sheet's conductance is dropped, its branches
+    stay). The operator dumps are openEMS's; the probes of those
+    elements still differ by 2e-4 (R‖L‖C) … 1e-1 (series C): the order
+    of the element's and the sheet branches' updates is not reproduced.
+  The 30 priority models agree bit for bit (were up to 0.87);
+  `rs_152` (a sheet touching a dielectric defined before it) 6e-3…1e-2
+  → 5e-7…2e-5, `rs_63` (a sheet through a metal box) 1.3e-3 → exact,
+  and seed 9 (series elements over a sheet-sided box) 3.6 → 1.5e-4.
 
 Not resolved (18 of 230): series elements (9 with an excitation over a
 csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an

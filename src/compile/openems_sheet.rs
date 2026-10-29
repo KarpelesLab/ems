@@ -87,8 +87,24 @@
 //!   the dual layer it otherwise zeroes (`pmc_half_cell`, design
 //!   §5.16.13).
 //! * **Priorities.** A material or metal of higher priority at the edge
-//!   midpoint removes the sheet edge (it keeps its material); the sheet
-//!   wins ties. Edges on the outer mesh planes are left to the boundary.
+//!   midpoint removes the sheet edge (it keeps its material); at equal
+//!   priority the property defined first in the file wins (wave 19,
+//!   `--debug-operator` dumps of a sheet against a dielectric, a Drude
+//!   medium and a metal box defined before and after it; it had been
+//!   measured with the sheet defined first only). A sheet that wins over
+//!   metal is a sheet edge, not PEC
+//!   ([`super::openems::sheet_over_metal`]). Lumped elements do not take
+//!   part in the priority: a parallel R, C or R‖C element leaves a sheet
+//!   edge alone (no effect on it), while an element with an inductor or a
+//!   series element is installed over the sheet's circuit, at any
+//!   priority: the sheet's capacitance is the medium the element replaces
+//!   or limits (§5.16.1), the sheet's conductance is dropped, the sheet's
+//!   branches stay (operator dumps identical; the probes still differ by
+//!   2e-4…1e-1, the order of the element's and the branches' updates is
+//!   not reproduced, design §5.16.3).
+//!   Dispersive poles at a sheet edge's midpoint have no effect (the
+//!   poles of the media the sheet wins over are dropped). Edges on the
+//!   outer mesh planes are left to the boundary.
 //!
 //! The time step openEMS uses ignores the sheets; ems resolves it before
 //! the sheet capacitances are set and pins it.
@@ -245,23 +261,21 @@ pub(super) struct Emulation {
 }
 
 /// Whether the sheet `name` contains `p` (drawing units, in the grid's
-/// coordinates `cs`) and wins the priority there (ties go to the sheet).
-/// `wrap`: on cylindrical grids, whether an `α` past 2π may also match
-/// as `α − 2π` ([`alpha_in`]).
+/// coordinates `cs`) and wins the priority there over every material,
+/// metal and other sheet containing it (ties go to the property defined
+/// first; lumped elements do not count). `wrap`: on cylindrical grids,
+/// whether an `α` past 2π may also match as `α − 2π` ([`alpha_in`]).
 fn sheet_at(model: &ContinuousStructure, cs: CoordSystem, name: &str, p: Vec3, wrap: bool) -> bool {
-    let hits = model.properties_at(p, cs, TypeMask::PHYSICAL);
-    let Some(top) = hits.first() else {
-        return false;
-    };
-    let prio = top.primitive.priority;
-    // The sheet wins ties.
-    hits.iter()
-        .take_while(|h| h.primitive.priority == prio)
-        .any(|h| {
-            h.property.name == name
-                && matches!(h.property.kind, PropertyKind::ConductingSheet(_))
-                && (cs == CoordSystem::Cartesian || alpha_in(model, h.primitive, p[1], wrap))
+    let is_sheet = |h: &csx::Hit<'_>| matches!(h.property.kind, PropertyKind::ConductingSheet(_));
+    model
+        .properties_at(p, cs, TypeMask::PHYSICAL)
+        .iter()
+        .filter(|h| !matches!(h.property.kind, PropertyKind::LumpedElement(_)))
+        // A sheet primitive whose α range misses `p` does not contain it.
+        .find(|h| {
+            !is_sheet(h) || cs == CoordSystem::Cartesian || alpha_in(model, h.primitive, p[1], wrap)
         })
+        .is_some_and(|h| is_sheet(h) && h.property.name == name)
 }
 
 /// openEMS's azimuth test of a cylindrical box (module docs): `α` within

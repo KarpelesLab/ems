@@ -269,3 +269,19 @@ fn mur_face_hold() {
 fn lumped_at_pmc() {
     case("rs_55", 2e-5, 2e-5);
 }
+
+/// A conducting sheet touching a dielectric of equal priority defined
+/// before it: the dielectric wins the sheet edges at its midpoints (ties
+/// go to the property defined first); a Drude box, a lumped port.
+/// 4.6e-7…2.1e-5 (was 6.1e-3…9.8e-3).
+#[test]
+fn sheet_material_tie_order() {
+    case("rs_152", 1e-4, 1e-4);
+}
+
+/// A conducting sheet of higher priority through a metal box: its edges
+/// in the metal are sheet edges, not PEC. Exact (dumps were 1.3e-3).
+#[test]
+fn sheet_over_metal() {
+    case("rs_63", 1e-6, 1e-5);
+}

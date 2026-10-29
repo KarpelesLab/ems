@@ -1735,6 +1735,7 @@ pub fn compile(
     if fdtd.get_openems_run() {
         openems::thin_metal_priority(model, mg.dims, &mut mg.pec);
         openems::lumped_over_metal(&mut mg);
+        openems::sheet_over_metal(model, &mut mg);
         openems::openems_sigma_m(model, &mut mg);
     }
     let node_map = NodeMap::new(grid.nodes());
@@ -1871,7 +1872,7 @@ pub fn compile(
     // scheme; design §5.16.12).
     let openems_poles =
         fdtd.get_openems_run() && opts.dispersive_scheme == DispersiveScheme::Leapfrog;
-    let (mut dispersive, dispersive_openems) = dispersive::dispersive_poles(
+    let (mut dispersive, mut dispersive_openems) = dispersive::dispersive_poles(
         model,
         &node_map,
         &materials,
@@ -1916,7 +1917,7 @@ pub fn compile(
     let mut timestep = fdtd.engine_timestep();
     let MaterialGrid {
         mut excitations,
-        lumped,
+        mut lumped,
         sheets,
         ..
     } = mg;
@@ -1952,6 +1953,32 @@ pub fn compile(
                  (openEMS's rule)",
                     emu.pec
                 ));
+            }
+            // openEMS's sheet edges keep the sheet's circuit: the other
+            // lumped elements and dispersive poles there have no effect
+            // (`compile::openems_sheet`).
+            let on_sheet: std::collections::HashSet<(Axis, [usize; 3])> =
+                emu.edges.iter().map(|&(a, p, _)| (a, p)).collect();
+            if !on_sheet.is_empty() {
+                // An element with an inductor or in series stays: openEMS
+                // installs it over the sheet's circuit.
+                let branch = |le: &LumpedEdge| {
+                    le.le_type == Some(csx::properties::LumpedElementType::Series) || !le.l.is_nan()
+                };
+                let before = lumped.len();
+                lumped.retain(|le| branch(le) || !on_sheet.contains(&node_map.edge(le.edge)));
+                if lumped.len() < before {
+                    warnings.push(format!(
+                        "{} lumped-element edge(s) on conducting-sheet edges ignored (openEMS's \
+                         sheet keeps its edges)",
+                        before - lumped.len()
+                    ));
+                }
+                let electric = |f: crate::engine::dispersive::Field, a, p| {
+                    f == crate::engine::dispersive::Field::Electric && on_sheet.contains(&(a, p))
+                };
+                dispersive.retain(|e| !electric(e.field, e.axis, e.node));
+                dispersive_openems.retain(|e| !electric(e.field, e.axis, e.node));
             }
             (emu.rest, emu.edges, emu.branches, emu.seam_branches)
         } else {
