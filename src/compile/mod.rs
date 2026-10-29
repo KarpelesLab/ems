@@ -831,11 +831,24 @@ impl Compiled {
             {
                 engine.add_operator(crate::engine::cylindrical::OpenemsAxisSeam);
             }
-            let keep = self
+            let mut keep: std::collections::HashSet<(bool, Axis, usize)> = self
                 .openems_sheets
                 .iter()
-                .map(|&(a, p, _)| (a, self.grid.index(p)))
+                .map(|&(a, p, _)| (false, a, self.grid.index(p)))
                 .collect();
+            // openEMS writes a lumped element's E edges after its PMC
+            // walls, and the H edge of the same direction and node of an
+            // element with an inductor or in series (black box, design
+            // §5.16.3).
+            for le in &self.sources.lumped {
+                let (a, p) = self.node_map.edge(le.edge);
+                let i = self.grid.index(p);
+                keep.insert((true, a, i));
+                let series = le.le_type == Some(csx::properties::LumpedElementType::Series);
+                if series || !le.l.is_nan() {
+                    keep.insert((false, a, i));
+                }
+            }
             pmc_half_cell(engine, &self.faces, &keep);
             let upper: Vec<Face> = self
                 .mur
@@ -1133,15 +1146,17 @@ fn map_boundaries(fdtd: &Fdtd) -> (FaceConditions, AbsorbingFaces) {
 /// H layer, so this only removes the fields (and excitations, lumped
 /// elements, probe contributions) on the face outside openEMS's magnetic
 /// wall. Not on the faces of a cylindrical grid that are not boundaries
-/// (the axis, the α faces of a closed azimuth). The H dual edges
-/// `(axis, index)` in `keep` stay: openEMS keeps the H edge of the same
-/// direction and node as a conducting-sheet E edge (black box,
-/// `--debug-operator` of sheets ending in and before the last cell of a
-/// PMC face, design §5.16.13).
+/// (the axis, the α faces of a closed azimuth). The edges `(E, axis,
+/// index)` in `keep` stay (`E` false for H dual edges): openEMS keeps the
+/// H edge of the same direction and node as a conducting-sheet E edge
+/// (black box, `--debug-operator` of sheets ending in and before the last
+/// cell of a PMC face, design §5.16.13), and the E edges of a lumped
+/// element and, for an element with an inductor or a series element, the
+/// H edges of the same direction and node (design §5.16.3).
 fn pmc_half_cell(
     engine: &mut Engine,
     faces: &FaceConditions,
-    keep: &std::collections::HashSet<(Axis, usize)>,
+    keep: &std::collections::HashSet<(bool, Axis, usize)>,
 ) {
     let grid = engine.grid();
     let n = grid.nodes();
@@ -1184,7 +1199,7 @@ fn pmc_half_cell(
                             continue;
                         }
                         let idx = (i * n[1] + j) * n[2] + k;
-                        if !e_side && keep.contains(&(a, idx)) {
+                        if keep.contains(&(e_side, a, idx)) {
                             continue;
                         }
                         c0[idx] = 0.0;

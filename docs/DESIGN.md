@@ -4000,6 +4000,24 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   equal to and below the metal's — all bit-identical, were 0.06…2;
   `rs_157` 1.2…2.0 → exact, and the sweep's seeds 85 (3e-3) and 185
   (0.99, the "slow growth") agree too).
+- **Lumped elements at PMC faces** (wave 19): openEMS writes a lumped
+  element's edges after its PMC walls (§5.16.1: the tangential H of the
+  dual layer next to the face and the tangential E on it are zeroed). The
+  element's E edges keep their medium (an element reaching the face
+  plane spreads over those edges too: a C box over the last cell, with
+  caps, was 0.99 off), and an element with an inductor or a series
+  element also keeps the H edge of its direction and node (R, C, R‖C do
+  not), as for conducting-sheet edges (§5.16.13). `--debug-operator`
+  dumps and probe files of 144 elements in, next to and on both PMC
+  faces (R, C, L, R‖L, R‖L‖C, series R, R‖L, LC; caps on and off): all
+  bit-identical or at the round-off of the inductor and series updates
+  (≤ 1.3e-5), were up to 1 (`compile::pmc_half_cell`). Seed 55 (the
+  "R‖L where openEMS keeps a few % of the capacitance") was this: its
+  element sits in the last cell before a PMC face; `rs_55` (cut to 320
+  steps) 4.7e-4…1.8e-2 → 1e-6…4e-6. The full 600 steps still differ:
+  the element (9 % of its capacitance left by openEMS's limit) grows
+  unstably in both codes at the same rate, seeded by the round-off of
+  the inductor update.
 
 Not resolved (18 of 230): series elements (9 with an excitation over a
 csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an

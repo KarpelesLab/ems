@@ -260,3 +260,12 @@ fn lumped_over_metal() {
 fn mur_face_hold() {
     case("rs_162", 1e-6, 1e-4);
 }
+
+/// An R‖L element in the last cell before a PMC face (cut to 320 steps:
+/// openEMS's capacitance limit makes it grow unstably later, in both
+/// codes): openEMS keeps the H edge of the element's direction and node
+/// in the PMC layer it otherwise zeroes. 1e-6…4e-6 (was 4.7e-4…1.8e-2).
+#[test]
+fn lumped_at_pmc() {
+    case("rs_55", 2e-5, 2e-5);
+}
