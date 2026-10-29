@@ -244,3 +244,11 @@ fn series_rlc_columns() {
 fn sheet_at_mur_lines() {
     case("rs_116", 1e-6, 1e-4);
 }
+
+/// A lumped capacitor with caps over a metal sheet of lower priority, an
+/// H source inside it: the element wins its edges over the metal (at any
+/// priority) and its caps span its whole box. Exact (was 1.2…2.0).
+#[test]
+fn lumped_over_metal() {
+    case("rs_157", 1e-6, 1e-4);
+}

@@ -1,0 +1,13 @@
+# openEMS reference outputs for tests/openems_rsweep.rs; regenerate with
+# scripts/openems-oracle/gen-rsweep.sh rs_157
+oracle revision:
+  openEMS-Project be30220 (2026-10-21)
+   openEMS ec4d2db (v0.37.0-32)
+   CSXCAD 626b99f (v0.7.0-8)
+   fparser 4b9c845
+command: openEMS model.xml --numThreads=1 --engine=basic 
+dt: 1.45485e-12
+steps: 1200
+end: 
+keep: e0 u1 h2 h3 h4
+args: 

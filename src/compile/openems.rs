@@ -68,6 +68,19 @@
 //! elements and conducting sheets do not count). [`thin_metal_priority`]
 //! clears those edges.
 //!
+//! # Lumped elements in metal
+//!
+//! An edge of a lumped element is the element's whatever metal lies
+//! there: openEMS v0.37 installs the element on its edges after the metal,
+//! at any priority (black box, `--debug-PEC` and probe files: R and C
+//! elements with and without caps crossing a metal sheet, a metal line
+//! and a solid metal box, element priority above, equal to and below the
+//! metal's; random sweep seed 157). Only the element's own edges (along
+//! its direction) are affected; the metal's other edges stay PEC, and the
+//! caps span the element's whole box. [`lumped_over_metal`] clears the PEC
+//! flag of those edges, which then take the medium the metal hides (see
+//! below) before the element replaces it.
+//!
 //! # Material samples in metal
 //!
 //! csx leaves the material samples that fall into metal out of an edge's
@@ -162,6 +175,21 @@ pub(crate) fn thin_metal_priority(
                     }
                 }
             }
+        }
+    }
+    cleared
+}
+
+/// Clears the PEC flag of every lumped-element edge (see the
+/// [module docs](self#lumped-elements-in-metal)); returns the number of
+/// edges cleared.
+pub(crate) fn lumped_over_metal(mg: &mut MaterialGrid) -> usize {
+    let mut cleared = 0;
+    for le in &mg.lumped {
+        let pec = &mut mg.pec[le.edge.dir][le.edge.index];
+        if *pec {
+            *pec = false;
+            cleared += 1;
         }
     }
     cleared

@@ -3984,6 +3984,17 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   ending at every line near Mur, `PML_3` and PMC faces; `rs_116` was
   unstable).
 - the H normal to an upper PML face (above).
+- **Lumped elements in metal** (wave 19): openEMS installs a lumped
+  element on its edges after the metal, at any priority: an element edge
+  inside a metal sheet, line or solid box is the element's (with the
+  medium the metal hides), the metal's other edges stay PEC and the caps
+  span the element's whole box; ems dropped those edges as shorted
+  (`compile::openems::lumped_over_metal`; `--debug-PEC` and probe files
+  of 48 hand-written variants — R and C, caps on and off, a sheet on
+  and inside the element, a line, a box, the element's priority above,
+  equal to and below the metal's — all bit-identical, were 0.06…2;
+  `rs_157` 1.2…2.0 → exact, and the sweep's seeds 85 (3e-3) and 185
+  (0.99, the "slow growth") agree too).
 
 Not resolved (18 of 230): series elements (9 with an excitation over a
 csheet-sided box, 3.6; 61, 101, 160, 190, 219, 225 with or without an

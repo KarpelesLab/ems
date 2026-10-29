@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, seed 157; a lumped capacitor with caps over a metal sheet of lower priority (the element wins its edges at any priority); tags: PEC PMC PML drude graded hsource lumpedC metalsheet -->
+<openEMS>
+  <FDTD NumberOfTimesteps="1200" endCriteria="1e-30">
+    <Excitation Type="0" f0="6.55648e+09" fc="3.5227e+09"/>
+    <BoundaryCond xmin="PMC" xmax="PML_4" ymin="PML_4" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LorentzMaterial Name="drude0"><Property Epsilon="1.57885" EpsilonPlasmaFrequency="3.37759e+09" EpsilonRelaxTime="2.00046e-09"/><Primitives><Box Priority="2"><P1 X="11.25" Y="12.75" Z="7"/><P2 X="15.75" Y="18" Z="12"/></Box></Primitives></LorentzMaterial>
+      <Metal Name="pec0"><Primitives><Box Priority="3"><P1 X="7.125" Y="20.25" Z="4"/><P2 X="7.125" Y="22.5" Z="8"/></Box></Primitives></Metal>
+      <LumpedElement Name="le0" Direction="2" Caps="1" C="2.46585e-13"><Primitives><Box Priority="5"><P1 X="4.5" Y="20.25" Z="4"/><P2 X="7.125" Y="22.5" Z="6"/></Box></Primitives></LumpedElement>
+      <Excitation Name="src" Type="2" Excite="0,1,-0.34597"><Primitives><Box Priority="0"><P1 X="5.625" Y="21" Z="5"/><P2 X="7.125" Y="22.5" Z="6"/></Box></Primitives></Excitation>
+      <ProbeBox Name="e0" Type="2"><FD_Samples>6.55648e+09,7.86778e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="10.325" Y="22.5" Z="1"/><P2 X="10.325" Y="22.5" Z="1"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="9" Y="13.5" Z="9"/><P2 X="10.125" Y="13.5" Z="9"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h2" Type="3"><Primitives><Box Priority="0"><P1 X="8.45" Y="22.5" Z="11"/><P2 X="8.45" Y="22.5" Z="11"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h3" Type="3"><Primitives><Box Priority="0"><P1 X="7.125" Y="12.75" Z="9"/><P2 X="7.125" Y="12.75" Z="9"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h4" Type="3"><FD_Samples>6.55648e+09,7.86778e+09</FD_Samples><Primitives><Box Priority="0"><P1 X="5.625" Y="11.625" Z="11"/><P2 X="5.625" Y="11.625" Z="11"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,0.75,1.5,3,4.5,5.625,7.125,8.25,9,10.125,11.25,13.5,14.25,15,15.75</XLines>
+      <YLines>0,1.5,3.75,6,7.875,8.625,10.125,11.625,12.75,13.5,15.75,18,20.25,21,22.5,24</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

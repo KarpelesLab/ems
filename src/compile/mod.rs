@@ -1719,6 +1719,7 @@ pub fn compile(
     }
     if fdtd.get_openems_run() {
         openems::thin_metal_priority(model, mg.dims, &mut mg.pec);
+        openems::lumped_over_metal(&mut mg);
         openems::openems_sigma_m(model, &mut mg);
     }
     let node_map = NodeMap::new(grid.nodes());
