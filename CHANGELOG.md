@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6](https://github.com/KarpelesLab/ems/compare/v0.0.5...v0.0.6) - 2026-11-01
+
+### Other
+
+- Design status: wave 20 (lumped element order, energy overflow, alpha index ranges of metal, poles and sheets)
+- openEMS files: metal, poles and sheets follow the alpha index ranges; probes, last alpha line, sheet junctions
+- Sweep tools: debug dump comparison, first field difference, random cylindrical sweep
+- openEMS files: lumped branches act before poles and sheet branches; the inductor's f32 update; energy with H sources and f32 overflow
+
 ## [0.0.5](https://github.com/KarpelesLab/ems/compare/v0.0.4...v0.0.5) - 2026-10-29
 
 ### Other
