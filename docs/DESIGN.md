@@ -3922,8 +3922,7 @@ Fixed in ems by the sweep (each was 2–270 % off, or did not run):
   11, … instead of every second line); raw H/B dumps snap their box to
   the dual lines (openEMS: H at 5.5 … 12.5 for a box 6 … 12).
 
-**Randomized differential sweep** (wave 14; `scratchpad` generator, not
-committed: per seed a random graded mesh of 10–16 cells per axis, each
+**Randomized differential sweep** (wave 14; `scripts/openems-oracle/tools/rsweep.py`: per seed a random graded mesh of 10–16 cells per axis, each
 face PEC, PMC, Mur or `PML_3…6`, up to three material boxes (ε, μ, κ,
 σ_m, Drude, Lorentz), metal boxes and sheets on and off the mesh,
 conducting sheets, up to two lumped elements (R, C, R‖C, R‖L, series
@@ -4184,8 +4183,8 @@ v0.37.0-19-gc3a956b, CSXCAD v0.7.0-1) until wave 14, and since then with
 be30220 (2026-10-21; openEMS v0.37.0-32-gec4d2db, CSXCAD v0.7.0-8; commit
 titles "dependencies: no CGAL, VTK only for AppCSXCAD, zlib", "update
 submodules", "Windows package: both GPU plugins"). Both were built side by
-side and run on every fixture model, the 169 feature-sweep models of the
-scratch generator and the 230 models of the randomized sweep (seeds
+side and run on every fixture model, the 169 feature-sweep models
+(`scripts/openems-oracle/tools/features.py`) and the 230 models of the randomized sweep (seeds
 0…229), all single-threaded `--engine=basic`; the outputs were compared
 file by file (black box only: `--help`, console, files).
 

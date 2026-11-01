@@ -163,3 +163,19 @@ command line in the case's `meta.txt`:
   binary on them): it copies back the files on the `keep:` line of
   `meta.txt` and records the time step, the number of steps run and the
   end-criterion line of the console.
+
+## Sweep tools (`tools/`)
+
+Differential sweeps against the black-box oracle. They need the oracle and a
+release build of `ems` with HDF5 (`cargo build --release --features hdf5
+--bin ems`), and are not run by the tests or CI.
+
+- `tools/features.py WORK` writes the feature-coverage models and
+  `tools/sweep.py WORK out.txt target/release/ems [ems_only]` runs them
+  (`compare.py` compares one case; DESIGN §5.16.3). Later additions to the
+  sweep exist only as the `sweep_*` fixtures: copy their `model.xml` into
+  `WORK/cases/<name>/` to include them.
+- `EMS=target/release/ems tools/rsweep.py OUT SEED0 SEED1 [--only-gen]` generates and runs
+  the random models (`both.py` runs the two codes, `cmpdir.py` compares
+  them). A seed always gives the same model. Seeds 0…559 have been run; the
+  `rs_*` fixtures are those models with their full-field dumps removed.
