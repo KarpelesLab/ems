@@ -152,7 +152,7 @@ fn h_row_energy<const COMMIT: bool, const OE: bool>(
         };
         *acc += if OE {
             let w = if k == 0 || k + 1 == n { ends } else { 1.0 };
-            w * (new as f64 * new as f64)
+            w * oe_square(new as f64)
         } else {
             weight(da[k], old as f64 * new as f64, db[k])
         };
@@ -195,6 +195,20 @@ fn hrow<const ENERGY: bool, const COMMIT: bool, const OE: bool>(
     }
 }
 
+/// A term of openEMS's energy measure: its squares overflow in `f32`
+/// (black box, design §5.16.3: an unstable run stops at the first check
+/// where a field passes `√FLT_MAX`, with the energy NaN and the fields
+/// finite), the sum itself is more accurate than `f32`.
+#[inline(always)]
+fn oe_square(x: f64) -> f64 {
+    let s = x * x;
+    if (s as f32).is_infinite() {
+        f64::INFINITY
+    } else {
+        s
+    }
+}
+
 /// Adds `(1 + ca)/cb · u²` of one row to the plane accumulators,
 /// skipping `cb = 0` (PEC and padding edges), or with `OE` plain `u²`
 /// (every edge). Entry `k` of the row has
@@ -210,7 +224,7 @@ fn e_energy_row<const OE: bool>(acc: &mut [f64; 4], r: usize, u: &[f32], ca: &[f
     let one = |k: usize, acc: &mut f64| {
         let x = u[k] as f64;
         *acc += if OE {
-            x * x
+            oe_square(x)
         } else {
             weight(ca[k], x * x, cb[k])
         };

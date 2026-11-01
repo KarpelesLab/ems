@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, hand-written: an unstable inductor on a conducting sheet; openEMS stops when a square in its energy measure overflows f32 -->
+<openEMS>
+  <FDTD NumberOfTimesteps="250" endCriteria="1e-30" TimeStep="1e-09">
+    <Excitation Type="0" f0="15000000.0" fc="15000000.0"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+<Excitation Name="s" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="2" Y="3" Z="3"/><P2 X="2" Y="3" Z="4"/></Box></Primitives></Excitation><ConductingSheet Name="cs" Conductivity="1000" Thickness="0.001"><Primitives><Box Priority="4"><P1 X="3" Y="2" Z="3"/><P2 X="3" Y="4" Z="4"/></Box></Primitives></ConductingSheet><LumpedElement Name="le" Direction="2" Caps="0" L="2e-07"><Primitives><Box Priority="5"><P1 X="3" Y="3" Z="3"/><P2 X="3" Y="3" Z="4"/></Box></Primitives></LumpedElement>
+
+      <ProbeBox Name="u0" Type="0"><Primitives><Box Priority="0"><P1 X="3" Y="3" Z="3"/><P2 X="3" Y="3" Z="4"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="1" Y="1" Z="3"/><P2 X="1" Y="1" Z="4"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="1" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6</XLines><YLines>0,1,2,3,4,5,6</YLines><ZLines>0,1,2,3,4,5,6</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

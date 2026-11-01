@@ -338,11 +338,10 @@ fn lumped_rc() {
 
 #[test]
 fn lumped_l() {
-    // openEMS's explicit inductor update (ems now uses it for files). The
-    // voltage over the inductor is ~2e-5 of the field around it (the
-    // inductor shorts the edge), so the f32 round-off of the neighbouring
-    // fields limits `ut` to ~5e-4.
-    Check::new("lumped_l").per_probe(&[("ut", 1.5e-3)]).check();
+    // openEMS's explicit inductor update in its `f32` arithmetic (design
+    // §5.16.3): the inductor voltage, ~2e-5 of the field around it, is
+    // exact too (was 3.1e-4).
+    Check::new("lumped_l").tol(1e-6).check();
 }
 
 #[test]

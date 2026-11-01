@@ -1729,6 +1729,65 @@ pub(crate) fn with_lookahead_currents<R>(
     engine: &Engine,
     f: impl FnOnce(&dyn Fn(Axis, [usize; 3]) -> f64) -> R,
 ) -> Option<R> {
+    lookahead_currents(engine, true, f)
+}
+
+/// What H sources add to openEMS's energy measure (design §5.8, §5.16.3):
+/// `μ0·Σ w·((k + s)² − k²)` over their dual edges, with `k` the kernel's
+/// look-ahead and `k + s` the true `i^{n+½}` the sources produce, `w` the
+/// weight of the edge in [`EnergyMeasure::OpenEms`](super::EnergyMeasure)
+/// (4 on the outer planes normal to the edge on Cartesian grids). 0 without
+/// H sources, or where the look-ahead is unavailable.
+pub(crate) fn lookahead_source_energy(engine: &Engine) -> f64 {
+    let ctx = super::StepContext {
+        step: engine.timestep(),
+        dt: engine.dt(),
+        grid: engine.grid(),
+        coefficients: &engine.coefficients(),
+    };
+    let mut edges: Vec<(Axis, [usize; 3])> = engine
+        .ops
+        .iter()
+        .flat_map(|r| r.op.lookahead_sources(&ctx))
+        .map(|(axis, node, _, _)| (axis, node))
+        .collect();
+    if edges.is_empty() {
+        return 0.0;
+    }
+    edges.sort_unstable_by_key(|&(axis, node)| (axis.index(), node));
+    edges.dedup();
+    let g = engine.grid();
+    let n = g.nodes();
+    let weight = |c: Axis, p: [usize; 3]| {
+        let k = c.index();
+        if !g.is_cylindrical() && (p[k] == 0 || p[k] + 1 == n[k]) {
+            4.0
+        } else {
+            1.0
+        }
+    };
+    let side = |sources: bool| {
+        lookahead_currents(engine, sources, |get| {
+            edges
+                .iter()
+                .map(|&(c, p)| get(c, p).powi(2) * weight(c, p))
+                .collect::<Vec<f64>>()
+        })
+    };
+    let (Some(with), Some(without)) = (side(true), side(false)) else {
+        return 0.0;
+    };
+    let mu0 = crate::constants::MU0;
+    mu0 * with.iter().zip(&without).map(|(w, k)| w - k).sum::<f64>()
+}
+
+/// [`with_lookahead_currents`], with or without the H sources of the next
+/// step.
+fn lookahead_currents<R>(
+    engine: &Engine,
+    with_sources: bool,
+    f: impl FnOnce(&dyn Fn(Axis, [usize; 3]) -> f64) -> R,
+) -> Option<R> {
     let g = engine.grid();
     // The axis and the seam of a cylindrical grid merge E copies only;
     // their H update is the plain one.
@@ -1765,9 +1824,11 @@ pub(crate) fn with_lookahead_currents<R>(
     };
     type SourceMap = std::collections::HashMap<(Axis, [usize; 3]), Vec<(f32, bool)>>;
     let mut sources = SourceMap::new();
-    for r in &engine.ops {
-        for (axis, node, v, hard) in r.op.lookahead_sources(&ctx) {
-            sources.entry((axis, node)).or_default().push((v, hard));
+    if with_sources {
+        for r in &engine.ops {
+            for (axis, node, v, hard) in r.op.lookahead_sources(&ctx) {
+                sources.entry((axis, node)).or_default().push((v, hard));
+            }
         }
     }
     let get = |c: Axis, p: [usize; 3]| -> f64 {

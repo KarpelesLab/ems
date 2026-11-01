@@ -3937,7 +3937,8 @@ maximum while the whole field agreed to 1e-6); runs where both codes
 diverge count as agreeing. 230 models: before 77 of the first 100 and,
 after the fixes of the first 130, 90 of 100 fresh ones agreed to 1e-4;
 212 of 230 after wave 14 (19 of them unstable in both codes, from R‖L
-elements with openEMS's capacitance limit); wave 19: 547 of 560 (below). Found and fixed (files; each with a
+elements with openEMS's capacitance limit); wave 19: 547 of 560; wave 20:
+555 of 560, 196 of 200 fresh seeds (below). Found and fixed (files; each with a
 fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
 
 - **Thin metal under materials**: a material of higher priority (or
@@ -4036,9 +4037,7 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
     with an inductor or a series element is installed over the sheet's
     circuit (the sheet's capacitance is the medium it replaces or
     limits, §5.16.1, the sheet's conductance is dropped, its branches
-    stay). The operator dumps are openEMS's; the probes of those
-    elements still differ by 2e-4 (R‖L‖C) … 1e-1 (series C): the order
-    of the element's and the sheet branches' updates is not reproduced.
+    stay). The element acts before the branches (wave 20, below).
   The 30 priority models agree bit for bit (were up to 0.87);
   `rs_152` (a sheet touching a dielectric defined before it) 6e-3…1e-2
   → 5e-7…2e-5, `rs_63` (a sheet through a metal box) 1.3e-3 → exact,
@@ -4063,8 +4062,8 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   Debye medium; a lossless C cancels out of the Lorentz coefficients,
   not out of the Debye ones) (`Dispersive::rebase_openems`, called by
   `Simulation` after the lumped elements). Elements with an inductor or
-  in series still differ (R‖L‖C 2e-2, series R 4e-2 in a Drude box):
-  neither the medium's nor the element's `vi` reproduces them. `rs_51`
+  in series keep the medium's coefficients and act before the poles
+  (wave 20, below). `rs_51`
   (resistors in Lorentz media next to a sheet) 2.6e-5…2.4e-4 → exact,
   `rs_51_debye` (hand-written, C in a Debye box) 0.59 → exact.
 - **Overlapping excitations** (wave 19): openEMS gives each edge to one
@@ -4088,6 +4087,92 @@ fixture `rs_<seed>`, `gen-rsweep.sh`, `tests/openems_rsweep.rs`):
   Mur and PML faces, above): a soft E source on the face plane drives
   the face's tangential E, and ems updated that H (seed 451, `rs_451`
   with a raw H dump of the last cells: 1.8 → 8.9e-9).
+- **The order on an element's edge** (wave 20; 1 m cells, one element edge,
+  per-step dumps, `--debug-operator`; `LumpedElement::openems_order`,
+  `Dispersive::defer_openems`, `OpenEmsSheetBranches::split_off`). With
+  `u* = f32(vv·u) + f32(vi·∮i)` known from the dumps, a fit of the observed
+  correction `R_n = u* − u^{n+1}` against `R_{n−1}, R_{n−2}, u^n, u^{n−1}`
+  on an element with L and C in a Drude medium has poles at the pole's `a`
+  and at 1, but the residue at 1 is `G·(1 + B/(1 − a))`, 1.2463 times the
+  inductor's gain `G`, with `B/(1 − a)` the pole's DC gain: the inductor
+  integrates the voltage *before* the pole's correction. The predicted
+  `u^{n−1}` coefficient `−(B + a·G − G·B)` is −0.24681 and −0.16855 (fits
+  −0.24682, −0.16855). So the order on an edge is: kernel, element, poles or
+  sheet branches, sources, and the element is driven by the voltage it left
+  behind. A soft source's `V^{n−1}`, which ems used to subtract from the
+  drive (`branch_drive_source`), is the same rule. The poles and the sheet
+  branches keep the medium's coefficients and are driven by the final `u^n`.
+  Files now run in this order: `ems` registers the poles and sheet
+  branches of those edges after the elements.
+- **openEMS's inductor, in `f32`** (wave 20). On the same dumps every step
+  fits
+  ```text
+  S ← f32(S + f32(K·u_L)),  u' = f32(u* − S),  u_L ← u'
+  K = f32(f32(dt/L_e)·f32(dt/(C + G·dt/2)))
+  ```
+  with `C`, `G` in `f64` and the element's own: `C_e` or the unrounded limit
+  of §5.16.1 (without a capacitor; the medium's where the limit does not
+  apply), and `G = 1/R_e` or 0, *not* the medium's conductance that `vv`,
+  `vi` include. That last point is a physics difference, not round-off: L
+  and C on a lossy medium were 0.2 off (`K` 0.25 against `vi·dt/L` = 0.2).
+  Evidence: `K` is pinned to one `f32` value per model (a ±6-ulp scan); of
+  some 200 rounding placements and a scan over combinations of the inputs'
+  rounding errors, this `K` reproduces all 32 random elements (`dt`, `L`,
+  `C`, `R`; the next best 24); 17 of 18 random elements without a capacitor take
+  the unrounded limit (`f32` limit 13). In media, 14 of 16 random models are
+  exact for all 249 steps with the order above, using approximate medium
+  coefficients; the other two fail at steps 12 and 99 (not followed up;
+  `ems`'s own medium coefficients are exact on the fixtures below). Element
+  values were checked on a single edge; several edges and graded meshes
+  use the per-edge `L_e` without further measurement.
+- **Series resistors are branches** (wave 20): on files a series R is no
+  longer folded into the edge, so `vv = 1` like openEMS's (§5.16.9) and it
+  follows the order above (series R in Drude, Lorentz, on a sheet: 6.2e-3,
+  3.2e-3, 5.0e-5 → 2.3e-7, 3.4e-7, 2.1e-7, per-step E on one edge).
+- **H sources in the energy** (wave 20): openEMS's measure holds the H
+  source's latest value, ems's look-ahead left it out
+  (`dump::lookahead_source_energy`). That matters where nothing else is
+  there: a soft H source inside metal integrates the pulse on its own edges,
+  and that integral passes near 0 at the check after half the excitation's
+  length. Seeds 443, 535: stop at 484, 425 (were 855, 475), `rs_443` prints
+  −48.5675 dB like openEMS. Seed 535 is 0.0009 dB off (−40.0487 / −40.0496).
+- **The energy overflows in `f32`** (wave 20): openEMS squares in `f32`, and
+  an unstable run stops at the first check where a field passes
+  `√FLT_MAX` = 1.84e19, printing `-nan` dB, with every field still finite
+  (`kernel::oe_square`; one per-step model pins the threshold only to
+  `u` between 4e18 and 2.9e20; the stop steps of the seeds below fit it).
+  This was the "openEMS diverges, ems does not" of seeds 1, 371, 480, 521,
+  555 and fresh 594: the fields were growing alike. Now the same stop step
+  (`rs_energy_overflow`; before this rule seed 1's dumps already agreed to
+  2e-8 or better over 1056 steps of growth to 1e24).
+
+Measured on single edges with the final code (relative L2 of the per-step
+E), parallel elements with an inductor are exact except in Debye media:
+
+| Element | vacuum | lossy | Drude | Lorentz | Debye | sheet |
+|---|---|---|---|---|---|---|
+| L, R+L, L+C, R+L+C (parallel) | 0 | 0 | 0 | 0 | 1.7e-3…8.3e-3 | 0 |
+| R, L, RL, RLC (series) | 2.5e-7…3.0e-7 | 2.1e-7…1.0e-6 | 2.3e-7…4.4e-7 | 3.0e-7…4.1e-7 | 5.8e-3…9.8e-3 | 2.1e-7…2.5e-7 |
+
+Before, the fixtures `rs_l_order` and `rs_s_order` (hand-written, one
+element in each of Drude, Lorentz, sheet, lossy) were up to 7.2e-2 and
+9.3e-2, now exact and ≤ 5.9e-5. Existing fixtures: `lumped_l` 3.1e-4 → 0
+(its inductor voltage had been attributed to neighbouring round-off),
+`rs_55` 3.9e-6 → 0, `rs_1` 1.6e-5 → 0, `rs_0` 1.7e-6 → 0;
+`lumped_graded_rl` 1.9e-5 → 1.3e-5, `rs_18` 5.7e-5 → 4.7e-5 and
+`lumped_exc` 1.0e-5 → 9.6e-6 stay inexact; an `f32` addition of the
+Thevenin source on branch elements did not help (1.3e-5 → 1.8e-5,
+9.6e-6 → 8.9e-6) and is not used.
+
+Debye media are not reproduced for these elements: the order above is the
+best arrangement measured (poles before the element, or the final `vi` in
+the Debye coefficients, are no better, 1.9e-3…1.2e-2), and an offline search
+of update orders did not reproduce even ems's own result, so it says nothing.
+The random generator has no Debye media.
+
+Wave 20 sweep (`tools/rsweep.py`, area W; every seed with the final binary,
+`ems --numThreads=1`): seeds 0…559 547 → 555 of 560, fresh seeds 560…759
+191 → 196 of 200.
 
 Wave 19 (area U; the fixes above marked "wave 19"): re-run with the
 same generator and the wave-18 binary (`fba1870`) as the reference,
@@ -4100,21 +4185,27 @@ layer), 51 (resistors in Lorentz media), and 9, 61, 160, 190, 219, 225
 (series elements, now ≤ 1e-4: the sheet and metal rules above, plus
 earlier waves' series work; 71 already agreed).
 
-Not resolved (13 of 560): 101 and 356 (series elements, 4.1e-4 and
-2.8e-4, the series-branch round-off of §5.16.13); 55 (an R‖L element
-left with 9 % of its capacitance grows unstably in both codes at the
-same rate, the round-off of the inductor update seeds it; agrees to
-4e-6 over the first 320 steps, `rs_55`); 1, 278, 371, 480, 521, 555
-(openEMS diverges, ems does not: R‖L elements left with a few % of
-their capacitance or inside a PML layer, §5.16.2 — openEMS's run blows
-up, ems's stays bounded); 443 and 535 (an H source inside metal: every
-probe and dump agrees, but the energy end criterion stops at another
-step, 484 vs 855); 454 (an R‖L element on a Lorentz box next to a
-metal sheet, 1.5e-2) and 507 (an R‖L element on a sheet next to a PMC
-face, 0.93), not analysed; both have inductor elements where the order of the
-inductor update against poles or sheet branches is not reproduced
-(above). Inductor and series elements in dispersive media or on sheets
-are the remaining open item of this area.
+Not resolved (9 of 760):
+
+- 101, 356, 682 (4.1e-4, 2.8e-4, 1.2e-4): the series-branch round-off of
+  §5.16.13.
+- 507, 454, 631 (1.6, 5.5e-4, 8.4e-4): an R‖L element left with 4…10 % of
+  its capacitance grows unstably at the same rate in both codes, seeded by
+  round-off of the rest of the model. Seed 507 agrees to 1e-5 until step 540
+  and its first bit differences (step 11, about 1e-8) are not on the element;
+  in seed 454 the full E and H dumps agree to 3.6e-7 and only weak probes and
+  a line dump differ.
+- 278, 570, 630: an R‖L or series element in or on the lines of an absorbing
+  layer, where openEMS diverges and ems deliberately leaves the element out
+  (§5.16.2, warning).
+
+The metric counts a run as agreeing when both codes diverge, and seven such
+runs have different stop steps: 15, 105, 187, 404, 623, 651, 656 (ems/openEMS
+196/800, 324/1200, 42/600, 68/1200, 990/198, 41/800, 600/612). In five of
+them openEMS runs on to its step limit although its run is unstable; when it
+stops there and when it does not was not measured. Seed 623 (a series element
+at a PML interface) grows much faster in openEMS. Seeds 278, 570, 630 are
+the same family. Their fields are garbage in both codes.
 ems's `--debug-PEC` dump does not list lumped caps (openEMS's does).
 
 Not reproduced (documented differences):
@@ -5564,7 +5655,10 @@ Third round (area P's Debye form, §5.16.12 on P's branch):
 Not implemented: none of these partial forms reproduces a whole run, and
 the sweep cases are long resonant runs where any residual rounding
 difference grows to the observed 1e-5…1e-4. Tolerances of
-`lumped_series_rlc`, `cyl_wrap_lumped`, `rs_1` unchanged.
+`lumped_series_rlc`, `cyl_wrap_lumped` unchanged. Wave 20 found the place of
+the series update in the step and the `f32` form of the parallel inductor
+(§5.16.3), but no new idea for the series update's bits, which was not tried
+again: series elements stay at 2e-7…1e-6 on one edge.
 
 Feature sweep (169 models, fresh be30220 outputs, before → after): 146 →
 146 exact; `sheet_thin_resistive` 1.54e-4 → 1.52e-4 (its operator dump is

@@ -125,6 +125,7 @@
 use super::Engine;
 use super::excite::Amplitude;
 use super::fields::Fields;
+use super::kernel::flush;
 use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
 use crate::axis::Axis;
 use crate::waveform::Waveform;
@@ -338,6 +339,13 @@ struct Branch {
     /// Explicit (leapfrog) inductor update instead of the trapezoidal
     /// branch ([`LumpedElement::explicit_inductor`]).
     explicit: bool,
+    /// openEMS's explicit inductor in `f32`
+    /// ([`LumpedElement::openems_order`]): `K` per edge.
+    oe_k: Vec<f32>,
+    /// State `S` of that update \[V\] per edge.
+    oe_s: Vec<f32>,
+    /// `dt/(C + G·dt/2)` of that update per edge, for `j = S/vi`.
+    oe_vi: Vec<f64>,
 }
 
 /// Recorder of the element's terminal current (see the
@@ -381,6 +389,8 @@ struct Installed {
     vd: Vec<f64>,
     /// Whether the source drives the branch (series topology with branch).
     src_in_branch: bool,
+    /// [`LumpedElement::openems_order`].
+    openems_order: bool,
     branch: Option<Branch>,
     record: Option<CurrentRecord>,
 }
@@ -413,6 +423,7 @@ pub struct LumpedElement {
     record: bool,
     explicit_inductor: bool,
     medium_folded: bool,
+    openems_order: Option<Vec<f64>>,
     state: Option<Installed>,
 }
 
@@ -455,6 +466,7 @@ impl LumpedElement {
             drive_sources: Vec::new(),
             record: false,
             explicit_inductor: false,
+            openems_order: None,
             medium_folded: false,
             state: None,
         }
@@ -506,6 +518,7 @@ impl LumpedElement {
             drive_sources: Vec::new(),
             record: false,
             explicit_inductor: false,
+            openems_order: None,
             medium_folded: false,
             state: None,
         })
@@ -586,10 +599,9 @@ impl LumpedElement {
     /// edge's branch only: from `ū` in a series branch, from `u^n` in an
     /// [explicit inductor](Self::explicit_inductor), from `ū` in a
     /// trapezoidal parallel inductor; folded resistors and capacitors do
-    /// not see it. This is not a circuit element of its own: it exists to
-    /// reproduce openEMS, whose lumped elements are driven by the edge
-    /// voltage without the soft excitation added to it (design §5.16.1).
-    /// Requires a branch (inductor or series RLC).
+    /// not see it. This is not a circuit element of its own: a drive that
+    /// leaves out a soft excitation added to the edge. Requires a branch
+    /// (inductor or series RLC).
     pub fn branch_drive_source(
         mut self,
         weights: Vec<f64>,
@@ -628,6 +640,23 @@ impl LumpedElement {
     /// still use them.
     pub(crate) fn medium_folded(mut self, on: bool) -> Self {
         self.medium_folded = on;
+        self
+    }
+
+    /// openEMS's place for the element's branch in the E update (files;
+    /// black box, design §5.16.3). The branch acts on the kernel result
+    /// before anything else corrects the edge, and is driven by the voltage
+    /// it left behind: poles, sheet branches and sources act later and are
+    /// not part of the drive. An [explicit inductor](Self::explicit_inductor)
+    /// runs openEMS's `f32` update, with `den[e] = C + G·dt/2` of the
+    /// element's own values on edge `e` (not the medium's conductance):
+    ///
+    /// ```text
+    /// S ← f32(S + f32(K·u_L)),  u' = f32(u* − S),  u_L ← u'
+    /// K = f32(f32(dt/L_e)·f32(dt/den))
+    /// ```
+    pub(crate) fn openems_order(mut self, den: Vec<f64>) -> Self {
+        self.openems_order = Some(den);
         self
     }
 
@@ -715,7 +744,7 @@ impl LumpedElement {
         let [_, l, c] = self.present();
         match self.topology {
             Topology::Parallel => l,
-            Topology::Series => l || c,
+            Topology::Series => l || c || self.openems_order.is_some(),
         }
     }
 
@@ -918,6 +947,9 @@ impl LumpedElement {
                 u_prev: vec![0.0; ne],
                 j_avg: vec![0.0; ne],
                 explicit: self.explicit_inductor && self.topology == Topology::Parallel,
+                oe_k: Vec::new(),
+                oe_s: Vec::new(),
+                oe_vi: Vec::new(),
             };
             for &(_, _, br) in &parts {
                 let (r, l, c) = br.unwrap_or((0.0, 0.0, f64::INFINITY));
@@ -925,6 +957,14 @@ impl LumpedElement {
                 b.two_l_dt.push(2.0 * l / dt);
                 b.inv_c.push(inv_c);
                 b.z.push(2.0 * l / dt + r + 0.5 * dt * inv_c);
+            }
+            if let (true, Some(den)) = (b.explicit, &self.openems_order) {
+                for (&(_, _, br), &d) in parts.iter().zip(den) {
+                    let l = br.map_or(f64::INFINITY, |b| b.1);
+                    b.oe_k.push(((dt / l) as f32) * ((dt / d) as f32));
+                    b.oe_vi.push(dt / d);
+                }
+                b.oe_s = vec![0.0; ne];
             }
             b
         });
@@ -954,6 +994,7 @@ impl LumpedElement {
             copies,
             g_src,
             series,
+            openems_order: self.openems_order.is_some(),
             v: vec![0.0; if terms.is_empty() { 0 } else { ne }],
             terms,
             vd: vec![0.0; if drive.is_empty() { 0 } else { ne }],
@@ -1059,7 +1100,9 @@ impl LumpedElement {
     pub(crate) fn pre_e_impl(&mut self, fields: &mut Fields<'_>) {
         let axis = self.axis();
         let Some(s) = &mut self.state else { return };
-        if let Some(b) = &mut s.branch {
+        if let Some(b) = &mut s.branch
+            && !s.openems_order
+        {
             for (u, &p) in b.u_prev.iter_mut().zip(&s.edges) {
                 *u = fields.u.get(axis, p) as f64;
             }
@@ -1100,14 +1143,10 @@ impl LumpedElement {
                 }
             }
         }
-        if active && !s.src_in_branch {
-            for (e, &p) in s.edges.iter().enumerate() {
-                let add = s.cb[e] * s.g_src[e] * s.v[e];
-                if add != 0.0 {
-                    let u = fields.u.get_mut(axis, p);
-                    *u = (*u as f64 + add) as f32;
-                }
-            }
+        // In openEMS's order a resistor's source acts like a soft one, after
+        // the branch.
+        if active && !s.src_in_branch && !s.openems_order {
+            s.add_sources(fields, axis);
         }
         if let Some(b) = &mut s.branch {
             // Series source sits in the branch; parallel source is in the
@@ -1122,11 +1161,25 @@ impl LumpedElement {
                     v_br += s.vd[e];
                 }
                 let u_star = fields.u.get(axis, p) as f64;
+                if !b.oe_k.is_empty() {
+                    let u_l = b.u_prev[e] as f32;
+                    b.oe_s[e] = flush(b.oe_s[e] + flush(b.oe_k[e] * u_l));
+                    let u_new = flush(fields.u.get(axis, p) - b.oe_s[e]);
+                    b.j[e] = f64::from(b.oe_s[e]) / b.oe_vi[e];
+                    b.j_avg[e] = b.j[e];
+                    fields.u.set(axis, p, u_new);
+                    b.u_prev[e] = f64::from(u_new);
+                    continue;
+                }
                 if b.explicit {
                     // `two_l_dt = 2·L_e/dt`: `dt/L_e = 2/two_l_dt`.
                     b.j[e] += 2.0 * (b.u_prev[e] - v_br) / b.two_l_dt[e];
                     b.j_avg[e] = b.j[e];
-                    fields.u.set(axis, p, (u_star - cb * b.j[e]) as f32);
+                    let u_new = (u_star - cb * b.j[e]) as f32;
+                    fields.u.set(axis, p, u_new);
+                    if s.openems_order {
+                        b.u_prev[e] = f64::from(u_new);
+                    }
                     continue;
                 }
                 let k = b.two_l_dt[e] * b.j[e] - b.q[e] * b.inv_c[e] - v_br + 0.5 * b.u_prev[e];
@@ -1137,7 +1190,13 @@ impl LumpedElement {
                 b.q[e] += s.dt * jb;
                 b.j_avg[e] = jb;
                 fields.u.set(axis, p, u_new as f32);
+                if s.openems_order {
+                    b.u_prev[e] = f64::from(u_new as f32);
+                }
             }
+        }
+        if active && !s.src_in_branch && s.openems_order {
+            s.add_sources(fields, axis);
         }
         for (&p, others) in s.edges.iter().zip(&s.copies) {
             if !others.is_empty() {
@@ -1166,6 +1225,19 @@ impl LumpedElement {
                 }
             }
             r.values.push(sum / s.series as f64);
+        }
+    }
+}
+
+impl Installed {
+    /// Adds the sources in series with the folded resistor to the edges.
+    fn add_sources(&self, fields: &mut Fields<'_>, axis: Axis) {
+        for (e, &p) in self.edges.iter().enumerate() {
+            let add = self.cb[e] * self.g_src[e] * self.v[e];
+            if add != 0.0 {
+                let u = fields.u.get_mut(axis, p);
+                *u = (*u as f64 + add) as f32;
+            }
         }
     }
 }

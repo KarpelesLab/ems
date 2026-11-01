@@ -102,9 +102,8 @@
 //!   series element is installed over the sheet's circuit, at any
 //!   priority: the sheet's capacitance is the medium the element replaces
 //!   or limits (§5.16.1), the sheet's conductance is dropped, the sheet's
-//!   branches stay (operator dumps identical; the probes still differ by
-//!   2e-4…1e-1, the order of the element's and the branches' updates is
-//!   not reproduced, design §5.16.3).
+//!   branches stay, and the element acts first (`sim::map`, design
+//!   §5.16.3).
 //!   Dispersive poles at a sheet edge's midpoint have no effect (the
 //!   poles of the media the sheet wins over are dropped). Edges on the
 //!   outer mesh planes are left to the boundary.

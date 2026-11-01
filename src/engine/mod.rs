@@ -712,7 +712,7 @@ impl Engine {
         let w = pool::energy(self.pool.as_mut(), &self.shared, self.dt, measure);
         match measure {
             EnergyMeasure::Invariant => w + self.operator_energy(),
-            EnergyMeasure::OpenEms => w,
+            EnergyMeasure::OpenEms => w + dump::lookahead_source_energy(self),
         }
     }
 

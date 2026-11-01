@@ -101,11 +101,10 @@ use map::{BlochMap, DumpOp, Mapped, ProbeOp};
 ///      model, so XML ports behave like native ones. With
 ///      [`Fdtd::openems_run`] the excitation is instead what openEMS does
 ///      on every element: a plain soft source added after the element's
-///      update, with the element's branch driven by the edge voltage
-///      without it (the stored voltage minus the previous step's source:
-///      a [`LumpedElement::branch_drive_source`] for an inductor, a
-///      half-voltage source one step later for a series element; a
-///      folded parallel R/C sees the whole voltage). Agreement ~1e-6.
+///      update, with the element's branch driven by the voltage it left
+///      behind, before the source (and before poles and sheet branches
+///      correct the edge, design §5.16.3); a folded parallel R/C sees the
+///      whole voltage. Agreement ~1e-6.
 ///    * `EFieldHard` overwrites the edge voltage (after the lumped
 ///      updates, so on a lumped element's edge the element has no effect:
 ///      warning), `HFieldSoft` / `HFieldHard` add to / overwrite the H
@@ -341,6 +340,10 @@ impl Simulation {
             layers.as_ref(),
             Some((&compiled.materials, compiled.coefficient_rounding)),
             &sheet_edges,
+            map::LateCorrections {
+                dispersive: boundaries.dispersive.as_ref(),
+                sheet_branches: boundaries.openems_sheet_branches.as_ref(),
+            },
         )?;
         // openEMS forms the coefficients of its poles from the edge's
         // final circuit, after the lumped elements (design §5.16.3).
@@ -379,6 +382,8 @@ impl Simulation {
                     layers.as_ref(),
                     Some((&compiled.materials, compiled.coefficient_rounding)),
                     &sheet_edges,
+                    // Bloch pairs are not an openEMS run.
+                    map::LateCorrections::default(),
                 )?;
                 Some(Box::new(BlochState {
                     imag,

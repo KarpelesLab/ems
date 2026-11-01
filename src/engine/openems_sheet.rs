@@ -81,6 +81,22 @@ impl OpenEmsSheetBranches {
         });
     }
 
+    /// Moves the edges in `edges` to a new operator, for registration
+    /// after the lumped elements: openEMS updates an element with an
+    /// inductor or in series before the branches of its edge (black box,
+    /// design §5.16.3). `None` if no branch is on those edges.
+    pub(crate) fn split_off(
+        &mut self,
+        edges: &std::collections::HashSet<(Axis, [usize; 3])>,
+    ) -> Option<Self> {
+        let (late, rest) = std::mem::take(&mut self.edges)
+            .into_iter()
+            .partition(|e| edges.contains(&(e.axis, e.node)));
+        self.edges = rest;
+        let late: Vec<Edge> = late;
+        (!late.is_empty()).then_some(Self { edges: late })
+    }
+
     /// Whether there is no edge.
     pub(crate) fn is_empty(&self) -> bool {
         self.edges.is_empty()

@@ -12,6 +12,8 @@ use crate::axis::Axis;
 use crate::compile::{ModelSources, NodeMap};
 use crate::engine::boundary::PmlLayers;
 use crate::engine::cylindrical;
+use crate::engine::dispersive::Dispersive;
+use crate::engine::openems_sheet::OpenEmsSheetBranches;
 use crate::engine::port::loop_entries;
 use crate::engine::{CoeffRounding, EdgeMaterials, e_coefficients, e_edge_circuit};
 use crate::engine::{
@@ -440,6 +442,14 @@ pub(crate) struct BlochMap {
 /// run (`bloch`), the imaginary engine gets no excitations (sources,
 /// Thevenin sources) other than its part of the plane waves, plane waves
 /// become [`PeriodicPlaneWave`]s, and SAR dumps are not supported.
+/// The operators that correct an edge after a lumped element's branch on
+/// it (openEMS's order, design §5.16.3).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LateCorrections<'a> {
+    pub dispersive: Option<&'a OperatorHandle<Dispersive>>,
+    pub sheet_branches: Option<&'a OperatorHandle<OpenEmsSheetBranches>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn map_sources(
     engine: &mut Engine,
@@ -451,8 +461,10 @@ pub(crate) fn map_sources(
     pml: Option<&PmlLayers>,
     medium: Option<(&EdgeMaterials, CoeffRounding)>,
     sheet_edges: &std::collections::HashSet<(Axis, [usize; 3])>,
+    late: LateCorrections<'_>,
 ) -> Result<Mapped> {
     let mut mapped = Mapped::default();
+    let mut branch_edges = std::collections::HashSet::new();
     let dt = engine.dt();
     let nodes = engine.grid().nodes();
     let idx = |p: [usize; 3]| (p[0] * nodes[1] + p[1]) * nodes[2] + p[2];
@@ -629,8 +641,8 @@ pub(crate) fn map_sources(
     }
     // openEMS semantics (black box, design §5.16.1): an excitation over a
     // lumped element is a plain soft source on every element, and the
-    // element's branch (inductor, series RLC) sees the edge voltage
-    // without it; see the install below. ems semantics: a Thevenin source
+    // element's branch (inductor, series RLC) is driven by the voltage it
+    // left behind, without the source; see the install below. ems semantics: a Thevenin source
     // in series with the resistor or the series branch.
     let openems = fdtd.get_openems_run();
     for g in &mut groups {
@@ -828,6 +840,8 @@ pub(crate) fn map_sources(
         // with an inductor and no capacitor, and of every series element
         // by its branch impedance at the excitation's frequency (§5.16.3).
         let folded = fdtd.get_openems_run();
+        // `C + G·dt/2` of the element on each edge (openEMS's inductor).
+        let mut den = Vec::new();
         if folded {
             let parallel = g.topology == Topology::Parallel;
             let no_c = g.edges.iter().all(|e| e.c.is_none());
@@ -835,7 +849,8 @@ pub(crate) fn map_sources(
                 .and_then(|w| w.nyquist_frequency())
                 .filter(|_| !parallel || (no_c && g.edges.iter().any(|e| e.l.is_some())))
                 .map(|f| 2.0 * core::f64::consts::PI * f);
-            let kept = replace_medium(
+            let kept;
+            (kept, den) = replace_medium(
                 engine,
                 g.axis,
                 &g.edges,
@@ -899,12 +914,16 @@ pub(crate) fn map_sources(
                 })
                 .collect()
         };
+        // A series resistor is a branch as well in openEMS: it is driven by
+        // the voltage before poles and sheet branches correct the edge.
         let branch = match g.topology {
             Topology::Parallel => has_l,
-            Topology::Series => g
-                .edges
-                .first()
-                .is_some_and(|e| e.l.is_some() || e.c.is_some()),
+            Topology::Series => {
+                folded
+                    || g.edges
+                        .first()
+                        .is_some_and(|e| e.l.is_some() || e.c.is_some())
+            }
         };
         // openEMS updates a parallel inductor explicitly (leapfrog). That
         // is only stable while the edge's own resonance is resolved,
@@ -935,10 +954,16 @@ pub(crate) fn map_sources(
                 ));
             }
         }
+        if openems && branch {
+            branch_edges.extend(g.edges.iter().map(|e| (g.axis, e.node)));
+        }
         let mut el = LumpedElement::from_edges(g.axis, g.topology, g.edges)?
             .record_current()
             .explicit_inductor(explicit)
             .medium_folded(folded);
+        if openems && branch {
+            el = el.openems_order(den);
+        }
         for (k, weights) in g.sources {
             debug_assert_eq!(weights.len(), ne);
             let ex = &src.excitations[k];
@@ -952,12 +977,9 @@ pub(crate) fn map_sources(
             }
             // openEMS: the excitation is a plain soft source (added with
             // the other soft sources, after the element), and the element
-            // is driven by the edge voltage without it. The stored `u^n`
-            // holds the previous step's soft source `V^{n−1}`, so the
-            // drive loses `V^{n−1}` (explicit inductor, drive `u^n`) or
-            // `V^{n−1}/2` (series branch or resistor, drive `ū`): a source
-            // one step later, of full or half the voltage. A parallel
-            // resistor or capacitor is folded into the edge and sees the
+            // is driven by the voltage it left behind, before the source
+            // (`LumpedElement::openems_order`). A parallel resistor or
+            // capacitor is folded into the edge and sees the
             // whole voltage, like any medium; with a resistor the plain
             // soft source is the element's Thevenin source scaled by
             // `gain` (so the element's current is the port current).
@@ -965,20 +987,22 @@ pub(crate) fn map_sources(
                 let scaled = weights.iter().zip(&gain).map(|(w, k)| w * k).collect();
                 el = el.edge_source(scaled, openems_signal(wf.clone(), ex.delay, lag, dt));
             }
-            let signal = openems_signal(wf, ex.delay, lag + dt, dt);
-            match g.topology {
-                Topology::Parallel if branch => {
-                    el = el.branch_drive_source(weights, signal);
-                }
-                Topology::Parallel => {}
-                Topology::Series => {
-                    let half = weights.iter().map(|w| 0.5 * w).collect();
-                    el = el.edge_source(half, signal);
-                }
-            }
         }
         let h = el.add_to(engine)?;
         mapped.lumped.push((g.name, h));
+    }
+    // What corrects an element's edge comes after the element.
+    if !branch_edges.is_empty() {
+        if let Some(h) = late.dispersive
+            && let Some(op) = engine.operator(h).defer_openems(&branch_edges)
+        {
+            engine.add_operator(op);
+        }
+        if let Some(h) = late.sheet_branches
+            && let Some(op) = engine.operator_mut(h).split_off(&branch_edges)
+        {
+            engine.add_operator(op);
+        }
     }
     // Soft E sources add after the lumped updates; hard sources overwrite
     // last; H sources act in post_h.
@@ -1465,7 +1489,9 @@ pub(crate) fn map_sources(
 /// (`C = dt·(1 + ca)/(2·cb)`, `G = (1 − ca)/cb`, exact up to their `f32`
 /// rounding). The element is installed with
 /// [`medium_folded`](LumpedElement::medium_folded). Returns the smallest
-/// kept fraction of an edge's capacitance under the limit (1 without).
+/// kept fraction of an edge's capacitance under the limit (1 without) and
+/// `C + G·dt/2` of the element on each edge
+/// ([`openems_order`](LumpedElement::openems_order)).
 fn replace_medium(
     engine: &mut Engine,
     axis: Axis,
@@ -1474,22 +1500,21 @@ fn replace_medium(
     medium: Option<(&EdgeMaterials, CoeffRounding)>,
     omega: Option<f64>,
     circuits: &mut Vec<(Axis, [usize; 3], f64)>,
-) -> f64 {
+) -> (f64, Vec<f64>) {
     let grid = engine.grid().clone();
     let dt = engine.dt();
     let rounding = medium.map_or(CoeffRounding::Exact, |m| m.1);
     let mut kept = 1.0f64;
+    let mut den = Vec::with_capacity(edges.len());
     let mut co = engine.coefficients_mut();
     let (ca, cb) = co.e_mut(axis);
     for e in edges {
         let series = topology == Topology::Series;
-        let branch = series && (e.l.is_some() || e.c.is_some());
-        if !series && e.c.is_none() && e.r.is_none() && omega.is_none() {
-            continue;
-        }
         let i = grid.index(e.node);
         let (a, b) = (ca[i], cb[i]);
-        if !b.is_finite() {
+        if (!series && e.c.is_none() && e.r.is_none() && omega.is_none()) || !b.is_finite() {
+            let (a, b) = (f64::from(a), f64::from(b));
+            den.push(dt * (1.0 + a) / (2.0 * b));
             continue;
         }
         let exact = medium
@@ -1505,17 +1530,22 @@ fn replace_medium(
         if series {
             cond = 0.0;
         }
-        if !branch && let Some(r) = e.r {
+        if !series && let Some(r) = e.r {
             cond = rounding.store(1.0 / r);
         }
+        // The inductor's own coefficient takes the values before their `f32`
+        // rounding, where they are the element's.
+        let mut c_own = if !series && let Some(c) = e.c { c } else { cap };
         if let Some(omega) = omega {
             let limit = capacitance_limit(e, omega, topology);
             if cap > limit {
                 kept = kept.min(limit / cap);
                 cap = rounding.store(limit);
+                c_own = limit;
             }
         }
         (ca[i], cb[i]) = e_coefficients(cap, cond, dt);
+        den.push(c_own + 0.5 * e.r.filter(|_| !series).map_or(0.0, |r| dt / r));
         // openEMS folds a parallel R/C element into the edge before its
         // poles take the edge's coefficients; an element with an
         // inductor or in series comes after them (design §5.16.3).
@@ -1523,7 +1553,7 @@ fn replace_medium(
             circuits.push((axis, e.node, cap));
         }
     }
-    kept
+    (kept, den)
 }
 
 /// openEMS's limit on the medium capacitance of the edges of a parallel

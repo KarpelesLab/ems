@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ems random differential sweep fixture, hand-written: elements with an inductor in a Drude medium, a Lorentz medium, on a conducting sheet and in a lossy medium: the element acts before poles and sheet branches -->
+<openEMS>
+  <FDTD NumberOfTimesteps="400" endCriteria="1e-30">
+    <Excitation Type="0" f0="5e9" fc="3e9"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="0">
+    <Properties>
+      <LorentzMaterial Name="drude"><Property Epsilon="2" Kappa="0.05" EpsilonPlasmaFrequency="5e9" EpsilonRelaxTime="1e-10"/><Primitives><Box Priority="1"><P1 X="2" Y="2" Z="5"/><P2 X="6" Y="6" Z="10"/></Box></Primitives></LorentzMaterial>
+      <LorentzMaterial Name="lor"><Property Epsilon="1.5" EpsilonPlasmaFrequency="4e9" EpsilonLorPoleFrequency="6e9" EpsilonRelaxTime="2e-10"/><Primitives><Box Priority="1"><P1 X="10" Y="2" Z="5"/><P2 X="14" Y="6" Z="10"/></Box></Primitives></LorentzMaterial>
+      <ConductingSheet Name="cs" Conductivity="1000" Thickness="1e-4"><Primitives><Box Priority="4"><P1 X="4" Y="10" Z="6"/><P2 X="4" Y="14" Z="9"/></Box></Primitives></ConductingSheet>
+      <Material Name="lossy"><Property Epsilon="2" Kappa="0.1"/><Primitives><Box Priority="1"><P1 X="10" Y="10" Z="5"/><P2 X="14" Y="14" Z="10"/></Box></Primitives></Material>
+      <LumpedElement Name="le0" Direction="2" Caps="0" L="2e-9" C="1e-13"><Primitives><Box Priority="5"><P1 X="4" Y="4" Z="7"/><P2 X="4" Y="4" Z="8"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="le1" Direction="2" Caps="0" L="2e-9" C="1e-13" R="100"><Primitives><Box Priority="5"><P1 X="12" Y="4" Z="7"/><P2 X="12" Y="4" Z="8"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="le2" Direction="2" Caps="0" L="3e-9" C="2e-13"><Primitives><Box Priority="5"><P1 X="4" Y="12" Z="7"/><P2 X="4" Y="12" Z="8"/></Box></Primitives></LumpedElement>
+      <LumpedElement Name="le3" Direction="2" Caps="0" L="2e-9" C="1e-13"><Primitives><Box Priority="5"><P1 X="12" Y="12" Z="7"/><P2 X="12" Y="12" Z="8"/></Box></Primitives></LumpedElement>
+      <Excitation Name="src" Type="0" Excite="0,0,1"><Primitives><Box Priority="0"><P1 X="8" Y="8" Z="6"/><P2 X="8" Y="8" Z="10"/></Box></Primitives></Excitation>
+      <ProbeBox Name="u0" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="4" Z="7"/><P2 X="4" Y="4" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e0" Type="2"><Primitives><Box Priority="0"><P1 X="5" Y="4" Z="7.5"/><P2 X="5" Y="4" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h0" Type="3"><Primitives><Box Priority="0"><P1 X="4" Y="4.5" Z="7.5"/><P2 X="4" Y="4.5" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u1" Type="0"><Primitives><Box Priority="0"><P1 X="12" Y="4" Z="7"/><P2 X="12" Y="4" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e1" Type="2"><Primitives><Box Priority="0"><P1 X="13" Y="4" Z="7.5"/><P2 X="13" Y="4" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h1" Type="3"><Primitives><Box Priority="0"><P1 X="12" Y="4.5" Z="7.5"/><P2 X="12" Y="4.5" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u2" Type="0"><Primitives><Box Priority="0"><P1 X="4" Y="12" Z="7"/><P2 X="4" Y="12" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e2" Type="2"><Primitives><Box Priority="0"><P1 X="5" Y="12" Z="7.5"/><P2 X="5" Y="12" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h2" Type="3"><Primitives><Box Priority="0"><P1 X="4" Y="12.5" Z="7.5"/><P2 X="4" Y="12.5" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="u3" Type="0"><Primitives><Box Priority="0"><P1 X="12" Y="12" Z="7"/><P2 X="12" Y="12" Z="8"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e3" Type="2"><Primitives><Box Priority="0"><P1 X="13" Y="12" Z="7.5"/><P2 X="13" Y="12" Z="7.5"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h3" Type="3"><Primitives><Box Priority="0"><P1 X="12" Y="12.5" Z="7.5"/><P2 X="12" Y="12.5" Z="7.5"/></Box></Primitives></ProbeBox>
+    </Properties>
+    <RectilinearGrid DeltaUnit="0.001" CoordSystem="0">
+      <XLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16</XLines>
+      <YLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16</YLines>
+      <ZLines>0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16</ZLines>
+    </RectilinearGrid>
+  </ContinuousStructure>
+</openEMS>

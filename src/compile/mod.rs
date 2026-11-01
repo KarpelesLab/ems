@@ -570,6 +570,8 @@ pub struct BoundaryHandles {
     pub openems_pml: Option<OperatorHandle<OpenEmsPml>>,
     /// The conducting-sheet operator, if the model has conducting sheets.
     pub sheets: Option<OperatorHandle<ConductingSheet>>,
+    /// openEMS's sheet branches ([`Compiled::openems_sheet_branches`]).
+    pub(crate) openems_sheet_branches: Option<OperatorHandle<OpenEmsSheetBranches>>,
     /// One operator per [`Compiled::abc`] sheet, in the same order.
     pub abc: Vec<OperatorHandle<AbsorbingSheet>>,
     /// The oblique thin-wire operator, if [`Compiled::oblique_wires`] is
@@ -996,7 +998,7 @@ impl Compiled {
                 }
             }
             if !b.is_empty() {
-                engine.add_operator(b);
+                h.openems_sheet_branches = Some(engine.add_operator(b));
             }
         }
         // After the dispersive poles: as slab hooks (see

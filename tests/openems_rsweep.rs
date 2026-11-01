@@ -174,17 +174,18 @@ fn case(case: &str, tol: f64, dump_tol: f64) {
 /// A Drude box reaching into PML layers: openEMS's layer replaces the
 /// update of its edges and the poles have no effect there (the static
 /// `ε` remains); the raw H line dump snaps to the cells of a graded mesh.
-/// 1e-6…5e-6 (was 1.2e-1 and 3.4e-1).
+/// Exact with the inductor's `f32` update (was 1.2e-1 and 3.4e-1).
 #[test]
 fn drude_in_pml() {
-    case("rs_0", 2e-5, 3e-5);
+    case("rs_0", 1e-6, 3e-5);
 }
 
 /// A Lorentz box touching a Mur face: openEMS's Mur face reads its
-/// neighbours before the dispersive correction. 1e-6…2e-5 (was 0.03…0.4).
+/// neighbours before the dispersive correction. Exact with the inductor's
+/// `f32` update (was 0.03…0.4).
 #[test]
 fn lorentz_at_mur() {
-    case("rs_1", 1e-4, 1e-4);
+    case("rs_1", 1e-6, 1e-4);
 }
 
 /// A metal sheet under a higher-priority dielectric (the dielectric wins
@@ -264,10 +265,11 @@ fn mur_face_hold() {
 /// An R‖L element in the last cell before a PMC face (cut to 320 steps:
 /// openEMS's capacitance limit makes it grow unstably later, in both
 /// codes): openEMS keeps the H edge of the element's direction and node
-/// in the PMC layer it otherwise zeroes. 1e-6…4e-6 (was 4.7e-4…1.8e-2).
+/// in the PMC layer it otherwise zeroes. Exact with the inductor's `f32`
+/// update (was 4.7e-4…1.8e-2).
 #[test]
 fn lumped_at_pmc() {
-    case("rs_55", 2e-5, 2e-5);
+    case("rs_55", 1e-6, 2e-5);
 }
 
 /// A conducting sheet touching a dielectric of equal priority defined
@@ -338,4 +340,40 @@ fn hard_source_on_sheet() {
 #[test]
 fn pec_face_normal_h() {
     case("rs_451", 1e-6, 1e-6);
+}
+
+/// A soft H source inside metal: nothing leaves the source's edges, so the
+/// integrated pulse passes near 0 at half the excitation's length, where
+/// openEMS checks once more. Its measure holds the H source's latest
+/// value, ems's look-ahead left that out and the run went on to step 855
+/// instead of 484. Probes exact.
+#[test]
+fn h_source_in_the_energy_measure() {
+    case("rs_443", 1e-6, 1e-4);
+}
+
+/// Elements with an inductor in a Drude and a Lorentz medium, on a
+/// conducting sheet and in a lossy medium (hand-written): openEMS's inductor
+/// acts before the poles and the sheet branches, driven by the voltage it
+/// left behind, with its own coefficient. Exact (were 1.5e-5…7.2e-2).
+#[test]
+fn inductor_before_poles_and_sheets() {
+    case("rs_l_order", 1e-6, 1e-4);
+}
+
+/// Series elements at the same places (hand-written): the same order. The
+/// series update itself stays at round-off, 1.4e-6…5.9e-5 (were up to
+/// 9.3e-2).
+#[test]
+fn series_before_poles_and_sheets() {
+    case("rs_s_order", 1e-4, 1e-4);
+}
+
+/// An unstable inductor on a conducting sheet (hand-written): the energy
+/// of openEMS's end criterion squares in `f32`, so the run stops at the
+/// first check past `√FLT_MAX` with finite fields. Same stop step, exact
+/// (ems ran on to the limit).
+#[test]
+fn energy_overflow_stops_the_run() {
+    case("rs_energy_overflow", 1e-6, 1e-4);
 }

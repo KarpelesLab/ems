@@ -198,9 +198,10 @@ use core::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
+use super::fields::Fields;
 use super::grid::Grid;
 use super::kernel::flush;
-use super::operator::{Hooks, Operator, OperatorHandle};
+use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
 use super::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0, OPENEMS_EPS0};
@@ -646,6 +647,9 @@ struct Side {
     mixed: Vec<bool>,
     /// `cb` / `db` of the edge at installation (look-ahead only).
     coef: Vec<f64>,
+    /// Edges corrected after the lumped elements by [`LatePoles`] (empty
+    /// when there are none).
+    late: Vec<bool>,
 }
 
 impl Side {
@@ -675,12 +679,38 @@ impl Side {
         let p = f.nodes()[1] * f.nodes()[2];
         let mut next = Vec::new();
         for e in edges {
+            if self.late.get(e).copied().unwrap_or(false) {
+                continue;
+            }
             let ax = self.axis[e] as usize;
             let gi = self.plane[e] as usize;
             let off = self.off[e] as usize;
             let cb = coef[ax][gi * p + off] as f64;
             let plane = f.plane_mut(Axis::ALL[ax], gi);
             plane[off] = self.step_edge(e, plane[off], cb, dt, &mut next);
+            let p0 = self.pole_start(e);
+            for (q, (j, c, oe)) in (p0..).zip(next.drain(..)) {
+                self.j[q] = j;
+                self.q[q] = c;
+                self.oe_state[q] = oe;
+            }
+        }
+    }
+
+    /// The correction of the [late](LatePoles) edges in the serial `post_e`
+    /// gap.
+    fn correct_late(&mut self, f: &mut Fields<'_>, ctx: &StepContext<'_>, dt: f64, nz: usize) {
+        let mut next = Vec::new();
+        for e in 0..self.late.len() {
+            if !self.late[e] {
+                continue;
+            }
+            let axis = Axis::ALL[self.axis[e] as usize];
+            let off = self.off[e] as usize;
+            let node = [self.plane[e] as usize, off / nz, off % nz];
+            let cb = f64::from(ctx.coefficients.cb(axis)[ctx.grid.index(node)]);
+            let u = self.step_edge(e, f.u.get(axis, node), cb, dt, &mut next);
+            f.u.set(axis, node, u);
             let p0 = self.pole_start(e);
             for (q, (j, c, oe)) in (p0..).zip(next.drain(..)) {
                 self.j[q] = j;
@@ -921,6 +951,26 @@ impl SlabHooks for Parts {
         }
         let r = st.h.edges_in(&planes);
         st.h.capture(i, r);
+    }
+}
+
+/// The correction of the E edges [`Dispersive::defer_openems`] moved, in
+/// the serial `post_e` gap.
+pub(crate) struct LatePoles {
+    parts: Arc<Parts>,
+    nz: usize,
+}
+
+impl Operator for LatePoles {
+    fn hooks(&self) -> Hooks {
+        Hooks::POST_E
+    }
+
+    fn post_e(&mut self, f: &mut Fields<'_>, ctx: &StepContext<'_>) {
+        for s in 0..self.parts.slabs.len() {
+            let dt = self.parts.dt;
+            self.parts.slab(s).e.correct_late(f, ctx, dt, self.nz);
+        }
     }
 }
 
@@ -1462,6 +1512,37 @@ impl Dispersive {
             }
         }
         n
+    }
+
+    /// Moves the correction of the E edges `edges` after the lumped
+    /// elements: openEMS updates an element with an inductor or in series
+    /// before the poles of its edge (black box, design §5.16.3). The poles
+    /// run in the returned operator, to be registered after the elements
+    /// and before the sources; `None` if no pole is on those edges.
+    pub(crate) fn defer_openems(
+        &self,
+        edges: &std::collections::HashSet<(Axis, [usize; 3])>,
+    ) -> Option<LatePoles> {
+        let parts = self.parts.as_ref()?;
+        let nz = self.nodes[2];
+        let mut any = false;
+        for slab in &parts.slabs {
+            let mut st = slab.lock().unwrap_or_else(PoisonError::into_inner);
+            let side = &mut st.e;
+            let late: Vec<bool> = (0..side.edges())
+                .map(|e| {
+                    let off = side.off[e] as usize;
+                    let node = [side.plane[e] as usize, off / nz, off % nz];
+                    edges.contains(&(Axis::ALL[side.axis[e] as usize], node))
+                })
+                .collect();
+            any |= late.contains(&true);
+            side.late = late;
+        }
+        any.then(|| LatePoles {
+            parts: Arc::clone(parts),
+            nz,
+        })
     }
 
     fn sum_energy(&self, field: Field) -> f64 {
