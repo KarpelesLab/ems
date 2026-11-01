@@ -68,7 +68,7 @@ def h5cmp(a, b, name):
     print(f'  {name}: h5 {len(ds)} vs {len(dsb)} datasets, worst rel {worst[0]:.2e} {worst[1]}')
 
 
-probe_worst = (0.0, '-')
+worst = []
 for f in fo:
     if f not in fe:
         continue
@@ -96,6 +96,8 @@ for f in fo:
         n = min(len(x), len(y))
         d = np.linalg.norm(x[:n, 1] - y[:n, 1]) / max(np.linalg.norm(x[:n, 1]), 1e-300)
         print(f'  {f}: rows {len(x)} vs {len(y)}, rel {d:.2e}')
+        if len(x) != len(y) or d > 1e-5:
+            worst.append((max(d, 1e-5 if len(x) != len(y) else 0), f))
         continue
     n = min(len(x), len(y))
     tdiff = np.max(np.abs(x[:n, 0] - y[:n, 0])) / max(np.max(np.abs(x[:n, 0])), 1e-300)
@@ -107,8 +109,10 @@ for f in fo:
         nx = np.linalg.norm(x[:n, k])
         d = np.linalg.norm(x[:n, k] - y[:n, k]) / max(nx, 1e-300)
         cols.append(f'{d:.2e}' + ('(0)' if nx == 0 else ''))
-        if d > probe_worst[0]:
-            probe_worst = (d, f)
+    fro = np.linalg.norm(x[:n, 1:] - y[:n, 1:]) / max(np.linalg.norm(x[:n, 1:]), 1e-300)
+    if np.linalg.norm(x[:n, 1:]) == 0 and np.linalg.norm(y[:n, 1:]) == 0:
+        fro = 0.0
+    worst.append((fro, f))
     hdr_o = [l for l in lines(a) if l.startswith('% start') or l.startswith('% stop')]
     hdr_e = [l for l in lines(b) if l.startswith('% start') or l.startswith('% stop')]
     hd = '' if hdr_o == hdr_e else ' HDR-DIFF'
@@ -116,4 +120,11 @@ for f in fo:
     if hd and os.environ.get('HDR'):
         print('     ', hdr_o, hdr_e)
 
-print(f'SUMMARY {os.path.basename(case.rstrip("/")):28s} worst {probe_worst[0]:.2e} ({probe_worst[1]})')
+ex_o = [l for l in lines(co) if l.startswith('exit')][-1]
+ex_e = [l for l in lines(ce) if l.startswith('exit')][-1]
+w = max(worst) if worst else (0.0, '-')
+flags = []
+if ex_o != ex_e: flags.append(f'exit oe:{ex_o[5:]} ems:{ex_e[5:]}')
+if only_o: flags.append('only-oe:' + ','.join(only_o[:4]))
+if only_e: flags.append('only-ems:' + ','.join(only_e[:4]))
+print(f'SUMMARY {os.path.basename(case.rstrip("/")):28s} worst {w[0]:.2e} ({w[1]}) {" ".join(flags)}')
