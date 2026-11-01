@@ -175,6 +175,12 @@ release build of `ems` with HDF5 (`cargo build --release --features hdf5
   (`compare.py` compares one case; DESIGN §5.16.3). Later additions to the
   sweep exist only as the `sweep_*` fixtures: copy their `model.xml` into
   `WORK/cases/<name>/` to include them.
+- `tools/dumpcmp.py [-v] DIR` compares the debug dumps of `DIR/model.xml` bit
+  for bit where both codes describe the same edge, and
+  `EMS=target/release/ems tools/rsweep_cyl.py [--family NAME] [--jobs N] WORK FIRST LAST`
+  is the random cylindrical sweep built on it (design §5.16.11);
+  `EMS=target/release/ems tools/firstdiff.py DIR [STEPS]` finds the first
+  field values that differ, from per-step dumps of the whole domain.
 - `EMS=target/release/ems tools/rsweep.py OUT SEED0 SEED1 [--only-gen]` generates and runs
   the random models (`both.py` runs the two codes, `cmpdir.py` compares
   them). A seed always gives the same model. Seeds 0…559 have been run; the
