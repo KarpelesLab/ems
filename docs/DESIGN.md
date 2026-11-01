@@ -4975,13 +4975,107 @@ printed digits (were 0.1…1 and 1e-3…2e-2), `cyl_seam_source` (sources
 on `α = 0` and `2π`, 1 m cells) exact, `dump_cyl_multigrid` (E/H dumps
 in the zone ending on the run's last step) 3e-16.
 
-Not reproduced: `e2e_coax_monopole` stays at 3e-7…2e-6 (its tests'
-first column; the α component of `ez_far`, which is 1e-4 of the field,
-8e-5): its mesh is uniform to 1e-9 (`6.283185307`), openEMS applies
-the z widths above there as well, which changes some `f32`
-coefficients by an ulp, but with them a few others still differ by an
-ulp (a seam z edge, `H_ρ` of the last cell, a seam `H_α`); the mesh is
-treated as uniform (bit-identical to before).
+Not reproduced then: `e2e_coax_monopole` at 3e-7…2e-6 (its tests' first
+column; the α component of `ez_far`, which is 1e-4 of the field, 8e-5),
+its mesh uniform to 1e-9 (`6.283185307`); see wave 20, below.
+
+**Wave 20 (what else follows the α indices).** Hand-written models and a
+random sweep (`scripts/openems-oracle/tools/rsweep_cyl.py`, families `metal`,
+`pole`, `sheet`, `prim`, `mix`; debug dumps bit for bit with
+`tools/dumpcmp.py`, probes through `both.py`, `cmpdir.py`); all rules on the
+openEMS-file path only.
+
+- **Metal, poles and sheets** follow the α index ranges of material boxes
+  above. Metal (`cylavg::limit_metal`): the zero `vv` per α index of one box
+  on and off the lines, across `α = 0`, past `2π`, wholly outside, on one
+  line; an α edge has its cell's index, a ρ or z edge its line's (the seam:
+  the `α = 2π` line), the axis z edge is not limited. A box over −0.5…2 is
+  not PEC on the seam nor below `2π`, one wholly below the lines or above
+  `α_1 + 2π` has no effect (probes before: order 1). Poles
+  (`compile::dispersive`) sample the winning property with the same indices;
+  sheets (`cylindrical::wrapped_sheets`, `openems_sheet::sheet_at`) likewise,
+  which replaces the earlier "angles as written" reading of the sheet model
+  with one rule, including its `[0, a]` tubes and fins at `α = 0`.
+- **The last α line of a closed grid** is at exactly `α_0 + 2π`, whatever the
+  file says (`io::openems::parse_model`; a mesh ending in `6.283185307` has
+  the coefficients and probes of the same mesh with that line, bit for bit).
+- **Graded α widths** (`Grid::with_openems_alpha_widths`) now apply as soon as
+  two widths differ at all, not by more than 1e-9: openEMS has no uniform
+  case. With the last line these two remove the coefficient mismatches of
+  `e2e_coax_monopole` other than the seam's merged dump values (below).
+- **Point and line probes** (`sim::map::openems_probe_alpha`, black box: the
+  line an E probe reads against its α, closed grids and sectors, any first
+  line): relative to the first line the angle is reduced modulo 2π keeping
+  its sign; a negative rest moves up by 2π only if that lands within the
+  lines, else it stays below them and clamps to line 0. A closed grid has no
+  `α_0 + 2π` line to snap to, so a probe in the last α cell reads line
+  `N − 1` (E) and cell `N − 2` (H): one cell off the drawn point. Voltage
+  probes follow the same rule, current boxes keep their literal corners
+  across α and only the layer of a loop in an α plane is reduced. An exact
+  tie after several wraps of 2π (`α_3 + 6π`) can differ by a cell.
+- **Current probes** on cylindrical grids sum in openEMS's order and `f32`
+  (`f32_sum`; loops in α planes 1.5e-7 → exact).
+- **The poles' `α = 0` seam line** updates on its own coefficients: the
+  magnetic poles of a seam `H_α` on a graded mesh take that line's `L` and
+  `iv`, and each line has the poles of its own α index
+  (`engine::openems_cyl`; a graded mesh with a magnetic box over the seam
+  0.16 → 1.5e-4, not exact, below).
+- **Sheets meeting at a node**: the interior test of §5.16.2 accepts any
+  conducting sheet at its sample points, not only the edge's own property
+  (operator dumps of an L junction; Cartesian grids as well). Which plane a
+  sheet edge belongs to now needs the primitive to contain its midpoint
+  (one property with a tube and a fin through a line). Fixed on the way:
+  removing the axis z edges from the sheet edges left the property names
+  shifted by one edge, so the first edge of the next sheet was dropped.
+
+- **Flat boxes near an α line** (`openems::dilated`): a box flat in α within
+  the inside tolerance of a line is on it, as openEMS reads a source, fin or
+  tube drawn to 9 digits (a source 3.6e-10 off its line had been dropped).
+
+Primitives other than untransformed cylindrical boxes (cylinders, shells,
+spheres, extruded and flat polygons, rotated boxes, Cartesian boxes across
+`α = 0`, as materials and metal) have no index limit: family `prim` has all
+probes identical in 40 of 40 models (measured with the probe rule above in
+place; 3 of them differ in single `ε` values of the material dump only).
+
+Measured with `rsweep_cyl.py`, models with every probe within 1e-9, before →
+after: `metal` seeds 0…29 14 of 30 → 30 of 30 (0…59: 60 of 60, all dumps
+identical); `sheet` 0…39 22 → 34 of 40 (the "before" with the metal and probe
+rules in place); `pole` 0…39 29 of 40; `prim` 40 of 40; `mix` 0…39 37 of 40.
+Of the seeds looked at only for their largest failures, `mix` 100…179: 65 of
+80; of seeds no rule was fitted on, `mix` 200…259: 54 of 60.
+
+Not reproduced:
+
+- Magnetic poles next to the seam, 1e-4…2e-2: a magnetic Lorentz box whose
+  cells include cell 0 but not the seam (mid-range boxes and boxes over the
+  whole ring are exact). Per-step dumps put the first difference on the seam
+  `E_z` next to the box. With poles on the `α = 2π` line only, the `α = 0`
+  `H_α` of openEMS lies midway between ems with and without a pole there, but
+  half strength on both lines is worse (1e-3 → 1e-2), so it is not adopted.
+  Unverified idea: the seam reads an `H_ρ`, `H_z` of its own cell `N`, which
+  has no pole when index `N` is out of range.
+- Sheets reaching the axis, 2e-2…4: fins and discs from `ρ = 0` (`sheet_0`, `_2`,
+  `_3`, `_37`, the last two with identical operator dumps), and `sheet_17`
+  (several sheets on a graded closed mesh).
+- Debye boxes over the axis (`pole_29` 2e-4).
+- Combinations (`mix`): the 21 of 140 left are 1.7e-5…0.8, most with magnetic
+  poles or sheets as above, not all analysed. In `mix_117` the time step
+  itself differs by 0.2 % on a graded closed mesh (a single Lorentz box up to
+  the `α = 2π` line reproduces it; 1.29102e-12 s against ems's 1.29378e-12 s),
+  cause not found. `mix_101` (0.57; one probe that openEMS reads as 0 shows as
+  `inf`): metal under a higher-priority Lorentz box;
+  likely `cylavg::limit_metal` lets that box win also at α indices outside its
+  own range (read from the code, not measured).
+- `e2e_coax_monopole`: its coefficient mismatches are gone except 3 ulps in
+  ems's merged seam dump values, but its probes stay at 1e-6 (`ez_far` 2.7e-6,
+  `h_near` 1.2e-6, `port_ut` 1.1e-6 of L2; not better than before). The same
+  model is identical with PEC faces, and with Mur faces on an α mesh of
+  identical widths; of the three Mur faces only `z_max` leaves a difference.
+  The first differences above the dump rounding are on that face in values
+  of 1e-34, where the Mur update cancels; its coefficient is identical (per
+  edge from the dumps). So this is round-off amplified at the wave front,
+  seeded by something not located.
 
 Dump formula (not changed): openEMS's raw dumps divide by the edge
 length computed from the drawing-unit deltas times the unit

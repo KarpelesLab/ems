@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Boxes across alpha = 0 on a closed cylindrical cavity whose last alpha line
+  is written to 9 digits (openEMS puts it at exactly 2 pi): metal over
+  alpha -0.5..1.3 (openEMS: [0, 1.3] only, not the seam nor the cells below
+  2 pi) and pi..3 pi, a Lorentz box over 4.4..7, a magnetic Lorentz box off the
+  seam and a conducting tube over 4.2..8. Point probes in the last alpha
+  cell (openEMS reads the cell below it) and past 2 pi, a current loop in an
+  alpha plane.
+  Hand-written for the ems cylindrical fixtures (scripts/openems-oracle/gen-cyl.sh).
+-->
+<openEMS>
+  <FDTD NumberOfTimesteps="500" endCriteria="0" f_max="10e9" CylinderCoords="1">
+    <Excitation Type="10" f0="10e9" Function="exp(-((t-3e-10)/7e-11)^2)*cos(2*pi*1e10*(t-3e-10))"/>
+    <BoundaryCond xmin="PEC" xmax="PEC" ymin="PEC" ymax="PEC" zmin="PEC" zmax="PEC"/>
+  </FDTD>
+  <ContinuousStructure CoordSystem="1">
+    <RectilinearGrid DeltaUnit="1e-3" CoordSystem="1">
+      <XLines>1,2,3,4,5,6,7</XLines>
+      <YLines>0,0.628318531,1.256637061,1.884955592,2.513274123,3.141592654,3.769911184,4.398229715,5.026548246,5.654866776,6.283185307</YLines>
+      <ZLines>0,1,2,3,4,5,6</ZLines>
+    </RectilinearGrid>
+    <Properties>
+      <Metal Name="m1"><Primitives><Box Priority="5"><P1 X="2" Y="-0.5" Z="0"/><P2 X="3" Y="1.3" Z="2"/></Box></Primitives></Metal>
+      <Metal Name="m2"><Primitives><Box Priority="5"><P1 X="5" Y="3.141592654" Z="4"/><P2 X="6" Y="9.424777961" Z="5"/></Box></Primitives></Metal>
+      <LorentzMaterial Name="l1"><Property Epsilon="2" EpsilonPlasmaFrequency="4e9" EpsilonLorPoleFrequency="6e9" EpsilonRelaxTime="1e-9"/><Primitives><Box Priority="2"><P1 X="3" Y="4.4" Z="2"/><P2 X="5" Y="7" Z="4"/></Box></Primitives></LorentzMaterial>
+      <LorentzMaterial Name="l2"><Property Epsilon="1.5" MuePlasmaFrequency="3e9" MueLorPoleFrequency="7e9" MueRelaxTime="1e-9"/><Primitives><Box Priority="2"><P1 X="4" Y="1" Z="1"/><P2 X="6" Y="2" Z="3"/></Box></Primitives></LorentzMaterial>
+      <ConductingSheet Name="s1" Conductivity="1000" Thickness="1e-4"><Primitives><Box Priority="3"><P1 X="4" Y="4.2" Z="4"/><P2 X="4" Y="8" Z="6"/></Box></Primitives></ConductingSheet>
+      <Excitation Name="exc" Type="0" Excite="0,0,1">
+        <Primitives><Box Priority="0"><P1 X="4" Y="3.141592654" Z="1"/><P2 X="4" Y="3.141592654" Z="3"/></Box></Primitives>
+      </Excitation>
+      <ProbeBox Name="e_seam" Type="2"><Primitives><Box Priority="0"><P1 X="4" Y="0" Z="3"/><P2 X="4" Y="0" Z="3"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e_last" Type="2"><Primitives><Box Priority="0"><P1 X="4" Y="6.2" Z="3"/><P2 X="4" Y="6.2" Z="3"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_last" Type="3"><Primitives><Box Priority="0"><P1 X="4.2" Y="5.8" Z="3.2"/><P2 X="4.2" Y="5.8" Z="3.2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_past" Type="3"><Primitives><Box Priority="0"><P1 X="4.2" Y="6.9" Z="3.2"/><P2 X="4.2" Y="6.9" Z="3.2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="h_zero" Type="3"><Primitives><Box Priority="0"><P1 X="3.2" Y="0" Z="1.2"/><P2 X="3.2" Y="0" Z="1.2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="e_near" Type="2"><Primitives><Box Priority="0"><P1 X="3" Y="0.628318531" Z="2"/><P2 X="3" Y="0.628318531" Z="2"/></Box></Primitives></ProbeBox>
+      <ProbeBox Name="i_alpha" Type="1" NormDir="1"><Primitives><Box Priority="0"><P1 X="3" Y="5.2" Z="1"/><P2 X="5" Y="5.2" Z="3"/></Box></Primitives></ProbeBox>
+    </Properties>
+  </ContinuousStructure>
+</openEMS>

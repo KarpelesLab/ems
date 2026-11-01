@@ -1133,7 +1133,27 @@ pub(crate) fn map_sources(
             _ => continue,
         };
         // openEMS snapping (ties to the lower line) of the raw corners.
-        let prim = |c: [f64; 3]| Axis::ALL.map(|a| snap_lower(grid.lines(a), c[a.index()]));
+        // On cylindrical files the α of a corner goes through openEMS's own
+        // reduction, and a closed grid has no `α_0 + 2π` line to snap to.
+        let oe_alpha = fdtd.get_openems_run() && grid.is_cylindrical();
+        let snap_lines = |a: Axis| -> &[f64] {
+            let l = grid.lines(a);
+            if a == Axis::Y && oe_alpha && grid.is_closed() {
+                &l[..l.len() - 1]
+            } else {
+                l
+            }
+        };
+        let reduce = |mut c: [f64; 3]| {
+            if oe_alpha {
+                c[1] = openems_probe_alpha(snap_lines(Axis::Y), c[1]);
+            }
+            c
+        };
+        let prim = |c: [f64; 3]| {
+            let c = reduce(c);
+            Axis::ALL.map(|a| snap_lower(snap_lines(a), c[a.index()]))
+        };
         // Dual lines: openEMS takes the cell holding the coordinate (closed
         // at its upper end), ems natively the nearest dual line; the two
         // differ on graded meshes only.
@@ -1142,8 +1162,18 @@ pub(crate) fn map_sources(
         } else {
             snap_dual
         };
-        let dual = |c: [f64; 3]| Axis::ALL.map(|a| dual_snap(grid.lines(a), c[a.index()]));
-        let (start, stop) = (prim(p.corners[0]), prim(p.corners[1]));
+        let dual = |c: [f64; 3]| {
+            let c = reduce(c);
+            Axis::ALL.map(|a| dual_snap(snap_lines(a), c[a.index()]))
+        };
+        // (A current box keeps its literal corners across α; only the layer
+        // of a loop in an α plane goes through the reduction, `dual` below.)
+        let literal = |c: [f64; 3]| Axis::ALL.map(|a| snap_lower(grid.lines(a), c[a.index()]));
+        let (start, stop) = if kind == ProbeKind::Current {
+            (literal(p.corners[0]), literal(p.corners[1]))
+        } else {
+            (prim(p.corners[0]), prim(p.corners[1]))
+        };
         // openEMS prints the α of cylindrical grids (radians) times the
         // drawing unit as well.
         let alpha_unit = if grid.is_cylindrical() {
@@ -1282,7 +1312,7 @@ pub(crate) fn map_sources(
                     stop_coords: at(hi),
                 };
                 // openEMS files (Cartesian): openEMS's order and f32 sum.
-                let oe_sum = fdtd.get_openems_run() && !grid.is_cylindrical();
+                let oe_sum = fdtd.get_openems_run();
                 let entries = if oe_sum {
                     openems_loop_order(entries, n, start, stop)
                 } else {
@@ -1765,6 +1795,20 @@ fn openems_loop_order(
         }
     });
     entries
+}
+
+/// The angle at which openEMS looks a probe corner up on the α lines `al`
+/// (black box, the line an E probe reads against its α on closed grids and
+/// sectors, any first line; design §5.16.11). Relative to the first line the
+/// angle is reduced modulo 2π keeping its sign, and a negative rest moves up
+/// by 2π only if that lands within the lines (otherwise the angle stays below
+/// them and clamps to the first line). On a closed grid `al` leaves out the
+/// `α_0 + 2π` line, so a point in the last cell clamps to `α_{N−1}`.
+fn openems_probe_alpha(al: &[f64], alpha: f64) -> f64 {
+    let (first, last) = (al[0], al[al.len() - 1]);
+    let x = (alpha - first) % core::f64::consts::TAU;
+    let up = x + core::f64::consts::TAU;
+    first + if x < 0.0 && up <= last - first { up } else { x }
 }
 
 /// Index of the mesh line nearest to `x` (openEMS probe snapping: on a

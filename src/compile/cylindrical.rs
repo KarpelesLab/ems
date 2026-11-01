@@ -41,11 +41,18 @@ use crate::fdtd::{Cpml, Face};
 ///
 /// Returns the sheets the ids of `mg.sheet` refer to (csx's, plus one per
 /// property found here only).
+///
+/// On files, `ranges` limits each box to openEMS's α indices
+/// (`compile::cylavg`), and `alpha_tol` is openEMS's inside tolerance in α.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn wrapped_sheets(
     model: &csx::ContinuousStructure,
     mg: &mut csx::discretize::MaterialGrid,
     node_map: &super::NodeMap,
     snap_tol: f64,
+    ranges: &super::cylavg::AlphaRanges,
+    closed: bool,
+    alpha_tol: f64,
     warnings: &mut Vec<String>,
 ) -> Vec<SheetSpec> {
     use csx::{CoordSystem, PropertyKind, Vec3};
@@ -53,7 +60,7 @@ pub(super) fn wrapped_sheets(
     let mut specs = SheetSpec::of(mg);
     let lines = [0, 1, 2].map(|a| model.grid.lines(a).to_vec());
     let n = lines.clone().map(|l| l.len());
-    for p in model.properties() {
+    for (prop, p) in model.properties().iter().enumerate() {
         let sheet = match &p.kind {
             PropertyKind::Metal => None,
             PropertyKind::ConductingSheet(c) => Some((c.conductivity.value(), c.thickness.value())),
@@ -111,13 +118,23 @@ pub(super) fn wrapped_sheets(
                         q[t] = lines[t][j];
                         q[nrm] = lines[nrm][k];
                         let inside = [0.0, TAU, -TAU].iter().any(|&s| {
-                            prim.contains_in(
-                                Vec3::new(q[0], q[1] + s, q[2]),
-                                CoordSystem::Cylindrical,
-                                model.coord_system,
-                            )
+                            [0.0, alpha_tol, -alpha_tol].iter().any(|&t| {
+                                prim.contains_in(
+                                    Vec3::new(q[0], q[1] + s + t, q[2]),
+                                    CoordSystem::Cylindrical,
+                                    model.coord_system,
+                                )
+                            })
                         });
-                        if !inside {
+                        // An α edge has its cell's index, the others their
+                        // line's (`compile::cylavg`).
+                        let index = if d == 1 {
+                            node[1]
+                        } else {
+                            super::cylavg::line_index(node[1], n[1], closed)
+                        };
+                        let on_axis = d == 2 && lines[0][node[0]] == 0.0;
+                        if !inside || !(on_axis || ranges.allows(prop, p, pi, index)) {
                             continue;
                         }
                         hits += 1;
@@ -154,11 +171,17 @@ pub(super) fn wrapped_sheets(
 pub(super) fn sheet_edges(
     grid: &Grid,
     edges: &mut Vec<crate::engine::SheetEdge>,
+    names: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
     use crate::Axis;
     let before = edges.len();
-    edges.retain(|e| !(grid.has_axis() && e.axis == Axis::Z && e.node[0] == 0));
+    let on_axis =
+        |e: &crate::engine::SheetEdge| grid.has_axis() && e.axis == Axis::Z && e.node[0] == 0;
+    // `names` runs along `edges`.
+    let mut kept = edges.iter().map(|e| !on_axis(e));
+    names.retain(|_| kept.next().unwrap_or(true));
+    edges.retain(|e| !on_axis(e));
     if edges.len() < before {
         warnings.push(format!(
             "{} conducting-sheet edge(s) on the axis are left as ordinary edges",
@@ -665,7 +688,7 @@ pub(super) fn graded_alpha(grid: &Grid) -> bool {
     use crate::Axis;
     let a = grid.lines(Axis::Y);
     let d0 = a[1] - a[0];
-    grid.is_cylindrical() && a.windows(2).any(|w| ((w[1] - w[0]) - d0).abs() > 1e-9 * d0)
+    grid.is_cylindrical() && a.windows(2).any(|w| (w[1] - w[0]) != d0)
 }
 
 /// Warns about boxes whose α range openEMS (CSXCAD) interprets
@@ -746,7 +769,10 @@ pub(super) fn openems_alpha_warnings(
                     continue;
                 }
             } else if (lo < g0 - eps || hi > g1 + eps)
-                && !(material_ranges && matches!(p.kind, PropertyKind::Material(_)))
+                && !(matches!(
+                    p.kind,
+                    PropertyKind::Metal | PropertyKind::ConductingSheet(_)
+                ) || material_ranges && matches!(p.kind, PropertyKind::Material(_)))
             {
                 warnings.push(format!(
                     "{tag}: alpha range [{lo}, {hi}] leaves the grid's [{g0}, {g1}]; ems wraps \
@@ -760,7 +786,10 @@ pub(super) fn openems_alpha_warnings(
                 && lo > g0 - eps
                 && !matches!(
                     p.kind,
-                    PropertyKind::Material(_) | PropertyKind::Excitation(_)
+                    PropertyKind::Material(_)
+                        | PropertyKind::Metal
+                        | PropertyKind::ConductingSheet(_)
+                        | PropertyKind::Excitation(_)
                 )
             {
                 warnings.push(format!(

@@ -454,6 +454,19 @@ fn cylindrical_boxes_across_the_seam_match_openems() {
     assert!(worst > 0.1, "{worst:e}");
 }
 
+/// Metal, electric Lorentz poles and a conducting tube across `α = 0` and
+/// past `2π` (a magnetic box next to them) on a closed grid whose last α line is written to 9
+/// digits (`cyl_alpha_metal`): they follow the α index ranges of material
+/// boxes, the last line sits at exactly `α_0 + 2π`, and point probes in the
+/// last α cell read the cell below it, past `2π` the wrapped angle (design
+/// §5.16.11). The probes match to the printed digits.
+#[test]
+fn cylindrical_metal_poles_sheets_across_the_seam_match_openems() {
+    for (n, e) in probe_l2("cyl_alpha_metal", "model.xml") {
+        assert!(e < 1e-6, "{n}: {e:e}");
+    }
+}
+
 /// A graded α mesh on a closed grid with the axis (`cyl_alpha_graded`,
 /// cells of 0.3…0.7 rad, a lossy dielectric with its α faces inside
 /// cells and a magnetic box over the axis and the seam): openEMS's α

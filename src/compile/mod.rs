@@ -743,11 +743,17 @@ impl Compiled {
             for ((axis, lo), (a, b)) in copies {
                 let hi = [lo[0], last, lo[2]];
                 let h = axis == crate::axis::Axis::Y;
-                if params(&a) == params(&b)
+                // A seam `H_α` has two lines of its own, whose poles can differ
+                // (α index ranges, `compile::cylavg`): under `hi` those of the
+                // `α = 0` line, under `lo` those of the `α = 2π` line.
+                if (h || params(&a) == params(&b))
                     && !touched.contains(&(axis, lo, h))
                     && !touched.contains(&(axis, hi, h))
                     && !debye_copies.contains_key(&(axis, lo))
                 {
+                    if h {
+                        seam_poles.insert((axis, hi), a);
+                    }
                     seam_poles.insert((axis, lo), b);
                 } else {
                     touched.insert((axis, lo, h));
@@ -1724,6 +1730,16 @@ pub fn compile(
             .with_snap_tolerance(opts.snap_tolerance),
     )?;
     oblique.renumber_warnings(&mut mg.warnings);
+    cylavg::limit_metal(
+        model,
+        &alpha_ranges,
+        grid.is_closed(),
+        &DiscretizeOptions::default()
+            .with_subsampling(opts.subsampling)
+            .with_threads(fdtd.resolved_threads())
+            .with_snap_tolerance(opts.snap_tolerance),
+        &mut mg,
+    )?;
     // openEMS's material samples see through metal (compile::openems).
     let material_model = fdtd
         .get_openems_run()
@@ -1800,6 +1816,13 @@ pub fn compile(
             &mut mg,
             &node_map,
             opts.snap_tolerance,
+            &alpha_ranges,
+            grid.is_closed(),
+            if fdtd.get_openems_run() {
+                openems::inside_tolerance(model)
+            } else {
+                0.0
+            },
             &mut warnings,
         )
     } else {
@@ -1815,7 +1838,12 @@ pub fn compile(
         &mut warnings,
     );
     if cyl {
-        cylindrical::sheet_edges(&grid, &mut sheet_map.edges, &mut warnings);
+        cylindrical::sheet_edges(
+            &grid,
+            &mut sheet_map.edges,
+            &mut sheet_map.names,
+            &mut warnings,
+        );
     }
     let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
     for &(d, idx) in &sheet_map.pec {
@@ -1888,6 +1916,7 @@ pub fn compile(
         &node_map,
         &materials,
         openems_poles.then_some(&grid),
+        &alpha_ranges,
         &mut warnings,
     );
     let thin_wires = wire::thin_wires(
@@ -1955,6 +1984,7 @@ pub fn compile(
                 fdtd,
                 sheet_map.edges,
                 sheet_map.names,
+                &alpha_ranges,
                 &mut materials,
                 &mut timestep,
             )?;

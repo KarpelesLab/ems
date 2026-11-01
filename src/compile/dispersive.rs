@@ -73,6 +73,7 @@ use csx::properties::{Aniso, DebyeMaterial, LorentzMaterial, weight_vars};
 use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
 
 use super::NodeMap;
+use super::cylavg::{ANY, AlphaRanges, Limits, line_index};
 use crate::axis::Axis;
 
 use crate::engine::dispersive::{EdgePole, Field, OpenEmsPole};
@@ -170,23 +171,37 @@ struct Sampler<'a> {
     /// The grid's coordinate system (`(ρ, α, z)` points for a cylindrical
     /// grid).
     cs: CoordSystem,
+    model: &'a csx::ContinuousStructure,
+    /// openEMS's α index ranges of the boxes (files only).
+    limits: Limits<'a>,
+    closed: bool,
 }
 
 impl Sampler<'_> {
     /// Poles of the dispersive property winning at `p` (none for metal,
     /// plain materials or background).
+    #[allow(clippy::too_many_arguments)]
     fn sample(
         &self,
         p: Vec3,
         field: Field,
         dir: usize,
+        index: usize,
         edge_inf: f64,
         out: &mut Vec<Pole>,
         raw: Option<&mut Vec<[f64; 3]>>,
     ) {
-        let Some(h) = self.index.query(p) else {
+        let Some(mut h) = self.index.query(p) else {
             return;
         };
+        if !self.limits.is_empty() && !self.limits.allowed(&h, index) {
+            let mask = TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal);
+            let hits = self.model.properties_at(p, self.cs, mask);
+            match hits.into_iter().find(|q| self.limits.allowed(q, index)) {
+                Some(q) => h = q,
+                None => return,
+            }
+        }
         // Weighting functions take Cartesian coordinates.
         let c = match self.cs {
             CoordSystem::Cylindrical => Vec3::new(p[0] * p[1].cos(), p[0] * p[1].sin(), p[2]),
@@ -236,8 +251,18 @@ impl Sampler<'_> {
                 p[t2] = self.mid(t2, n[t2]);
             }
         }
+        // openEMS's α index (`compile::cylavg`): E edges along α and the H
+        // dual edges have their own cell's or line's; the seam's E edges the
+        // `α = 2π` line's, the axis z edge none.
+        let index = match field {
+            _ if self.cs != CoordSystem::Cylindrical => ANY,
+            Field::Electric if d == 1 => n[1],
+            Field::Electric if d == 2 && self.lines[0][n[0]] == 0.0 => ANY,
+            Field::Electric => line_index(n[1], self.lines[1].len(), self.closed),
+            Field::Magnetic => n[1],
+        };
         let mut out = Vec::new();
-        self.sample(p, field, d, edge_inf, &mut out, raw);
+        self.sample(p, field, d, index, edge_inf, &mut out, raw);
         out
     }
 }
@@ -267,6 +292,7 @@ pub(super) fn dispersive_poles(
     node_map: &NodeMap,
     materials: &EdgeMaterials,
     openems: Option<&Grid>,
+    alpha_ranges: &AlphaRanges,
     warnings: &mut Vec<String>,
 ) -> (Vec<EdgePole>, Vec<OpenEmsPole>) {
     let dispersive =
@@ -294,6 +320,9 @@ pub(super) fn dispersive_poles(
         index: model.spatial_index(cs, TypeMask::MATERIALS | TypeMask::of(PropertyType::Metal)),
         lines: [0, 1, 2].map(|a| model.grid.lines(a)),
         cs,
+        model,
+        limits: alpha_ranges.limits(model),
+        closed: openems.is_some_and(|g| g.is_closed()),
     };
     let dims = node_map.nodes();
     // csx normalises a cylindrical bounding box's α range to [−π, π)

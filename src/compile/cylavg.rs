@@ -62,8 +62,12 @@
 //! ranges (taken from the undilated model, compile::openems), and
 //! [`apply`] re-samples every edge and face that has a sample where the
 //! ranges change the winning primitive, csx's own averages included
-//! (with csx's weights, single sample per quarter cell).
+//! (with csx's weights, single sample per quarter cell). Metal boxes
+//! ([`limit_metal`]), conducting sheets (`cylindrical::wrapped_sheets`,
+//! `compile::openems_sheet`) and dispersive poles (`compile::dispersive`)
+//! follow the same ranges (design §5.16.11, wave 20).
 
+use csx::discretize::{DiscretizeOptions, MaterialGrid, discretize};
 use csx::primitives::{Primitive, Shape};
 use csx::properties::{MaterialQuantity, PropertyType, TypeMask};
 use csx::{CoordSystem, Hit, Vec3};
@@ -99,7 +103,12 @@ impl AlphaRanges {
         };
         let mut out = Vec::new();
         for (pi, p) in model.properties().iter().enumerate() {
-            if p.kind.material().is_none() && p.property_type() != PropertyType::Metal {
+            if p.kind.material().is_none()
+                && !matches!(
+                    p.property_type(),
+                    PropertyType::Metal | PropertyType::ConductingSheet
+                )
+            {
                 continue;
             }
             for (bi, prim) in boxes(p) {
@@ -129,11 +138,146 @@ impl AlphaRanges {
         }
         Self(out)
     }
+
+    /// Whether primitive number `prim` of property `p` (number `pi` of the
+    /// model) may act on α index `j`.
+    pub(crate) fn allows(&self, pi: usize, p: &csx::Property, prim: usize, j: usize) -> bool {
+        if !matches!(p.primitives[prim].shape, Shape::Box(_)) {
+            return true;
+        }
+        let bi = p.primitives[..prim]
+            .iter()
+            .filter(|q| matches!(q.shape, Shape::Box(_)))
+            .count();
+        self.0
+            .iter()
+            .find(|r| r.0 == pi && r.1 == bi)
+            .is_none_or(|r| r.2 <= j && j <= r.3)
+    }
+
+    /// The limited boxes of `model` as a lookup for samples.
+    pub(crate) fn limits<'m>(&self, model: &'m csx::ContinuousStructure) -> Limits<'m> {
+        Limits(
+            model
+                .properties()
+                .iter()
+                .enumerate()
+                .flat_map(|(pi, p)| {
+                    boxes(p).filter_map(move |(bi, prim)| {
+                        self.0
+                            .iter()
+                            .find(|r| r.0 == pi && r.1 == bi)
+                            .map(|r| (prim, r.2, r.3))
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The limited boxes of a model ([`AlphaRanges::limits`]).
+pub(crate) struct Limits<'m>(Vec<(&'m Primitive, usize, usize)>);
+
+impl Limits<'_> {
+    /// Whether no box is limited.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether the primitive of `h` counts for α index `j`.
+    pub(crate) fn allowed(&self, h: &Hit<'_>, j: usize) -> bool {
+        self.0
+            .iter()
+            .find(|r| core::ptr::eq(r.0, h.primitive))
+            .is_none_or(|r| r.1 <= r.2 && (j == ANY || (r.1 <= j && j <= r.2)))
+    }
+}
+
+/// openEMS's α index of the edges and dual edges on line `j` of `n` lines:
+/// the seam of a closed grid is the `α = 2π` line.
+pub(crate) fn line_index(j: usize, n: usize, closed: bool) -> usize {
+    if closed && j == 0 { n - 1 } else { j }
+}
+
+/// Applies the α index ranges to the PEC edges of metal boxes (see the
+/// [module docs](self#α-index-ranges-of-boxes)): `mg.pec` becomes the PEC
+/// edges of the model without the limited metal boxes, plus those of each
+/// such box whose α index lies in its range. Black box: the zero `vv` of
+/// `--debug-operator` per α index, boxes on and off the lines, across
+/// `α = 0`, past `2π`, wholly outside, on one line. An α edge has the index
+/// of its cell, a ρ or z edge that of its line (the seam: the `α = 2π` line,
+/// for both copies). The axis z edge is not limited. The sheet ids of
+/// `mg` become those of the model without the limited conducting sheets:
+/// `cylindrical::wrapped_sheets` selects these again within their ranges.
+pub(crate) fn limit_metal(
+    model: &csx::ContinuousStructure,
+    ranges: &AlphaRanges,
+    closed: bool,
+    opts: &DiscretizeOptions,
+    mg: &mut MaterialGrid,
+) -> csx::Result<()> {
+    let of_type = |pi: usize, t: PropertyType| model.properties()[pi].property_type() == t;
+    let metal: Vec<_> = ranges
+        .0
+        .iter()
+        .filter(|r| of_type(r.0, PropertyType::Metal))
+        .collect();
+    let sheet = |pi: usize| of_type(pi, PropertyType::ConductingSheet);
+    if metal.is_empty() && !ranges.0.iter().any(|r| sheet(r.0)) {
+        return Ok(());
+    }
+    let keep = |keep: &dyn Fn(usize, usize) -> bool| {
+        let mut m = model.clone();
+        for (pi, p) in m.properties_mut().enumerate() {
+            let mut bi = 0;
+            p.primitives.retain(|q| {
+                let b = matches!(q.shape, Shape::Box(_));
+                let ord = bi;
+                bi += usize::from(b);
+                !b || keep(pi, ord)
+            });
+        }
+        m
+    };
+    let limited = |pi: usize, bi: usize| {
+        (sheet(pi) || of_type(pi, PropertyType::Metal))
+            && ranges.0.iter().any(|r| r.0 == pi && r.1 == bi)
+    };
+    let base = discretize(&keep(&|pi, bi| !limited(pi, bi)), opts)?;
+    let n = mg.dims;
+    mg.sheet = base.sheet;
+    mg.sheets = base.sheets;
+    let mut pec = base.pec;
+    for r in metal {
+        // This box among everything not limited: other properties still win
+        // over it by priority.
+        let only = keep(&|pi, bi| !limited(pi, bi) || (pi == r.0 && bi == r.1));
+        let g = discretize(&only, opts)?;
+        for (d, pd) in pec.iter_mut().enumerate() {
+            for (idx, &on) in g.pec[d].iter().enumerate() {
+                let node = g.node(idx);
+                let j = node[1];
+                let seam = closed && d != 1 && (j == 0 || j == n[1] - 1);
+                let index = if seam { n[1] - 1 } else { j };
+                let axis = d == 2 && model.grid.lines(0)[node[0]] == 0.0;
+                let hit = if seam {
+                    on || g.pec[d][g.index([node[0], n[1] - 1 - j, node[2]])]
+                } else {
+                    on
+                };
+                if hit && (axis || (r.2 <= index && index <= r.3 && r.2 <= r.3)) {
+                    pd[idx] = true;
+                }
+            }
+        }
+    }
+    mg.pec = pec;
+    Ok(())
 }
 
 /// The α index of a sample that no range limits (the axis; a box wholly
 /// outside the α lines still has no effect).
-const ANY: usize = usize::MAX;
+pub(crate) const ANY: usize = usize::MAX;
 
 /// The box primitives of `p` with their ordinal among its boxes (stable
 /// under csx's dilation and the removal of oblique wires).
@@ -190,27 +334,8 @@ pub(crate) fn apply(
         [bg.kappa.value(); 3],
         [bg.sigma.value(); 3],
     ];
-    // The limited boxes of `model` with their α index ranges.
-    let limited: Vec<(&Primitive, usize, usize)> = model
-        .properties()
-        .iter()
-        .enumerate()
-        .flat_map(|(pi, p)| {
-            boxes(p).filter_map(move |(bi, prim)| {
-                ranges
-                    .0
-                    .iter()
-                    .find(|r| r.0 == pi && r.1 == bi)
-                    .map(|r| (prim, r.2, r.3))
-            })
-        })
-        .collect();
-    let allowed = |h: &Hit<'_>, j: usize| {
-        limited
-            .iter()
-            .find(|r| core::ptr::eq(r.0, h.primitive))
-            .is_none_or(|r| r.1 <= r.2 && (j == ANY || (r.1 <= j && j <= r.2)))
-    };
+    let limited = ranges.limits(model);
+    let allowed = |h: &Hit<'_>, j: usize| limited.allowed(h, j);
     let material = |hit: Option<Hit<'_>>, p: [f64; 3]| -> Option<Sample> {
         match hit {
             None => Some(bg),
@@ -243,7 +368,7 @@ pub(crate) fn apply(
     };
     // openEMS's α index of the edges and dual edges on line `j`: the seam
     // of a closed grid is the `α = 2π` line.
-    let line_index = |j: usize| if closed && j == 0 { n[1] - 1 } else { j };
+    let line_index = |j: usize| line_index(j, n[1], closed);
     // Signed half cell next to line `i` of axis `a` on side `s`.
     let half = |a: usize, i: usize, s: i32| -> Option<f64> {
         let l = lines[a];

@@ -46,7 +46,10 @@ use std::path::Path;
 use csx::io::dom::{Element, Node};
 use csx::{ContinuousStructure, OpenEmsDocument};
 
+use crate::engine::CLOSED_TOL;
 use crate::{Error, Result};
+
+const TAU: f64 = core::f64::consts::TAU;
 
 /// Reads the openEMS file at `path` with openEMS's reading rules (see the
 /// [module docs](self)): the document and the warnings of the rewrites.
@@ -138,6 +141,19 @@ pub fn parse_model(xml: &str) -> Result<(OpenEmsDocument, Vec<String>)> {
              mesh (rho, alpha, z and the primitives' coordinates as x, y, z), as openEMS does"
                 .into(),
         );
+    }
+    // openEMS puts the last α line of a closed grid at exactly `α_0 + 2π`,
+    // whatever the file says (black box: a mesh written to 9 digits has the
+    // coefficients and probes, bit for bit, of the same mesh with that line;
+    // design §5.16.11).
+    let g = &mut doc.structure.grid;
+    if g.coord_system == csx::CoordSystem::Cylindrical
+        && let [first, .., last] = *g.lines(1)
+        && (last - first - TAU).abs() <= CLOSED_TOL * TAU
+    {
+        let mut lines = g.lines(1).to_vec();
+        *lines.last_mut().expect("two lines at least") = first + TAU;
+        g.set_lines(1, lines).map_err(Error::Csx)?;
     }
     Ok((doc, warnings))
 }

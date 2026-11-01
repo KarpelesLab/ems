@@ -21,8 +21,6 @@
 //! * A sheet with conductivity or thickness `≤ 0` has no effect (the
 //!   edges stay ordinary), with a warning.
 
-use std::collections::HashMap;
-
 use csx::discretize::MaterialGrid;
 use csx::{CoordSystem, PropertyKind, Vec3};
 
@@ -53,18 +51,23 @@ fn local_cell(lines: &[f64], i: usize) -> f64 {
     lo.max(hi)
 }
 
-/// `(normal, plane index)` of every planar primitive of the conducting
-/// sheets, by property name.
-fn sheet_planes(
-    model: &csx::ContinuousStructure,
-    snap_tol: f64,
-) -> HashMap<&str, Vec<(usize, usize)>> {
-    let mut out: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+/// A planar primitive of a conducting sheet.
+struct Plane<'m> {
+    name: &'m str,
+    prim: &'m csx::primitives::Primitive,
+    /// Conductivity and thickness: csx gives sheets alike one id.
+    sheet: (f64, f64),
+    normal: usize,
+    line: usize,
+}
+
+/// Every planar primitive of the conducting sheets.
+fn sheet_planes(model: &csx::ContinuousStructure, snap_tol: f64) -> Vec<Plane<'_>> {
+    let mut planes = Vec::new();
     for p in model.properties() {
-        if !matches!(p.kind, PropertyKind::ConductingSheet(_)) {
+        let PropertyKind::ConductingSheet(c) = &p.kind else {
             continue;
-        }
-        let planes = out.entry(p.name.as_str()).or_default();
+        };
         for prim in &p.primitives {
             if prim.dimension() != 2 {
                 continue;
@@ -90,11 +93,62 @@ fn sheet_planes(
             if let [nrm] = flat[..]
                 && let Some(k) = plane_line(model, nrm, b.min[nrm], snap_tol)
             {
-                planes.push((nrm, k));
+                planes.push(Plane {
+                    name: p.name.as_str(),
+                    prim,
+                    sheet: (c.conductivity.value(), c.thickness.value()),
+                    normal: nrm,
+                    line: k,
+                });
             }
         }
     }
-    out
+    planes
+}
+
+/// The plane of the sheet edge along `d` at `node` with id properties
+/// `info`: of the planes through the edge, one whose primitive contains the
+/// edge's midpoint if any (several sheets can share an id, one sheet can
+/// have several planes through a line), else that property's first.
+fn edge_plane<'p, 'm>(
+    model: &csx::ContinuousStructure,
+    planes: &'p [Plane<'m>],
+    info: &SheetSpec,
+    d: usize,
+    node: [usize; 3],
+) -> Option<&'p Plane<'m>> {
+    let through = |q: &&Plane<'m>| q.normal != d && node[q.normal] == q.line;
+    let alike = |q: &&Plane<'m>| q.sheet == (info.conductivity, info.thickness);
+    let cs = model.grid.coord_system;
+    let mut mid = Vec3::new(
+        model.grid.lines(0)[node[0]],
+        model.grid.lines(1)[node[1]],
+        model.grid.lines(2)[node[2]],
+    );
+    mid.0[d] = 0.5 * (model.grid.lines(d)[node[d]] + model.grid.lines(d)[node[d] + 1]);
+    let tau = core::f64::consts::TAU;
+    let shifts: &[f64] = if cs == CoordSystem::Cylindrical {
+        &[0.0, tau, -tau]
+    } else {
+        &[0.0]
+    };
+    let contains = |q: &&Plane<'m>| {
+        shifts.iter().any(|&s| {
+            let p = Vec3::new(mid[0], mid[1] + s, mid[2]);
+            q.prim.contains_in(p, cs, model.coord_system)
+        })
+    };
+    planes
+        .iter()
+        .filter(through)
+        .filter(alike)
+        .find(contains)
+        .or_else(|| {
+            planes
+                .iter()
+                .filter(through)
+                .find(|q| q.name == info.name.as_str())
+        })
 }
 
 /// The mesh line of `axis` within the snapping tolerance of `v` (on a
@@ -232,16 +286,12 @@ pub(super) fn sheet_edges(
                 continue;
             }
             let node = node_map.csx_node(idx);
-            let normal = planes.get(info.name.as_str()).and_then(|p| {
-                p.iter()
-                    .find(|&&(nrm, k)| nrm != d && node[nrm] == k)
-                    .map(|&(nrm, _)| nrm)
-            });
-            let Some(nrm) = normal else {
+            let Some(plane) = edge_plane(model, &planes, info, d, node) else {
                 pec[s] += 1;
                 out.pec.push((d, idx));
                 continue;
             };
+            let nrm = plane.normal;
             out.edges.push(SheetEdge {
                 axis: Axis::ALL[d],
                 node,
@@ -250,7 +300,7 @@ pub(super) fn sheet_edges(
                 thickness: t,
                 upper_share: shares(model, d, node, nrm),
             });
-            out.names.push(info.name.clone());
+            out.names.push(plane.name.to_string());
         }
     }
     for (s, info) in sheets.iter().enumerate() {

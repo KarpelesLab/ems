@@ -61,10 +61,8 @@
 //!   start node. On a closed azimuth openEMS updates the ρ and z edges of
 //!   the seam at `α = 2π` (the `α = 0` copy is not used): the neighbouring
 //!   cells there are cells `N − 1` and `N`, the copy of cell 0 (which
-//!   counts); the edge is in a box that contains 2π as written, or 0 and
-//!   `α_{N−1}`. openEMS compares box angles as written (no wrap), except
-//!   that a point past 2π (cell `N`) also matches as `α − 2π` in a box of
-//!   nonzero α extent: a fin drawn at `α = 0` has no effect (it is not on
+//!   counts). A box acts on the α indices of `compile::cylavg`, as for
+//!   materials and metal (wave 20): a fin drawn at `α = 0` has no effect (it is not on
 //!   the `2π` copy), boxes past 2π do not reach the first α cells. ems
 //!   stores the seam edge twice (`j = 0` and `j = N`) and splits the
 //!   edge's `C` and `G` between the copies by their halves of the dual
@@ -112,10 +110,10 @@
 //! the sheet capacitances are set and pins it.
 
 use csx::ContinuousStructure;
-use csx::primitives::{Primitive, Shape};
 use csx::properties::{PropertyKind, TypeMask};
 use csx::{CoordSystem, Vec3};
 
+use super::cylavg::{ANY, AlphaRanges, Limits};
 use crate::Result;
 use crate::axis::Axis;
 use crate::engine::{EdgeMaterials, Grid, OPENEMS_EPS0, OPENEMS_MU0, SheetEdge, TimeStep};
@@ -262,56 +260,46 @@ pub(super) struct Emulation {
     pub pec: usize,
 }
 
-/// Whether the sheet `name` contains `p` (drawing units, in the grid's
-/// coordinates `cs`) and wins the priority there over every material,
-/// metal and other sheet containing it (ties go to the property defined
-/// first; lumped elements do not count). `wrap`: on cylindrical grids,
-/// whether an `α` past 2π may also match as `α − 2π` ([`alpha_in`]).
-fn sheet_at(model: &ContinuousStructure, cs: CoordSystem, name: &str, p: Vec3, wrap: bool) -> bool {
+/// Whether the sheet `name` (empty: any sheet) contains `p` (drawing units,
+/// in the grid's coordinates `cs`) and wins the priority there over every
+/// material, metal and other sheet containing it (ties go to the property
+/// defined first; lumped elements do not count). On cylindrical grids the
+/// sample has α index `index` (`compile::cylavg`), and a bound written to
+/// fewer digits than a line still reaches it (openEMS's inside tolerance
+/// `tol`; csx selects sheets without it).
+fn sheet_at(
+    model: &ContinuousStructure,
+    cs: CoordSystem,
+    name: &str,
+    p: Vec3,
+    (limits, index): (&Limits<'_>, usize),
+    tol: f64,
+) -> bool {
     let is_sheet = |h: &csx::Hit<'_>| matches!(h.property.kind, PropertyKind::ConductingSheet(_));
-    model
-        .properties_at(p, cs, TypeMask::PHYSICAL)
-        .iter()
-        .filter(|h| !matches!(h.property.kind, PropertyKind::LumpedElement(_)))
-        // A sheet primitive whose α range misses `p` does not contain it.
-        .find(|h| {
-            !is_sheet(h) || cs == CoordSystem::Cartesian || alpha_in(model, h.primitive, p[1], wrap)
-        })
-        .is_some_and(|h| is_sheet(h) && h.property.name == name)
-}
-
-/// openEMS's azimuth test of a cylindrical box (module docs): `α` within
-/// the box's α range as written, or (`wrap`) `α − 2π` for points past 2π
-/// (the copies of the first α cells) in a box of nonzero α extent. csx
-/// compares angles modulo 2π instead, which also puts a fin drawn at
-/// `α = 0` on the `α = 2π` copy of the seam (openEMS: not) and wraps
-/// boxes past 2π onto the first α cells. Other primitives keep csx's
-/// test.
-fn alpha_in(model: &ContinuousStructure, prim: &Primitive, alpha: f64, wrap: bool) -> bool {
-    let Shape::Box(b) = &prim.shape else {
-        return true;
+    let at = |p: Vec3| {
+        model
+            .properties_at(p, cs, TypeMask::PHYSICAL)
+            .iter()
+            .filter(|h| !matches!(h.property.kind, PropertyKind::LumpedElement(_)))
+            .find(|h| !is_sheet(h) || limits.allowed(h, index))
+            .is_some_and(|h| is_sheet(h) && (name.is_empty() || h.property.name == name))
     };
-    if !prim.transform.is_empty() || prim.shape_cs(model.coord_system) != CoordSystem::Cylindrical {
-        return true;
-    }
-    let (a0, a1) = (b.start.value()[1], b.stop.value()[1]);
-    let (lo, hi) = (a0.min(a1), a0.max(a1));
-    let tol = 1e-12 * lo.abs().max(hi.abs()).max(1.0);
-    let tau = core::f64::consts::TAU;
-    let within = |a: f64| a >= lo - tol && a <= hi + tol;
-    within(alpha) || (wrap && hi - lo > tol && alpha >= tau - tol && within(alpha - tau))
+    let near = |da: f64| at(Vec3::new(p[0], p[1] + da, p[2]));
+    near(0.0) || (cs == CoordSystem::Cylindrical && (near(-tol) || near(tol)))
 }
 
 /// Replaces the native sheet edges `edges` by openEMS's model (module
 /// docs): sets `ε`, `κ` (and PEC) of the edges in `materials`, returns
 /// the branch poles. `timestep` is resolved here with `materials` and
 /// pinned to that value.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emulate(
     model: &ContinuousStructure,
     grid: &Grid,
     fdtd: &Fdtd,
     edges: Vec<SheetEdge>,
     names: Vec<String>,
+    ranges: &AlphaRanges,
     materials: &mut EdgeMaterials,
     timestep: &mut TimeStep,
 ) -> Result<Emulation> {
@@ -339,6 +327,10 @@ pub(super) fn emulate(
     let f = sheet_frequency(fdtd);
     let n = grid.nodes();
     let cyl = grid.is_cylindrical();
+    // A bound written to fewer digits than the `α = 2π` line still reaches
+    // it (openEMS's inside tolerance, `compile::openems`).
+    let tol = super::openems::inside_tolerance(model);
+    let limits = ranges.limits(model);
     let cs = if cyl {
         CoordSystem::Cylindrical
     } else {
@@ -393,19 +385,16 @@ pub(super) fn emulate(
         };
         let mut mid = Vec3::new(at(0, node[0]), at(1, node[1]), at(2, node[2]));
         mid.0[d] = 0.5 * (lines[d][node[d]] + lines[d][node[d] + 1]);
-        // The seam edge (at α_N = 2π) is in a box that contains 2π as
-        // written, or 0 and α_{N−1} (measured on tubes [0, a]: the seam
-        // edge is a sheet edge from a ≥ α_{N−1} on).
-        let on_sheet = sheet_at(model, cs, &name, mid, false)
-            || (seam
-                && sheet_at(model, cs, &name, mid, true)
-                && sheet_at(
-                    model,
-                    cs,
-                    &name,
-                    Vec3::new(mid[0], lines[1][seam_n - 1], mid[2]),
-                    false,
-                ));
+        // openEMS's α index of the edge (`compile::cylavg`): the seam's is
+        // the `α = 2π` line's.
+        let index = if !cyl {
+            ANY
+        } else if seam {
+            seam_n
+        } else {
+            node[1]
+        };
+        let on_sheet = sheet_at(model, cs, &name, mid, (&limits, index), tol);
         if !on_sheet {
             continue;
         }
@@ -425,12 +414,14 @@ pub(super) fn emulate(
                 0.5 * (lines[t][c] + lines[t][c + 1])
             }
         };
-        let inside = |p: Vec3| sheet_at(model, cs, &name, p, true);
+        // Any conducting sheet counts, not only the edge's own property
+        // (black box: two sheets meeting at a node, both edges there interior).
         let interior = [jt - 1, jt].into_iter().all(|c| {
             let mut p = mid;
             p.0[d] = lines[d][node[d]];
             p.0[t] = centre(c);
-            c != 0 && !in_region(t, c) && inside(p)
+            let index = if cyl && t == 1 { c } else { index };
+            c != 0 && !in_region(t, c) && sheet_at(model, cs, "", p, (&limits, index), tol)
         });
         // The stored copies of the edge with their share of it.
         let copies: Vec<([usize; 3], f64)> = if seam {

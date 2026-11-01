@@ -31,7 +31,7 @@ pub enum Coordinates {
 }
 
 /// Relative tolerance on `α_max − α_min = 2π` for a closed azimuth.
-const CLOSED_TOL: f64 = 1e-6;
+pub(crate) const CLOSED_TOL: f64 = 1e-6;
 
 /// A validated rectilinear mesh, Cartesian (metres) or cylindrical
 /// (`ρ`, `z` in metres, `α` in radians).

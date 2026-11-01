@@ -543,6 +543,8 @@ pub(crate) fn dilated(model: &ContinuousStructure) -> Option<ContinuousStructure
         return None;
     }
     let cs = model.coord_system;
+    let alpha =
+        (model.grid.coord_system == CoordSystem::Cylindrical).then(|| model.grid.lines(1).to_vec());
     let mut m = model.clone();
     for p in m.properties_mut() {
         if applies(&p.kind) {
@@ -550,6 +552,25 @@ pub(crate) fn dilated(model: &ContinuousStructure) -> Option<ContinuousStructure
             // snapping, not by inside tests.
             for q in p.primitives.iter_mut().filter(|q| q.dimension() == 3) {
                 grow(q, t, cs);
+            }
+            // A box flat in α, drawn within the tolerance of an α line, is
+            // on that line (a line written to fewer digits than the mesh).
+            if let Some(al) = &alpha {
+                for q in p.primitives.iter_mut() {
+                    if !q.transform.is_empty() || q.shape_cs(cs) != CoordSystem::Cylindrical {
+                        continue;
+                    }
+                    let Shape::Box(b) = &mut q.shape else {
+                        continue;
+                    };
+                    let a = b.start.0[1].value();
+                    if a == b.stop.0[1].value()
+                        && let Some(&l) = al.iter().find(|&&l| (l - a).abs() <= t)
+                    {
+                        b.start.0[1].set(l);
+                        b.stop.0[1].set(l);
+                    }
+                }
             }
         }
     }

@@ -191,6 +191,8 @@ pub use edge_dft::{CellBox, EdgeDft};
 pub use edge_material::EdgeMaterials;
 pub use excite::{Amplitude, EdgeSource, SourceKind};
 pub use fields::{FieldArrays, Fields};
+#[cfg(feature = "xml")]
+pub(crate) use grid::CLOSED_TOL;
 pub use grid::{Coordinates, Grid};
 pub use lumped::{EdgeValues, LumpedBox, LumpedElement, Topology, fold_parallel};
 pub use material::{CellMaterials, Material};
