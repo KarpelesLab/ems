@@ -6338,7 +6338,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-10-30, after wave 19)
+### Status (2026-11-02, after wave 20)
 
 | Step | State |
 |---|---|
@@ -6513,20 +6513,40 @@ absorbing-face lines, poles under parallel lumped elements, excitation
 priorities, the H normal to an upper PEC face). Feature sweep unchanged
 at 150 of 169 exact, 166 to the printed digits.
 
+Wave 20: the update order on a lumped element's edge (kernel, element,
+poles or sheet branches, sources) and openEMS's f32 inductor update, whose
+coefficient holds only the element's own `1/R` (§5.16.3, `rs_l_order`
+7.2e-2 → 0); the energy end criterion with H sources and its f32 overflow,
+which ends runs with `-nan` dB while the fields are finite; random sweep
+555 of seeds 0…559, 196 of 200 fresh seeds 560…759. Closed cylindrical
+grids (§5.16.11): metal, electric poles and most sheets follow the α index
+ranges, the last α line sits at exactly `α_0 + 2π`, graded rules apply
+from any width difference, probes in the last α cell read as in openEMS,
+cylindrical current probes in f32; random cylindrical sweep
+(`tools/rsweep_cyl.py`): 54 of 60 on seeds no rule was fitted to. The sweep
+tools are committed (`scripts/openems-oracle/tools/`). The feature sweep now
+runs 182 models (`features.py` and the `sweep_*` fixtures): 162 exact, the
+same differences as before plus `sheet_triangle_r` at 3e-14.
+
 Remaining:
-- Cylindrical (§5.16.11): metal boxes crossing α = 0 and the α index
-  ranges of dispersive poles (not measured); `e2e_coax_monopole` probes
-  3e-7…2e-6 (its α mesh is uniform only to 1e-9); `cyl_wrap_lumped`
-  1.6e-5 (series elements); kept on purpose:
+- Cylindrical (§5.16.11): magnetic poles in cell 0 off the seam
+  (1e-4…2e-2), sheets reaching the axis (2e-2…4), Debye boxes over the axis
+  (2e-4), a Lorentz box's time step (`mix_117`, 0.2 %), a dielectric over
+  metal outside its index range (`mix_101`, 0.57, not measured),
+  `e2e_coax_monopole` probes about 1e-6 (a `z_max` Mur face on an inexact
+  mesh, seed not found), lumped elements on seam edges (the wave 20 order not
+  measured there); kept on purpose:
   openEMS's lumped elements on the α = 0 line and its (N−1)/N ring
   current; HDF5 dump divisions (≤ 1e-7).
-- From the random sweep (§5.16.3, 13 of 560): series elements (101, 356);
-  R‖L elements with little capacitance or inside a PML where openEMS
-  diverges and ems stays bounded (1, 278, 371, 480, 521, 555) or both grow
-  alike (55); the energy end criterion with an H source inside metal (443,
-  535; fields agree); 454, 507 not analysed; inductor or series elements
-  in dispersive media or on sheets (the order of their update against the
-  poles and sheet branches).
+- From the random sweep (§5.16.3, 9 of 760): series-update round-off (101,
+  356, 682); R‖L elements with 4…10 % of their capacitance (454, 507, 631);
+  elements in or on an absorbing layer, where openEMS diverges and ems stays
+  bounded (278, 570, 630). The metric counts runs where both codes diverge
+  as agreeing; seven of these stop at different steps (15, 105, 187, 404,
+  623, 651, 656), openEMS's stop rule in 623 (198 vs 990) is not measured.
+  Debye media with inductor or series elements (1.7e-3…9.8e-3) are outside
+  the generator. The inductor rule is fitted on single edges (`rs_18`
+  4.7e-5, `lumped_graded_rl` 1.3e-5, `lumped_exc` 9.6e-6).
 - From the feature sweep: series lumped elements (`lumped_series_rlc`
   8.8e-5, `cyl_wrap_lumped`, `rs_1` 1.6e-5): the first two steps are
   exact, later ones need a history term not yet identified (§5.16.13);
