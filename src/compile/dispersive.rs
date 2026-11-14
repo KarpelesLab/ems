@@ -76,7 +76,7 @@ use super::NodeMap;
 use super::cylavg::{ANY, AlphaRanges, Limits, line_index};
 use crate::axis::Axis;
 
-use crate::engine::dispersive::{EdgePole, Field, OpenEmsPole};
+use crate::engine::dispersive::{EdgePole, EdgePoles, Field, OpenEmsPole};
 use crate::engine::{CoeffRounding, EdgeMaterials, Grid, Pole, e_edge_circuit, h_edge_inductance};
 
 /// Value of `a` along `dir` at `vars` (isotropic: axis 0).
@@ -294,7 +294,7 @@ pub(super) fn dispersive_poles(
     openems: Option<&Grid>,
     alpha_ranges: &AlphaRanges,
     warnings: &mut Vec<String>,
-) -> (Vec<EdgePole>, Vec<OpenEmsPole>) {
+) -> (EdgePoles, Vec<OpenEmsPole>) {
     let dispersive =
         TypeMask::of(PropertyType::LorentzMaterial) | TypeMask::of(PropertyType::DebyeMaterial);
     let mut bbox = BoundingBox::EMPTY;
@@ -313,7 +313,7 @@ pub(super) fn dispersive_poles(
         }
     }
     if bbox.is_empty() || !(bbox.min.is_finite() && bbox.max.is_finite()) {
-        return (Vec::new(), Vec::new());
+        return (EdgePoles::new(), Vec::new());
     }
     let cs = model.grid.coord_system;
     let s = Sampler {
@@ -337,7 +337,7 @@ pub(super) fn dispersive_poles(
             node_range(s.lines[a], bbox.min[a], bbox.max[a])
         }
     });
-    let mut out = Vec::new();
+    let mut out = EdgePoles::new();
     let mut oe = Vec::new();
     let mut raw = Vec::new();
     let mut bad = 0usize;
@@ -445,6 +445,8 @@ pub(super) fn dispersive_poles(
              ignored (openEMS gives the axis none)"
         ));
     }
+    out.shrink_to_fit();
+    oe.shrink_to_fit();
     (out, oe)
 }
 

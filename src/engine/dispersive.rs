@@ -481,6 +481,201 @@ pub struct EdgePole {
     pub pole: Pole,
 }
 
+/// A list of [`EdgePole`]s held compactly: the distinct poles once, and
+/// per entry the edge and the index of its pole (16 bytes an entry where
+/// an [`EdgePole`] takes 64). The compile step gives every edge of a
+/// dispersive material its poles; on all but the edges at its surface
+/// those are the material's own, the same on every edge.
+///
+/// The entries keep their order, and [`iter`](Self::iter) gives back
+/// exactly the poles that were pushed (bit for bit).
+///
+/// ```
+/// use ems::engine::dispersive::{EdgePole, EdgePoles, Field, Pole};
+/// use ems::Axis;
+/// let mut list = EdgePoles::new();
+/// for k in 0..100 {
+///     list.push(EdgePole { field: Field::Electric, axis: Axis::Z, node: [1, 2, k], pole: Pole::debye(3.0, 1e-11) });
+/// }
+/// assert_eq!((list.len(), list.distinct()), (100, 1));
+/// assert_eq!(list.iter().nth(7).unwrap().node, [1, 2, 7]);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct EdgePoles {
+    poles: Vec<Pole>,
+    refs: Vec<PoleRef>,
+    /// Bit patterns of `poles` → index, while the list grows (rebuilt
+    /// when needed).
+    ids: std::collections::HashMap<[u64; 4], u32>,
+}
+
+/// One entry of [`EdgePoles`]: the node and, in `tag`, the pole index
+/// (29 bits), the axis (2 bits) and the field (1 bit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PoleRef {
+    node: [u32; 3],
+    tag: u32,
+}
+
+const POLE_ID_BITS: u32 = 29;
+
+impl PoleRef {
+    fn field(&self) -> Field {
+        if self.tag >> 31 == 0 {
+            Field::Electric
+        } else {
+            Field::Magnetic
+        }
+    }
+
+    fn axis(&self) -> Axis {
+        Axis::ALL[((self.tag >> POLE_ID_BITS) & 3) as usize]
+    }
+
+    fn pole(&self) -> usize {
+        (self.tag & ((1 << POLE_ID_BITS) - 1)) as usize
+    }
+
+    fn node(&self) -> [usize; 3] {
+        self.node.map(|v| v as usize)
+    }
+}
+
+impl Pole {
+    /// The bit patterns that identify the pole.
+    fn bits(&self) -> [u64; 4] {
+        match *self {
+            Pole::Lorentz {
+                omega_p,
+                omega_0,
+                gamma,
+            } => [0, omega_p.to_bits(), omega_0.to_bits(), gamma.to_bits()],
+            Pole::Drude { omega_p, gamma } => [1, omega_p.to_bits(), gamma.to_bits(), 0],
+            Pole::Debye { delta_eps, tau } => [2, delta_eps.to_bits(), tau.to_bits(), 0],
+        }
+    }
+}
+
+impl EdgePoles {
+    /// An empty list.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.refs.len()
+    }
+
+    /// Whether the list has no entry.
+    pub fn is_empty(&self) -> bool {
+        self.refs.is_empty()
+    }
+
+    /// Number of distinct poles (bit patterns) among the entries pushed.
+    pub fn distinct(&self) -> usize {
+        self.poles.len()
+    }
+
+    /// Appends an entry.
+    ///
+    /// # Panics
+    /// If a node index does not fit 32 bits or the list would hold more
+    /// than 2²⁹ distinct poles.
+    pub fn push(&mut self, e: EdgePole) {
+        if self.ids.len() != self.poles.len() {
+            self.ids = self
+                .poles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.bits(), i as u32))
+                .collect();
+        }
+        let next = self.poles.len() as u32;
+        let id = *self.ids.entry(e.pole.bits()).or_insert(next);
+        if id == next {
+            assert!(next < 1 << POLE_ID_BITS, "too many distinct poles");
+            self.poles.push(e.pole);
+        }
+        let node = e
+            .node
+            .map(|v| u32::try_from(v).expect("node index of a pole edge"));
+        let field = u32::from(e.field == Field::Magnetic);
+        self.refs.push(PoleRef {
+            node,
+            tag: id | (e.axis.index() as u32) << POLE_ID_BITS | field << 31,
+        });
+    }
+
+    fn entry(&self, r: &PoleRef) -> EdgePole {
+        EdgePole {
+            field: r.field(),
+            axis: r.axis(),
+            node: r.node(),
+            pole: self.poles[r.pole()],
+        }
+    }
+
+    /// The entry at `index`, if in range.
+    pub fn get(&self, index: usize) -> Option<EdgePole> {
+        self.refs.get(index).map(|r| self.entry(r))
+    }
+
+    /// The entries in order.
+    pub fn iter(&self) -> impl Iterator<Item = EdgePole> + '_ {
+        self.refs.iter().map(|r| self.entry(r))
+    }
+
+    /// The entries as a vector.
+    pub fn to_vec(&self) -> Vec<EdgePole> {
+        self.iter().collect()
+    }
+
+    /// Keeps the entries for which `keep` is true (in order).
+    pub fn retain(&mut self, mut keep: impl FnMut(&EdgePole) -> bool) {
+        let poles = &self.poles;
+        self.refs.retain(|r| {
+            keep(&EdgePole {
+                field: r.field(),
+                axis: r.axis(),
+                node: r.node(),
+                pole: poles[r.pole()],
+            })
+        });
+    }
+
+    /// Releases the spare capacity and the lookup table of the poles (a
+    /// later [`push`](Self::push) rebuilds it).
+    pub fn shrink_to_fit(&mut self) {
+        self.poles.shrink_to_fit();
+        self.refs.shrink_to_fit();
+        self.ids = std::collections::HashMap::new();
+    }
+}
+
+impl PartialEq for EdgePoles {
+    /// The same entries in the same order.
+    fn eq(&self, o: &Self) -> bool {
+        self.len() == o.len() && self.iter().zip(o.iter()).all(|(a, b)| a == b)
+    }
+}
+
+impl Extend<EdgePole> for EdgePoles {
+    fn extend<T: IntoIterator<Item = EdgePole>>(&mut self, iter: T) {
+        for e in iter {
+            self.push(e);
+        }
+    }
+}
+
+impl FromIterator<EdgePole> for EdgePoles {
+    fn from_iter<T: IntoIterator<Item = EdgePole>>(iter: T) -> Self {
+        let mut out = Self::new();
+        out.extend(iter);
+        out
+    }
+}
+
 /// A Lorentz or Drude pole of an openEMS file, updated with openEMS's own
 /// arithmetic ([`Dispersive::push_openems`], design §5.16.12): the same
 /// explicit leapfrog scheme as [`Scheme::Leapfrog`], but in `f32`, in
@@ -609,7 +804,7 @@ enum Kind {
 
 /// Branch state of all edges of one field type in one slab (structure of
 /// arrays, edges in global order, poles in CSR layout).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct Side {
     /// Axis index of each edge.
     axis: Vec<u8>,
@@ -623,21 +818,19 @@ struct Side {
     sum_inv_z: Vec<f64>,
     /// End of each edge's poles in the pole arrays.
     pole_end: Vec<u32>,
-    /// `2L/dt` per pole (leapfrog poles: `k_a`).
-    a: Vec<f64>,
-    /// `1/C_p` per pole.
-    inv_c: Vec<f64>,
-    /// `1/z_p` per pole (leapfrog poles: `k_b`).
-    inv_z: Vec<f64>,
-    /// `½·L` per pole (energy).
-    half_l: Vec<f64>,
-    /// How the pole is integrated.
-    kind: Vec<Kind>,
+    /// The integration constants of each pole: an index into `consts`
+    /// (the poles of a material have the same ones on every edge of the
+    /// same cell geometry).
+    cidx: Vec<u32>,
+    /// The distinct integration constants of the medium (shared by all
+    /// slabs).
+    consts: Arc<[PoleConst]>,
     /// Branch current `j^n` (magnetic: voltage) per pole.
     j: Vec<f64>,
     /// Branch charge `q^n` per pole.
     q: Vec<f64>,
-    /// openEMS poles: `(A, B, K)` per pole (zeros for the others).
+    /// openEMS poles: `(A, B, K)` per pole (zeros for the others). Empty
+    /// in a medium without openEMS poles, as is `oe_state`.
     oe_coef: Vec<[f32; 3]>,
     /// openEMS poles: `(V, W)` per pole.
     oe_state: Vec<[f32; 2]>,
@@ -654,9 +847,67 @@ struct Side {
     late: Vec<bool>,
 }
 
+/// The integration constants of one pole (see [`Branch`]).
+#[derive(Debug, Clone, Copy)]
+struct PoleConst {
+    /// `2L/dt` (leapfrog poles: `k_a`).
+    a: f64,
+    /// `1/C_p`.
+    inv_c: f64,
+    /// `1/z_p` (leapfrog poles: `k_b`).
+    inv_z: f64,
+    /// `½·L` (energy).
+    half_l: f64,
+    /// How the pole is integrated.
+    kind: Kind,
+}
+
+impl Default for Side {
+    fn default() -> Self {
+        Self {
+            axis: Vec::new(),
+            plane: Vec::new(),
+            off: Vec::new(),
+            prev: Vec::new(),
+            sum_inv_z: Vec::new(),
+            pole_end: Vec::new(),
+            cidx: Vec::new(),
+            consts: Arc::from(Vec::new()),
+            j: Vec::new(),
+            q: Vec::new(),
+            oe_coef: Vec::new(),
+            oe_state: Vec::new(),
+            oe_src: Vec::new(),
+            mixed: Vec::new(),
+            coef: Vec::new(),
+            late: Vec::new(),
+        }
+    }
+}
+
 impl Side {
     fn edges(&self) -> usize {
         self.axis.len()
+    }
+
+    /// The integration constants of pole `q`.
+    #[inline]
+    fn c(&self, q: usize) -> &PoleConst {
+        &self.consts[self.cidx[q] as usize]
+    }
+
+    /// Stores the new state of the poles from `p0` on (see
+    /// [`step_edge`](Self::step_edge)).
+    #[inline]
+    fn store(&mut self, p0: usize, next: &mut Vec<(f64, f64, [f32; 2])>) {
+        let oe_state = !self.oe_state.is_empty();
+        for (q, (j, c, oe)) in (p0..).zip(next.drain(..)) {
+            self.j[q] = j;
+            self.q[q] = c;
+            if oe_state {
+                self.oe_state[q] = oe;
+            }
+        }
     }
 
     /// Releases the spare capacity of every array.
@@ -667,11 +918,7 @@ impl Side {
         self.prev.shrink_to_fit();
         self.sum_inv_z.shrink_to_fit();
         self.pole_end.shrink_to_fit();
-        self.a.shrink_to_fit();
-        self.inv_c.shrink_to_fit();
-        self.inv_z.shrink_to_fit();
-        self.half_l.shrink_to_fit();
-        self.kind.shrink_to_fit();
+        self.cidx.shrink_to_fit();
         self.j.shrink_to_fit();
         self.q.shrink_to_fit();
         self.oe_coef.shrink_to_fit();
@@ -713,11 +960,7 @@ impl Side {
             let plane = f.plane_mut(Axis::ALL[ax], gi);
             plane[off] = self.step_edge(e, plane[off], cb, dt, &mut next);
             let p0 = self.pole_start(e);
-            for (q, (j, c, oe)) in (p0..).zip(next.drain(..)) {
-                self.j[q] = j;
-                self.q[q] = c;
-                self.oe_state[q] = oe;
-            }
+            self.store(p0, &mut next);
         }
     }
 
@@ -736,11 +979,7 @@ impl Side {
             let u = self.step_edge(e, f.u.get(axis, node), cb, dt, &mut next);
             f.u.set(axis, node, u);
             let p0 = self.pole_start(e);
-            for (q, (j, c, oe)) in (p0..).zip(next.drain(..)) {
-                self.j[q] = j;
-                self.q[q] = c;
-                self.oe_state[q] = oe;
-            }
+            self.store(p0, &mut next);
         }
     }
 
@@ -765,7 +1004,7 @@ impl Side {
         // openEMS's poles first, in f32 (`OpenEmsPole`).
         let mut u32_star = u_in;
         let prev32 = self.prev[e] as f32;
-        if p1 > p0 && self.kind[p0] == Kind::OpenEmsDebye {
+        if p1 > p0 && self.c(p0).kind == Kind::OpenEmsDebye {
             // openEMS's Debye poles, all of the edge's (`with_openems_debye`,
             // design §5.16.12).
             let mut pol: Vec<f32> = self.oe_state[p0..p1].iter().map(|s| s[0]).collect();
@@ -776,8 +1015,8 @@ impl Side {
             return u;
         }
         for q in p0..p1 {
-            let mut oe = self.oe_state[q];
-            match self.kind[q] {
+            let mut oe = self.oe_state.get(q).copied().unwrap_or([0.0; 2]);
+            match self.c(q).kind {
                 Kind::OpenEms => {
                     let [a, b, k] = self.oe_coef[q];
                     let [v, w] = oe;
@@ -799,30 +1038,30 @@ impl Side {
         let u_star = u32_star as f64;
         let mut s = 0.0;
         for q in p0..p1 {
-            match self.kind[q] {
+            let c = self.c(q);
+            match c.kind {
                 Kind::OpenEms | Kind::OpenEmsDebye => {}
                 Kind::Leapfrog => {
                     // Leapfrog: j^{n+½} from u^n, then q^{n+1}.
-                    let j = self.a[q] * self.j[q]
-                        + self.inv_z[q] * (self.prev[e] - self.q[q] * self.inv_c[q]);
+                    let j = c.a * self.j[q] + c.inv_z * (self.prev[e] - self.q[q] * c.inv_c);
                     next[q - p0].0 = j;
                     next[q - p0].1 = self.q[q] + dt * j;
                     s += j;
                 }
                 Kind::Trapezoidal => {
-                    s += (self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev)
-                        * self.inv_z[q];
+                    s += (c.a * self.j[q] - self.q[q] * c.inv_c + half_prev) * c.inv_z;
                 }
             }
         }
         let u_new = ((u_star - cb * s) / (1.0 + 0.5 * cb * self.sum_inv_z[e])) as f32;
         let half_new = 0.5 * u_new as f64;
         for q in p0..p1 {
-            if self.kind[q] != Kind::Trapezoidal {
+            let c = self.c(q);
+            if c.kind != Kind::Trapezoidal {
                 continue;
             }
-            let k = self.a[q] * self.j[q] - self.q[q] * self.inv_c[q] + half_prev;
-            let jb = (k + half_new) * self.inv_z[q];
+            let k = c.a * self.j[q] - self.q[q] * c.inv_c + half_prev;
+            let jb = (k + half_new) * c.inv_z;
             next[q - p0].0 = 2.0 * jb - self.j[q];
             next[q - p0].1 = self.q[q] + dt * jb;
         }
@@ -849,9 +1088,9 @@ impl Side {
     /// Adds `Σ ½·L·j² + ½·q²/C_p` to `w`, in pole order (one running
     /// sum over all slabs keeps the order independent of the partition).
     fn add_energy(&self, w: &mut f64) {
-        for q in 0..self.a.len() {
-            *w += self.half_l[q] * self.j[q] * self.j[q]
-                + 0.5 * self.inv_c[q] * self.q[q] * self.q[q];
+        for q in 0..self.cidx.len() {
+            let c = self.c(q);
+            *w += c.half_l * self.j[q] * self.j[q] + 0.5 * c.inv_c * self.q[q] * self.q[q];
         }
     }
 }
@@ -1025,15 +1264,17 @@ impl Operator for LatePoles {
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct Dispersive {
-    entries: Vec<EdgePole>,
+    entries: EdgePoles,
     openems: Vec<OpenEmsPole>,
     scheme: Scheme,
     /// Debye poles with openEMS's arithmetic
     /// ([`with_openems_debye`](Self::with_openems_debye)).
     openems_debye: bool,
     /// Built at installation, partitioned at registration: the edges,
-    /// and their branches in one list in edge order.
+    /// and their branches in one list in edge order, each an index into
+    /// the distinct branches.
     built: Vec<EdgeBranches>,
+    branch_ids: Vec<u32>,
     branches: Vec<Branch>,
     nodes: [usize; 3],
     dt: f64,
@@ -1217,6 +1458,19 @@ impl Dispersive {
         self.push(e.field, e.axis, e.node, e.pole);
     }
 
+    /// Adds every entry of `list`, in order (see [`push`](Self::push)).
+    pub fn push_all(&mut self, list: &EdgePoles) {
+        if self.entries.is_empty() && list.poles.iter().all(|p| !p.is_null()) {
+            // (The compact list as it is.)
+            self.entries = list.clone();
+            self.entries.shrink_to_fit();
+        } else {
+            for e in list.iter() {
+                self.push_entry(e);
+            }
+        }
+    }
+
     /// Adds a pole with openEMS's arithmetic (see [`OpenEmsPole`]; the
     /// openEMS-file path). Poles with `ω_p = 0` are ignored. On an edge
     /// that also has [`push`](Self::push) poles, the openEMS poles are
@@ -1230,7 +1484,7 @@ impl Dispersive {
     /// The requested (non-null) pole entries, in insertion order. The
     /// list is released at installation ([`add_to`](Self::add_to)): empty
     /// afterwards ([`len`](Self::len) keeps the count).
-    pub fn entries(&self) -> &[EdgePole] {
+    pub fn entries(&self) -> &EdgePoles {
         &self.entries
     }
 
@@ -1296,9 +1550,11 @@ impl Dispersive {
                 )))
             }
         };
-        for e in &self.entries {
-            e.pole.validate()?;
-            in_grid(e.field, e.axis, e.node)?;
+        for p in &self.entries.poles {
+            p.validate()?;
+        }
+        for r in &self.entries.refs {
+            in_grid(r.field(), r.axis(), r.node())?;
         }
         for e in &self.openems {
             let vals = [e.omega_p, e.omega_0, e.gamma, e.circuit];
@@ -1309,33 +1565,44 @@ impl Dispersive {
             }
             in_grid(e.field, e.axis, e.node)?;
         }
-        // openEMS poles first on their edge (stable sort keeps the
-        // insertion order of each kind).
-        type Entry = (Field, Axis, [usize; 3], Result<Pole, OpenEmsPole>);
-        // (The request lists are released here: they are in `entries`,
-        // and in the branches afterwards.)
+        // The entries in edge order, openEMS poles first on their edge
+        // (a stable sort keeps the insertion order of each kind): as
+        // indices, the openEMS poles first. (The request lists are
+        // released at the end: they are in the branches then.)
         self.requested = self.len();
-        let mut entries: Vec<Entry> = Vec::with_capacity(self.requested);
-        entries.extend(
-            std::mem::take(&mut self.openems)
-                .into_iter()
-                .map(|e| (e.field, e.axis, e.node, Err(e))),
-        );
-        entries.extend(
-            std::mem::take(&mut self.entries)
-                .into_iter()
-                .map(|e| (e.field, e.axis, e.node, Ok(e.pole))),
-        );
-        let key = |e: &Entry| (e.2[0], e.0, e.1.index(), e.2[1], e.2[2]);
-        entries.sort_by_key(key);
+        let openems = std::mem::take(&mut self.openems);
+        let entries = std::mem::take(&mut self.entries);
+        let no = openems.len();
+        let total = u32::try_from(no + entries.len())
+            .map_err(|_| Error::Invalid("dispersive medium: more than 2³² poles".into()))?;
+        let key = |i: u32| {
+            let i = i as usize;
+            let (field, axis, node) = if i < no {
+                let e = &openems[i];
+                (e.field, e.axis, e.node)
+            } else {
+                let r = &entries.refs[i - no];
+                (r.field(), r.axis(), r.node())
+            };
+            (node[0], field, axis.index(), node[1], node[2])
+        };
+        let mut order: Vec<u32> = (0..total).collect();
+        order.sort_by_key(|&i| key(i));
         let co = engine.coefficients();
         let mut built: Vec<EdgeBranches> = Vec::new();
-        let mut branches: Vec<Branch> = Vec::with_capacity(entries.len());
+        // The distinct branches, and per pole the index of its branch:
+        // the branch of a pole on an edge follows from the pole and the
+        // edge's geometry, which repeat over the edges of a material.
+        let mut branches: Vec<Branch> = Vec::new();
+        let mut branch_ids: Vec<u32> = Vec::with_capacity(order.len());
+        let mut known: std::collections::HashMap<(u32, u64, bool), u32> =
+            std::collections::HashMap::new();
         let mut skipped = 0;
         let mut last = None;
-        for e in &entries {
-            let k = key(e);
-            let (field, axis, node, pole) = *e;
+        for &i in &order {
+            let k = key(i);
+            let i = i as usize;
+            let (field, axis, node) = (k.1, Axis::ALL[k.2], [k.0, k.3, k.4]);
             let idx = grid.index(node);
             let (ab, ac) = axis.others();
             // `m = X0·g`, `g` the dual face area over the edge length
@@ -1367,7 +1634,7 @@ impl Dispersive {
             let m = x0 * geo;
             let new_edge = last != Some(k);
             last = Some(k);
-            if coef == 0.0 || matches!(pole, Err(p) if p.circuit == 0.0) {
+            if coef == 0.0 || (i < no && openems[i].circuit == 0.0) {
                 if new_edge {
                     skipped += 1;
                 }
@@ -1382,8 +1649,9 @@ impl Dispersive {
                     poles: 0,
                 });
             }
-            let branch = match pole {
-                Err(p) => Branch {
+            let id = if i < no {
+                let p = openems[i];
+                branches.push(Branch {
                     a: 0.0,
                     inv_c: 0.0,
                     inv_z: 0.0,
@@ -1392,13 +1660,21 @@ impl Dispersive {
                     oe: p.coefficients(f64::from(coef), dt),
                     debye_oe: None,
                     oe_src: Some(Box::new(OeSource::Pole(p))),
-                },
-                Ok(pole) => {
+                });
+                branches.len() as u32 - 1
+            } else {
+                let pole_id = entries.refs[i - no].pole();
+                let pole = entries.poles[pole_id];
+                let next = branches.len() as u32;
+                let id = *known
+                    .entry((pole_id as u32, geo.to_bits(), field == Field::Electric))
+                    .or_insert(next);
+                if id == next {
                     let leap = match self.scheme {
                         Scheme::Leapfrog => pole.leapfrog(m, dt),
                         Scheme::Trapezoidal => None,
                     };
-                    match leap {
+                    branches.push(match leap {
                         Some((ka, kb, inv_c, half_l)) => Branch {
                             a: ka,
                             inv_c,
@@ -1430,46 +1706,55 @@ impl Dispersive {
                                 oe_src: None,
                             }
                         }
-                    }
+                    });
                 }
+                id
             };
             built.last_mut().expect("edge just pushed").poles += 1;
-            branches.push(branch);
+            branch_ids.push(id);
         }
         drop(co);
+        drop(order);
+        drop(known);
         drop(entries);
+        drop(openems);
         // An edge whose poles are all openEMS Debye poles runs openEMS's
         // update (`with_openems_debye`); edges with other poles keep the
-        // trapezoidal rule.
+        // trapezoidal rule. (Its coefficients are the edge's own: branches
+        // of their own.)
         let mut next = 0;
-        for eb in &built {
-            let of_edge = &mut branches[next..next + eb.poles as usize];
+        for eb in built.iter().filter(|_| self.openems_debye) {
+            let of_edge = next..next + eb.poles as usize;
             next += eb.poles as usize;
-            let Some(poles) = of_edge
+            let Some(poles) = branch_ids[of_edge.clone()]
                 .iter()
-                .map(|b| b.debye_oe)
+                .map(|&b| branches[b as usize].debye_oe)
                 .collect::<Option<Vec<_>>>()
             else {
                 continue;
             };
             let cp = poles[0].2;
-            let poles: Vec<(f64, f64)> = poles.iter().map(|p| (p.0, p.1)).collect();
-            let coefs = openems_debye_coefficients(eb.coef, cp, &poles, dt);
-            for (b, oe) in of_edge.iter_mut().zip(coefs) {
-                *b = Branch {
+            let params: Vec<(f64, f64)> = poles.iter().map(|p| (p.0, p.1)).collect();
+            let coefs = openems_debye_coefficients(eb.coef, cp, &params, dt);
+            for ((q, oe), debye_oe) in of_edge.zip(coefs).zip(poles) {
+                branches.push(Branch {
                     a: 0.0,
                     inv_c: 0.0,
                     inv_z: 0.0,
                     half_l: 0.0,
                     kind: Kind::OpenEmsDebye,
                     oe,
-                    debye_oe: b.debye_oe,
-                    oe_src: b.oe_src.take(),
-                };
+                    debye_oe: Some(debye_oe),
+                    oe_src: None,
+                });
+                branch_ids[q] = branches.len() as u32 - 1;
             }
         }
+        branches.shrink_to_fit();
+        branch_ids.shrink_to_fit();
         built.shrink_to_fit();
         self.built = built;
+        self.branch_ids = branch_ids;
         self.branches = branches;
         self.skipped = skipped;
         self.nodes = n;
@@ -1530,14 +1815,14 @@ impl Dispersive {
                         continue;
                     };
                     match side.oe_src[at].1 {
-                        OeSource::Pole(mut pole) if side.kind[q] == Kind::OpenEms => {
+                        OeSource::Pole(mut pole) if side.c(q).kind == Kind::OpenEms => {
                             pole.circuit = c;
                             side.oe_coef[q] = pole.coefficients(cb, p.dt);
                             side.oe_src[at].1 = OeSource::Pole(pole);
                             n += 1;
                         }
                         OeSource::Debye([c_p, delta_eps, tau])
-                            if side.kind[q] == Kind::OpenEmsDebye =>
+                            if side.c(q).kind == Kind::OpenEmsDebye =>
                         {
                             cp = c_p;
                             debye.push((q, (delta_eps, tau)));
@@ -1633,10 +1918,58 @@ impl Operator for Dispersive {
         );
         assert_eq!(part.dt(), self.dt, "dispersive medium built for another dt");
         let nz = self.nodes[2];
+        let built = std::mem::take(&mut self.built);
+        let branch_ids = std::mem::take(&mut self.branch_ids);
+        let branches = std::mem::take(&mut self.branches);
+        let consts: Arc<[PoleConst]> = branches
+            .iter()
+            .map(|b| PoleConst {
+                a: b.a,
+                inv_c: b.inv_c,
+                inv_z: b.inv_z,
+                half_l: b.half_l,
+                kind: b.kind,
+            })
+            .collect();
+        // Only openEMS's poles have `f32` coefficients and state.
+        let any_oe = branches
+            .iter()
+            .any(|b| matches!(b.kind, Kind::OpenEms | Kind::OpenEmsDebye));
         let mut slabs: Vec<SlabState> = vec![SlabState::default(); part.slabs()];
+        // The size of every slab's arrays first: no growing.
         let mut s = 0;
-        let mut branches = std::mem::take(&mut self.branches).into_iter();
-        for eb in std::mem::take(&mut self.built) {
+        let mut counts = vec![[(0usize, 0usize); 2]; part.slabs()];
+        for eb in &built {
+            while !part.planes(s).contains(&eb.node[0]) {
+                s += 1;
+            }
+            let c = &mut counts[s][usize::from(eb.field == Field::Magnetic)];
+            c.0 += 1;
+            c.1 += eb.poles as usize;
+        }
+        for (slab, c) in slabs.iter_mut().zip(&counts) {
+            for (side, &(edges, poles)) in [&mut slab.e, &mut slab.h].into_iter().zip(c) {
+                side.consts = Arc::clone(&consts);
+                side.axis.reserve_exact(edges);
+                side.plane.reserve_exact(edges);
+                side.off.reserve_exact(edges);
+                side.prev.reserve_exact(edges);
+                side.sum_inv_z.reserve_exact(edges);
+                side.pole_end.reserve_exact(edges);
+                side.mixed.reserve_exact(edges);
+                side.coef.reserve_exact(edges);
+                side.cidx.reserve_exact(poles);
+                side.j.reserve_exact(poles);
+                side.q.reserve_exact(poles);
+                if any_oe {
+                    side.oe_coef.reserve_exact(poles);
+                    side.oe_state.reserve_exact(poles);
+                }
+            }
+        }
+        let mut s = 0;
+        let mut ids = branch_ids.iter();
+        for eb in built {
             while !part.planes(s).contains(&eb.node[0]) {
                 s += 1;
             }
@@ -1650,23 +1983,22 @@ impl Operator for Dispersive {
             side.prev.push(0.0);
             let mut sum = 0.0;
             let mut mixed = false;
-            for b in branches.by_ref().take(eb.poles as usize) {
-                side.a.push(b.a);
-                side.inv_c.push(b.inv_c);
-                side.inv_z.push(b.inv_z);
-                side.half_l.push(b.half_l);
-                side.kind.push(b.kind);
+            for &id in ids.by_ref().take(eb.poles as usize) {
+                let b = &branches[id as usize];
+                side.cidx.push(id);
                 side.j.push(0.0);
                 side.q.push(0.0);
-                side.oe_coef.push(b.oe);
-                side.oe_state.push([0.0; 2]);
-                let src = b.oe_src.map(|s| *s).or_else(|| {
+                if any_oe {
+                    side.oe_coef.push(b.oe);
+                    side.oe_state.push([0.0; 2]);
+                }
+                let src = b.oe_src.as_deref().copied().or_else(|| {
                     b.debye_oe
                         .filter(|_| b.kind == Kind::OpenEmsDebye)
                         .map(|(delta_eps, tau, cp)| OeSource::Debye([cp, delta_eps, tau]))
                 });
                 if let Some(src) = src {
-                    side.oe_src.push(((side.a.len() - 1) as u32, src));
+                    side.oe_src.push(((side.cidx.len() - 1) as u32, src));
                 }
                 if b.kind == Kind::Trapezoidal {
                     sum += b.inv_z;
@@ -1676,7 +2008,7 @@ impl Operator for Dispersive {
             side.sum_inv_z.push(sum);
             side.mixed.push(mixed);
             side.coef.push(eb.coef);
-            side.pole_end.push(side.a.len() as u32);
+            side.pole_end.push(side.cidx.len() as u32);
         }
         // The arrays were grown edge by edge: give back the slack.
         for slab in &mut slabs {
@@ -1740,6 +2072,54 @@ mod tests {
         let s = Pole::lorentz(3e10, 1e10, 1e9).scaled(0.25);
         let r = s.susceptibility(w) / Pole::lorentz(3e10, 1e10, 1e9).susceptibility(w);
         assert!((r - 0.25).norm() < 1e-12);
+    }
+
+    #[test]
+    fn edge_poles_keep_entries_and_order() {
+        let poles = [
+            Pole::debye(3.0, 1e-11),
+            Pole::drude(3e10, 1e9),
+            Pole::lorentz(3e10, 1e10, 1e9),
+            // Bit patterns count: −0 is another pole than 0.
+            Pole::lorentz(3e10, 1e10, -0.0),
+            Pole::lorentz(3e10, 1e10, 0.0),
+        ];
+        let mut want = Vec::new();
+        for k in 0..200usize {
+            want.push(EdgePole {
+                field: if k % 3 == 0 {
+                    Field::Magnetic
+                } else {
+                    Field::Electric
+                },
+                axis: Axis::ALL[k % 3],
+                node: [k, 7 * k % 11, 100_000 + k],
+                pole: poles[(k + k / 7) % poles.len()],
+            });
+        }
+        let mut list: EdgePoles = want.iter().copied().collect();
+        assert_eq!((list.len(), list.distinct()), (200, poles.len()));
+        assert_eq!(list.to_vec(), want);
+        assert_eq!(list.get(17), Some(want[17]));
+        assert_eq!(list.get(200), None);
+        // The lookup table is rebuilt after it was released.
+        list.shrink_to_fit();
+        list.push(want[3]);
+        assert_eq!((list.len(), list.distinct()), (201, poles.len()));
+        list.retain(|e| e.field == Field::Electric);
+        want.push(want[3]);
+        want.retain(|e| e.field == Field::Electric);
+        assert_eq!(list.to_vec(), want);
+        assert_eq!(list, want.iter().copied().collect::<EdgePoles>());
+        // A medium takes the list as it is, or entry by entry: the same.
+        let mut a = Dispersive::new();
+        a.push_all(&list);
+        let mut b = Dispersive::new();
+        for e in &want {
+            b.push_entry(*e);
+        }
+        assert_eq!(a.entries(), b.entries());
+        assert_eq!(a.len(), want.len());
     }
 
     /// A box of poles on the E and H edges of nodes 3..7 of a 1 mm

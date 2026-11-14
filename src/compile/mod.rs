@@ -190,7 +190,7 @@ use crate::engine::openems_sheet::OpenEmsSheetBranches;
 use crate::engine::{CoeffRounding, CurlOrder};
 use crate::engine::{
     ConductingSheet, Conductor, ConformalOptions, ConformalPec, ConformalReport, Dispersive,
-    EdgeMaterials, EdgePole, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires,
+    EdgeMaterials, EdgePoles, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires,
     OperatorHandle, Roughness, SheetEdge, SolidEdge, SurfaceImpedance, ThinWire, TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
@@ -686,7 +686,7 @@ pub struct Compiled {
     /// Dispersive poles per edge from csx `LorentzMaterial` /
     /// `DebyeMaterial` properties (see [`dispersive`](self#dispersive-materials));
     /// installed by [`build`](Self::build) as one [`Dispersive`] operator.
-    pub dispersive: Vec<EdgePole>,
+    pub dispersive: EdgePoles,
     /// The Lorentz/Drude poles of an openEMS file ([`Fdtd::openems_run`]),
     /// updated with openEMS's `f32` arithmetic
     /// ([`OpenEmsPole`](crate::engine::dispersive::OpenEmsPole), design
@@ -915,7 +915,7 @@ impl Compiled {
             // The same for the axis z edges (per α copy).
             let mut axis_debye: std::collections::HashMap<usize, Vec<Vec<(f64, f64)>>> =
                 std::collections::HashMap::new();
-            for p in &self.dispersive {
+            for p in self.dispersive.iter() {
                 if let crate::engine::Pole::Debye { delta_eps, tau } = p.pole
                     && self.openems_debye_cutoff
                     && p.field == crate::engine::dispersive::Field::Electric
@@ -1183,7 +1183,14 @@ impl Compiled {
                 .with_openems_debye(self.openems_debye_cutoff);
             let mut any = false;
             let dt = engine.dt();
-            for &e in &self.dispersive {
+            // Nothing to leave out (every model but openEMS files): the
+            // list as it is.
+            let whole = seam_debye.is_empty() && layers.is_none() && !self.openems_debye_cutoff;
+            if whole && !self.dispersive.is_empty() {
+                d.push_all(&self.dispersive);
+                any = true;
+            }
+            for e in self.dispersive.iter().filter(|_| !whole) {
                 let last = self.grid.nodes()[1] - 1;
                 let on_axis =
                     e.axis == crate::axis::Axis::Z && e.node[0] == 0 && self.grid.has_axis();
@@ -2320,12 +2327,18 @@ pub fn compile(
         &mut warnings,
     );
 
+    // (As a list of entries only for a model with plane waves.)
+    let wave_poles = if plane_waves.is_empty() {
+        Vec::new()
+    } else {
+        dispersive.to_vec()
+    };
     planewave::set_backgrounds(
         &mut plane_waves,
         &grid,
         &materials,
         fdtd,
-        &dispersive,
+        &wave_poles,
         opts.dispersive_scheme,
     )?;
     if openems_poles {
@@ -2524,7 +2537,7 @@ fn openems_multigrid_ring(
     grid: &Grid,
     fdtd: &Fdtd,
     materials: &EdgeMaterials,
-    dispersive: &[EdgePole],
+    dispersive: &EdgePoles,
     sheets: &[SheetEdge],
     mur: &[(Face, Option<f64>)],
     pml: &[(Face, Cpml)],

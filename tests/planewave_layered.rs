@@ -109,7 +109,7 @@ impl Case {
             let mut d = Dispersive::new().with_scheme(self.scheme);
             d.fill_cells(&grid, [0..n, 0..n, 0..n], Field::Electric, &self.poles)
                 .unwrap();
-            spec = spec.with_dispersion(d.entries(), d.scheme());
+            spec = spec.with_dispersion(&d.entries().to_vec(), d.scheme());
             d.add_to(&mut e).unwrap();
         }
         let t0 = std::time::Instant::now();
@@ -456,7 +456,7 @@ fn dispersive_layer_leakage() {
         .with_match_frequency(8e9)
         .with_duration(sine_pulse_duration(4e9))
         .with_layers(Axis::Z)
-        .with_dispersion(d.entries(), d.scheme());
+        .with_dispersion(&d.entries().to_vec(), d.scheme());
     d.add_to(&mut e).unwrap();
     let pw = PlaneWave::new(&e, &spec, sine_pulse(8e9, 4e9)).unwrap();
     e.add_operator(pw);

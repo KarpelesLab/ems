@@ -183,7 +183,7 @@ pub use conformal::{
     ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, ConformalSheets,
     MergedFaces, SheetCutEdge, SheetCutFace, SheetRegion,
 };
-pub use dispersive::{Dispersive, EdgePole, Pole};
+pub use dispersive::{Dispersive, EdgePole, EdgePoles, Pole};
 pub use dump::{
     DumpPosition, DumpQuantity, DumpRegion, DumpSink, DumpTiming, FieldSampler, FinalSample,
     FreqDump, MemorySink, Schedule, Snapshot, TimeDump, VtrSeries,
