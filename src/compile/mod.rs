@@ -2030,6 +2030,15 @@ pub fn compile(
     let (oblique, stripped) = wire::oblique_wires(model, &grid, &mut warnings);
     let full_model = model;
     let model = stripped.as_ref().unwrap_or(model);
+    // (Before the model itself: see `surface::bare_pec`.)
+    let bare_pec = surface::bare_pec(
+        model,
+        &opts.lossy_metals,
+        &DiscretizeOptions::default()
+            .with_subsampling(opts.subsampling)
+            .with_threads(fdtd.resolved_threads())
+            .with_snap_tolerance(opts.snap_tolerance),
+    )?;
     let mut mg: MaterialGrid = discretize(
         model,
         &DiscretizeOptions::default()
@@ -2157,14 +2166,12 @@ pub fn compile(
         model,
         &mg,
         &opts.lossy_metals,
-        &DiscretizeOptions::default()
-            .with_subsampling(opts.subsampling)
-            .with_threads(fdtd.resolved_threads())
-            .with_snap_tolerance(opts.snap_tolerance),
+        bare_pec.as_ref(),
         &node_map,
         cyl,
         &mut warnings,
     )?;
+    drop(bare_pec);
     if !solid_edges.is_empty() && opts.conformal {
         warnings.push(
             "lossy metal with conformal PEC: the surface impedance is on the edges wholly \

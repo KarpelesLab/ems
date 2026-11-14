@@ -67,13 +67,46 @@ fn outside(model: &csx::ContinuousStructure, d: usize, node: [usize; 3]) -> (f64
     (ok(cap * unit), ok(cond * unit))
 }
 
+/// The PEC edges of `model` without the primitives of its lossy metals
+/// `metals` (module docs), or `None` if it has none of them (or the grid
+/// is cylindrical). Call it before the model itself is discretised: only
+/// the PEC masks of this second discretisation are kept, so the two sets
+/// of material arrays never exist side by side.
+pub(super) fn bare_pec(
+    model: &csx::ContinuousStructure,
+    metals: &[(String, Conductor)],
+    discretize_opts: &DiscretizeOptions,
+) -> Result<Option<[Vec<bool>; 3]>> {
+    let listed: Vec<&str> = metals
+        .iter()
+        .map(|m| m.0.as_str())
+        .filter(|n| {
+            matches!(
+                model.property_by_name(n).map(|p| &p.kind),
+                Some(PropertyKind::Metal)
+            )
+        })
+        .collect();
+    if listed.is_empty() || model.grid.coord_system != csx::CoordSystem::Cartesian {
+        return Ok(None);
+    }
+    let mut bare = model.clone();
+    for name in listed {
+        if let Some(p) = bare.property_by_name_mut(name) {
+            p.primitives.clear();
+        }
+    }
+    Ok(Some(discretize(&bare, discretize_opts)?.pec))
+}
+
 /// The edges of the lossy metals `metals` of `model`, whose discretisation
-/// is `mg` (module docs).
+/// is `mg` and whose PEC edges without those metals are `bare`
+/// ([`bare_pec`]; module docs).
 pub(super) fn solid_edges(
     model: &csx::ContinuousStructure,
     mg: &MaterialGrid,
     metals: &[(String, Conductor)],
-    discretize_opts: &DiscretizeOptions,
+    bare: Option<&[Vec<bool>; 3]>,
     node_map: &NodeMap,
     cylindrical: bool,
     warnings: &mut Vec<String>,
@@ -107,17 +140,13 @@ pub(super) fn solid_edges(
         ));
         return Ok(Vec::new());
     }
-    let mut bare = model.clone();
-    for m in &listed {
-        if let Some(p) = bare.property_by_name_mut(&m.0) {
-            p.primitives.clear();
-        }
-    }
-    let bare = discretize(&bare, discretize_opts)?;
+    let Some(bare) = bare else {
+        return Ok(Vec::new());
+    };
     let uniform = listed.iter().all(|m| m.1 == listed[0].1);
     let mut out = Vec::new();
     for d in 0..3 {
-        for (idx, (&with, &without)) in mg.pec[d].iter().zip(&bare.pec[d]).enumerate() {
+        for (idx, (&with, &without)) in mg.pec[d].iter().zip(&bare[d]).enumerate() {
             if !with || without {
                 continue;
             }
