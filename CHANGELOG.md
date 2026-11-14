@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7](https://github.com/KarpelesLab/ems/compare/v0.0.6...v0.0.7) - 2026-11-14
+
+### Other
+
+- Design status: what cadlab works around in conformal PEC (strips and round copper of a cell, the small-face threshold)
+- Conformal PEC: solid metal along the mesh can keep the staircase (CompileOptions::conformal_solids)
+- surface impedance with conformal outlines (5.9.1, 5.13.2)
+- Typed warnings: metal.lossy_thin and metal.lossy_cut
+- Surface impedance with conformal outlines: sheets take their cuts, solid edges keep their capacitance and their width
+- a link the build without the xml feature cannot resolve
+- Design status: wave 21 (surface impedance on solid lossy metal and sheets, roughness, CPML stretch; §5.9.1)
+- Surface impedance: the border edges of a sheet carry half a cell of conductor
+- lossy Metal properties and the rational sheet model as options (with_lossy_metal, SheetModel::SurfaceImpedance, with_sheet_roughness)
+- Surface impedance: a rational skin-effect fit on the faces of solid metal and of sheets, roughness, the CPML's stretch (engine::surface)
+- Design status: outlines of sheets on mesh planes (5.13.2, wave 21)
+- Conformal PEC: outlines of sheets on mesh planes (planar metal sheets and conducting sheets)
+- Conducting sheets: edges partly covered by the sheet, cut faces; conformal PEC: wall edges
+- Loops that clippy 1.100 flags as needless_range_loop
+- driving ems from another program (typed warnings, one compile for several runs, port voltage, memory)
+- no second copy of the materials, a slimmer dispersive operator
+- Lumped port: the voltage as the mean over the port's columns (opt-in)
+- Typed warnings: a code, the property and a count for every warning line
+- one compile for several runs, each driving its own excitations
+
 ## [0.0.6](https://github.com/KarpelesLab/ems/compare/v0.0.5...v0.0.6) - 2026-11-01
 
 ### Other
