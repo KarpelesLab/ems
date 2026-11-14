@@ -260,6 +260,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use super::Engine;
 use super::boundary::cpml::CpmlBoundary;
+use super::conformal::MergedFaces;
 use super::fields::Fields;
 use super::kernel::flush;
 use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
@@ -986,6 +987,9 @@ struct SolidState {
     port: u32,
     st: u32,
     u: f64,
+    /// Where the array value it overwrites goes ([`Parts::held`]), or
+    /// `u32::MAX`.
+    watch: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1023,6 +1027,8 @@ struct SheetState {
     /// Its slot among those its slab publishes for the slab before it,
     /// or `u32::MAX`.
     slot: u32,
+    /// As [`SolidState::watch`].
+    watch: u32,
 }
 
 /// How a sheet edge takes what another operator added to its array value
@@ -1317,6 +1323,7 @@ impl Part {
         solids: Range<usize>,
         sheets: Range<usize>,
         slots: &[Slot],
+        held: &[AtomicU32],
     ) {
         let Self {
             solids: all_solids,
@@ -1337,6 +1344,9 @@ impl Part {
             let um = (s + e.two_c * e.u + hist / port.z_inf) * e.inv;
             port.advance(st, (e.g * um - hist) / port.z_inf);
             e.u = 2.0 * um - e.u;
+            if e.watch != u32::MAX {
+                held[e.watch as usize].store(f.u(e.axis, e.loc).to_bits(), Ordering::Relaxed);
+            }
             f.set_u(e.axis, e.loc, flush(e.u as f32));
         }
         for e in &mut all_sheets[sheets] {
@@ -1379,6 +1389,9 @@ impl Part {
                 flush((gap.u + face) as f32)
             };
             e.written = up;
+            if e.watch != u32::MAX {
+                held[e.watch as usize].store(f.u(e.axis, e.loc).to_bits(), Ordering::Relaxed);
+            }
             f.set_u(e.axis, e.loc, up);
             let mut s_e = 0.0;
             for c in &terms[e.k0 as usize..(e.k0 + e.nk) as usize] {
@@ -1408,6 +1421,9 @@ struct Parts {
     /// Per slab, the sheet edges of its first plane that the slab before
     /// it corrects dual edges for.
     slots: Vec<Vec<Slot>>,
+    /// The array values the edges overwrite in the E half-step, for the
+    /// merged faces of conformal PEC (`MergedFaces::held_back`).
+    held: Arc<[AtomicU32]>,
 }
 
 impl Parts {
@@ -1463,6 +1479,7 @@ impl SlabHooks for Parts {
             solids,
             sheets,
             &self.slots[ctx.slab],
+            &self.held,
         );
     }
 }
@@ -1522,6 +1539,10 @@ pub struct SurfaceImpedance {
     nodes: [usize; 3],
     /// Whether the edges can be run by the slabs (see [`Operator::slab_hooks`]).
     slab_ok: bool,
+    /// Kept in the serial hooks ([`in_serial_hooks`](Self::in_serial_hooks)).
+    serial: bool,
+    /// See [`Parts::held`].
+    held: Option<Arc<[AtomicU32]>>,
     /// The edges as installed, until the operator is registered.
     ports: Vec<Port>,
     solids: Vec<SolidState>,
@@ -1546,6 +1567,7 @@ struct Counts {
     gaps: usize,
     stretches: usize,
     state: usize,
+    held: usize,
 }
 
 /// The edges of the node box `start..=stop`: every edge between two of
@@ -1616,6 +1638,14 @@ impl SurfaceImpedance {
     #[must_use]
     pub fn with_band(mut self, f_lo: f64, f_hi: f64) -> Self {
         self.band = Some((f_lo, f_hi));
+        self
+    }
+
+    /// Keeps the edges in the serial hooks, whatever the other operators
+    /// are: the reference the slab path is tested against (same values,
+    /// one thread).
+    pub fn in_serial_hooks(mut self, on: bool) -> Self {
+        self.serial = on;
         self
     }
 
@@ -1765,10 +1795,18 @@ impl SurfaceImpedance {
         }
     }
 
+    /// Number of edges around the faces that the merged faces of conformal
+    /// PEC compute, which get the array values of these edges as their
+    /// serial hook read them (0 with the edges in the serial hooks).
+    pub fn held_back(&self) -> usize {
+        self.counts.held
+    }
+
     /// Whether the edges are run by the engine's threads, each on its
     /// slab ([`Operator::slab_hooks`]); `false` before registration and
     /// where an operator registered earlier acts in the serial hooks after
-    /// a half-step (the order of the two would change).
+    /// a half-step (the order of the two would change), other than the
+    /// merged faces of conformal PEC, which get what they read.
     pub fn runs_in_slabs(&self) -> bool {
         self.slabs
     }
@@ -1887,14 +1925,6 @@ impl SurfaceImpedance {
         self.dt = dt;
         let (f_lo, f_hi) = self.band(dt)?;
         self.nodes = n;
-        // Slab hooks run before every serial hook: only when no operator
-        // registered before this one acts serially after a half-step
-        // (their order would change), as for the Mur faces.
-        self.slab_ok = engine.periodic.is_none()
-            && !engine
-                .ops
-                .iter()
-                .any(|r| r.hooks.intersects(Hooks::POST_H | Hooks::POST_E));
         // (x-plane, offset in the plane.)
         let locate = |p: [usize; 3]| (p[0] as u32, (p[1] * n[2] + p[2]) as u32);
         let cpml: Option<CpmlBoundary> = engine.find_operator::<CpmlBoundary>().cloned();
@@ -2026,7 +2056,7 @@ impl SurfaceImpedance {
             std::collections::HashMap::new()
         } else {
             engine
-                .find_operator::<super::conformal::MergedFaces>()
+                .find_operator::<MergedFaces>()
                 .map(|m| m.edge_diagonal(n, |a, k| requested.contains(&(a, k))))
                 .unwrap_or_default()
         };
@@ -2253,6 +2283,7 @@ impl SurfaceImpedance {
                 port,
                 st,
                 u: 0.0,
+                watch: u32::MAX,
             });
         }
         if !dead.is_empty() {
@@ -2472,17 +2503,99 @@ impl SurfaceImpedance {
                 written: 0.0,
                 wc: 0.0,
                 slot: u32::MAX,
+                watch: u32::MAX,
             });
         }
+        self.slab_ok = self.slabs_allowed(engine);
         self.counts = Counts {
             solids: self.solids.len(),
             sheets: self.sheets.len(),
             gaps: self.gaps.len(),
             stretches: self.stretches.len(),
             state: self.state.len(),
+            held: self.held.as_ref().map_or(0, |h| h.len()),
         };
         self.installed = true;
         Ok(())
+    }
+
+    /// Whether the slabs can run the edges, each right after its kernel:
+    /// slab hooks run before every serial hook, so an operator registered
+    /// before this one that acts serially after a half-step would find
+    /// the order of the two changed (as for the Mur faces). The merged
+    /// faces of conformal PEC ([`MergedFaces`]) are such an operator, and
+    /// the order does not matter to them where
+    ///
+    /// * no H correction of a sheet lies on a face they drive (they write
+    ///   those currents after the H kernel; the corrections are on faces
+    ///   the kernel updates, and neither reads what the other writes);
+    /// * the edges of the layer corrections they read are none of these;
+    /// * their look-ahead after the E half-step, which reads the voltages
+    ///   around their faces for the energy before this operator's serial
+    ///   hook writes its edges, gets the array values of those edges as
+    ///   they were before the slabs wrote them (`MergedFaces::held_back`).
+    ///
+    /// Then every value is what it is with the edges in the serial hooks.
+    fn slabs_allowed(&mut self, engine: &mut Engine) -> bool {
+        if self.serial || engine.periodic.is_some() {
+            return false;
+        }
+        let serial = Hooks::POST_H | Hooks::POST_E;
+        let mut earlier = engine.ops.iter().filter(|r| r.hooks.intersects(serial));
+        match (earlier.next(), earlier.next()) {
+            (None, _) => return true,
+            (Some(r), None) => {
+                let op: &dyn core::any::Any = &*r.op;
+                if !op.is::<MergedFaces>() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        let n = self.nodes;
+        let plane = n[1] * n[2];
+        let key = |a: Axis, p: [usize; 3]| (a.index(), p[0] * plane + p[1] * n[2] + p[2]);
+        // (Looked up only: the order of the map does not matter.)
+        let mut edges: std::collections::HashMap<(usize, usize), (bool, usize)> =
+            std::collections::HashMap::new();
+        for (i, e) in self.solids.iter().enumerate() {
+            let k = (e.axis.index(), e.loc.0 as usize * plane + e.loc.1 as usize);
+            edges.insert(k, (true, i));
+        }
+        for (i, e) in self.sheets.iter().enumerate() {
+            edges.insert(key(e.axis, e.node), (false, i));
+        }
+        let Some(m) = engine.find_operator_mut::<MergedFaces>() else {
+            return false;
+        };
+        let driven = m.driven_keys(n);
+        let apart = self.corrections.iter().all(|c| {
+            !driven.contains(&(c.axis.index(), c.loc.0 as usize * plane + c.loc.1 as usize))
+        }) && m
+            .layer_edges()
+            .all(|(a, p)| !edges.contains_key(&key(a, p)));
+        if !apart {
+            return false;
+        }
+        let mut held = Vec::new();
+        for (a, p) in m.circulation_edges() {
+            let Some(&(solid, i)) = edges.get(&key(a, p)) else {
+                continue;
+            };
+            let watch = if solid {
+                &mut self.solids[i].watch
+            } else {
+                &mut self.sheets[i].watch
+            };
+            if *watch == u32::MAX {
+                *watch = held.len() as u32;
+                held.push((a, p));
+            }
+        }
+        if !held.is_empty() {
+            self.held = Some(m.held_back(held));
+        }
+        true
     }
 
     /// Validates the edges, fits the impedances for `engine` and registers
@@ -2663,6 +2776,7 @@ impl SurfaceImpedance {
             p.remote.shrink_to_fit();
         }
         Parts {
+            held: self.held.take().unwrap_or_else(|| Vec::new().into()),
             parts: parts.into_iter().map(Mutex::new).collect(),
             ports,
             slots: slots
@@ -2726,7 +2840,7 @@ impl Operator for SurfaceImpedance {
         let Some(parts) = &self.parts else { return };
         let mut p = parts.part(0);
         let (solids, sheets) = (0..p.solids.len(), 0..p.sheets.len());
-        p.step_e(&parts.ports, &mut Serial(f), solids, sheets, &[]);
+        p.step_e(&parts.ports, &mut Serial(f), solids, sheets, &[], &[]);
     }
 
     fn energy(&self) -> f64 {

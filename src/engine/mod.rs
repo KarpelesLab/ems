@@ -590,6 +590,14 @@ impl Engine {
         })
     }
 
+    /// As [`find_operator`](Self::find_operator), mutable.
+    pub(crate) fn find_operator_mut<T: Operator>(&mut self) -> Option<&mut T> {
+        self.ops.iter_mut().find_map(|r| {
+            let op: &mut dyn core::any::Any = &mut *r.op;
+            op.downcast_mut()
+        })
+    }
+
     /// Mutable access to the operator behind `h`.
     ///
     /// # Panics

@@ -217,6 +217,8 @@
 //! threshold and the scheme was unstable (`s` = 1.046).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::coeffs::Coefficients;
 use super::fields::Fields;
@@ -2015,6 +2017,30 @@ pub struct MergedFaces {
     pml: Vec<PmlTerm>,
     /// Cylindrical `ρ_max` PML corrections of merged faces.
     cyl: Vec<CylTerm>,
+    /// Voltages `post_e` takes from an operator registered later instead
+    /// of the array ([`MergedFaces::held_back`]).
+    held: Option<Held>,
+}
+
+/// The voltages of edges that an operator registered after the
+/// [`MergedFaces`] writes in the slabs' E half-step, before `post_e` here
+/// runs, as they were before it wrote them: what `post_e` read from the
+/// array while that operator still ran in the serial hooks after it.
+#[derive(Debug, Clone)]
+struct Held {
+    /// The edges, in the order of `values`.
+    edges: Vec<(Axis, [usize; 3])>,
+    /// Bits of the `f32` voltages, written by the other operator.
+    values: Arc<[AtomicU32]>,
+    /// Per circulation term of each group: its index in `values`, or
+    /// `u32::MAX` (filled with `flat_terms`).
+    terms: Vec<Vec<u32>>,
+}
+
+impl PartialEq for Held {
+    fn eq(&self, other: &Self) -> bool {
+        self.edges == other.edges && Arc::ptr_eq(&self.values, &other.values)
+    }
 }
 
 /// The cylindrical `ρ_max` PML correction of one merged face (design
@@ -2092,7 +2118,48 @@ impl MergedFaces {
             scratch: Vec::new(),
             flat_terms: Vec::new(),
             flat_faces: Vec::new(),
+            held: None,
         }
+    }
+
+    /// The E edges of the circulations (every term of every reduced
+    /// current), which `post_h` and `post_e` read.
+    pub(crate) fn circulation_edges(&self) -> impl Iterator<Item = (Axis, [usize; 3])> + '_ {
+        self.groups
+            .iter()
+            .flat_map(|g| g.terms.iter().map(|&(a, p, _)| (a, p)))
+    }
+
+    /// The E edges the corrections of the absorbing layers read.
+    pub(crate) fn layer_edges(&self) -> impl Iterator<Item = (Axis, [usize; 3])> + '_ {
+        let pml = self
+            .pml
+            .iter()
+            .flat_map(|t| t.nodes.iter().map(move |&p| (t.other, p)));
+        let cyl = self.cyl.iter().flat_map(|t| t.edges.iter().copied());
+        pml.chain(cyl)
+    }
+
+    /// For an operator registered after this one that writes the voltages
+    /// of `edges` in the slabs' E half-step, which is before `post_e`
+    /// here, where its serial `post_e` hook wrote them after: `post_e`
+    /// (the circulations of the energy look-ahead) takes these edges from
+    /// the returned values, bits of `f32`, into which that operator puts
+    /// what the array held before it wrote. So the look-ahead reads what
+    /// it read with that operator in the serial hooks, bit for bit. (It
+    /// is the kernel's value of such an edge, not its voltage: the energy
+    /// of the reduced currents next to a surface impedance is the
+    /// kernel's estimate there, as it was.)
+    pub(crate) fn held_back(&mut self, edges: Vec<(Axis, [usize; 3])>) -> Arc<[AtomicU32]> {
+        let values: Arc<[AtomicU32]> = edges.iter().map(|_| AtomicU32::new(0)).collect();
+        self.held = Some(Held {
+            edges,
+            values: Arc::clone(&values),
+            terms: Vec::new(),
+        });
+        // (Located again, with the terms' places in `values`.)
+        self.flat_terms = Vec::new();
+        values
     }
 
     fn locate(&mut self, f: &Fields<'_>) {
@@ -2114,12 +2181,53 @@ impl MergedFaces {
             .iter()
             .map(|(a, p, _)| (*a, f.i.layout().locate(*p)))
             .collect();
+        if let Some(h) = &mut self.held {
+            // (Looked up only: the order of the map does not matter.)
+            let at: HashMap<(Axis, [usize; 3]), u32> = h
+                .edges
+                .iter()
+                .enumerate()
+                .map(|(k, &e)| (e, k as u32))
+                .collect();
+            h.terms = self
+                .groups
+                .iter()
+                .map(|g| {
+                    g.terms
+                        .iter()
+                        .map(|&(a, p, _)| at.get(&(a, p)).copied().unwrap_or(u32::MAX))
+                        .collect()
+                })
+                .collect();
+        }
     }
 
-    fn circulations(&mut self, f: &Fields<'_>) {
+    /// The circulations from the voltages in the array; `ahead` (the
+    /// look-ahead of `post_e`): with the values held back for it
+    /// ([`held_back`](Self::held_back)).
+    fn circulations(&mut self, f: &Fields<'_>, ahead: bool) {
         self.locate(f);
-        for (c, t) in self.circ.iter_mut().zip(&self.flat_terms) {
-            *c = t.iter().map(|&(a, at, w)| w * f.u.at(a, at) as f64).sum();
+        match self.held.as_ref().filter(|_| ahead) {
+            None => {
+                for (c, t) in self.circ.iter_mut().zip(&self.flat_terms) {
+                    *c = t.iter().map(|&(a, at, w)| w * f.u.at(a, at) as f64).sum();
+                }
+            }
+            Some(h) => {
+                for ((c, t), held) in self.circ.iter_mut().zip(&self.flat_terms).zip(&h.terms) {
+                    *c = t
+                        .iter()
+                        .zip(held)
+                        .map(|(&(a, at, w), &k)| {
+                            let u = match h.values.get(k as usize) {
+                                Some(v) => f32::from_bits(v.load(Ordering::Relaxed)),
+                                None => f.u.at(a, at),
+                            };
+                            w * u as f64
+                        })
+                        .sum();
+                }
+            }
         }
     }
 
@@ -2175,7 +2283,7 @@ impl MergedFaces {
     }
 
     /// Keys of the faces the operator drives.
-    fn driven_keys(&self, n: [usize; 3]) -> HashSet<Key> {
+    pub(crate) fn driven_keys(&self, n: [usize; 3]) -> HashSet<Key> {
         self.faces
             .iter()
             .map(|(a, p, _)| (a.index(), index(n, *p)))
@@ -2199,7 +2307,7 @@ impl Operator for MergedFaces {
     }
 
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        self.circulations(f);
+        self.circulations(f, false);
         self.add_pml(f, true);
         let (mut next, mut x) = (
             core::mem::take(&mut self.next),
@@ -2219,7 +2327,7 @@ impl Operator for MergedFaces {
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         // For the energy at t = (n + 1)·dt (`energy`): the circulations the
         // next `post_h` uses, PML corrections included (not committed).
-        self.circulations(f);
+        self.circulations(f, true);
         self.add_pml(f, false);
     }
 

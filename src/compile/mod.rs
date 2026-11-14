@@ -786,6 +786,10 @@ pub struct Compiled {
     /// Fit band of the surface impedances
     /// ([`CompileOptions::surface_band`]).
     pub surface_band: Option<(f64, f64)>,
+    /// Keeps the surface impedance in the engine's serial hooks
+    /// ([`SurfaceImpedance::in_serial_hooks`]): the reference its threaded
+    /// path is tested against. `false` from [`compile`].
+    pub surface_serial: bool,
     /// Highest frequency of interest \[Hz\] ([`Fdtd::get_max_frequency`]),
     /// used to grade the conducting-sheet layers.
     pub max_frequency: Option<f64>,
@@ -1342,7 +1346,8 @@ impl Compiled {
         }
         // After the CPML: the operator takes the layers' stretch from it.
         if !(self.solid_edges.is_empty() && self.surface_sheets.is_empty()) {
-            let mut s = SurfaceImpedance::new(self.max_frequency);
+            let mut s =
+                SurfaceImpedance::new(self.max_frequency).in_serial_hooks(self.surface_serial);
             if let Some((lo, hi)) = self.surface_band {
                 s = s.with_band(lo, hi);
             }
@@ -2571,6 +2576,7 @@ pub fn compile(
         solid_edges,
         solid_surfaces,
         surface_band: opts.surface_band,
+        surface_serial: false,
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,
         openems_sheet_branches,
