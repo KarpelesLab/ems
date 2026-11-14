@@ -102,6 +102,49 @@
 //! materials included). Copies of an axis z edge (the dual face is the whole
 //! disc around the axis) are skipped.
 //!
+//! # Outlines between mesh lines
+//!
+//! Where the outline of a sheet crosses the cells
+//! ([`ConductingSheet::cut`], [`ConductingSheet::cut_face`]; the compile
+//! step declares both for slanted outlines with conformal PEC, design
+//! §5.13.2), an edge the sheet covers partly is two parts in series
+//! carrying the same current: the open part, of length `f·l`, is an
+//! ordinary edge with the capacitance `C/f` (the Dey–Mittra edge of
+//! [`crate::engine::conformal`], whose scaled coefficient the kernel
+//! holds), and the covered part, of length `(1 − f)·l`, is the ladder
+//! with `g = w/((1 − f)·l)` between the two face voltages, which take the
+//! capacitance `C/(1 − f)` of that part of the dual face. Both are driven
+//! by the same dual edges, and those see the sum of the two voltages, so
+//! the system stays symmetric. A perfectly conducting sheet then gives the
+//! conformal PEC edge, `f → 0` the whole sheet edge.
+//!
+//! A face of the sheet's plane that the sheet covers in part (a *cut
+//! face*) keeps the sheet edges in its contour: the current that wraps
+//! around the sheet's rim is the `H` of the open part of that face, and
+//! it flows through the ladders of the edges along the rim, which is
+//! where a strip's loss is largest. Two things follow:
+//!
+//! * *The array value.* The small faces and the hosts of conformal PEC
+//!   are computed by its operator (`db = 0` in the kernel), which reads
+//!   the array and cannot be corrected afterwards. A sheet edge next to
+//!   such a face stores what crossing dual edges need,
+//!   `f+·u+ + f−·u−`, instead of `u+`, and the corrections of its other
+//!   dual edges are taken against that. (With `u+` in the array such a
+//!   face drove the two faces by `f±` and read `u+` alone, which is not
+//!   passive: the run diverged.)
+//! * *Stability.* A cut face has less inductance than a whole one (its
+//!   open area, or the part its deviation current keeps), and the open
+//!   parts of its edges have more capacitance, in proportion; the face
+//!   voltages of the ladders do not, and resonated with the small faces
+//!   above the Courant limit (a 45° strip diverged within 600 steps).
+//!   The capacitances of the two faces of every sheet edge around a cut
+//!   face are therefore multiplied by [`CUT_FACE_LOADING`] (measured on
+//!   strips at six angles: 1 diverges on most, 2 on one, 4 and 8 on none,
+//!   at a stability factor of 0.987). On a good conductor these voltages
+//!   are `Z_s/η` of the fields around, so the energy this adds is
+//!   negligible (4 and 8 give the same frequency and Q to four digits);
+//!   on a resistive film it is a capacitance along the rim.
+//!
 //! # Time stepping
 //!
 //! The ladder and the two face voltages are integrated with the
@@ -180,6 +223,11 @@ use crate::{Error, Result};
 /// Thickness of the outermost layers of the ladder, in skin depths at the
 /// highest frequency (see the [module docs](self#discretisation-a-1d-sub-grid-across-the-thickness)).
 pub const SURFACE_LAYER: f64 = 0.15;
+
+/// Factor on the face capacitances of the sheet edges around a face the
+/// sheet covers in part ([`ConductingSheet::cut_face`]; see the
+/// [module docs](self#outlines-between-mesh-lines)).
+pub const CUT_FACE_LOADING: f64 = 8.0;
 
 /// Growth ratio of consecutive layers from the faces to the middle.
 pub const GROWTH: f64 = 1.15;
@@ -376,6 +424,8 @@ pub struct SheetEdge {
 struct Coupling {
     axis: Axis,
     node: [usize; 3],
+    /// Sign of `i` in the E update of the edge.
+    sign: f64,
     /// Weight of `i` in Ampère's law of the `+` / `−` face (sign included).
     w_up: f64,
     w_dn: f64,
@@ -400,6 +450,25 @@ struct EdgeState {
     l0: usize,
     c0: usize,
     nc: usize,
+    /// Index of its open part in `gaps` (edges partly covered).
+    gap: Option<usize>,
+    /// Share of `u−` in the face voltage the array holds,
+    /// `u+ + mix·(u− − u+)` (0: `u+`).
+    mix: f64,
+    /// The array value written by the last `post_e` (edges with a gap or
+    /// a mix, whose `u+` is not read back from the array).
+    written: f32,
+}
+
+/// The open part of an edge the sheet covers partly: an ordinary edge in
+/// series with the ladder (module docs).
+#[derive(Debug, Clone, Copy)]
+struct Gap {
+    /// Kernel coefficients of the edge (`cb` scaled to the open part).
+    ca: f64,
+    cb: f64,
+    /// Voltage over the open part.
+    u: f64,
 }
 
 /// Conducting sheets: thin lossy conductors on mesh planes, with the
@@ -427,6 +496,11 @@ struct EdgeState {
 pub struct ConductingSheet {
     f_max: Option<f64>,
     entries: Vec<SheetEdge>,
+    /// Open fractions of edges partly covered ([`cut`](Self::cut)).
+    cuts: Vec<(Axis, [usize; 3], f64)>,
+    /// Faces partly covered ([`cut_face`](Self::cut_face)).
+    cut_faces: Vec<(Axis, [usize; 3])>,
+    gaps: Vec<Gap>,
     installed: bool,
     skipped: usize,
     dt: f64,
@@ -460,6 +534,30 @@ impl ConductingSheet {
     /// Adds a sheet edge.
     pub fn push(&mut self, e: SheetEdge) {
         self.entries.push(e);
+    }
+
+    /// Declares the sheet edge along `axis` at `node` as covered by the
+    /// sheet over the fraction `1 − open` of its length only (`open` in
+    /// `(0, 1)`, the open length fraction; other values and edges that
+    /// are not pushed are ignored). The engine's coefficient of the edge
+    /// must be that of its open part when the sheets are installed (`cb`
+    /// scaled by `open`, as [`ConformalPec::apply`](super::ConformalPec::apply)
+    /// leaves a cut edge); see the
+    /// [module docs](self#outlines-between-mesh-lines). Cartesian grids.
+    pub fn cut(&mut self, axis: Axis, node: [usize; 3], open: f64) {
+        if open > 0.0 && open < 1.0 {
+            self.cuts.push((axis, node, open));
+        }
+    }
+
+    /// Declares the cell face of normal `axis` with lowest corner `node`,
+    /// lying in the plane of a sheet, as covered by it in part (a cut
+    /// face of conformal PEC, with less inductance than a whole face):
+    /// the sheet edges around it get the capacitance loading and the
+    /// array value of the
+    /// [module docs](self#outlines-between-mesh-lines). Cartesian grids.
+    pub fn cut_face(&mut self, axis: Axis, node: [usize; 3]) {
+        self.cut_faces.push((axis, node));
     }
 
     /// Adds every tangential edge of the node rectangle `start..=stop` on
@@ -579,6 +677,17 @@ impl ConductingSheet {
         };
         order.sort_by_key(|&i| key(&self.entries[i]));
         let co = engine.coefficients();
+        let cuts: std::collections::HashMap<(usize, [usize; 3]), f64> = self
+            .cuts
+            .iter()
+            .map(|&(a, p, f)| ((a.index(), p), f))
+            .collect();
+        let cut_faces: std::collections::HashSet<(usize, [usize; 3])> = self
+            .cut_faces
+            .iter()
+            .map(|&(a, p)| (a.index(), p))
+            .collect();
+        let outlines = !cut_faces.is_empty();
         let mut last = None;
         for &i in &order {
             let e = self.entries[i];
@@ -612,6 +721,14 @@ impl ConductingSheet {
             }
             let c_edge: f64 = cg.iter().map(|x| x.0).sum();
             let g_edge: f64 = cg.iter().map(|x| x.1).sum();
+            // An edge partly covered: the kernel's coefficients are those
+            // of the open part (C/f, G/f); the covered part has
+            // C/(1 − f), G/(1 − f) and a ladder of its length.
+            let open = (copies.len() == 1)
+                .then(|| cuts.get(&(e.axis.index(), e.node)).copied())
+                .flatten();
+            let part = open.map_or(1.0, |f| f / (1.0 - f));
+            let (c_cov, g_cov) = (part * c_edge, part * g_edge);
             let (nrm, d) = (e.normal, e.axis);
             let geom = |node: [usize; 3]| sheet_geometry(grid, d, nrm, node);
             // A sheet on the α seam of a closed grid (normal α): the two
@@ -637,6 +754,7 @@ impl ConductingSheet {
                 let (sc, sg) = e.upper_share.unwrap_or((s, s));
                 (copies.iter().map(|&c| geom(c).0).sum(), sc, sg)
             };
+            let geo: f64 = open.map_or(geo, |f| geo / (1.0 - f));
 
             // Ladder.
             let dz = layer_profile(e.conductivity, e.thickness, f_max);
@@ -652,10 +770,21 @@ impl ConductingSheet {
                 self.a.push(dt * geo / (2.0 * MU0 * z));
                 self.h.push(0.0);
             }
-            c_node[0] += sc * c_edge;
-            g_node[0] += sg * g_edge;
-            c_node[nn - 1] += (1.0 - sc) * c_edge;
-            g_node[nn - 1] += (1.0 - sg) * g_edge;
+            // Around a cut face: loaded (module docs).
+            let (b, c) = d.others();
+            let by_cut_face = copies.len() == 1 && {
+                let mut lo = e.node;
+                let o = if b == nrm { c } else { b };
+                let below = lo[o.index()] > 0;
+                lo[o.index()] = lo[o.index()].saturating_sub(1);
+                cut_faces.contains(&(nrm.index(), e.node))
+                    || (below && cut_faces.contains(&(nrm.index(), lo)))
+            };
+            let load = if by_cut_face { CUT_FACE_LOADING } else { 1.0 };
+            c_node[0] += load * sc * c_cov;
+            g_node[0] += sg * g_cov;
+            c_node[nn - 1] += load * (1.0 - sc) * c_cov;
+            g_node[nn - 1] += (1.0 - sg) * g_cov;
             // Thomas factorisation of the constant matrix.
             let a = &self.a[l0..];
             let mut prev_cp = 0.0;
@@ -676,8 +805,12 @@ impl ConductingSheet {
             // Couplings: the four dual edges around the dual face of every
             // copy, with their sign in the E update (engine kernel
             // convention).
-            let (b, c) = d.others();
             let c0 = self.couplings.len();
+            // (axis, node, sign, shares of the two faces, da, db)
+            let mut around = Vec::with_capacity(4 * copies.len());
+            // Share of `u−` in the stored voltage (module docs, *Outlines
+            // between mesh lines*).
+            let mut mix = 0.0;
             for (node, ax, off, s) in copies.iter().flat_map(|&node| {
                 [
                     (node, c, None, 1.0),
@@ -708,7 +841,15 @@ impl ConductingSheet {
                 };
                 let mi = grid.index(m);
                 let (da, db) = (co.da(ax)[mi] as f64, co.db(ax)[mi] as f64);
-                let corr = -db * s * w_dn;
+                if ax == nrm && db == 0.0 && outlines && copies.len() == 1 {
+                    mix = w_dn;
+                }
+                around.push((ax, m, s, (w_up, w_dn), (da, db)));
+            }
+            for (ax, m, s, (w_up, w_dn), (da, db)) in around {
+                // (The dual edge read the stored voltage, with the share
+                // `mix` of `u−`; its own share is `w_dn`.)
+                let corr = -db * s * (w_dn - mix);
                 let ecorr = if db == 0.0 {
                     0.0
                 } else {
@@ -717,12 +858,22 @@ impl ConductingSheet {
                 self.couplings.push(Coupling {
                     axis: ax,
                     node: m,
+                    sign: s,
                     w_up: s * w_up,
                     w_dn: s * w_dn,
                     corr,
                     ecorr,
                 });
             }
+            let gap = open.map(|_| {
+                let idx = grid.index(copies[0]);
+                self.gaps.push(Gap {
+                    ca: co.ca(d)[idx] as f64,
+                    cb: co.cb(d)[idx] as f64,
+                    u: 0.0,
+                });
+                self.gaps.len() - 1
+            });
             self.edges.push(EdgeState {
                 axis: d,
                 copies,
@@ -732,6 +883,9 @@ impl ConductingSheet {
                 l0,
                 c0,
                 nc: self.couplings.len() - c0,
+                gap,
+                mix,
+                written: 0.0,
             });
         }
         drop(co);
@@ -766,9 +920,19 @@ impl Operator for ConductingSheet {
 
     fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         for e in &self.edges {
-            let up = f.u.get(e.axis, e.copies[0]) as f64;
-            self.u[e.n0] = up;
-            let diff = self.u[e.n0 + e.nn - 1] - up;
+            let stored = f.u.get(e.axis, e.copies[0]);
+            if e.gap.is_none() && e.mix == 0.0 {
+                self.u[e.n0] = stored as f64;
+            } else if stored != e.written {
+                // What another operator added since `post_e` (a source):
+                // to the open part, or to `u+` as on a plain sheet edge.
+                let d = stored as f64 - e.written as f64;
+                match e.gap {
+                    Some(g) => self.gaps[g].u += d,
+                    None => self.u[e.n0] += d,
+                }
+            }
+            let diff = self.u[e.n0 + e.nn - 1] - self.u[e.n0];
             for c in &self.couplings[e.c0..e.c0 + e.nc] {
                 if c.corr != 0.0 {
                     let v = f.i.get_mut(c.axis, c.node);
@@ -781,13 +945,15 @@ impl Operator for ConductingSheet {
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
         let x = &mut self.scratch;
         let mut w_corr = 0.0;
-        for e in &self.edges {
-            let (mut s_up, mut s_dn, mut s_e) = (0.0, 0.0, 0.0);
+        for e in &mut self.edges {
+            // (`s_all`: the E update's sum, for the open part.)
+            let (mut s_up, mut s_dn, mut s_e, mut s_all) = (0.0, 0.0, 0.0, 0.0);
             for c in &self.couplings[e.c0..e.c0 + e.nc] {
                 let i = f.i.get(c.axis, c.node) as f64;
                 s_up += c.w_up * i;
                 s_dn += c.w_dn * i;
                 s_e += c.ecorr * i;
+                s_all += c.sign * i;
             }
             let (n0, nn, l0) = (e.n0, e.nn, e.l0);
             let u = &mut self.u[n0..n0 + nn];
@@ -825,11 +991,31 @@ impl Operator for ConductingSheet {
             for k in 0..nn {
                 u[k] = 2.0 * x[k] - u[k];
             }
-            let up = flush(u[0] as f32);
+            // The face voltage in the array value.
+            let face = if e.mix == 0.0 {
+                u[0]
+            } else {
+                u[0] + e.mix * (u[nn - 1] - u[0])
+            };
+            let up = match e.gap {
+                None => flush(face as f32),
+                Some(g) => {
+                    // The open part: the kernel's update of an ordinary
+                    // edge, with the currents of all its dual edges.
+                    let gap = &mut self.gaps[g];
+                    gap.u = gap.ca * gap.u + gap.cb * s_all;
+                    flush((gap.u + face) as f32)
+                }
+            };
+            e.written = up;
             for &c in &e.copies {
                 f.u.set(e.axis, c, up);
             }
-            w_corr += s_e * (u[nn - 1] - up as f64);
+            w_corr += if e.gap.is_some() || e.mix != 0.0 {
+                s_e * (u[nn - 1] - u[0])
+            } else {
+                s_e * (u[nn - 1] - up as f64)
+            };
         }
         self.w_corr = w_corr;
     }
@@ -841,7 +1027,21 @@ impl Operator for ConductingSheet {
             for k in 0..nn {
                 w += 0.25 * self.two_c[k + n0] * self.dt * self.u[n0 + k] * self.u[n0 + k];
             }
-            w -= 0.5 * e.c_edge * self.u[n0] * self.u[n0];
+            // The engine's field sum has ½·C·(array value)².
+            let face = if e.mix == 0.0 {
+                self.u[n0]
+            } else {
+                self.u[n0] + e.mix * (self.u[n0 + nn - 1] - self.u[n0])
+            };
+            let stored = match e.gap {
+                None => face,
+                Some(g) => {
+                    let uo = self.gaps[g].u;
+                    w += 0.5 * e.c_edge * uo * uo;
+                    uo + face
+                }
+            };
+            w -= 0.5 * e.c_edge * stored * stored;
             for j in 0..nn - 1 {
                 let l = self.dt / (2.0 * self.a[l0 + j]);
                 w += 0.5 * l * self.h[l0 + j] * self.h[l0 + j];

@@ -341,6 +341,9 @@ pub struct ConformalPec {
     cyl_h: Option<CylLayer>,
     sheet_edges: Vec<SheetCutEdge>,
     sheet_faces: Vec<SheetCutFace>,
+    /// Edges that are not PEC but closed for interpolation and merging
+    /// ([`push_wall`](Self::push_wall)).
+    walls: Vec<(Axis, [usize; 3])>,
     options: ConformalOptions,
 }
 
@@ -376,6 +379,15 @@ impl ConformalPec {
     /// Adds a cut edge.
     pub fn push_edge(&mut self, e: ConformalEdge) {
         self.edges.push(e);
+    }
+
+    /// Declares an edge that conducts over its whole length without being
+    /// PEC (an edge of a conducting sheet, whose voltage is the small one
+    /// its surface impedance leaves): like a PEC edge, it separates the
+    /// faces on its two sides, so no small face is interpolated from or
+    /// merged with a face across it. The coefficients are not changed.
+    pub fn push_wall(&mut self, axis: Axis, node: [usize; 3]) {
+        self.walls.push((axis, node));
     }
 
     /// Adds a cut face without its open-area centroid. A small face
@@ -745,7 +757,15 @@ impl ConformalPec {
             .collect();
         let fa_of =
             |a: Axis, p: [usize; 3]| face_info.get(&(a.index(), idx(p))).map_or(1.0, |x| x.0);
-        let open = |a: Axis, p: [usize; 3]| co.cb(a)[idx(p)] > 0.0;
+        let walls: HashSet<Key> = self
+            .walls
+            .iter()
+            .filter(|&&(a, p)| (0..3).all(|d| p[d] < n[d]) && p[a.index()] + 1 < n[a.index()])
+            .map(|&(a, p)| (a.index(), idx(p)))
+            .collect();
+        let open = |a: Axis, p: [usize; 3]| {
+            co.cb(a)[idx(p)] > 0.0 && !walls.contains(&(a.index(), idx(p)))
+        };
         let fe_of = |a: Axis, p: [usize; 3]| {
             if open(a, p) {
                 *edge_frac.get(&(a.index(), idx(p))).unwrap_or(&1.0)
