@@ -27,6 +27,20 @@
 //! Transitions within `1e-6` of an end are moved onto it (a surface
 //! through a node otherwise leaves a `2⁻³⁰` sliver on one side).
 //!
+//! # Surfaces along the mesh
+//!
+//! With [`ConformalOutlines::Slanted`](super::ConformalOutlines) for
+//! solid metal ([`CompileOptions::conformal_solids`](super::CompileOptions::conformal_solids);
+//! Cartesian grids) an edge is cut only if the surface is oblique to the
+//! mesh at one of its transitions (`Ctx::oblique`); an edge that only
+//! surfaces along the mesh cross keeps csx's staircase, and a face is
+//! cut if one of its edges is. A box, or the straight side of a prism,
+//! is then discretised as without conformal PEC whether its faces are on
+//! mesh lines or between them, as with the outlines of sheets on mesh
+//! planes (`planar`): a mesh laid out for the staircase (the thirds rule
+//! at the edges of a strip) keeps its meaning. `Off` leaves all solid
+//! metal to csx.
+//!
 //! # Faces
 //!
 //! The open area of a cell face is the polygon formed, in order around the
@@ -178,6 +192,30 @@ impl Ctx<'_> {
             Some(h) if matches!(h.property.kind, PropertyKind::Metal) && h.primitive.dimension() == 3)
     }
 
+    /// Whether the metal surface crossing the edge along `a` from node
+    /// `n` at the parameter `t` is oblique to the mesh there: on a line
+    /// beside the edge (`SLANT_ACROSS` of its length away, along either
+    /// other axis) the metal reaches past the crossing, by `SLANT_ALONG`
+    /// of the edge or more (about 0.6° from the edge's normal). A line
+    /// beside the edge that is outside the metal altogether (the edge
+    /// lies in a face of the metal) says nothing.
+    fn oblique(&self, a: usize, n: [usize; 3], t: f64) -> bool {
+        use planar::{SLANT_ACROSS, SLANT_ALONG};
+        let p0 = self.node(n);
+        let len = self.lines[a][n[a] + 1] - self.lines[a][n[a]];
+        let at = |dt: f64, o: usize, w: f64| {
+            let mut p = p0;
+            p.0[a] += (t + dt) * len;
+            p.0[o] += w * len;
+            self.metal(p)
+        };
+        [(a + 1) % 3, (a + 2) % 3].into_iter().any(|o| {
+            [SLANT_ACROSS, -SLANT_ACROSS]
+                .into_iter()
+                .any(|w| at(-SLANT_ALONG, o, w) && at(SLANT_ALONG, o, w))
+        })
+    }
+
     fn node(&self, n: [usize; 3]) -> Vec3 {
         Vec3::new(
             self.lines[0][n[0]],
@@ -306,6 +344,8 @@ pub(super) struct Request<'a> {
     pub threads: usize,
     /// Outlines of sheets on mesh planes (`planar`).
     pub outlines: super::ConformalOutlines,
+    /// Which surfaces of solid metal cut the edges they cross.
+    pub solids: super::ConformalOutlines,
     /// The conducting-sheet edges csx selected, or `None` where the
     /// outlines of conducting sheets are not cut (openEMS's sheet model).
     pub sheet_edges: Option<&'a [crate::engine::SheetEdge]>,
@@ -321,7 +361,7 @@ pub(super) fn geometry(
     warnings: &mut Vec<String>,
 ) -> Geometry {
     let (pec, snap, threads) = (&req.pec, req.snap, req.threads);
-    let (mut out, solid) = solid_geometry(model, pec, threads);
+    let (mut out, solid) = solid_geometry(model, pec, threads, req.solids);
     // The metal test of the solid geometry (grid coordinates), for sheets
     // ending on a metal surface.
     let index = model.spatial_index(
@@ -436,6 +476,7 @@ fn solid_geometry(
     model: &csx::ContinuousStructure,
     pec: &[&[bool]; 3],
     threads: usize,
+    mode: super::ConformalOutlines,
 ) -> (Geometry, SolidProfiles) {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
     let dims = lines.map(<[f64]>::len);
@@ -447,10 +488,15 @@ fn solid_geometry(
         sheet_cut_faces: Vec::new(),
     };
     let bb = metal_bbox(model);
-    if bb.is_empty() || !(bb.min.is_finite() && bb.max.is_finite()) {
+    if bb.is_empty()
+        || !(bb.min.is_finite() && bb.max.is_finite())
+        || mode == super::ConformalOutlines::Off
+    {
         return (out, HashMap::new());
     }
     let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
+    // (The test of an oblique surface is Cartesian.)
+    let all = mode == super::ConformalOutlines::All || cyl;
     let ctx = Ctx {
         index: model.spatial_index(
             model.grid.coord_system,
@@ -486,7 +532,7 @@ fn solid_geometry(
     };
     // Edge profiles: (axis, node) → profile, for edges with any state
     // change; plus the midpoint state of every edge in range.
-    type EdgeOut = (usize, [usize; 3], bool, Profile);
+    type EdgeOut = (usize, [usize; 3], bool, Profile, bool);
     let edges: Vec<Vec<EdgeOut>> = par(threads, rx.clone(), |i| {
         let mut v = Vec::new();
         for j in ry.clone() {
@@ -503,7 +549,11 @@ fn solid_geometry(
                     let sm = ctx.metal(mid);
                     let (s0, s1) = (state(n), state(m));
                     if s0 || sm || s1 {
-                        v.push((a, n, sm, ctx.profile(a, n, s0, sm, s1)));
+                        let prof = ctx.profile(a, n, s0, sm, s1);
+                        // Cut where a surface crosses the edge obliquely
+                        // (module docs, *Surfaces along the mesh*).
+                        let cut = all || prof.transitions.iter().any(|&t| ctx.oblique(a, n, t));
+                        v.push((a, n, sm, prof, cut));
                     }
                 }
             }
@@ -512,15 +562,16 @@ fn solid_geometry(
     });
     let mut profiles: HashMap<(usize, [usize; 3]), Profile> = HashMap::new();
     let mut cut = Vec::new();
-    for (a, n, sm, prof) in edges.into_iter().flatten() {
+    for (a, n, sm, prof, oblique) in edges.into_iter().flatten() {
         let axis = Axis::from_index(a).expect("axis in 0..3");
         let f = prof.open_fraction();
         let k = eidx(n);
         if f <= 0.0 {
             out.pec.push((axis, k, true));
         } else if f < 1.0 {
-            if pec[a][k] && !sm {
-                // PEC from a sheet or wire: keep it.
+            if (pec[a][k] && !sm) || !oblique {
+                // PEC from a sheet or wire: keep it. A surface along the
+                // mesh: csx's staircase decides.
             } else {
                 out.pec.push((axis, k, false));
                 cut.push(ConformalEdge {
@@ -539,6 +590,8 @@ fn solid_geometry(
     // carry its circulation: measured on a circular guide meshed through
     // its extreme points, it held a local resonance that never decayed.)
     let mut surface: std::collections::HashSet<(usize, [usize; 3])> = Default::default();
+    let is_cut: std::collections::HashSet<(usize, [usize; 3])> =
+        cut.iter().map(|e| (e.axis.index(), e.node)).collect();
     // Faces.
     let profile = |a: usize, n: [usize; 3]| -> Profile {
         profiles
@@ -588,7 +641,8 @@ fn solid_geometry(
                         surface.extend(keys);
                         continue;
                     }
-                    if fa < 1.0 {
+                    // (A face is cut if one of its edges is.)
+                    if fa < 1.0 && (all || keys.iter().any(|key| is_cut.contains(key))) {
                         let centroid = open_centroid(&e, lb, lc);
                         out.conformal.push_face_with_centroid(
                             ConformalFace {

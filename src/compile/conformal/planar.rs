@@ -79,8 +79,8 @@ const METAL: u8 = 1;
 const SHEET: u8 = 2;
 /// Offsets of the slant test, in edge lengths: along the edge and across
 /// it.
-const SLANT_ALONG: f64 = 5e-5;
-const SLANT_ACROSS: f64 = 5e-3;
+pub(super) const SLANT_ALONG: f64 = 5e-5;
+pub(super) const SLANT_ACROSS: f64 = 5e-3;
 
 /// An edge `(axis index, node)` or a face `(normal index, node)`.
 pub(super) type Key = (usize, [usize; 3]);

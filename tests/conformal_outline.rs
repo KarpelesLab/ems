@@ -310,6 +310,8 @@ enum Copper {
     /// Solid metal of this thickness \[mm\], a mesh cell high, with a
     /// conductivity \[S/m\] (a surface impedance on its faces).
     Solid(f64, f64),
+    /// Solid perfect metal of this thickness \[mm\], a mesh cell high.
+    SolidPec(f64),
 }
 
 struct Strip {
@@ -345,6 +347,8 @@ struct Case {
     model: SheetModel,
     /// Roughness of the sheet (rational model).
     roughness: Roughness,
+    /// Which surfaces of solid metal are cut.
+    solids: ConformalOutlines,
 }
 
 impl Case {
@@ -359,6 +363,7 @@ impl Case {
             threads: 3,
             model: SheetModel::Ladder,
             roughness: Roughness::Smooth,
+            solids: ConformalOutlines::All,
         }
     }
 }
@@ -378,6 +383,7 @@ fn strip(case: Case) -> Strip {
         threads,
         model,
         roughness,
+        solids,
     } = case;
     let (len, w, sub) = (12.0, 1.0, 0.5);
     let ext = 10.0;
@@ -389,7 +395,7 @@ fn strip(case: Case) -> Strip {
     if cubic {
         lz = lines(0.0, 16.0 * h, h);
     } else {
-        if let Copper::Solid(t, _) = copper {
+        if let Copper::Solid(t, _) | Copper::SolidPec(t) = copper {
             lz.push(sub + t);
         }
         lz.extend([0.8, 1.2, 1.7, 2.3, 3.0, 3.8]);
@@ -412,7 +418,7 @@ fn strip(case: Case) -> Strip {
     let prop = match copper {
         Copper::Pec => Property::metal("strip"),
         Copper::Sheet(sigma, thickness) => Property::conducting_sheet("strip", sigma, thickness),
-        Copper::Solid(..) => Property::metal("strip"),
+        Copper::Solid(..) | Copper::SolidPec(_) => Property::metal("strip"),
     };
     let id = m.add_property(prop);
     let verts = vec![
@@ -422,14 +428,16 @@ fn strip(case: Case) -> Strip {
         at(-0.5 * len, 0.5 * w),
     ];
     let prim = match copper {
-        Copper::Solid(t, _) => {
+        Copper::Solid(t, _) | Copper::SolidPec(t) => {
             Primitive::new(LinPoly::new(2, sub, if cubic { h } else { t }, verts))
         }
         _ => Primitive::new(Polygon::new(2, sub, verts)),
     };
     m.add_primitive(id, prim.with_priority(10)).unwrap();
     let fdtd = Fdtd::new().threads(threads).max_frequency(12e9);
-    let mut opts = options(outlines).with_sheet_model(model);
+    let mut opts = options(outlines)
+        .with_sheet_model(model)
+        .with_conformal_solids(solids);
     if roughness != Roughness::Smooth {
         opts = opts.with_sheet_roughness("strip", roughness);
     }
@@ -725,6 +733,49 @@ fn lossy_solid_strip_loss_does_not_depend_on_direction() {
         assert!((s.f / along.f - 1.0).abs() < 0.015, "{name}: {}", s.f);
     }
     assert!(stair.q > 3.0 * along.q, "{} {}", stair.q, along.q);
+}
+
+/// Solid metal with `ConformalOutlines::Slanted`: a strip along the mesh
+/// with its sides and ends between mesh lines is discretised as without
+/// conformal PEC (the same samples), a strip at 45° as with every surface
+/// cut.
+#[test]
+fn solid_surfaces_along_the_mesh_keep_the_staircase() {
+    for cu in [Copper::SolidPec(0.1), Copper::Solid(0.1, 2e5)] {
+        let run = |deg: f64, o, solids| {
+            strip(Case {
+                periods: 12.0,
+                solids,
+                ..Case::new(deg, 0.25, cu, o)
+            })
+        };
+        let off = run(0.0, None, ConformalOutlines::All);
+        let slanted = run(0.0, SLANTED, ConformalOutlines::Slanted);
+        let rep = slanted.report.unwrap();
+        assert_eq!((rep.edges, rep.faces), (0, 0), "{rep:?}");
+        assert_eq!(off.values, slanted.values);
+        let all = run(0.0, SLANTED, ConformalOutlines::All);
+        assert!(all.report.unwrap().edges > 50);
+        assert_ne!(off.values, all.values);
+        // No solid metal cut at all.
+        let none = run(45.0, SLANTED, ConformalOutlines::Off);
+        assert_eq!(none.report.unwrap().edges, 0);
+        assert_eq!(none.values, run(45.0, None, ConformalOutlines::All).values);
+        // Every side oblique: nothing kept.
+        let (a, b) = (
+            run(45.0, SLANTED, ConformalOutlines::All),
+            run(45.0, SLANTED, ConformalOutlines::Slanted),
+        );
+        assert!(a.report.unwrap().edges > 100);
+        assert_eq!(a.report, b.report);
+        assert_eq!(a.values, b.values);
+        // 17°: the long sides are oblique, and so are the ends.
+        let (a, b) = (
+            run(17.0, SLANTED, ConformalOutlines::All),
+            run(17.0, SLANTED, ConformalOutlines::Slanted),
+        );
+        assert_eq!(a.values, b.values);
+    }
 }
 
 #[test]

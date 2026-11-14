@@ -1978,6 +1978,27 @@ non-PEC (unless their PEC came from a sheet/wire), and so do the edges of
 faces without open area: their open part lies on the metal surface. E
 excitations on cut edges are scaled by `f_e`.
 
+*Surfaces along the mesh* (`CompileOptions::conformal_solids`, default
+`All`: every surface, as above). With `Slanted` an edge is cut only where
+the surface crossing it is oblique to the mesh at one of its transitions:
+on a line beside the edge (5e-3 of its length away along either other
+axis) the metal reaches past the crossing by 5e-5 of the edge or more,
+about 0.6° from the edge's normal; a line beside the edge that is outside
+the metal altogether (the edge lies in a face of the metal) says nothing.
+Other edges keep csx's staircase, and a face is cut if one of its edges
+is (its open area from the true geometry, as §5.13.2). A box, or the
+straight side of a prism, is then discretised as without the option
+whether its faces are on mesh lines or between them; `Off` leaves all
+solid metal to csx. This is §5.13.2's rule for sheets, for the same
+reason: a mesh laid out for the staircase keeps its meaning. cadlab puts a
+mesh line a third of a cell inside a strip's edge; with every surface cut,
+a 1 mm microstrip of 35 µm copper on that mesh read `Z0` 49.07 Ω where
+cadlab's solver (staircase along the mesh) reads 49.85 Ω, and `|S11|`
+0.017 apart; with `Slanted`, 49.88 Ω and 0.005. A strip resonator along
+x gives the samples of the run without conformal PEC, at 45° and 17° those
+of `All` (`tests/conformal_outline.rs`). Cartesian grids (on a cylindrical
+grid as `All`).
+
 **Scheme (Dey–Mittra in integral form).** With `u = E·l_open` on cut edges,
 Dey–Mittra is a coefficient change: `cb → f_e·cb`, `db → db/f_A`. The
 system stays `C·du/dt = Kᵀi`, `L·di/dt = −K·u`, so the energy invariant of

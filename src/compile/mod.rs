@@ -226,6 +226,11 @@ pub struct CompileOptions {
     /// [`conformal`](Self::conformal) is set (default
     /// [`ConformalOutlines::Slanted`]).
     pub conformal_outlines: ConformalOutlines,
+    /// Which surfaces of solid metal are resolved below the cell size
+    /// when [`conformal`](Self::conformal) is set (default
+    /// [`ConformalOutlines::All`]; see
+    /// [`with_conformal_solids`](Self::with_conformal_solids)).
+    pub conformal_solids: ConformalOutlines,
     /// Time integration of Lorentz/Drude poles (default
     /// [`Scheme::Leapfrog`](crate::engine::dispersive::Scheme::Leapfrog),
     /// the scheme openEMS uses, so XML models give the same signals; see
@@ -344,12 +349,37 @@ impl CompileOptions {
         self.conformal_outlines = outlines;
         self
     }
+
+    /// Returns `self` with [`conformal_solids`](Self::conformal_solids)
+    /// set to `surfaces`: which surfaces of solid metal cut the cells
+    /// they cross. [`ConformalOutlines::All`] (the default): every one.
+    /// [`ConformalOutlines::Slanted`]: those oblique to the mesh; an edge
+    /// crossed only by surfaces along the mesh keeps csx's staircase, so a
+    /// box or the straight side of a prism is discretised as without
+    /// conformal PEC whether its faces are on mesh lines or between them
+    /// (for a mesh laid out for the staircase, as with the outlines of
+    /// sheets; Cartesian grids, on a cylindrical grid as `All`).
+    /// [`ConformalOutlines::Off`]: solid metal keeps the staircase.
+    ///
+    /// ```
+    /// use ems::compile::{CompileOptions, ConformalOutlines};
+    /// let o = CompileOptions::default()
+    ///     .with_conformal(true)
+    ///     .with_conformal_solids(ConformalOutlines::Slanted);
+    /// assert_eq!(o.conformal_solids, ConformalOutlines::Slanted);
+    /// ```
+    #[must_use]
+    pub fn with_conformal_solids(mut self, surfaces: ConformalOutlines) -> Self {
+        self.conformal_solids = surfaces;
+        self
+    }
 }
 
 /// The outlines of sheets on mesh planes that
 /// [`CompileOptions::conformal`] resolves below the cell size (planar
 /// metal sheets and conducting sheets on Cartesian grids; see
-/// [Conformal PEC](self#conformal-pec)).
+/// [Conformal PEC](self#conformal-pec)), and likewise the surfaces of
+/// solid metal ([`CompileOptions::conformal_solids`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum ConformalOutlines {
@@ -378,6 +408,7 @@ impl Default for CompileOptions {
             conformal: false,
             conformal_options: ConformalOptions::default(),
             conformal_outlines: ConformalOutlines::default(),
+            conformal_solids: ConformalOutlines::All,
             dispersive_scheme: DispersiveScheme::Leapfrog,
             lossy_metals: Vec::new(),
             sheet_model: SheetModel::Ladder,
@@ -2177,6 +2208,7 @@ pub fn compile(
                 snap: opts.snap_tolerance,
                 threads: fdtd.resolved_threads(),
                 outlines: opts.conformal_outlines,
+                solids: opts.conformal_solids,
                 // openEMS's sheet model (files) has no cut edges.
                 sheet_edges: (!fdtd.get_openems_run()).then_some(&sheet_map.edges[..]),
             },
