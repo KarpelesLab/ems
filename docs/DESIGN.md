@@ -209,7 +209,7 @@ with cadlab's S-parameter command as the consumer). None changes a default.
 lists stay lines of text (`Simulation::warnings`, `Compiled::warnings`,
 `io::openems::read_model`; the `ems` program prints them as before).
 `Warning::parse` reads a line back into a `WarningCode` (`mesh.in_pml`,
-`box.snapped`, `sheet.in_pml`, `lumped.edges`, …: 32 codes, `as_str` is the
+`box.snapped`, `sheet.in_pml`, `lumped.edges`, …: 34 codes, `as_str` is the
 stable text), the property the line is about (the name quoted in its head,
 or the location of a mesh-check line) and the primitive index; `collect`
 merges the lines of one code about one property into one entry with a
@@ -1271,7 +1271,14 @@ each side where the neighbouring parallel edge is PEC too (the dual length
 on a flat face, half of each of the two faces at a convex edge, as cadlab's
 solver does). Then `C·du/dt + G·u + h = S`, `u = (l/w)·Z_s ∗ h`, `C`, `G`
 of the part of the dual face outside the metal (sampled by the compile
-step). Edges inside the metal and re-entrant edges stay 0; edges with
+step), `C` at least that of the quarters of the dual face next to a face
+with field, in vacuum. The samples are taken on the drawn metal, which
+reaches past the edges of its staircase (and past the whole edges next to
+a conformal outline), so an edge at the end of a strip could have every
+sample in metal and no capacitance: it is then a resistor `Z∞/g` in the
+loops of its faces, integrated explicitly, and a strip of 2e5 S/m grew
+from the corners of its end within 20 periods (copper, with a smaller
+`Z∞`, only with conformal cells and after 100). Edges inside the metal and re-entrant edges stay 0; edges with
 field on two opposite sides (zero-thickness metal, wires) are not solid
 and stay PEC (warning). The compile step finds the edges of a lossy metal
 by discretising the model a second time without it: an edge another metal
@@ -1285,6 +1292,21 @@ the sheet goes on (a parallel sheet edge, or metal), so an edge on the
 border of a sheet carries half a cell of conductor. (The ladder gives it
 the whole dual length, which makes a strip `n` cells wide conduct like
 `n + 1`.) What a source adds to a sheet edge is added to both faces.
+
+**Conformal outlines.** *Sheets* take the cuts of §5.13.2 exactly as the
+ladder does (`SurfaceImpedance::cut_sheet`, `cut_face`): the covered part
+of a cut edge carries the two face voltages with `g = w/((1 − f)·l)` and
+the capacitance `C/(1 − f)`, in series with the open part (the kernel's
+edge, updated with the stretched circulation of both faces); the edges
+around a cut face are loaded by `sheet::CUT_FACE_LOADING`; an edge next to
+a face conformal PEC computes itself stores `f+·u+ + f−·u−`, and all its
+other dual edges are corrected against that (those on the `+` side too).
+*Solid metal* keeps the covered part of a cut edge perfectly conducting
+(warning `metal.lossy_cut`), but a cut edge counts as its covered
+fraction of a conductor for the width `w` of the whole edges beside it
+(`cut_edge`). Counted as open, the whole edges along an oblique outline
+carried half a cell where the metal goes on, and a strip lost more the
+more oblique it was (table below).
 
 **Time stepping.** Trapezoidal at `(n + ½)·dt`: a section advances as
 `v̄ = (2v + 2r·(h̄ − h))/(2 + a·dt)`, so a one-port is `x̄ = Z∞·h̄ + e`
@@ -1321,6 +1343,9 @@ hooks are serial (they do not scale with the thread count).
 | A sheet without effect (`σt = 1e-18 S`) in the plane of E along a line, through both layers | the line without the sheet | −119 dB from it; +1.7 dB without the stretch |
 | Plate capacitor discharged by a resistive strip two cells wide (`σt = 5e-5 S`) | `τ = R·C = 8.854 ns` with the strip's own width | 8.854 ns (a whole dual cell per border edge: a third less) |
 | Block and sheet in a closed cavity, graded mesh | energy | only decays; identical for 1 and 3 threads |
+| Half-wave strip resonator of §5.13.2 (12 × 1 mm, 0.25 mm cells), rational sheet of 35 µm at 2e5 S/m, along x / 45° / 17° with conformal outlines (`tests/conformal_outline.rs`) | the same strip in another direction | Q 33.8 / 36.8 / 35.2, the resonance within 0.04 % of the ladder's (the ladder: Q 58 / 37 / 48); copper 520 / 575 / 544 |
+| The same of solid metal 0.1 mm thick (one cell), 2e5 S/m | the same strip in another direction | Q 38.7 / 36.4 / 36.7 (cut edges counted as open: 38.7 / 24.2 / 31.9; staircase at 45°: 184); copper 639 / 602 / 606 (before: 639 / 392 / 523) |
+| Both, 100 to 150 periods in the closed box, 1e4 to 5.8e7 S/m (the sheet on cubic cells too) | the probe signal | no growth |
 
 **Against another solver** (cadlab's `sim.sparams`, its built-in FDTD with
 a surface impedance on every copper face, and ems behind the same region,
@@ -1346,8 +1371,13 @@ copper already, by 0.05…0.2 dB above 3 GHz: its geometry, not its loss.)
 and sheets use the ladder, with warnings). Solid metal must be thicker
 than a few skin depths at the lowest frequency of interest: its faces are
 independent half spaces and the resistance does not go to the DC value of
-a thin conductor. Conformal cut cells along a lossy metal's outline stay
-perfectly conducting (warning). Lossy metal in openEMS's own PML (openEMS
+a thin conductor. The covered parts of the edges a lossy metal's outline
+cuts stay perfectly conducting (warning; their neighbours carry the
+surface, so the loss of a strip is within 6 % of the same strip along the
+mesh at four cells per width, and within 16 % at two). At two cells per
+width the rational sheet's loss depends on the direction too (Q 34 along
+x and at 17°, 50 at 45°, as the ladder's): most of its edges are cut
+edges, each taken with half a cell of conductor on either side. Lossy metal in openEMS's own PML (openEMS
 files) is not stretched (warning). The H-side stretch of sheets is covered
 by the layer-echo case only (the sheet without effect has `u− = u+`).
 
@@ -2507,6 +2537,11 @@ that diverged or misread the loss:
 
 openEMS's sheet model (files) has no cut edges: conducting sheets keep the
 staircase there, metal sheets are cut.
+
+The rational sheet model (`SheetModel::SurfaceImpedance`, §5.9.1) takes
+the same cuts, walls, stored voltage and loading. (As first merged it
+took none and indexed past its roughness list on the first cut edge csx
+had not selected: a panic on any sheet with an oblique outline.)
 
 **Validation** (`tests/conformal_outline.rs`).
 
@@ -6914,12 +6949,21 @@ per edge (`engine::surface`), with Hammerstad–Jensen and Huray roughness
 and the CPML's stretch on these edges. Six to nine times the ladder's
 speed on a ground plane, a tenth of its memory; the plate cavity's
 `Q = h/(δK)` within 0.5 %, the thick-ish sheet within 0.006 dB of the
-slab. Defaults and openEMS files are unchanged.
+slab. Defaults and openEMS files are unchanged. With conformal outlines
+(found by cadlab's 45° line, the two having been merged without a joint
+test): the rational sheet takes the cuts of its outline as the ladder
+does (it panicked on the first oblique outline); solid lossy edges keep
+the capacitance of their open quarters (a strip of 2e5 S/m, and a copper
+strip with conformal cells, grew in a closed box) and take the cut edges
+beside them as conductor for their width (a copper strip at 45°: Q 602
+against 639 along x, before 392).
 
 Remaining:
-- Surface impedance (§5.9.1): the hooks are serial; conformal cut cells
-  of lossy metal stay PEC; Cartesian grids only; the DC resistance of
-  solid metal thinner than the skin depth is not modelled.
+- Surface impedance (§5.9.1): the hooks are serial; the covered parts of
+  the edges conformal PEC cuts along lossy solid metal stay PEC (their
+  neighbours carry the surface); the loss of a strip two cells wide
+  depends on its direction by up to a third; Cartesian grids only; the DC
+  resistance of solid metal thinner than the skin depth is not modelled.
 - Cylindrical (§5.16.11): magnetic poles in cell 0 off the seam
   (1e-4…2e-2), sheets reaching the axis (2e-2…4), Debye boxes over the axis
   (2e-4), a Lorentz box's time step (`mix_117`, 0.2 %), a dielectric over
