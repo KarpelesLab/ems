@@ -150,8 +150,11 @@ pub enum StopReason {
     MaxTimesteps,
     /// The progress callback returned [`ControlFlow::Break`].
     Aborted,
-    /// The energy became NaN or infinite (unstable setup, e.g. an operator
-    /// that adds energy without bound).
+    /// The energy became NaN, infinite or negative (unstable setup, e.g.
+    /// an operator that adds energy without bound). The invariant is a
+    /// positive quadratic form of the fields while the scheme is stable;
+    /// a mode that grows drives it below zero before the fields overflow,
+    /// and `W < 0` must not read as a field that has decayed.
     Diverged,
 }
 
@@ -223,7 +226,8 @@ impl Engine {
     /// `W_max` is updated. Then, in this order:
     ///
     /// 1. `progress` is called; `Break` → [`StopReason::Aborted`];
-    /// 2. a non-finite `W` → [`StopReason::Diverged`];
+    /// 2. a non-finite `W`, or a negative one beyond round-off
+    ///    (`W < −1e-12·W_max`) → [`StopReason::Diverged`];
     /// 3. if end criteria are set, `t > excitation_end` (or no excitation
     ///    end is given), `W_max > 0` and `W/W_max < energy_ratio` →
     ///    [`StopReason::EnergyDecay`];
@@ -302,6 +306,10 @@ impl Stepper for Engine {
     }
 }
 
+/// A negative energy invariant of more than this fraction of the largest
+/// seen is a diverging run, not the round-off of a field that is gone.
+const NEGATIVE_ENERGY: f64 = 1e-12;
+
 /// The loop of [`Engine::run_until_with`] for any [`Stepper`].
 pub(crate) fn drive<S, F>(s: &mut S, limits: &RunLimits, mut progress: F) -> Result<RunOutcome>
 where
@@ -370,7 +378,7 @@ where
         if progress(&p).is_break() {
             break StopReason::Aborted;
         }
-        if !w.is_finite() {
+        if !w.is_finite() || w < -NEGATIVE_ENERGY * w_max {
             break StopReason::Diverged;
         }
         if let Some(c) = &limits.end_criteria
@@ -395,4 +403,68 @@ where
         max_energy: w_max,
         elapsed: start.elapsed(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stepper with a scripted energy per check.
+    struct Script {
+        n: u64,
+        w: Vec<f64>,
+    }
+
+    impl Stepper for Script {
+        fn timestep(&self) -> u64 {
+            self.n
+        }
+        fn dt(&self) -> f64 {
+            1.0
+        }
+        fn time(&self) -> f64 {
+            self.n as f64
+        }
+        fn cells(&self) -> f64 {
+            1.0
+        }
+        fn step_with_energy(&mut self) -> f64 {
+            let w = self.w[(self.n as usize).min(self.w.len() - 1)];
+            self.n += 1;
+            w
+        }
+        fn run(&mut self, n: u64) {
+            self.n += n;
+        }
+    }
+
+    fn outcome(w: &[f64]) -> RunOutcome {
+        let limits =
+            RunLimits::new(100).end_criteria(EndCriteria::energy_decay_db(-30.0).check_interval(1));
+        let mut s = Script {
+            n: 0,
+            w: w.to_vec(),
+        };
+        drive(&mut s, &limits, |_| ControlFlow::Continue(())).unwrap()
+    }
+
+    /// A negative invariant is a diverging run, not a decayed one: a
+    /// scheme with a growing mode passes below zero on its way up, and
+    /// `W/W_max < ratio` would end the run as converged there.
+    #[test]
+    fn negative_energy_is_divergence_not_decay() {
+        let o = outcome(&[1.0, 4.0, 4.5, -0.2, 3.0]);
+        assert_eq!(o.reason, StopReason::Diverged, "{o:?}");
+        assert_eq!(o.steps, 4);
+        // A field that is gone: zero, or round-off of either sign.
+        for last in [0.0, 1e-20, -1e-20] {
+            let o = outcome(&[1.0, 4.0, 2.0, last]);
+            assert!(
+                matches!(o.reason, StopReason::EnergyDecay { .. }),
+                "{last}: {o:?}"
+            );
+        }
+        assert_eq!(outcome(&[1.0, f64::NAN]).reason, StopReason::Diverged);
+        assert_eq!(outcome(&[1.0, 2.0, 1.5]).reason, StopReason::MaxTimesteps);
+    }
 }
