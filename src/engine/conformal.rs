@@ -38,7 +38,8 @@
 //! minimum cures that only for minima around 0.3–0.5, and then costs most
 //! of the accuracy gain (first-order convergence again). Every face with
 //! `f_A <` [`ConformalOptions::merge_below`] therefore loses its own
-//! current: its current is a fixed combination of the currents of
+//! current (unless the time step leaves it room,
+//! [below](self#small-faces-the-time-step-allows)): its current is a fixed combination of the currents of
 //! neighbouring faces, `i = P·g` with `g` the remaining (reduced)
 //! currents, and the reduced system is the Galerkin (Ritz) restriction of
 //! Dey–Mittra to that subspace, in the spirit of the uniformly stable
@@ -158,6 +159,43 @@
 //! so `s` is an estimate, not a bound; the long-run tests check
 //! boundedness directly.
 //!
+//! # Small faces the time step allows
+//!
+//! The threshold is a rule for any mesh: at the Courant limit of cubic
+//! cells a face of less than half its area cannot keep its current. A
+//! mesh whose time step is set by smaller cells elsewhere has room: on a
+//! board, with layers a fifth or a tenth as thick as the cells are wide,
+//! the faces in the plane of the copper are far from the limit, and
+//! there the interpolation costs more than it saves (a bent microstrip
+//! two cells wide lost 13° of 300° of phase to it).
+//!
+//! So a face below the threshold keeps its own current with its true area
+//! (plain Dey–Mittra) where both cells it belongs to are stable at the
+//! time step by themselves ([`ConformalOptions::keep_stable`], the
+//! default; [`ConformalReport::kept`]). The test is the element bound of
+//! Irons and Treharne (1971): the curl-curl operator `KᵀL⁻¹K` and the
+//! capacitance `C` are both sums over the cells, each edge giving every
+//! cell around it the share of its capacitance that lies in the cell (a
+//! quarter of its dual face) and each face giving both its cells their
+//! half of its dual edge, so
+//!
+//! `uᵀKᵀL⁻¹Ku = Σ_c u_cᵀA_c u_c ≤ Σ_c λ_c·u_cᵀC_c u_c ≤ max_c λ_c · uᵀCu`
+//!
+//! and the grid's largest eigenvalue is at most that of its worst cell, a
+//! symmetric problem of six faces and twelve edges. For a cell of a
+//! uniform grid `λ_c·dt²/4` is the Courant number squared,
+//! `c²dt²(1/Δx² + 1/Δy² + 1/Δz²)`, exactly, so the bound gives nothing
+//! away there; a cut cell enters with its open lengths (`C/f_e`) and open
+//! areas (`L·f_A`). A face is kept when `λ_c·dt²/4 ≤`
+//! [`ConformalOptions::max_stability`]`²` in both its cells, every face
+//! of them at its true area. That is a bound, not an estimate: an uncut
+//! cell passes at any time step at or below the Courant limit of the
+//! smallest cell at the vacuum speed (its share of an edge's capacitance
+//! is at least that of vacuum), so where every cut cell passes too
+//! ([`ConformalReport::bounded`]) the lossless scheme is stable by proof.
+//! Cells that fail keep the rule of the threshold, and the check below
+//! runs as before. Cartesian grids, outside the absorbing layers.
+//!
 //! # Thin PEC sheets
 //!
 //! Zero-thickness PEC sheets cutting cells ([`SheetCutEdge`],
@@ -240,6 +278,15 @@ pub struct ConformalOptions {
     /// open fraction (see the
     /// [module docs](self#deviation-currents-no-spurious-static-fields)).
     pub deviation_area: f64,
+    /// Faces below [`merge_below`](Self::merge_below) keep their own
+    /// current, with their true open area, where the two cells they
+    /// belong to are stable at the time step by the cell-wise bound of the
+    /// [module docs](self#small-faces-the-time-step-allows) (default
+    /// `true`): on a mesh whose time step is set by smaller cells
+    /// elsewhere, a board with layers much thinner than its cells are
+    /// wide, most small faces are. `false`: every face below the threshold
+    /// loses its current, whatever the mesh.
+    pub keep_stable: bool,
 }
 
 impl Default for ConformalOptions {
@@ -250,6 +297,7 @@ impl Default for ConformalOptions {
             iterations: 300,
             max_rounds: 4,
             deviation_area: 0.5,
+            keep_stable: true,
         }
     }
 }
@@ -276,6 +324,23 @@ pub struct ConformalReport {
     /// Small faces without an open neighbour, `f_A` raised to the
     /// threshold instead.
     pub floored: usize,
+    /// Faces below the threshold that keep their own current with their
+    /// true area: the cells around them are stable at the time step
+    /// ([`ConformalOptions::keep_stable`]).
+    pub kept: usize,
+    /// Whether every cell with a cut face passed the cell-wise bound
+    /// ([`ConformalOptions::keep_stable`]), so that no face lost its
+    /// current: the cut cells are then stable at the time step by proof,
+    /// as the uncut ones are at or below the Courant limit of the smallest
+    /// cell (the bound is the Courant number there), and
+    /// [`stability`](Self::stability), an estimate from below, is not what
+    /// the run rests on. `false` with thin sheets off the mesh planes, on
+    /// cylindrical grids and with cut faces in an absorbing layer.
+    pub bounded: bool,
+    /// Edges the compile step kept whole for the narrow slanted
+    /// conductors they carry
+    /// ([`CompileOptions::conformal_bridges`](crate::compile::CompileOptions::conformal_bridges)).
+    pub bridges: usize,
     /// Final merge threshold.
     pub merge_below: f64,
     /// Estimated stability factor `s` (NaN if not checked).
@@ -344,6 +409,8 @@ pub struct ConformalPec {
     /// Edges that are not PEC but closed for interpolation and merging
     /// ([`push_wall`](Self::push_wall)).
     walls: Vec<(Axis, [usize; 3])>,
+    /// Edges the geometry step kept whole ([`set_bridges`](Self::set_bridges)).
+    bridges: usize,
     options: ConformalOptions,
 }
 
@@ -520,6 +587,13 @@ impl ConformalPec {
         })
     }
 
+    /// Records how many edges the geometry step left whole to keep narrow
+    /// slanted conductors in one piece; reported as
+    /// [`ConformalReport::bridges`].
+    pub fn set_bridges(&mut self, edges: usize) {
+        self.bridges = edges;
+    }
+
     /// The cut edges.
     pub fn edges(&self) -> &[ConformalEdge] {
         &self.edges
@@ -614,6 +688,12 @@ impl ConformalPec {
             .iter()
             .map(|f| (f.axis.index(), index(n, f.node)))
             .collect();
+        let (kept, bounded) = if self.options.keep_stable && !cyl {
+            self.stable_faces(&co, &grid, dt)
+        } else {
+            (HashSet::new(), false)
+        };
+        let bounded = bounded && self.sheet_faces.is_empty();
         let mut tau = self.options.merge_below.clamp(0.0, 1.0);
         let rounds = self.options.max_rounds.max(1);
         for round in 0..rounds {
@@ -625,7 +705,7 @@ impl ConformalPec {
                 // (unstable where a septum touches a curved wall).
                 let mut exclude = volume_faces.clone();
                 if !self.faces.is_empty() {
-                    let (_, pre, _) = self.construct(&co, &grid, dt, tau, &p.face_keys());
+                    let (_, pre, _) = self.construct(&co, &grid, dt, tau, &p.face_keys(), &kept);
                     exclude.extend(pre.driven_keys(n));
                 }
                 p.construct(
@@ -641,7 +721,9 @@ impl ConformalPec {
             });
             let empty = HashSet::new();
             let owned = built.as_ref().map_or(&empty, |b| &b.owned);
-            let (mut coeffs, merged, mut report) = self.construct(&co, &grid, dt, tau, owned);
+            let (mut coeffs, merged, mut report) =
+                self.construct(&co, &grid, dt, tau, owned, &kept);
+            report.bounded = bounded;
             let mut gterms = group_terms(&merged.groups[..merged.scalar], n);
             let mut bterms = merged.block_terms(n);
             let mut extra = Vec::new();
@@ -690,6 +772,51 @@ impl ConformalPec {
         unreachable!("the last round returns")
     }
 
+    /// The cut faces both of whose cells are stable at `dt` by the
+    /// cell-wise bound ([`cell_stability`]), with every face at its true
+    /// open area and every edge at its open length (`co`: the edge scaling
+    /// applied, the faces not yet); outside the absorbing layers.
+    fn stable_faces(&self, co: &Coefficients, grid: &Grid, dt: f64) -> (HashSet<Key>, bool) {
+        let n = grid.nodes();
+        let fractions: HashMap<Key, f64> = self
+            .faces
+            .iter()
+            .map(|f| ((f.axis.index(), index(n, f.node)), f.fraction))
+            .collect();
+        let limit = self.options.max_stability * self.options.max_stability;
+        let mut cells: HashMap<[usize; 3], bool> = HashMap::new();
+        let mut ok = |q: [usize; 3]| {
+            *cells
+                .entry(q)
+                .or_insert_with(|| cell_stability(co, grid, dt, q, &fractions) <= limit)
+        };
+        let mut out = HashSet::new();
+        let mut all = true;
+        for f in &self.faces {
+            let a = f.axis.index();
+            if f.fraction <= 0.0 {
+                continue;
+            }
+            if self.in_absorbing(f.axis, f.node, n) {
+                all = false;
+                continue;
+            }
+            // The cell above the face and the one below it.
+            let above = f.node[a] + 1 >= n[a] || ok(f.node);
+            let below = f.node[a] == 0 || {
+                let mut q = f.node;
+                q[a] -= 1;
+                ok(q)
+            };
+            if above && below {
+                out.insert((a, index(n, f.node)));
+            } else {
+                all = false;
+            }
+        }
+        (out, all)
+    }
+
     fn validate(&self, n: [usize; 3], copies: &sheets::Copies<'_>) -> Result<()> {
         for e in &self.edges {
             let a = e.axis.index();
@@ -721,6 +848,7 @@ impl ConformalPec {
         dt: f64,
         tau: f64,
         owned: &HashSet<Key>,
+        kept: &HashSet<Key>,
     ) -> (Coefficients, MergedFaces, ConformalReport) {
         let n = grid.nodes();
         let idx = |p: [usize; 3]| index(n, p);
@@ -733,6 +861,9 @@ impl ConformalPec {
             merged: 0,
             groups: 0,
             floored: 0,
+            kept: 0,
+            bounded: false,
+            bridges: self.bridges,
             merge_below: tau,
             stability: f64::NAN,
             verified: true,
@@ -805,7 +936,11 @@ impl ConformalPec {
         let small: Vec<&ConformalFace> = self
             .faces
             .iter()
-            .filter(|f| f.fraction < tau && live(f.axis, f.node))
+            .filter(|f| {
+                f.fraction < tau
+                    && live(f.axis, f.node)
+                    && !kept.contains(&(f.axis.index(), idx(f.node)))
+            })
             .collect();
 
         // Interpolation stencil of a small face (see `interpolation_weights`):
@@ -1217,8 +1352,12 @@ impl ConformalPec {
             }
             let mut fa = f.fraction;
             if fa < tau {
-                fa = tau.max(1e-6);
-                report.floored += 1;
+                if kept.contains(&(f.axis.index(), k)) {
+                    report.kept += 1;
+                } else {
+                    fa = tau.max(1e-6);
+                    report.floored += 1;
+                }
             }
             if fa < 1.0 {
                 let (_, db) = out.h_mut(f.axis);
@@ -1232,6 +1371,164 @@ impl ConformalPec {
             report,
         )
     }
+}
+
+/// The stability factor squared, `λ·dt²/4`, of one cell of a Cartesian
+/// grid taken by itself: the cell with lowest node `q`, its twelve edges
+/// with the share of their capacitance that lies in the cell (a quarter
+/// of the dual face, by the cells' cross sections) and its six faces
+/// with the share of their inverse inductance (half the dual edge, by the
+/// cells' heights). `co` holds the edge coefficients with the open
+/// lengths applied and the face coefficients of the whole faces;
+/// `fractions` the open area fractions of the cut faces.
+///
+/// The curl-curl operator of the grid is the sum of those of its cells,
+/// and so is the capacitance: `uᵀKᵀL⁻¹Ku = Σ_c u_cᵀA_c u_c ≤ Σ_c λ_c
+/// u_cᵀC_c u_c ≤ max λ_c · uᵀCu`. The largest eigenvalue of the grid is
+/// therefore at most the largest of its cells (the element bound of
+/// Irons and Treharne, 1971), whatever the shares, as long as they add up
+/// to the edge and the face. For a cell of a uniform grid it is the
+/// Courant number squared exactly, `c²dt²(1/Δx² + 1/Δy² + 1/Δz²)`.
+fn cell_stability(
+    co: &Coefficients,
+    grid: &Grid,
+    dt: f64,
+    q: [usize; 3],
+    fractions: &HashMap<Key, f64>,
+) -> f64 {
+    let n = grid.nodes();
+    if (0..3).any(|d| q[d] + 1 >= n[d]) {
+        return 0.0;
+    }
+    let delta = |d: Axis, i: usize| grid.delta(d, i);
+    // Faces: (axis, node, share / L).
+    let mut faces: Vec<(Axis, [usize; 3], f64)> = Vec::with_capacity(6);
+    for d in Axis::ALL {
+        let i = q[d.index()];
+        for o in 0..2 {
+            let mut p = q;
+            p[d.index()] += o;
+            let k = index(n, p);
+            let (da, db) = (co.da(d)[k] as f64, co.db(d)[k] as f64);
+            if db <= 0.0 {
+                continue;
+            }
+            let l = dt * (1.0 + da) / (2.0 * db);
+            let f = fractions.get(&(d.index(), k)).copied().unwrap_or(1.0);
+            if !(l > 0.0 && f > 0.0) {
+                continue;
+            }
+            // The cell on the other side of the face.
+            let other = if o == 0 {
+                (i > 0).then(|| delta(d, i - 1))
+            } else {
+                (i + 2 < n[d.index()]).then(|| delta(d, i + 1))
+            };
+            let share = other.map_or(1.0, |h| delta(d, i) / (delta(d, i) + h));
+            faces.push((d, p, share / (f * l)));
+        }
+    }
+    // Edges: inverse of the cell's share of the capacitance.
+    let mut inv_c: HashMap<Key, f64> = HashMap::new();
+    for d in Axis::ALL {
+        let (b, c) = d.others();
+        for (ob, oc) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let mut p = q;
+            p[b.index()] += ob;
+            p[c.index()] += oc;
+            let k = index(n, p);
+            let (ca, cb) = (co.ca(d)[k] as f64, co.cb(d)[k] as f64);
+            if cb <= 0.0 {
+                continue;
+            }
+            let cap = dt * (1.0 + ca) / (2.0 * cb);
+            // The cross sections of the cells around the edge.
+            let side = |a: Axis, i: usize| {
+                let mut v = Vec::with_capacity(2);
+                if i > 0 {
+                    v.push(delta(a, i - 1));
+                }
+                if i + 1 < n[a.index()] {
+                    v.push(delta(a, i));
+                }
+                v
+            };
+            let total: f64 = side(b, p[b.index()])
+                .iter()
+                .flat_map(|x| side(c, p[c.index()]).into_iter().map(move |y| x * y))
+                .sum();
+            let own = delta(b, q[b.index()]) * delta(c, q[c.index()]);
+            if cap > 0.0 && total > 0.0 {
+                inv_c.insert((d.index(), k), total / (own * cap));
+            }
+        }
+    }
+    // M = Y^½ K C⁻¹ Kᵀ Y^½ over the cell's faces.
+    let m = faces.len();
+    let rows: Vec<Vec<(Key, f64)>> = faces
+        .iter()
+        .map(|&(d, p, _)| {
+            face_edges(d, p)
+                .iter()
+                .zip(SIGNS)
+                .map(|(&(e, en), s)| ((e.index(), index(n, en)), f64::from(s)))
+                .collect()
+        })
+        .collect();
+    let mut a = vec![vec![0.0; m]; m];
+    for i in 0..m {
+        for j in 0..m {
+            let mut sum = 0.0;
+            for &(ki, si) in &rows[i] {
+                let Some(&ic) = inv_c.get(&ki) else { continue };
+                for &(kj, sj) in &rows[j] {
+                    if ki == kj {
+                        sum += si * sj * ic;
+                    }
+                }
+            }
+            a[i][j] = sum * (faces[i].2 * faces[j].2).sqrt();
+        }
+    }
+    0.25 * dt * dt * largest_eigenvalue(a)
+}
+
+/// Largest eigenvalue of a small symmetric matrix (cyclic Jacobi).
+fn largest_eigenvalue(mut a: Vec<Vec<f64>>) -> f64 {
+    let m = a.len();
+    for _ in 0..60 {
+        let off: f64 = (0..m)
+            .flat_map(|i| (0..m).filter(move |&j| j != i).map(move |j| (i, j)))
+            .map(|(i, j)| a[i][j] * a[i][j])
+            .sum();
+        let diag: f64 = (0..m).map(|i| a[i][i] * a[i][i]).sum();
+        if off <= 1e-28 * diag {
+            break;
+        }
+        for p in 0..m {
+            for q in p + 1..m {
+                if a[p][q] == 0.0 {
+                    continue;
+                }
+                let theta = 0.5 * (a[q][q] - a[p][p]) / a[p][q];
+                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                let c = 1.0 / (t * t + 1.0).sqrt();
+                let s = t * c;
+                for row in &mut a {
+                    let (akp, akq) = (row[p], row[q]);
+                    row[p] = c * akp - s * akq;
+                    row[q] = s * akp + c * akq;
+                }
+                let (lo, hi) = a.split_at_mut(q);
+                for (x, y) in lo[p].iter_mut().zip(hi[0].iter_mut()) {
+                    let (apk, aqk) = (*x, *y);
+                    *x = c * apk - s * aqk;
+                    *y = s * apk + c * aqk;
+                }
+            }
+        }
+    }
+    (0..m).map(|i| a[i][i]).fold(0.0, f64::max)
 }
 
 /// A merge group with deviation currents, before it joins the blocks:
@@ -2351,6 +2648,121 @@ mod tests {
             assert_eq!(ahead, now);
             assert!(now.iter().any(|&i| i != 0.0));
         }
+    }
+
+    #[test]
+    fn cell_bound_is_the_courant_number() {
+        // Of a uniform grid, cubes or bricks: c²dt²(1/Δx² + 1/Δy² + 1/Δz²)
+        // over its limit, the Courant factor squared.
+        for (size, s) in [([1e-3; 3], 0.9), ([1e-3, 0.5e-3, 0.2e-3], 0.7)] {
+            let g = Grid::uniform([6, 6, 6], size).unwrap();
+            let e = Engine::builder(g.clone())
+                .materials(CellMaterials::vacuum(&g))
+                .timestep(TimeStep::Courant(s))
+                .threads(1)
+                .build()
+                .unwrap();
+            let none = HashMap::new();
+            for q in [[2, 3, 2], [1, 1, 1], [4, 2, 3]] {
+                let v = cell_stability(&e.coefficients(), e.grid(), e.dt(), q, &none);
+                assert!((v - s * s).abs() < 1e-5, "{size:?} {q:?}: {v} {}", s * s);
+            }
+            // A face of a fifth of its area raises it.
+            let n = e.grid().nodes();
+            let cut = HashMap::from([((2, index(n, [2, 3, 2])), 0.2)]);
+            let v = cell_stability(&e.coefficients(), e.grid(), e.dt(), [2, 3, 2], &cut);
+            assert!(v > s * s * 1.05, "{v}");
+        }
+        // Symmetric matrices: the largest eigenvalue.
+        let l = largest_eigenvalue(vec![vec![2.0, 1.0], vec![1.0, 2.0]]);
+        assert!((l - 3.0).abs() < 1e-12, "{l}");
+        let l = largest_eigenvalue(vec![
+            vec![4.0, -1.0, 0.0],
+            vec![-1.0, 4.0, -1.0],
+            vec![0.0, -1.0, 4.0],
+        ]);
+        assert!((l - (4.0 + 2f64.sqrt())).abs() < 1e-12, "{l}");
+    }
+
+    /// A z-normal face with a fifth of its area between two y edges a
+    /// fifth open, on cells of `1 × 1 × dz` mm.
+    fn fifth(dz: f64, s: f64) -> (Engine, ConformalPec) {
+        let g = Grid::uniform([12, 12, 12], [1e-3, 1e-3, dz * 1e-3]).unwrap();
+        let e = Engine::builder(g.clone())
+            .materials(CellMaterials::vacuum(&g))
+            .timestep(TimeStep::Courant(s))
+            .threads(1)
+            .build()
+            .unwrap();
+        let mut c = ConformalPec::new();
+        c.push_face_with_centroid(
+            ConformalFace {
+                axis: Axis::Z,
+                node: [5, 5, 5],
+                fraction: 0.2,
+            },
+            [0.5, 0.1],
+        );
+        for q in [[5, 5, 5], [6, 5, 5]] {
+            c.push_edge(ConformalEdge {
+                axis: Axis::Y,
+                node: q,
+                fraction: 0.2,
+            });
+        }
+        c.push_edge(ConformalEdge {
+            axis: Axis::X,
+            node: [5, 6, 5],
+            fraction: 0.0,
+        });
+        (e, c)
+    }
+
+    #[test]
+    fn small_faces_keep_their_current_where_the_time_step_allows() {
+        // Cubes at the Courant limit: the face loses its current.
+        let (mut e, c) = fifth(1.0, 0.99);
+        let r = c.apply(&mut e).unwrap();
+        assert!(r.verified, "{r:?}");
+        assert_eq!((r.kept, r.interpolated + r.merged > 0), (0, true), "{r:?}");
+        assert!(!r.bounded, "{r:?}");
+        // Cells a tenth as high as wide: the time step is set by their
+        // height, and the face keeps its current and its area.
+        let (mut e, c) = fifth(0.1, 0.99);
+        let base = e.coefficients().db(Axis::Z)[index(e.grid().nodes(), [5, 5, 5])];
+        let r = c.apply(&mut e).unwrap();
+        assert!(r.verified && r.stability < 0.999, "{r:?}");
+        assert_eq!((r.kept, r.interpolated, r.merged, r.floored), (1, 0, 0, 0));
+        assert!(r.bounded, "{r:?}");
+        let db = e.coefficients().db(Axis::Z)[index(e.grid().nodes(), [5, 5, 5])];
+        assert!(
+            (f64::from(db) / f64::from(base) - 5.0).abs() < 1e-5,
+            "{db} {base}"
+        );
+        // The energy holds.
+        {
+            let mut f = e.fields_mut();
+            f.u.set(Axis::Y, [5, 5, 5], 1.0);
+            f.u.set(Axis::X, [5, 5, 5], -0.5);
+        }
+        e.run(1);
+        let w0 = e.energy();
+        let mut dev: f64 = 0.0;
+        for _ in 0..50 {
+            e.run(100);
+            dev = dev.max((e.energy() / w0 - 1.0).abs());
+        }
+        assert!(dev < 1e-5, "{dev}");
+        // Switched off: as on the cubes.
+        let (mut e, c) = fifth(0.1, 0.99);
+        let r = c
+            .with_options(ConformalOptions {
+                keep_stable: false,
+                ..ConformalOptions::default()
+            })
+            .apply(&mut e)
+            .unwrap();
+        assert_eq!((r.kept, r.interpolated + r.merged > 0), (0, true), "{r:?}");
     }
 
     #[test]
