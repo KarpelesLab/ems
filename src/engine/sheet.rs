@@ -1078,6 +1078,20 @@ impl Operator for ConductingSheet {
         }
         w + self.w_corr
     }
+
+    /// The magnetic energy of the ladder's inductances: the field inside
+    /// the conductor, which diffuses into its own resistance once the
+    /// field outside is gone.
+    fn energy_held(&self) -> f64 {
+        let mut w = 0.0;
+        for e in &self.edges {
+            for j in 0..e.nn - 1 {
+                let l = self.dt / (2.0 * self.a[e.ka + j]);
+                w += 0.5 * l * self.h[e.l0 + j] * self.h[e.l0 + j];
+            }
+        }
+        w
+    }
 }
 
 #[cfg(test)]

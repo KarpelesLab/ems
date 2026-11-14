@@ -57,7 +57,10 @@ pub struct RunLimits {
 #[non_exhaustive]
 pub enum EnergyMeasure {
     /// The leapfrog energy invariant [`Engine::energy`] (fields weighted
-    /// by their edge capacitances and inductances, plus operator state).
+    /// by their edge capacitances and inductances, plus operator state),
+    /// less the energy inside lossy conductors
+    /// ([`Engine::held_energy`]), which no field outside them can draw
+    /// on and which decays at the conductor's own rate.
     #[default]
     Invariant,
     /// openEMS's measure [`Engine::energy_openems`]:
@@ -170,7 +173,9 @@ pub struct Progress {
     /// Steps run by this call so far (the engine is one step past the
     /// sample: `timestep + 1`).
     pub steps: u64,
-    /// Energy invariant `W^n` \[J\] (see [`Engine::energy`]).
+    /// The criterion's energy `W^n` \[J\]: the invariant
+    /// [`Engine::energy`], less [`Engine::held_energy`] for
+    /// [`EnergyMeasure::Invariant`].
     pub energy: f64,
     /// Largest `W` seen in this call \[J\].
     pub max_energy: f64,
@@ -222,8 +227,9 @@ impl Engine {
     /// Every `K = limits.check_interval()` steps, starting with the first
     /// step of the call, the step is run with
     /// [`step_with_energy`](Self::step_with_energy), which yields the
-    /// energy invariant `W^n` of the state before it (`t = n·dt`), and
-    /// `W_max` is updated. Then, in this order:
+    /// energy invariant `W^n` of the state before it (`t = n·dt`); the
+    /// criterion's `W` is that less [`held_energy`](Self::held_energy)
+    /// of the same state, and `W_max` is updated. Then, in this order:
     ///
     /// 1. `progress` is called; `Break` → [`StopReason::Aborted`];
     /// 2. a non-finite `W`, or a negative one beyond round-off
@@ -274,6 +280,11 @@ pub(crate) trait Stepper {
     fn step_with_energy(&mut self) -> f64;
     /// `n` steps without energy evaluation.
     fn run(&mut self, n: u64);
+    /// The part of the invariant of the current state that the end
+    /// criterion leaves out ([`Engine::held_energy`]).
+    fn held_energy(&self) -> f64 {
+        0.0
+    }
     /// The energy of the current state in `measure` without stepping, if
     /// the stepper supports it.
     fn energy_now(&mut self, measure: EnergyMeasure) -> Option<f64> {
@@ -301,6 +312,9 @@ impl Stepper for Engine {
     fn run(&mut self, n: u64) {
         Engine::run(self, n);
     }
+    fn held_energy(&self) -> f64 {
+        Engine::held_energy(self)
+    }
     fn energy_now(&mut self, measure: EnergyMeasure) -> Option<f64> {
         Some(self.energy_in(measure))
     }
@@ -327,6 +341,12 @@ where
     let supported = s.energy_now(measure).is_some();
     let after = limits.check_after_interval && supported;
     let before = !after && measure != EnergyMeasure::Invariant && supported;
+    // The invariant counts what lossy conductors hold inside; the
+    // criterion does not (`Operator::energy_held`).
+    let held = |s: &S| match measure {
+        EnergyMeasure::Invariant => s.held_energy(),
+        EnergyMeasure::OpenEms => 0.0,
+    };
     let reason = loop {
         if steps >= max {
             break StopReason::MaxTimesteps;
@@ -345,7 +365,7 @@ where
                 continue;
             }
             n = s.timestep();
-            w = s.energy_now(measure).expect("checked above");
+            w = s.energy_now(measure).expect("checked above") - held(s);
         } else if before {
             n = s.timestep();
             w = s.energy_now(measure).expect("checked above");
@@ -353,7 +373,8 @@ where
             steps += 1;
         } else {
             n = s.timestep();
-            w = s.step_with_energy();
+            let inside = held(s);
+            w = s.step_with_energy() - inside;
             steps += 1;
         }
         w_max = w_max.max(w);

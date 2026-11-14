@@ -216,6 +216,24 @@ pub trait Operator: Any + Send {
         0.0
     }
 
+    /// The part of [`energy`](Self::energy) \[J\] that the fields cannot
+    /// draw on: energy in state that the operator itself dissipates, at a
+    /// rate of its own, and that reaches the fields only through a
+    /// coupling much weaker than that dissipation (default 0). The
+    /// example is the magnetic energy inside a lossy conductor, held by
+    /// the sections of a [`SurfaceImpedance`](super::surface::SurfaceImpedance):
+    /// once the field outside is gone it decays with the sections' own
+    /// `L/R`, into their resistors.
+    ///
+    /// The energy end criterion leaves it out
+    /// ([`Engine::run_until`](super::Engine::run_until)); the invariant
+    /// [`Engine::energy`](super::Engine::energy) keeps it. It must be a
+    /// non-negative part of [`energy`](Self::energy) (a sum of its
+    /// squares), so that what remains is still a positive form.
+    fn energy_held(&self) -> f64 {
+        0.0
+    }
+
     /// Whether [`lookahead_current`](Self::lookahead_current) may return
     /// a value (default `false`; queried once per look-ahead).
     fn has_lookahead_currents(&self) -> bool {

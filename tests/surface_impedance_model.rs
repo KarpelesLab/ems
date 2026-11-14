@@ -353,3 +353,71 @@ fn copper_through_the_cpml_compiles_without_the_ladder_warning() {
     assert_eq!(op.thin(), 0);
     e.run(20);
 }
+
+/// Steps to the end criterion of −80 dB for the strip of [`strip_model`]
+/// driven between ground and strip, and the last energy ratio \[dB\]; the
+/// strip a `Metal` sheet (`sheet: false`) or the conducting sheet.
+fn steps_to_the_end(sheet: bool, opts: &CompileOptions) -> (u64, f64, Simulation) {
+    let (mut m, fdtd) = strip_model();
+    if !sheet {
+        let strip = m.add_property(Property::metal("pec_strip"));
+        m.add_primitive(
+            strip,
+            Primitive::new(BoxShape::new([0.0, 3.0, 1.0], [20.0, 5.0, 1.0])).with_priority(5),
+        )
+        .unwrap();
+    }
+    let ex = m.add_property(Property::excitation("ex", Excitation::new([0.0, 0.0, 1.0])));
+    m.add_primitive(
+        ex,
+        Primitive::new(BoxShape::new([10.0, 3.0, 0.5], [10.0, 5.0, 1.0])),
+    )
+    .unwrap();
+    let fdtd = fdtd
+        .waveform(Waveform::gaussian(5e9, 4e9))
+        .end_criteria(ems::EndCriteria::energy_decay_db(-80.0).check_interval(16))
+        .max_timesteps(60_000)
+        .threads(1);
+    let mut sim = Simulation::with_options(&m, &fdtd, opts).unwrap();
+    let res = sim.run().unwrap();
+    let out = *res.outcome().unwrap();
+    assert!(
+        matches!(out.reason, ems::engine::StopReason::EnergyDecay { .. }),
+        "{out:?}"
+    );
+    (out.steps, db(out.energy / out.max_energy) / 2.0, sim)
+}
+
+/// The end criterion follows the field, not what the copper holds inside.
+/// The sections of a surface impedance keep the magnetic energy of the
+/// conductor's interior, the lowest a decade below the band, and give it
+/// to their own resistors with their own `L/R`: counted in the criterion,
+/// a line that perfect copper ends after 1425 steps ran twice
+/// as long to −80 dB, on energy no probe could see.
+#[test]
+fn lossy_copper_ends_with_the_field() {
+    let (perfect, _, _) = steps_to_the_end(false, &CompileOptions::default());
+    let lossy = CompileOptions::default()
+        .with_sheet_model(SheetModel::SurfaceImpedance)
+        .with_lossy_metal("ground", Conductor::new(5.8e7));
+    let (sheet, w_sheet, sim) = steps_to_the_end(true, &lossy);
+    let (solid, _, _) = steps_to_the_end(false, &lossy);
+    let (ladder, _, _) = steps_to_the_end(true, &CompileOptions::default());
+    eprintln!(
+        "steps to −80 dB: perfect {perfect}, rational sheet over lossy ground {sheet}, \
+         lossy ground {solid}, ladder sheet {ladder}"
+    );
+    for (name, steps) in [("sheet", sheet), ("solid", solid), ("ladder", ladder)] {
+        assert!(
+            (steps as f64) < 1.25 * perfect as f64 && steps >= perfect - 64,
+            "{name}: {steps} steps, perfect copper {perfect}"
+        );
+    }
+    // The invariant still has what the copper holds, and that is most of
+    // it at the end.
+    let e = sim.engine();
+    let (w, held) = (e.energy(), e.held_energy());
+    assert!(held > 0.0 && held < w, "{held} of {w}");
+    assert!(w_sheet < -80.0);
+    assert!(held > 0.5 * w, "{held} of {w}");
+}

@@ -1195,6 +1195,23 @@ and open (CPML) along the normal `n`.
   K = 50.
 - The run stops when the excitation is over and `W/W_max <` threshold, or at
   `max_timesteps`.
+- **Lossy conductors.** The invariant counts the magnetic energy inside a
+  lossy conductor: the sections of a surface impedance (§5.9.1), the
+  inductances of a ladder sheet (§5.9). The criterion does not
+  (`Operator::energy_held`, `Engine::held_energy`; `W` in `Progress` and
+  `RunOutcome` is the invariant less it). A section's current closes
+  through its own resistor and decays with its own `L/R`, and the lowest
+  corners of a fit lie a decade below the band (10 MHz for 10 GHz: 8 ns
+  for the energy, 47 000 steps of 0.17 ps). The face voltage it leaves,
+  `r·i_L`, drives the fields outside through milliohms against their
+  tens of ohms, so next to nothing comes back. Counted, it was what a
+  run with lossy copper ended on below about −55 dB: cadlab's bent line
+  (135 660 cells, rational sheets) had its field at −70 dB after 7 700
+  steps, as with perfect copper, and the sections at −60 dB, falling
+  0.5 dB per 1000 steps. To −70 dB: 22 497 → 7 777 steps (cadlab's own
+  solver, which counts the fields only: 7 648), solid copper 57 697 →
+  13 729 (13 440). `Engine::energy` is unchanged and still only
+  decreases.
 - **Plane waves.** The TF/SF source injects real field energy: inside the
   box the fields are total fields, so `W` includes the incident wave while
   it crosses the box (the look-ahead misses the `post_h` corrections of the

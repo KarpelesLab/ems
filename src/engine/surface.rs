@@ -2496,6 +2496,37 @@ impl Operator for SurfaceImpedance {
         }
         w + w_corr
     }
+
+    /// The magnetic energy of the sections: the field inside the
+    /// conductor. A section's current closes through its own resistor,
+    /// and the face voltage `r·i_L` it leaves drives the fields outside
+    /// through `r` against their impedance, so it decays with the
+    /// section's `1/a` whatever the fields do (the lowest corners lie a
+    /// decade below the band).
+    fn energy_held(&self) -> f64 {
+        let Some(parts) = &self.parts else { return 0.0 };
+        let ports = &parts.ports;
+        let held: Vec<_> = (0..parts.parts.len()).map(|s| parts.part(s)).collect();
+        // (In edge order, as `energy`.)
+        let mut w = 0.0;
+        for p in &held {
+            for e in &p.solids {
+                let port = &ports[e.port as usize];
+                let st = &p.state[e.st as usize..e.st as usize + port.stride()];
+                w += port.energy(st) / e.g;
+            }
+        }
+        for p in &held {
+            for e in &p.sheets {
+                for q in 0..2 {
+                    let port = &ports[e.port[q] as usize];
+                    let st = &p.state[e.st[q] as usize..e.st[q] as usize + port.stride()];
+                    w += 0.5 * port.energy(st) / e.g;
+                }
+            }
+        }
+        w
+    }
 }
 
 #[cfg(test)]

@@ -747,6 +747,14 @@ impl Engine {
         self.ops.iter().map(|r| r.op.energy()).sum()
     }
 
+    /// Sum of [`Operator::energy_held`] over the registered operators, in
+    /// registration order \[J\] (`t = n·dt`): the part of
+    /// [`energy`](Self::energy) held inside lossy conductors, which the
+    /// end criterion of [`run_until`](Self::run_until) does not count.
+    pub fn held_energy(&self) -> f64 {
+        self.ops.iter().map(|r| r.op.energy_held()).sum()
+    }
+
     /// The simple staggered energy `½·Σ C·u² + ½·Σ L·i²` \[J\], with `u` at
     /// `n·dt` and `i` at `(n − ½)·dt`.
     ///

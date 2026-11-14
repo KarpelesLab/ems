@@ -482,6 +482,9 @@ impl Stepper for BlochStepper<'_> {
     fn step_with_energy(&mut self) -> f64 {
         self.coupling.step(self.re, self.im, true)
     }
+    fn held_energy(&self) -> f64 {
+        self.re.held_energy() + self.im.held_energy()
+    }
     fn run(&mut self, n: u64) {
         for _ in 0..n {
             self.coupling.step(self.re, self.im, false);
