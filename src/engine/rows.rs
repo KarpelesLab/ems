@@ -178,11 +178,11 @@ mod tests {
             assert!(kc.pooled() >= 6, "{}", kc.pooled());
             let v = kc.view(&co, false);
             let [nx, ny, nz] = co.nodes();
-            for a in 0..12 {
+            for (a, data) in co.data.iter().enumerate().take(12) {
                 for gi in 0..nx {
                     for j in 0..ny {
                         let o = (gi * ny + j) * nz;
-                        let want = &co.data[a][o..o + nz];
+                        let want = &data[o..o + nz];
                         let got = v.row(a, gi, j);
                         assert!(
                             want.iter()

@@ -87,8 +87,8 @@ fn tm010(c: &Case, threads: usize) -> (f64, ConformalReport, Vec<f64>) {
     m.coord_system = CoordSystem::Cylindrical;
     m.grid.coord_system = CoordSystem::Cylindrical;
     m.grid.delta_unit = 1e-3;
-    for a in 0..3 {
-        m.grid.set_lines(a, c.lines[a].iter().copied()).unwrap();
+    for (a, lines) in c.lines.iter().enumerate() {
+        m.grid.set_lines(a, lines.iter().copied()).unwrap();
     }
     let z1 = c.lines[2][c.lines[2].len() - 1];
     let (cx, cy) = c.centre;
