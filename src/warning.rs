@@ -89,10 +89,17 @@ pub enum WarningCode {
     Sheet,
     /// `metal.lossy`: a finding about lossy metal
     /// ([`CompileOptions::with_lossy_metal`](crate::CompileOptions::with_lossy_metal)):
-    /// a name that is no `Metal` property, edges that stay perfect
-    /// conductors (zero-thickness metal, cylindrical grids, conformal cut
-    /// cells), metal inside openEMS's PML.
+    /// a name that is no `Metal` property, metal that stays a perfect
+    /// conductor on a cylindrical grid, metal inside openEMS's PML.
     LossyMetal,
+    /// `metal.lossy_thin`: edges of lossy metal that are zero-thickness
+    /// metal or wires (field on two opposite sides) and stay perfect
+    /// conductors.
+    LossyMetalThin,
+    /// `metal.lossy_cut`: lossy metal with conformal PEC, where the
+    /// covered parts of the edges its outline cuts stay perfect
+    /// conductors.
+    LossyMetalCut,
     /// `dispersive.ignored`: dispersive poles that were ignored.
     DispersiveIgnored,
     /// `lumped.stability`: a lumped element whose update may be unstable,
@@ -166,6 +173,8 @@ const WORDINGS: &[(&[&str], WarningCode)] = {
         (&["clamped to the mesh"], BoxClamped),
         (&["conformal PEC: estimated stability"], ConformalStability),
         (&["conducting-sheet edge(s) inside the PML"], SheetInPml),
+        (&["of lossy metal are zero-thickness"], LossyMetalThin),
+        (&["lossy metal with conformal PEC"], LossyMetalCut),
         (&["lossy metal"], LossyMetal),
         (&["sheet roughness of "], Sheet),
         (&["conducting sheets on a cylindrical grid"], Sheet),
@@ -249,6 +258,8 @@ impl WarningCode {
             Self::SheetInPml => "sheet.in_pml",
             Self::Sheet => "sheet.other",
             Self::LossyMetal => "metal.lossy",
+            Self::LossyMetalThin => "metal.lossy_thin",
+            Self::LossyMetalCut => "metal.lossy_cut",
             Self::DispersiveIgnored => "dispersive.ignored",
             Self::LumpedStability => "lumped.stability",
             Self::LumpedValue => "lumped.value",
@@ -562,12 +573,12 @@ mod tests {
         ),
         (
             "318 edge(s) of lossy metal are zero-thickness metal or wires and stay perfect conductors; use a ConductingSheet for a lossy sheet",
-            LossyMetal,
+            LossyMetalThin,
             None,
         ),
         (
-            "lossy metal with conformal PEC: the surface impedance is on the edges wholly in the metal; the cut cells along its outline stay perfectly conducting",
-            LossyMetal,
+            "lossy metal with conformal PEC: the surface impedance is on the edges wholly in the metal, which carry the surface of the cut edges next to them too; the covered parts of the cut edges along its outline stay perfectly conducting",
+            LossyMetalCut,
             None,
         ),
         (
