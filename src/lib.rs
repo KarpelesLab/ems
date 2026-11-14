@@ -20,6 +20,7 @@ pub mod nf2ff;
 pub mod port;
 pub mod post;
 mod sim;
+pub mod warning;
 pub mod waveform;
 
 pub use axis::Axis;
@@ -33,6 +34,7 @@ pub use sim::{
     CompiledModel, DumpData, DumpResult, IncidentWave, ProbeKind, ProbeLocation, ProbeResult,
     ProbeValues, Results, SarResult, Simulation,
 };
+pub use warning::{Warning, WarningCode};
 pub use waveform::{ExpressionWaveform, Waveform};
 
 /// The main user-facing types, for glob import: `use ems::prelude::*;`.

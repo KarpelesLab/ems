@@ -655,9 +655,44 @@ impl Simulation {
     }
 
     /// Compile and mapping warnings (csx model checks, discretisation,
-    /// approximations, unsupported properties).
+    /// approximations, unsupported properties), one line of text per
+    /// finding. [`diagnostics`](Self::diagnostics) gives them typed.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// The [`warnings`](Self::warnings) as typed entries: each with a
+    /// stable [code](crate::WarningCode), the model property it is about
+    /// and a count, the lines of one kind about one property merged into
+    /// one entry ([`warning::collect`](crate::warning::collect)).
+    ///
+    /// ```
+    /// use csx::primitives::BoxShape;
+    /// use csx::properties::{ProbeBox, ProbeType};
+    /// use csx::{ContinuousStructure, Primitive, Property};
+    /// use ems::{Fdtd, Simulation, WarningCode};
+    ///
+    /// let mut model = ContinuousStructure::new();
+    /// for a in 0..3 {
+    ///     model.grid.set_lines(a, (0..=10).map(|i| i as f64))?;
+    /// }
+    /// let probe = model.add_property(Property::probe("ut", ProbeBox::new(ProbeType::Voltage)));
+    /// // Not on mesh lines.
+    /// model.add_primitive(probe, Primitive::new(BoxShape::new([5.2, 5.0, 2.0], [5.2, 5.0, 8.0])))?;
+    ///
+    /// let sim = Simulation::new(&model, &Fdtd::new().max_timesteps(10).threads(1))?;
+    /// let snapped: Vec<_> = sim
+    ///     .diagnostics()
+    ///     .into_iter()
+    ///     .filter(|w| w.code() == WarningCode::BoxSnapped)
+    ///     .collect();
+    /// assert_eq!(snapped.len(), 1);
+    /// assert_eq!(snapped[0].subject(), Some("ut"));
+    /// assert_eq!(snapped[0].code().as_str(), "box.snapped");
+    /// # Ok::<(), ems::Error>(())
+    /// ```
+    pub fn diagnostics(&self) -> Vec<crate::Warning> {
+        crate::warning::collect(&self.warnings)
     }
 
     /// The lumped-element operator of the csx property `name`.
