@@ -4,7 +4,7 @@
 //!
 //! The warning lists of the crate ([`Simulation::warnings`](crate::Simulation::warnings),
 //! [`Compiled::warnings`](crate::Compiled::warnings),
-//! [`io::openems::read_model`](crate::io::openems::read_model)) are lines
+//! `io::openems::read_model`) are lines
 //! of text, one per finding; a model with twenty primitives reaching into
 //! an absorbing layer gets twenty lines. [`Warning`] is one finding read
 //! back from its line, and [`collect`] turns a list into one entry per
