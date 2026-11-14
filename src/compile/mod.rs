@@ -187,6 +187,7 @@ use crate::engine::boundary::upml::OpenEmsPml;
 use crate::engine::dispersive::Field as DispersiveField;
 use crate::engine::dispersive::Scheme as DispersiveScheme;
 use crate::engine::openems_sheet::OpenEmsSheetBranches;
+use crate::engine::surface::CutSurface;
 use crate::engine::{CoeffRounding, CurlOrder};
 use crate::engine::{
     ConductingSheet, Conductor, ConformalOptions, ConformalPec, ConformalReport, Dispersive,
@@ -778,6 +779,10 @@ pub struct Compiled {
     /// installed by [`build`](Self::build) in the [`SurfaceImpedance`]
     /// operator, which finds the ones on the metal's surface.
     pub solid_edges: Vec<SolidEdge>,
+    /// The surfaces of lossy metal oblique to the mesh, for the surface
+    /// width of the edges beside them
+    /// ([`SurfaceImpedance::cut_surface`]; with conformal PEC).
+    pub solid_surfaces: Vec<CutSurface>,
     /// Fit band of the surface impedances
     /// ([`CompileOptions::surface_band`]).
     pub surface_band: Option<(f64, f64)>,
@@ -1362,6 +1367,9 @@ impl Compiled {
             if !self.solid_edges.is_empty() {
                 for e in self.conformal.iter().flat_map(|c| c.edges()) {
                     s.cut_edge(e.axis, e.node, e.fraction);
+                }
+                for &o in &self.solid_surfaces {
+                    s.cut_surface(o);
                 }
             }
             h.surface = Some(s.add_to(engine)?);
@@ -2288,6 +2296,7 @@ pub fn compile(
     }
     // (Cylindrical grids: solid metal only, see compile::conformal.)
     let (mut sheet_cuts, mut sheet_cut_faces) = (Vec::new(), Vec::new());
+    let mut solid_surfaces = Vec::new();
     let conformal = if opts.conformal {
         let pec: [&[bool]; 3] = [
             materials.pec_mask(Axis::X),
@@ -2328,6 +2337,13 @@ pub fn compile(
         }
         sheet_cuts = geo.sheet_cuts;
         sheet_cut_faces = geo.sheet_cut_faces;
+        if !solid_edges.is_empty() {
+            // (Lengths in metres.)
+            solid_surfaces = geo.oblique;
+            for o in &mut solid_surfaces {
+                o.reach *= model.grid.delta_unit;
+            }
+        }
         let bridges = geo.bridges;
         let mut pec = if cyl {
             cylindrical::conformal_sheets_in_zones(&grid, geo.conformal, &mut warnings)
@@ -2553,6 +2569,7 @@ pub fn compile(
         sheet_cut_faces,
         surface_sheets,
         solid_edges,
+        solid_surfaces,
         surface_band: opts.surface_band,
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,

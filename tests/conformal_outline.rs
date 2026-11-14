@@ -326,6 +326,9 @@ struct Strip {
     surface_cuts: usize,
     /// The probe series.
     values: Vec<f64>,
+    /// Edges of lossy solid metal left perfect conductors as metal
+    /// without thickness.
+    thin: usize,
 }
 
 /// One resonator run.
@@ -354,6 +357,10 @@ struct Case {
     width: f64,
     /// Whether narrow slanted conductors keep whole edges.
     bridges: bool,
+    /// Where the strip's centre lies across it, in cells from a mesh
+    /// line (0 with a width of whole cells and `deg` = 0: its long sides
+    /// on mesh lines).
+    offset: f64,
 }
 
 impl Case {
@@ -371,6 +378,7 @@ impl Case {
             solids: ConformalOutlines::All,
             width: 1.0,
             bridges: true,
+            offset: 0.21,
         }
     }
 }
@@ -393,12 +401,13 @@ fn strip(case: Case) -> Strip {
         solids,
         width: w,
         bridges,
+        offset,
     } = case;
     let (len, sub) = (12.0, 0.5);
     let ext = 10.0;
     // The strip's centre off the nodes; with `deg` = 0 its long sides
     // fall between mesh lines.
-    let c = [0.37 * h, 0.21 * h];
+    let c = [0.37 * h, offset * h];
     let l = lines(-ext, ext, h);
     let mut lz = lines(0.0, sub, sub / 2.0);
     if cubic {
@@ -466,6 +475,7 @@ fn strip(case: Case) -> Strip {
         .surface
         .as_ref()
         .map_or(0, |h| e.operator(h).cut_sheet_edges());
+    let thin = hnd.surface.as_ref().map_or(0, |h| e.operator(h).thin());
     // E_z under the strip, 1 mm from each end.
     let end = |s: f64| {
         let (x, y) = at(s * (0.5 * len - 1.0), 0.0);
@@ -505,6 +515,7 @@ fn strip(case: Case) -> Strip {
         sheet_cuts,
         surface_cuts,
         values: v,
+        thin,
     }
 }
 
@@ -738,7 +749,7 @@ fn lossy_solid_strip_loss_does_not_depend_on_direction() {
         slant.f * 1e-9,
         slant.q
     );
-    // Measured: 38.7 along x, 36.4 at 45°, 36.7 at 17°.
+    // Measured: 46.8 along x, 44.9 at 45°, 47.0 at 17°.
     for (name, s) in [("45°", &diag), ("17°", &slant)] {
         assert!(
             (s.q / along.q - 1.0).abs() < 0.12,
@@ -749,6 +760,66 @@ fn lossy_solid_strip_loss_does_not_depend_on_direction() {
         assert!((s.f / along.f - 1.0).abs() < 0.015, "{name}: {}", s.f);
     }
     assert!(stair.q > 3.0 * along.q, "{} {}", stair.q, along.q);
+}
+
+/// The loss of a strip of thin copper does not depend on where its rims
+/// lie in the cells. Reference: the same strip with its rims on mesh
+/// lines, two cells across. With the rims between mesh lines, or at 45°,
+/// the edges beside them carried half a cell where the neighbouring edge
+/// was covered, and Q read 555 to 589 for 755 (23 to 27 % more loss): a
+/// line with a 45° section lost that much more per length in it.
+#[test]
+fn rims_between_mesh_lines_lose_what_rims_on_them_do() {
+    let run = |deg: f64, offset: f64| {
+        strip(Case {
+            solids: ConformalOutlines::All,
+            offset,
+            ..Case::new(deg, 0.5, Copper::Solid(0.035, 5.8e7), SLANTED)
+        })
+    };
+    let on = run(0.0, 0.0);
+    let mut line = format!("rims on mesh lines: Q {:.1};", on.q);
+    for (deg, offset) in [(0.0, 0.21), (0.0, 0.5), (45.0, 0.21), (45.0, 0.5)] {
+        let s = run(deg, offset);
+        line += &format!(" {deg}°, {offset} of a cell: Q {:.1};", s.q);
+        // Measured: +1.7 %, +6.8 %, +7.7 %, +7.8 %.
+        assert!(
+            (s.q / on.q - 1.0).abs() < 0.12,
+            "{deg}° {offset}: {} {}",
+            s.q,
+            on.q
+        );
+        assert_eq!(s.thin, 0);
+    }
+    eprintln!("{line}");
+}
+
+/// A slanted strip one row of whole edges wide is solid metal: its edges
+/// have a cut face on either side, which read as field on two opposite
+/// sides, metal without thickness, and 68 of its 100 edges stayed perfect
+/// conductors (the resonance then did not decay at all).
+#[test]
+fn a_strip_one_row_of_edges_wide_is_lossy() {
+    let run = |deg: f64, offset: f64| {
+        strip(Case {
+            solids: ConformalOutlines::All,
+            offset,
+            ..Case::new(deg, 0.5, Copper::Solid(0.035, 5.8e7), SLANTED)
+        })
+    };
+    let (on, narrow) = (run(0.0, 0.0), run(45.0, 0.79));
+    eprintln!(
+        "rims on mesh lines: Q {:.1}; 45°, one row of edges: Q {:.1}, {} thin",
+        on.q, narrow.q, narrow.thin
+    );
+    assert_eq!(narrow.thin, 0);
+    // Measured: 866 for 755.
+    assert!(
+        narrow.q > 0.0 && (narrow.q / on.q - 1.0).abs() < 0.25,
+        "{} {}",
+        narrow.q,
+        on.q
+    );
 }
 
 /// Solid metal with `ConformalOutlines::Slanted`: a strip along the mesh
@@ -971,15 +1042,23 @@ fn narrow_strip_table() {
 #[test]
 #[ignore = "slow; run with --release -- --ignored --nocapture"]
 fn solid_strip_direction_table() {
-    for sigma in [2e5, 5.8e7] {
-        for h in [0.25, 0.125] {
-            let mut line = format!("solid strip, {sigma:e} S/m, {h} mm cells:");
-            for deg in [0.0, 45.0, 17.0, 30.0] {
+    for (t, sigma) in [(0.1, 2e5), (0.1, 5.8e7), (0.035, 5.8e7)] {
+        for h in [0.5, 0.25, 0.125] {
+            let mut line = format!("solid strip {t} mm, {sigma:e} S/m, {h} mm cells:");
+            // The rims on mesh lines, then between them and oblique.
+            for (deg, offset) in [
+                (0.0, 0.0),
+                (0.0, 0.21),
+                (45.0, 0.21),
+                (17.0, 0.21),
+                (30.0, 0.21),
+            ] {
                 let s = strip(Case {
                     periods: if sigma > 1e6 { 60.0 } else { 30.0 },
-                    ..Case::new(deg, h, Copper::Solid(0.1, sigma), SLANTED)
+                    offset,
+                    ..Case::new(deg, h, Copper::Solid(t, sigma), SLANTED)
                 });
-                line += &format!(" {deg}°: {:.4} GHz, Q {:.1};", s.f * 1e-9, s.q);
+                line += &format!(" {deg}° ({offset}): {:.4} GHz, Q {:.1};", s.f * 1e-9, s.q);
             }
             eprintln!("{line}");
         }

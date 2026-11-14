@@ -89,14 +89,82 @@
 //! at least that of the quarters of the dual face next to a face with
 //! field, in vacuum (the explicit coupling to those faces needs it: an
 //! edge without capacitance is a resistor in their loops), and beside a
-//! cell that conformal PEC cuts at least `2·dt·Σ dt/L` over the faces
-//! around it (conformal PEC took the edge for a perfect conductor when it
-//! decided which small faces the time step allows; at the highest
-//! frequencies of the mesh the trapezoidal admittance vanishes and the
-//! edge is its capacitance alone). Edges
+//! cell that conformal PEC cuts at least `4·dt·Σ n·dt/L` over the faces
+//! around it, `n` the edges of the face that carry a surface (conformal
+//! PEC took the edge for a perfect conductor when it decided which small
+//! faces the time step allows; at the highest frequencies of the mesh
+//! the trapezoidal admittance vanishes and the edge is its capacitance
+//! alone). Edges
 //! inside the metal (no face left) and re-entrant edges keep `u = 0`.
 //! Edges of zero-thickness metal (faces left on two opposite sides) are
 //! not solid metal and stay PEC ([`SurfaceImpedance::thin`]); use a sheet.
+//! (Two opposite faces that the metal's outline both crosses are the two
+//! rims of a conductor one row of edges wide, which is solid.)
+//!
+//! *Oblique surfaces.* With conformal PEC a surface of the metal crosses
+//! the cells. The edges wholly in the metal beside it carry it (the
+//! covered parts of the edges it cuts stay perfect conductors), and the
+//! count of half cells above is then a staircase's: every edge beside a
+//! wall at 45° would carry one cell of it where `√2` cells cross its dual
+//! face, and the wall would lose 41 % too much. The width of the surface
+//! that an edge along `d` carries through a face with field comes from
+//! the surface itself ([`CutSurface`], which the compile step takes from
+//! the points where the surface crosses the mesh edges). Let the face's
+//! dual edge run along `c`, of length `ℓ`:
+//!
+//! ```text
+//! w = ℓ·cos γ / sin φ
+//! ```
+//!
+//! with `γ` the angle in the edge's dual plane between the surface's
+//! trace and the dual edge, and `φ` the angle between the edge and the
+//! surface's normal. The first factor is Ampère's law on the dual loop:
+//! next to a good conductor `H` is the surface current turned by a right
+//! angle, so the dual edge collects the current of the piece of surface
+//! it projects on, and the dual edges of the edges along a wall project
+//! on all of it, once. The second is the Leontovich condition: the edge
+//! has the component `sin φ` of the tangential field that drives the
+//! current through its dual face, so `u = E_t·l·sin φ` for `h = K·ℓ·cos
+//! γ`. A surface turned in the dual plane (`γ ≠ 0`) goes on to both sides
+//! of the edge whatever lies on the mesh lines there; one along the dual
+//! edge is counted by half cells as above. Where another surface of the
+//! metal stands on the edge (a floor edge running under a wall), the edge
+//! lies in its own surface over the part `a` of its length that the face
+//! leaves open, and `g = w/(a·l)`.
+//!
+//! *Rims.* A flat surface in a mesh plane whose outline crosses the
+//! cells: the edges its outline cuts keep a perfectly conducting covered
+//! part and a displacement current only, so the dual loop of the last
+//! edge wholly in the metal encloses the current of all the metal from
+//! its own inner half cell out to the rim, a patch of width `P` (its
+//! reach to the rim, [`CutSurface::reach`], measured by the compile step
+//! along the mesh lines through its nodes, plus the half cell on the
+//! other side). The current of a patch that ends on a rim is not spread
+//! evenly, and how the patch is lumped decides its loss: with rims on
+//! mesh lines the scheme has an edge on the rim that carries half a cell
+//! `λ` and far more current than a row inside (measured on a strip of
+//! 35 µm copper, 1 mm wide over 0.5 mm of `ε_r` = 4: the two rim rows
+//! carry 0.37, 0.28 and 0.23 of the current each at two, four and eight
+//! cells across, a row inside 0.27, 0.15 and 0.08). An edge beside the
+//! rim is given the loss those rows would have with its patch: the half
+//! cell at the rim with the share `φ = (λ/P)^0.28` of the patch's
+//! current, the rest of the patch with the rest,
+//!
+//! ```text
+//! 1/w = φ²/λ + (1 − φ)²/(P − λ)
+//! ```
+//!
+//! (`λ` taken along the mesh line across the edge, `1/cos` of the
+//! outline's angle to the edge times the half cell); an edge with a rim on
+//! both sides, a conductor one row of edges wide, `φ = ½·(2λ/P)^0.4` in
+//! each of two half cells. The exponents are fitted, not derived: 0.28
+//! makes the loss of a strip independent of where its rims lie in the
+//! cells (below), and the staircase's own rim share falls with `λ^0.29`
+//! between four and eight cells across. Counting the metal by area
+//! (`w = P`) halves the loss of such a strip; counting half cells where
+//! the neighbouring edge is covered, as before, read 26 % more loss with
+//! the rims between mesh lines or oblique to them than with the rims on
+//! mesh lines.
 //!
 //! *Sheets.* As in [`super::sheet`] the edge is split into its two face
 //! voltages `u+` (the engine's value) and `u−`, each with its share of the
@@ -172,7 +240,9 @@
 //!   resistance levelling off.
 //! * With conformal PEC the covered part of an edge that solid metal cuts
 //!   stays perfectly conducting; the whole edges next to it carry its
-//!   share of the surface ([`SurfaceImpedance::cut_edge`]). Sheets take
+//!   share of the surface ([`SurfaceImpedance::cut_edge`]), with the
+//!   width the surface has across them
+//!   ([`SurfaceImpedance::cut_surface`]). Sheets take
 //!   the cuts of their outline as the ladder does
 //!   ([`SurfaceImpedance::cut_sheet`], [`SurfaceImpedance::cut_face`]).
 //!
@@ -474,10 +544,17 @@ fn nnls(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 }
 
 /// Capacitance of a solid edge beside a cut cell, in units of
-/// `dt·Σ dt/L` of the faces around it (see `install`): the unit is where
-/// growth sets in (a copper strip at 17° on cells of 0.125 × 0.125 ×
-/// 0.1 mm: no growth at 1, growth within 40 periods at 0.5).
-const FLOOR_MARGIN: f64 = 2.0;
+/// `dt·Σ n·dt/L` of the faces around it, `n` the surface edges of the
+/// face (see `install`). With `(Σ u)² ≤ (s + Σ_n u)² ≤ s²/(1 − θ) +
+/// n·Σ_n u²/θ` for the circulation of a face, `s` over its ordinary
+/// edges, the cells stay stable with these edges in them if they were
+/// stable at `(1 − θ)` of the limit without and `C ≥ dt²·Σ n/L / (4θ)`:
+/// 4 is `θ = 1/16`, a stability factor of 0.97 before. Measured: a copper
+/// strip at 17° on cells of 0.125 × 0.125 × 0.1 mm grew at 0.5 and not at
+/// 1; a box cavity with walls of 2e4 S/m at 45° on 1 mm cells and at 30°
+/// on 0.5 mm cells (`tests/validation_lossy_walls.rs`) grew at 2 and not
+/// at 4, its Q 0.06 % lower per unit beyond.
+const FLOOR_MARGIN: f64 = 4.0;
 
 /// Frequencies sampled by [`ImpedanceFit::fit`].
 const FIT_SAMPLES: usize = 64;
@@ -676,6 +753,81 @@ pub struct SolidEdge {
     /// its dual face outside the metal (`ε·A/l`, `κ·A/l`); `None`: vacuum
     /// on the quarters of the dual face next to a face that carries field.
     pub outside: Option<(f64, f64)>,
+}
+
+/// The conductor surface that a solid edge carries through one of the
+/// faces around it, where that surface crosses the cells
+/// ([`SurfaceImpedance::cut_surface`]; module docs, *Oblique surfaces*).
+///
+/// The face (normal `c`, the direction of its dual edge) contains the
+/// edge (along `d`) and extends from it along the third axis `a`. Two
+/// slopes describe the surface next to the edge: `along`, of its trace in
+/// the plane of the face against the edge (`|Δa/Δd|`; 0: parallel to the
+/// edge), and `across`, of its trace in the edge's dual plane against the
+/// dual edge of the face (`|Δa/Δc|`; 0: parallel to it). A surface along
+/// the mesh has both 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CutSurface {
+    /// The solid edge: axis and start node.
+    pub edge: (Axis, [usize; 3]),
+    /// The face: normal and lowest node.
+    pub face: (Axis, [usize; 3]),
+    /// Slope of the surface's trace in the face against the edge.
+    pub along: f64,
+    /// Slope of the surface's trace in the dual plane of the edge against
+    /// the dual edge of the face.
+    pub across: f64,
+    /// The part of the edge's length that lies in the surface, in
+    /// `(0, 1]`: less than 1 where another surface of the metal rises
+    /// from the edge through the face (a floor edge that runs under a
+    /// wall).
+    pub exposed: f64,
+    /// How far the metal reaches from the edge in the plane of the face
+    /// \[m\], the mean over the edge's length (0: not given). Where
+    /// that plane holds a surface of the metal whose outline crosses the
+    /// face, this is the width the edge carries of it on this side: its
+    /// own half cell and what lies under the cut edges beyond, whose
+    /// current its dual loop encloses.
+    pub reach: f64,
+}
+
+/// Least part of an edge taken as lying in its surface
+/// ([`CutSurface::exposed`]).
+const MIN_EXPOSED: f64 = 1e-3;
+
+/// Largest slope taken from an [`CutSurface`] along the edge: an edge
+/// at 84° to its surface carries it with a tenth of its voltage.
+const MAX_SLOPE: f64 = 10.0;
+
+/// Exponent of the share of a rim patch's current that the half cell at
+/// the rim carries, `(λ/P)^0.28` for a patch of width `P` (module docs,
+/// *Rims*).
+const RIM_SHARE: f64 = 0.28;
+/// The same for a patch with a rim on both sides, `½·(2λ/P)^0.4` in each
+/// of the two half cells.
+const STRIP_SHARE: f64 = 0.4;
+
+/// Width of the surface that an edge beside the rim of a flat surface
+/// carries on its dual edge: `reach` of metal from the edge to the rim,
+/// in a cell whose half is `lump`, and `inner` on the other side (module
+/// docs, *Rims*).
+fn rim_width(reach: f64, lump: f64, inner: f64) -> f64 {
+    let p = reach + inner;
+    if !(lump > 0.0 && p > lump) {
+        return p;
+    }
+    let f = (lump / p).powf(RIM_SHARE);
+    1.0 / (f * f / lump + (1.0 - f) * (1.0 - f) / (p - lump))
+}
+
+/// [`rim_width`] of an edge with a rim on both sides, `total` of metal
+/// between them.
+fn strip_width(total: f64, lump: f64) -> f64 {
+    if !(lump > 0.0 && total > 2.0 * lump) {
+        return total;
+    }
+    let f = 0.5 * (2.0 * lump / total).powf(STRIP_SHARE);
+    1.0 / (2.0 * f * f / lump + (1.0 - 2.0 * f) * (1.0 - 2.0 * f) / (total - 2.0 * lump))
 }
 
 /// The discrete one-port of an [`ImpedanceFit`] for one time step
@@ -1358,6 +1510,9 @@ pub struct SurfaceImpedance {
     /// Open fractions of the edges solid metal covers in part
     /// ([`cut_edge`](Self::cut_edge)).
     cut_edges: Vec<(Axis, [usize; 3], f64)>,
+    /// Surfaces crossing the cells beside solid edges
+    /// ([`cut_surface`](Self::cut_surface)).
+    oblique: Vec<CutSurface>,
     gaps: Vec<Gap>,
     installed: bool,
     skipped: usize,
@@ -1532,6 +1687,21 @@ impl SurfaceImpedance {
     pub fn cut_edge(&mut self, axis: Axis, node: [usize; 3], open: f64) {
         if open > 0.0 && open < 1.0 {
             self.cut_edges.push((axis, node, open));
+        }
+    }
+
+    /// Declares how the conductor surface which the solid edge `s.edge`
+    /// carries through its face `s.face` lies in the cells
+    /// ([`CutSurface`]): the width of that surface in the edge's dual
+    /// face is then the face's dual length projected on the surface, not
+    /// the staircase's count of half cells (module docs, *Oblique
+    /// surfaces*). Entries for edges or faces that are not installed are
+    /// ignored, as are those with slopes that are not finite or no part
+    /// of the edge in the surface; the last one given for an edge and
+    /// face counts.
+    pub fn cut_surface(&mut self, s: CutSurface) {
+        if s.along.is_finite() && s.across.is_finite() && s.exposed > 0.0 {
+            self.oblique.push(s);
         }
     }
 
@@ -1808,21 +1978,71 @@ impl SurfaceImpedance {
             }
         };
 
+        // (Looked up only: the order of the map does not matter.)
+        type FaceKey = (usize, [usize; 3], usize, [usize; 3]);
+        let oblique: std::collections::HashMap<FaceKey, (f64, f64, f64)> = self
+            .oblique
+            .iter()
+            .filter(|o| o.along != 0.0 || o.across != 0.0 || o.exposed != 1.0)
+            .map(|o| {
+                (
+                    (o.edge.0.index(), o.edge.1, o.face.0.index(), o.face.1),
+                    (
+                        o.along.abs().min(MAX_SLOPE),
+                        o.across.abs(),
+                        o.exposed.clamp(MIN_EXPOSED, 1.0),
+                    ),
+                )
+            })
+            .collect();
+
+        // (edge, the axis across it, towards higher index) → reach.
+        type SideKey = (usize, [usize; 3], usize, bool);
+        let mut reach: std::collections::HashMap<SideKey, (f64, f64)> =
+            std::collections::HashMap::new();
+        for o in &self.oblique {
+            if o.reach > 0.0 && o.reach.is_finite() {
+                let a = 3 - o.edge.0.index() - o.face.0.index();
+                let up = o.face.1[a] == o.edge.1[a];
+                // (The half cell at the rim, along the mesh line across
+                // the edge: `1/cos` of the outline's angle to the edge.)
+                let slant = (1.0 + o.along.abs().min(MAX_SLOPE).powi(2)).sqrt();
+                reach.insert((o.edge.0.index(), o.edge.1, a, up), (o.reach, slant));
+            }
+        }
+
         // `Σ dt/L` of the faces beside the requested edges that the
         // merged faces of conformal PEC drive in the kernel's place.
         // (Looked up only: the order of the map does not matter.)
+        let requested: std::collections::HashSet<(usize, usize)> = if self.cut_edges.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            self.solid_entries
+                .iter()
+                .map(|e| (e.axis.index(), grid.index(e.node)))
+                .collect()
+        };
         let merged: std::collections::HashMap<(usize, usize), f64> = if self.cut_edges.is_empty() {
             std::collections::HashMap::new()
         } else {
-            let requested: std::collections::HashSet<(usize, usize)> = self
-                .solid_entries
-                .iter()
-                .map(|e| (e.axis.index(), grid.index(e.node)))
-                .collect();
             engine
                 .find_operator::<super::conformal::MergedFaces>()
                 .map(|m| m.edge_diagonal(n, |a, k| requested.contains(&(a, k))))
                 .unwrap_or_default()
+        };
+        // The edges of the face normal to `ax` at `m` that may get a
+        // face voltage here.
+        let surface_edges = |ax: Axis, m: [usize; 3]| {
+            let (p, q) = ax.others();
+            let (mut mp, mut mq) = (m, m);
+            mp[p.index()] += 1;
+            mq[q.index()] += 1;
+            [(p, m), (p, mq), (q, m), (q, mp)]
+                .iter()
+                .filter(|&&(a, at)| {
+                    is_pec(a, at) && requested.contains(&(a.index(), grid.index(at)))
+                })
+                .count()
         };
         // Whether the face normal to `ax` at `m` has an edge that solid
         // metal cuts.
@@ -1859,12 +2079,14 @@ impl SurfaceImpedance {
             // Faces with field around the edge.
             let mut live = Vec::new();
             let mut sides = [[false; 2]; 2]; // [b, c][−, +]
+            let mut cut_sides = [[false; 2]; 2];
             for (ax, m, (side, up), s) in around(d, e.node) {
                 let Some(m) = m else { continue };
                 match face(ax, m) {
                     Some(false) => {
                         live.push((ax, m, s));
                         sides[usize::from(side == c)][usize::from(up)] = true;
+                        cut_sides[usize::from(side == c)][usize::from(up)] = by_cut(ax, m);
                     }
                     Some(true) => dead.push((ax, grid.index(m))),
                     None => {}
@@ -1874,14 +2096,37 @@ impl SurfaceImpedance {
                 self.interior += 1;
                 continue;
             }
-            if (sides[0][0] && sides[0][1]) || (sides[1][0] && sides[1][1]) {
+            // Field on two opposite sides: metal without thickness in
+            // the mesh. Not so where the metal's outline crosses both
+            // faces: a conductor one row of edges wide, with its metal
+            // in both (and below or above the edge).
+            if (0..2).any(|a| sides[a][0] && sides[a][1] && !(cut_sides[a][0] && cut_sides[a][1])) {
                 self.thin += 1;
                 continue;
             }
             // Width of the conductor surface inside the dual face.
+            // Through each face with field: the dual length of the face
+            // as far as the conductor goes on beside the edge. Where the
+            // surface is oblique (`oblique`), the dual edge runs at an
+            // angle to it and the surface at an angle to the edge:
+            // `ℓ·cos γ / sin φ` (module docs).
+            // `w` is the width over the part of the edge's length that
+            // lies in the surface: a face through which another surface
+            // rises from the edge leaves `exposed` of it.
             let mut w = 0.0;
-            for &(ax, _, _) in &live {
-                for up in [false, true] {
+            for &(ax, m, _) in &live {
+                let trace = oblique.get(&(d.index(), e.node, ax.index(), m)).copied();
+                let (factor, turned, exposed) = match trace {
+                    Some((along, across, exposed)) => {
+                        let c2 = 1.0 + across * across;
+                        ((c2 + along * along).sqrt() / c2, across > 1e-9, exposed)
+                    }
+                    None => (1.0, false, 1.0),
+                };
+                // The two halves of the dual edge: (length, conductor
+                // beside it, measured reach of a flat surface's rim).
+                let mut halves = [(0.0, 0.0, None); 2];
+                for (h, up) in [false, true].into_iter().enumerate() {
                     let mut q = e.node;
                     let k = q[ax.index()];
                     if up {
@@ -1891,8 +2136,31 @@ impl SurfaceImpedance {
                     } else {
                         q[ax.index()] -= 1;
                     }
-                    w += cover(d, q) * half(ax, k, up);
+                    // A surface turned in the dual plane goes on to
+                    // both sides, whatever lies on the mesh line there.
+                    let on = if turned { 1.0 } else { cover(d, q) };
+                    let len = half(ax, k, up);
+                    let rim = if trace.is_none() && on < 1.0 && len > 0.0 {
+                        reach.get(&(d.index(), e.node, ax.index(), up)).copied()
+                    } else {
+                        None
+                    };
+                    halves[h] = (len, on, rim);
                 }
+                w += match (trace, halves[0].2, halves[1].2) {
+                    (Some(_), ..) | (None, None, None) => {
+                        (halves[0].0 * halves[0].1 + halves[1].0 * halves[1].1) * factor / exposed
+                    }
+                    (None, Some(a), None) => {
+                        rim_width(a.0, halves[0].0 * a.1, halves[1].0 * halves[1].1)
+                    }
+                    (None, None, Some(a)) => {
+                        rim_width(a.0, halves[1].0 * a.1, halves[0].0 * halves[0].1)
+                    }
+                    (None, Some(a), Some(b)) => {
+                        strip_width(a.0 + b.0, halves[0].0.min(halves[1].0) * a.1.max(b.1))
+                    }
+                };
             }
             if w <= 0.0 {
                 self.interior += 1;
@@ -1936,7 +2204,11 @@ impl SurfaceImpedance {
                     .copied()
                     .unwrap_or(0.0);
                 for &(ax, m, _) in &live {
-                    sum += db[ax.index()][grid.index(m)] as f64;
+                    // (A face's circulation squared is at most the
+                    // squares of its edges times their number: each of
+                    // the face's surface edges answers for all of them.)
+                    sum +=
+                        surface_edges(ax, m).max(1) as f64 * db[ax.index()][grid.index(m)] as f64;
                 }
                 floor = floor.max(FLOOR_MARGIN * dt * sum);
             }
@@ -2534,6 +2806,32 @@ mod tests {
     use super::*;
 
     const CU: f64 = 5.8e7;
+
+    /// The width of a rim patch: the half cell of a rim on the mesh line,
+    /// growing with the reach, below the patch's own width (its current
+    /// crowds at the rim), and continuous where the next edge comes in.
+    #[test]
+    fn rim_widths() {
+        let l = 0.25e-3;
+        assert_eq!(rim_width(0.0, l, l), l);
+        let mut last = l;
+        for q in 1..=40 {
+            let reach = q as f64 * 0.05 * l;
+            let w = rim_width(reach, l, l);
+            assert!(w > last && w < reach + l, "{reach}: {w}");
+            last = w;
+        }
+        // One cell of reach: the rim's half cell with (1/3)^0.28 = 0.735
+        // of the current and a cell with the rest, 0.87 cells.
+        let w = rim_width(2.0 * l, l, l);
+        assert!((w / (2.0 * l) - 0.869).abs() < 2e-3, "{}", w / (2.0 * l));
+        // A patch narrower than the half cell is the patch.
+        assert_eq!(rim_width(0.1 * l, l, 0.0), 0.1 * l);
+        // Two rims: two half cells for a cell, less than the patch beyond.
+        assert_eq!(strip_width(2.0 * l, l), 2.0 * l);
+        let w = strip_width(4.0 * l, l);
+        assert!(w > 2.0 * l && w < 4.0 * l, "{w}");
+    }
 
     #[test]
     fn nnls_small() {

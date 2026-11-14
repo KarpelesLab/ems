@@ -1369,21 +1369,32 @@ update the trapezoidal admittance is `(g/Z)·cos(ω·dt/2)`: at the highest
 frequency of the mesh it is nothing, and the edge is its capacitance
 alone, an ordinary edge where conformal PEC took a perfect conductor when
 it decided which small faces the time step allows (§5.13.3); a face of a
-tenth of its area has ten times the `dt/L`. Such an edge gets `C ≥ 2·dt·Σ
-dt/L` over the faces around it, those the merged faces drive included
-(`MergedFaces::edge_diagonal`): with `C = dt·Σ dt/L` the diagonal of
-`dt²·C⁻¹KᵀL⁻¹K` for the edge is 1 (an edge of cubic cells at the Courant
-limit has 4/3), and that is where growth set in when the factor was varied
-(none at 1, growth within 40 periods at 0.5; 2 is used). Next to `g/Z`
-this capacitance is nothing: the results that were stable before did not
-move in four digits. Without it the copper strip below grew at 45° and 17°
+tenth of its area has ten times the `dt/L`. Such an edge gets `C ≥ 4·dt·Σ
+n·dt/L` over the faces around it, `n` the edges of the face that carry a
+surface, those the merged faces drive included
+(`MergedFaces::edge_diagonal`). The circulation of a face is `s + Σ_n u`,
+`s` over its ordinary edges, and `(s + Σ_n u)² ≤ s²/(1 − θ) + n·Σ_n
+u²/θ`: the cells stay stable with these edges in them if they were at
+`1 − θ` of the limit without them and `C ≥ dt²·Σ n/L/(4θ)`; 4 is
+`θ = 1/16`, a stability factor of 0.97 before. (It was `2·dt·Σ dt/L`
+until a box cavity with oblique walls of 2e4 S/m, below, grew within
+1000 steps at 45° on 1 mm cells and at 30° on 0.5 mm cells: two surface
+edges on one small face at 45°, cells nearer the limit at 30°. Varied on
+the strip below: no growth at 1, growth within 40 periods at 0.5.) Next
+to `g/Z` this capacitance is little: the Q of that cavity falls by
+0.06 % per unit of the factor at 2e4 S/m, a thousandth of that for
+copper. Without it the copper strip below grew at 45° and 17°
 on cells of 0.125 mm (0.1 mm in z, where the time step leaves the small
 faces little room), the strip of 2e5 S/m at 30° on 0.25 mm cells, and
 cadlab's bent line of solid copper on 0.25 mm cells came back not passive
 after 7553 steps (679 320 cells; it ends after 10 881 now, as with ems
 0.0.7, and is passive). Edges inside the metal and re-entrant edges stay
 0; edges with field on two opposite sides (zero-thickness metal, wires)
-are not solid and stay PEC (warning). The compile step finds the edges of
+are not solid and stay PEC (warning), unless the metal's outline crosses
+the faces on both sides: that is a conductor one row of edges wide (a
+slanted track of two cells), which was taken for metal without thickness
+and lost nothing (68 of the 100 edges of the strip below at 45° on 0.5 mm
+cells). The compile step finds the edges of
 a lossy metal by discretising the model a second time without it: an edge
 another metal covers too stays PEC.
 
@@ -1405,11 +1416,43 @@ around a cut face are loaded by `sheet::CUT_FACE_LOADING`; an edge next to
 a face conformal PEC computes itself stores `f+·u+ + f−·u−`, and all its
 other dual edges are corrected against that (those on the `+` side too).
 *Solid metal* keeps the covered part of a cut edge perfectly conducting
-(warning `metal.lossy_cut`), but a cut edge counts as its covered
-fraction of a conductor for the width `w` of the whole edges beside it
-(`cut_edge`). Counted as open, the whole edges along an oblique outline
-carried half a cell where the metal goes on, and a strip lost more the
-more oblique it was (table below).
+(warning `metal.lossy_cut`); the edges wholly in the metal beside it
+carry the surface, with the width it has across them
+(`SurfaceImpedance::cut_surface`, from the points where the surface
+crosses the mesh edges, `compile::conformal`):
+
+- *A surface that crosses the cells* (a wall oblique to the mesh): an
+  edge along `d` carries through a face with field, whose dual edge of
+  length `ℓ` runs along `c`, the width `w = ℓ·cos γ / sin φ`, `γ` the
+  angle in the edge's dual plane between the surface's trace and the
+  dual edge, `φ` the angle between the edge and the surface's normal.
+  `cos γ` is Ampère's law: next to a good conductor `H` is the surface
+  current turned by a right angle, so a dual edge collects the current
+  of the piece of surface it projects on, and the dual edges of the
+  edges along a wall project on all of it once. `sin φ` is the
+  Leontovich condition: the edge has that component of the tangential
+  field which drives the current through its dual face. By half cells
+  (the rule above) the wall was a staircase for its loss: at 45° every
+  edge beside it carried one cell where `√2` cross its dual face.
+- *A surface another one stands on* (a floor edge running under a
+  wall): the edge lies in its own surface over the part `a` of its
+  length that the face above it leaves open, `g = w/(a·l)`.
+- *The rim of a flat surface* (a strip whose outline crosses the cells):
+  the edges the outline cuts carry a displacement current only, so the
+  dual loop of the last edge wholly in the metal encloses the current of
+  all the metal out to the rim, a patch of width `P` (its reach to the
+  rim along the mesh lines through its nodes, plus its inner half cell).
+  That current crowds at the rim, and how the patch is lumped decides
+  its loss. With the rims on mesh lines the scheme has a row of edges on
+  the rim carrying half a cell `λ` and much of the current (measured
+  below); an edge beside a rim gets the loss those rows would have with
+  its patch, `1/w = φ²/λ + (1 − φ)²/(P − λ)`, `φ = (λ/P)^0.28` the share
+  of the half cell at the rim (`λ` along the mesh line across the edge:
+  the half cell over the cosine of the outline's angle to the edge); an
+  edge with a rim on both sides `φ = ½·(2λ/P)^0.4` in each of two half
+  cells. The exponents are fitted to the scheme, not derived (below).
+  A cut edge still counts as its covered fraction of a conductor
+  (`cut_edge`) where no surface is declared.
 
 **Time stepping.** Trapezoidal at `(n + ½)·dt`: a section advances as
 `v̄ = (2v + 2r·(h̄ − h))/(2 + a·dt)`, so a one-port is `x̄ = Z∞·h̄ + e`
@@ -1472,7 +1515,8 @@ copper 441 Mcells/s): the sheet 121 → 192 Mcells/s, solid metal 169 →
 | Plate capacitor discharged by a resistive strip two cells wide (`σt = 5e-5 S`) | `τ = R·C = 8.854 ns` with the strip's own width | 8.854 ns (a whole dual cell per border edge: a third less) |
 | Block and sheet in a closed cavity, graded mesh | energy | only decays; identical for 1 and 3 threads |
 | Half-wave strip resonator of §5.13.2 (12 × 1 mm, 0.25 mm cells), rational sheet of 35 µm at 2e5 S/m, along x / 45° / 17° with conformal outlines (`tests/conformal_outline.rs`) | the same strip in another direction | Q 33.8 / 36.8 / 35.2, the resonance within 0.04 % of the ladder's (the ladder: Q 58 / 37 / 48); copper 520 / 575 / 544 |
-| The same of solid metal 0.1 mm thick (one cell), 2e5 S/m | the same strip in another direction | Q 38.7 / 36.4 / 36.7 (cut edges counted as open: 38.7 / 24.2 / 31.9; staircase at 45°: 184); copper 639 / 602 / 606 (before: 639 / 392 / 523) |
+| Box cavity 20 × 14 × 10 mm in a block of 2e4 S/m, turned about z by 0°, 45°, 17°, 30° (`tests/validation_lossy_walls.rs`): TM110 (wall currents along z) and TE101 (along the walls) | `Q = (c/δ)·k²pq/(k²pq + 2π²c(p/q² + q/p²))` (Pozar 6.46): 140.4 and 144.7; resonance lower by `f/2Q` | Q within 0.84 % on 1 mm cells and 0.37 % on 0.5 mm, the shift −0.355…−0.358 % for −0.356 % (by half cells: −6 % at 17° and −19 % at 45° on 0.5 mm, −14 % at 30° on 1 mm; 45° on 1 mm and 30° on 0.5 mm grew) |
+| The strip of §5.13.2 of solid copper, 35 µm and 0.1 mm thick, and of 2e5 S/m, on cells of 0.5, 0.25 and 0.125 mm: rims between mesh lines, and at 45°, 17°, 30° (`tests/conformal_outline.rs`) | the same strip with its rims on mesh lines | Q within −7…+8.5 % (table below; before: 23 to 27 % low) |
 | Both, 100 to 150 periods in the closed box, 1e4 to 5.8e7 S/m (the sheet on cubic cells too) | the probe signal | no growth |
 
 **Against another solver** (cadlab's `sim.sparams`, its built-in FDTD with
@@ -1523,42 +1567,85 @@ and sheets use the ladder, with warnings). Solid metal must be thicker
 than a few skin depths at the lowest frequency of interest: its faces are
 independent half spaces and the resistance does not go to the DC value of
 a thin conductor. The covered parts of the edges a lossy metal's outline
-cuts stay perfectly conducting (warning; their neighbours carry the
-surface, so the loss of a strip is within 6 % of the same strip along the
-mesh at four cells per width, and within 16 % at two). That loss is too
-high, not too low, and more so on a finer mesh (the strip of the table,
-1 mm wide and 0.1 mm thick, `tests/conformal_outline.rs`,
-`solid_strip_direction_table`):
+cuts stay perfectly conducting (warning); the edges beside them carry the
+surface with its width across them (*Conformal outlines* above).
 
-| Q | along x | 45° | 17° | 30° |
+*Walls.* Against the closed form the box cavity of the table has, by
+angle and cell (Q of TM110 / TE101, per cent from 140.42 / 144.68):
+
+| | 0° | 45° | 17° | 30° |
 |---|---|---|---|---|
-| 2e5 S/m, 0.25 mm cells | 37.8 | 36.4 | 36.5 | 36.3 |
-| 2e5 S/m, 0.125 mm cells | 38.5 | 35.5 | 35.9 | 35.3 |
-| copper, 0.25 mm cells | 623 | 602 | 602 | 597 |
-| copper, 0.125 mm cells | 627 | 573 | 581 | 570 |
+| 1 mm cells | +0.12 / +0.60 | −0.13 / +0.55 | −0.84 / +0.23 | −0.57 / +0.04 |
+| 0.5 mm cells | +0.00 / +0.18 | −0.08 / +0.12 | −0.37 / −0.20 | −0.29 / −0.04 |
+| 0.5 mm, by half cells (ems 0.0.9) | +0.00 / +0.18 | −19.4 / −13.8 | −5.7 / −6.6 | grew |
 
-So the loss the covered parts do not have is not what separates the
-directions (3 to 4 % at four cells per width, 7 to 9 % at eight), and
-giving it to them makes the difference larger. Two forms were tried and
-are not in the code:
+Of the 0.0.9 errors at 0.5 mm, the projection of the dual edges on the
+wall takes −19.4 → −0.9 % at 45° and −5.7 → −2.6 % at 17°, the floor
+edges under the walls the rest. The cavity is drawn as floor, ceiling and
+four walls of metal. (Carved out of a block by a material of higher
+priority, its faces along the mesh stay perfect conductors: conformal PEC
+takes the edges in them for metal, csx's discretisation, from which the
+lossy edges are taken, for the material. Not fixed.)
 
-- *An impedance in series with the open part* (the covered part with the
-  capacitance `C/(1 − f)`, as a sheet's): at the highest frequencies of
-  the mesh the trapezoidal admittance vanishes and the cut edge has the
-  capacitance of its whole length again, where the cut cells are stable
-  for `C/f`. It grew within a few periods at every angle.
-- *Its surface added to the whole edge in line with it*
-  (`Z_s·(l·w + A)/w²`, the same current density on both), with the
-  widths of the whole edges beside the outline measured on the drawn
-  metal instead of taken from the covered fractions of their
-  neighbours: stable, and each dual cell's copper counted once, but Q
-  33.1 at 45° and 34.3 at 17° for 37.8 (copper 545 and 562 for 623).
+*Rims.* There is no closed form for a strip: the current at a rim is
+singular, and every lumping of it depends on the mesh. The reference is
+the scheme itself with the rims on mesh lines, which is what a board's
+mesh gives a track along it and what agrees with cadlab's solver there.
+Q of the strip (12 × 1 mm over 0.5 mm of `ε_r` = 4, solid metal), rims on
+mesh lines / between them at 0.21 of a cell / at 45° / 17° / 30°:
 
-What makes an oblique rim lossier than one along the mesh is not
-established; the table is the state. (cadlab's own solver reads 9 to
-11 % less loss than ems on its bent line of solid copper, and 13 % less
-than itself with sheet copper of the same line, which ems does not: 0.037 /
-0.048 / 0.058 dB at 3 / 5 / 7 GHz for both coppers.) At two cells per
+| | 0.5 mm cells | 0.25 mm | 0.125 mm |
+|---|---|---|---|
+| copper, 35 µm | 755 / 768 / 812 / 801 / 819 | 716 / 718 / 688 / 712 / 720 | 618 / 627 / 627 / 627 / 631 |
+| copper, 0.1 mm | 812 / 804 / 841 / 849 / 857 | 803 / 779 / 748 / 784 / 789 | 752 / 736 / 725 / 731 / 735 |
+| 2e5 S/m, 0.1 mm | 48.5 / 47.8 / 50.1 / 50.5 / 51.0 | 48.3 / 46.8 / 44.9 / 47.0 / 47.3 | 45.7 / 44.6 / 44.1 / 44.3 / 44.6 |
+
+Within −7 to +8.5 % of the rims on mesh lines, 2 % at eight cells across.
+By half cells (0.0.9) the 35 µm strip read 555 / 577 between mesh lines
+and at 45° on 0.5 mm cells for 755, and 550 / 559 on 0.25 mm for 716: a
+quarter more loss wherever a rim did not lie on a mesh line, which is all
+of a slanted track. (The table of 0.0.9, 37.8 along x and 36.4 at 45°,
+compared two strips with their rims between mesh lines; with them on mesh
+lines that strip reads 48.3.) What the rule rests on: the share of the
+strip's current in each of the two rows of edges on the rims, with the
+rims on mesh lines, is 0.367, 0.278 and 0.227 at two, four and eight
+cells across (a row inside: 0.266, 0.150, 0.082 to 0.075), falling as
+`λ^0.29` from four to eight; the exponent 0.28 is the one for which the
+35 µm strip between mesh lines reads what it reads on them (at 0.21 of a
+cell, for 755 and 716: 915 and 827 with 0.5, 840 and 772 with 0.38, 708
+and 672 with 0.2), and with the half cell taken along the mesh line
+across the edge the 45° strip follows (without that factor 693 and 601).
+Tried and not in the code: the width as the metal's area in the patch
+(`w = P`, each dual cell's copper counted once: Q 1052 at 0.5 mm for
+755, the loss halved, since a patch's current is not spread evenly); an
+impedance in series with the open part of a cut edge (grows within a few
+periods: at the highest frequencies of the mesh the trapezoidal
+admittance vanishes and the cut edge has the capacitance of its whole
+length again, where the cut cells are stable for `C/f`), and besides the
+current around a cut edge is its displacement current, not that of its
+covered part; the cut edge's surface added to the whole edge in line
+with it at the same density (`Z_s·(l·w + A)/w²`: Q 33 for 38). The rims
+on mesh lines are not converged themselves: Q falls from 755 to 618 from
+two to eight cells across for 35 µm copper, as the rim's current is
+resolved (cadlab's quasi-static reference has 9 % more conductor loss
+than either solver on its 60 mm line at two cells across).
+
+On cadlab's bent line (8 mm, 14.1 mm at 45°, 8 mm; 1 mm wide, 35 µm of
+solid copper, two cells across; the copper's part of `|S21|` at 1.09 /
+3.07 / 5.05 / 7.03 / 10 GHz, both runs to −70 dB):
+
+| dB | 1.09 | 3.07 | 5.05 | 7.03 | 10 |
+|---|---|---|---|---|---|
+| straight line of that length, ems | 0.0197 | 0.0318 | 0.0415 | 0.0493 | 0.0587 |
+| straight, cadlab's solver | 0.0194 | 0.0319 | 0.0413 | 0.0494 | 0.0595 |
+| bent, cadlab's solver | 0.0209 | 0.0319 | 0.0420 | 0.0513 | 0.0623 |
+| bent, ems 0.0.9 | 0.0236 | 0.0361 | 0.0473 | 0.0573 | 0.0697 |
+| bent, ems now | 0.0206 | 0.0313 | 0.0415 | 0.0505 | 0.0612 |
+| bent, ems now, 0.25 mm cells | 0.0206 | 0.0329 | 0.0431 | 0.0515 | 0.0616 |
+
+ems was 12 to 13 % above cadlab's solver on the bent line and is 1 to 2 %
+below it; against its own straight line the bend costs −2 to +5 % (0.0.9:
++13 to +20 %). At two cells per
 width the rational sheet's loss depends on the direction too (Q 34 along
 x and at 17°, 50 at 45°, as the ladder's): most of its edges are cut
 edges, each taken with half a cell of conductor on either side. Lossy metal in openEMS's own PML (openEMS

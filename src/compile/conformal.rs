@@ -108,6 +108,7 @@
 //! ([`scale_excitations`]): the engine stores `u = E·l_open` there.
 
 use crate::axis::Axis;
+use crate::engine::surface::CutSurface;
 use crate::engine::{ConformalEdge, ConformalFace, ConformalPec};
 use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
 use std::collections::HashMap;
@@ -140,6 +141,9 @@ pub(super) struct Geometry {
     /// Edges kept whole for the narrow slanted conductors they carry
     /// (`bridges`).
     pub bridges: usize,
+    /// The surfaces of solid metal oblique to the mesh, as the edges
+    /// wholly in the metal beside them see them ([`surface_traces`]).
+    pub oblique: Vec<CutSurface>,
 }
 
 /// Open intervals of one edge: transition parameters (sorted, in (0, 1))
@@ -643,6 +647,7 @@ fn solid_geometry(
         sheet_cuts: Vec::new(),
         sheet_cut_faces: Vec::new(),
         bridges: 0,
+        oblique: Vec::new(),
     };
     let bb = metal_bbox(model);
     if bb.is_empty()
@@ -870,6 +875,9 @@ fn solid_geometry(
                             },
                             centroid,
                         );
+                        if !cyl {
+                            surface_traces(axis, n, &e, &lines, &profile, &mut out.oblique);
+                        }
                     }
                 }
             }
@@ -891,6 +899,244 @@ fn solid_geometry(
     }
     profiles.retain(|_, p| p.start_metal || !p.transitions.is_empty());
     (out, profiles)
+}
+
+/// Most edges followed from a node to where the metal ends
+/// ([`CutSurface::reach`]).
+const REACH: usize = 8;
+
+/// The direction of the line through `pts` (least squares; exact for
+/// points on a line), or `None` for fewer than two distinct points.
+fn line_through(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
+    let n = pts.len() as f64;
+    if pts.len() < 2 {
+        return None;
+    }
+    let (mx, my) = pts
+        .iter()
+        .fold((0.0, 0.0), |a, p| (a.0 + p.0 / n, a.1 + p.1 / n));
+    let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
+    for p in pts {
+        let (x, y) = (p.0 - mx, p.1 - my);
+        sxx += x * x;
+        syy += y * y;
+        sxy += x * y;
+    }
+    let scale = pts
+        .iter()
+        .fold(0.0f64, |a, p| a.max(p.0.abs()).max(p.1.abs()));
+    if sxx + syy <= 1e-18 * scale * scale {
+        return None;
+    }
+    let t = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    Some((t.cos(), t.sin()))
+}
+
+/// The metal surface that crosses the cut face normal to `axis` at `n`
+/// (edge profiles `e`, in the order of [`face_fraction`]), as each edge of
+/// the face that lies wholly in the metal sees it ([`CutSurface`]):
+///
+/// * the slope of its trace in the face against the edge, from the two
+///   points where it crosses the face's boundary (a face it crosses
+///   otherwise says nothing along the edge);
+/// * the slope of its trace across the edge, from the points where it
+///   crosses the faces normal to the edge at the edge's two nodes, on
+///   this face's side (the line through them, least squares);
+/// * for a surface that stands on the edge (it crosses the opposite edge
+///   only, between a side in the metal and an open one), the part of the
+///   edge outside it;
+/// * how far the metal reaches from the edge in the plane of the face:
+///   along the mesh lines through its two nodes to the first place
+///   where it ends, the mean of the two.
+fn surface_traces(
+    axis: Axis,
+    n: [usize; 3],
+    e: &[Profile; 4],
+    lines: &[&[f64]; 3],
+    profile: &impl Fn(usize, [usize; 3]) -> Profile,
+    out: &mut Vec<CutSurface>,
+) {
+    let (bb, cc) = axis.others();
+    let (b, c, f) = (bb.index(), cc.index(), axis.index());
+    let len = |a: usize, m: [usize; 3]| lines[a][m[a] + 1] - lines[a][m[a]];
+    let (lb, lc) = (len(b, n), len(c, n));
+    let (mut nb, mut nc) = (n, n);
+    nb[b] += 1;
+    nc[c] += 1;
+    // The edges of the face: axis, node, the other in-face axis and
+    // whether the face lies towards higher index from the edge.
+    let edges = [
+        (b, n, c, true),
+        (c, nb, b, false),
+        (b, nc, c, false),
+        (c, n, b, true),
+    ];
+    let mut pts = Vec::new();
+    for (q, p) in e.iter().enumerate() {
+        for &t in &p.transitions {
+            pts.push(match q {
+                0 => (t * lb, 0.0),
+                1 => (lb, t * lc),
+                2 => (t * lb, lc),
+                _ => (0.0, t * lc),
+            });
+        }
+    }
+    let in_face = if pts.len() == 2 {
+        Some((pts[1].0 - pts[0].0, pts[1].1 - pts[0].1))
+    } else {
+        None
+    };
+    for (q, &(d, node, a, up)) in edges.iter().enumerate() {
+        if !(e[q].start_metal && e[q].transitions.is_empty()) {
+            continue;
+        }
+        // Along the edge: |Δa/Δd| of the trace in the face.
+        let along = match in_face {
+            Some((du, dv)) => {
+                let (dd, da) = if d == b { (du, dv) } else { (dv, du) };
+                if dd.abs() > 1e-12 * da.abs() {
+                    (da / dd).abs()
+                } else {
+                    f64::MAX
+                }
+            }
+            None => 0.0,
+        };
+        // A surface that crosses the face from the opposite edge to this
+        // one, between two sides it does not touch: another surface of
+        // the metal, standing on the edge. The edge lies in its own
+        // surface as far as the opposite edge is open.
+        let opposite = &e[(q + 2) % 4];
+        let standing = pts.len() == 1
+            && opposite.transitions.len() == 1
+            && e[(q + 1) % 4].transitions.is_empty()
+            && e[(q + 3) % 4].transitions.is_empty()
+            && (e[(q + 1) % 4].start_metal != e[(q + 3) % 4].start_metal);
+        if standing {
+            out.push(CutSurface {
+                edge: (Axis::from_index(d).expect("axis in 0..3"), node),
+                face: (axis, n),
+                along: 0.0,
+                across: 0.0,
+                exposed: opposite.open_fraction(),
+                reach: 0.0,
+            });
+            continue;
+        }
+        // The metal in the plane of the face, from the edge: along the
+        // mesh lines through its two nodes to where the metal ends, and
+        // the mean of the two (the mean over the edge for a straight
+        // outline).
+        let reach_from = |mut m: [usize; 3]| -> f64 {
+            let mut dist = 0.0;
+            for _ in 0..REACH {
+                let p = if up {
+                    if m[a] + 1 >= lines[a].len() {
+                        break;
+                    }
+                    profile(a, m)
+                } else {
+                    if m[a] == 0 {
+                        break;
+                    }
+                    m[a] -= 1;
+                    profile(a, m)
+                };
+                let l = len(a, m);
+                let ends_metal = p.start_metal ^ (p.transitions.len() % 2 == 1);
+                match (up, p.transitions.first(), p.transitions.last()) {
+                    (true, _, _) if !p.start_metal => break,
+                    (false, _, _) if !ends_metal => break,
+                    (true, Some(&t), _) => {
+                        dist += t * l;
+                        break;
+                    }
+                    (false, _, Some(&t)) => {
+                        dist += (1.0 - t) * l;
+                        break;
+                    }
+                    _ => dist += l,
+                }
+                if up {
+                    m[a] += 1;
+                }
+            }
+            dist
+        };
+        let mut far = node;
+        far[d] += 1;
+        let reach = 0.5 * (reach_from(node) + reach_from(far));
+        // Across it: the crossings of the faces normal to the edge at
+        // its nodes, on the side of this face and on both sides along
+        // the face's normal; (a, f) offsets from the node.
+        let dims = [lines[0].len(), lines[1].len(), lines[2].len()];
+        let mut slopes = Vec::new();
+        for end in 0..2 {
+            let mut at = node;
+            at[d] += end;
+            let mut pts: Vec<(f64, f64)> = Vec::new();
+            let mut seen: Vec<(usize, [usize; 3])> = Vec::new();
+            for below in [false, true] {
+                let mut qn = at;
+                if !up {
+                    if qn[a] == 0 {
+                        continue;
+                    }
+                    qn[a] -= 1;
+                }
+                if below {
+                    if qn[f] == 0 {
+                        continue;
+                    }
+                    qn[f] -= 1;
+                }
+                if qn[a] + 1 >= dims[a] || qn[f] + 1 >= dims[f] {
+                    continue;
+                }
+                let (mut qa, mut qf) = (qn, qn);
+                qa[a] += 1;
+                qf[f] += 1;
+                for (ax, m) in [(a, qn), (f, qa), (a, qf), (f, qn)] {
+                    if seen.contains(&(ax, m)) {
+                        continue;
+                    }
+                    seen.push((ax, m));
+                    let off = |x: usize| lines[x][m[x]] - lines[x][at[x]];
+                    for &t in &profile(ax, m).transitions {
+                        let along_edge = t * len(ax, m);
+                        pts.push(if ax == a {
+                            (off(a) + along_edge, off(f))
+                        } else {
+                            (off(a), off(f) + along_edge)
+                        });
+                    }
+                }
+            }
+            if let Some((da, df)) = line_through(&pts) {
+                slopes.push(if df.abs() > 1e-12 * da.abs() {
+                    (da / df).abs()
+                } else {
+                    f64::MAX
+                });
+            }
+        }
+        let across = if slopes.is_empty() {
+            0.0
+        } else {
+            slopes.iter().map(|s| s.min(1e12)).sum::<f64>() / slopes.len() as f64
+        };
+        if along > 0.0 || across > 0.0 || reach > 0.0 {
+            out.push(CutSurface {
+                edge: (Axis::from_index(d).expect("axis in 0..3"), node),
+                face: (axis, n),
+                along: along.min(1e12),
+                across,
+                exposed: 1.0,
+                reach,
+            });
+        }
+    }
 }
 
 /// The open polygon of a face (see [`face_fraction`]) in local `(u, v)`
