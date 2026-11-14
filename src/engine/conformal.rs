@@ -2293,6 +2293,59 @@ pub fn stability_factor(
 type BlockTerms<'a> = (Vec<Vec<(usize, usize, f64)>>, &'a Envelope, f64);
 
 impl MergedFaces {
+    /// The diagonal of `Kᵀ·(dt/L)·K` over the currents this operator
+    /// drives (merge groups, hosts with the faces interpolated from
+    /// them), for the E edges `wanted` selects: `(axis index, node
+    /// index) → Σ dt/L`. What an edge that is no perfect conductor after
+    /// all (solid lossy metal, [`SurfaceImpedance`](super::SurfaceImpedance))
+    /// needs to know about the faces beside it that the kernel does not
+    /// update.
+    pub(crate) fn edge_diagonal(
+        &self,
+        n: [usize; 3],
+        wanted: impl Fn(usize, usize) -> bool,
+    ) -> HashMap<Key, f64> {
+        let mut out: HashMap<Key, f64> = HashMap::new();
+        for (d, terms) in group_terms(&self.groups[..self.scalar], n) {
+            for (a, k, s) in terms {
+                if wanted(a, k) {
+                    *out.entry((a, k)).or_insert(0.0) += d * s * s;
+                }
+            }
+        }
+        for (terms, m, dt) in self.block_terms(n) {
+            // (Summed per edge: the order of the map does not matter.)
+            let mut by_edge: HashMap<Key, Vec<(usize, f64)>> = HashMap::new();
+            for (q, t) in terms.iter().enumerate() {
+                for &(a, k, s) in t {
+                    if wanted(a, k) {
+                        by_edge.entry((a, k)).or_default().push((q, s));
+                    }
+                }
+            }
+            let mut y = vec![0.0; terms.len()];
+            for (key, list) in by_edge {
+                y.fill(0.0);
+                for &(q, s) in &list {
+                    y[q] += s;
+                }
+                m.solve(&mut y);
+                // (`y` now holds M⁻¹·s; the weights of one member add up.)
+                let mut seen = vec![false; terms.len()];
+                let mut d = 0.0;
+                for &(q, _) in &list {
+                    if !seen[q] {
+                        seen[q] = true;
+                        let sq: f64 = list.iter().filter(|x| x.0 == q).map(|x| x.1).sum();
+                        d += sq * y[q];
+                    }
+                }
+                *out.entry(key).or_insert(0.0) += dt * d;
+            }
+        }
+        out
+    }
+
     fn block_terms(&self, n: [usize; 3]) -> Vec<BlockTerms<'_>> {
         self.blocks
             .iter()

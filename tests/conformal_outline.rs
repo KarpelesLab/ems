@@ -680,14 +680,20 @@ fn conducting_outlines_are_stable_on_cubic_cells() {
 /// at 45° with conformal PEC within 100.
 #[test]
 fn lossy_solid_strip_is_stable() {
-    for (sigma, deg, h, o) in [
-        (2e5, 0.0, 0.5, None),
-        (2e5, 17.0, 0.25, SLANTED),
-        (5.8e7, 45.0, 0.25, SLANTED),
-        (1e4, 45.0, 0.5, SLANTED),
+    // The last two grew on cells that conformal PEC cuts until the
+    // surface edges beside them got the capacitance those cells need
+    // (2e5 S/m at 30° within 30 periods; copper on 0.125 mm cells, where
+    // the time step leaves the small faces less room, within 20).
+    for (sigma, deg, h, o, periods) in [
+        (2e5, 0.0, 0.5, None, 100.0),
+        (2e5, 17.0, 0.25, SLANTED, 100.0),
+        (5.8e7, 45.0, 0.25, SLANTED, 100.0),
+        (1e4, 45.0, 0.5, SLANTED, 100.0),
+        (2e5, 30.0, 0.25, SLANTED, 60.0),
+        (5.8e7, 17.0, 0.125, SLANTED, 30.0),
     ] {
         let s = strip(Case {
-            periods: 100.0,
+            periods,
             ..Case::new(deg, h, Copper::Solid(0.1, sigma), o)
         });
         let n = s.values.len();
@@ -954,6 +960,26 @@ fn narrow_strip_table() {
                     r.q,
                     r.report.map_or(0, |x| x.bridges)
                 );
+            }
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Measurement (design §5.9.1): the Q of the solid strip in several
+/// directions, at 2e5 S/m and for copper, on 0.25 and 0.125 mm cells.
+#[test]
+#[ignore = "slow; run with --release -- --ignored --nocapture"]
+fn solid_strip_direction_table() {
+    for sigma in [2e5, 5.8e7] {
+        for h in [0.25, 0.125] {
+            let mut line = format!("solid strip, {sigma:e} S/m, {h} mm cells:");
+            for deg in [0.0, 45.0, 17.0, 30.0] {
+                let s = strip(Case {
+                    periods: if sigma > 1e6 { 60.0 } else { 30.0 },
+                    ..Case::new(deg, h, Copper::Solid(0.1, sigma), SLANTED)
+                });
+                line += &format!(" {deg}°: {:.4} GHz, Q {:.1};", s.f * 1e-9, s.q);
             }
             eprintln!("{line}");
         }

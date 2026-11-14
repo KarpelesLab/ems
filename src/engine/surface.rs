@@ -88,7 +88,12 @@
 //! with `C`, `G` of the part of the dual face outside the metal, and `C`
 //! at least that of the quarters of the dual face next to a face with
 //! field, in vacuum (the explicit coupling to those faces needs it: an
-//! edge without capacitance is a resistor in their loops). Edges
+//! edge without capacitance is a resistor in their loops), and beside a
+//! cell that conformal PEC cuts at least `2·dt·Σ dt/L` over the faces
+//! around it (conformal PEC took the edge for a perfect conductor when it
+//! decided which small faces the time step allows; at the highest
+//! frequencies of the mesh the trapezoidal admittance vanishes and the
+//! edge is its capacitance alone). Edges
 //! inside the metal (no face left) and re-entrant edges keep `u = 0`.
 //! Edges of zero-thickness metal (faces left on two opposite sides) are
 //! not solid metal and stay PEC ([`SurfaceImpedance::thin`]); use a sheet.
@@ -467,6 +472,12 @@ fn nnls(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
         .map(|(v, &s)| if s > 0.0 { v / s } else { 0.0 })
         .collect()
 }
+
+/// Capacitance of a solid edge beside a cut cell, in units of
+/// `dt·Σ dt/L` of the faces around it (see `install`): the unit is where
+/// growth sets in (a copper strip at 17° on cells of 0.125 × 0.125 ×
+/// 0.1 mm: no growth at 1, growth within 40 periods at 0.5).
+const FLOOR_MARGIN: f64 = 2.0;
 
 /// Frequencies sampled by [`ImpedanceFit::fit`].
 const FIT_SAMPLES: usize = 64;
@@ -1797,6 +1808,34 @@ impl SurfaceImpedance {
             }
         };
 
+        // `Σ dt/L` of the faces beside the requested edges that the
+        // merged faces of conformal PEC drive in the kernel's place.
+        // (Looked up only: the order of the map does not matter.)
+        let merged: std::collections::HashMap<(usize, usize), f64> = if self.cut_edges.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            let requested: std::collections::HashSet<(usize, usize)> = self
+                .solid_entries
+                .iter()
+                .map(|e| (e.axis.index(), grid.index(e.node)))
+                .collect();
+            engine
+                .find_operator::<super::conformal::MergedFaces>()
+                .map(|m| m.edge_diagonal(n, |a, k| requested.contains(&(a, k))))
+                .unwrap_or_default()
+        };
+        // Whether the face normal to `ax` at `m` has an edge that solid
+        // metal cuts.
+        let by_cut = |ax: Axis, m: [usize; 3]| {
+            let (p, q) = ax.others();
+            let (mut mp, mut mq) = (m, m);
+            mp[p.index()] += 1;
+            mq[q.index()] += 1;
+            [(p, m), (p, mq), (q, m), (q, mp)]
+                .iter()
+                .any(|&(a, at)| cut_edges.contains_key(&(a.index(), at)))
+        };
+
         // ---- Solid metal ----
         let mut fits: Vec<(Conductor, u32)> = Vec::new();
         let mut order: Vec<usize> = (0..self.solid_entries.len()).collect();
@@ -1877,7 +1916,30 @@ impl SurfaceImpedance {
                     }
                 }
             }
-            let floor = EPS0 * area / l;
+            let mut floor = EPS0 * area / l;
+            // Beside a cut cell the edge needs more. The trapezoidal
+            // rule's admittance `g/Z` goes to zero at the highest
+            // frequency of the mesh (it is `Y·cos(ω·dt/2)` in the edge's
+            // update), where the edge is left with its capacitance alone:
+            // an ordinary edge, where conformal PEC took a perfect
+            // conductor when it decided which small faces the time step
+            // allows. A face of a tenth of its area next to it has ten
+            // times the `dt/L`. With `C = dt·Σ dt/L` over the faces around
+            // it (those the merged faces drive included) the edge has the
+            // diagonal `dt²·(C⁻¹·Kᵀ·L⁻¹·K)_ee = 1` (an edge of cubic
+            // cells at the Courant limit has 4/3); with
+            // [`FLOOR_MARGIN`] times that it is out of the way of those
+            // modes. Next to `g/Z` this capacitance is nothing.
+            if live.iter().any(|&(ax, m, _)| by_cut(ax, m)) {
+                let mut sum = merged
+                    .get(&(d.index(), grid.index(e.node)))
+                    .copied()
+                    .unwrap_or(0.0);
+                for &(ax, m, _) in &live {
+                    sum += db[ax.index()][grid.index(m)] as f64;
+                }
+                floor = floor.max(FLOOR_MARGIN * dt * sum);
+            }
             let (cap, cond) = match e.outside {
                 Some((cap, cond)) => (cap.max(floor), cond),
                 None => (floor, 0.0),
