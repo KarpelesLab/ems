@@ -71,9 +71,14 @@
 //! [`crate::engine::conformal`]). Zero-thickness metal sheets off the
 //! mesh planes (oblique plates, cylindrical and spherical shells) are
 //! split into pieces and regions on both sides (thin-sheet scheme of the
-//! same module); sheets on mesh planes, curves and wires keep the
-//! staircase mask. A cut edge's voltage `u` is then the voltage over its
-//! open part, `E·l_open`.
+//! same module); curves and wires keep the staircase mask. Sheets on mesh
+//! planes (planar metal sheets and conducting sheets, Cartesian grids)
+//! keep it too, except where their outline is oblique to the mesh: there
+//! the in-plane edges and faces it crosses get their open lengths and
+//! areas ([`CompileOptions::conformal_outlines`], rules in
+//! `src/compile/conformal/planar.rs`; a conducting sheet keeps its ladder
+//! on the covered part of a cut edge, [`Compiled::sheet_cuts`]). A cut
+//! edge's voltage `u` is then the voltage over its open part, `E·l_open`.
 //!
 //! # Dispersive materials
 //!
@@ -208,12 +213,18 @@ pub struct CompileOptions {
     /// warnings and errors to its warnings (default `true`). Not used by
     /// [`compile`] itself.
     pub mesh_check: bool,
-    /// Conformal (sub-cell) PEC for solid metal (default `false`: the
+    /// Conformal (sub-cell) PEC for solid metal, sheets off the mesh
+    /// planes and the outlines of sheets on them (default `false`: the
     /// staircase PEC mask of csx). See [Conformal PEC](self#conformal-pec).
     pub conformal: bool,
     /// Options of the conformal scheme (stability floor and check), used
     /// when [`conformal`](Self::conformal) is set.
     pub conformal_options: ConformalOptions,
+    /// Which outlines of sheets lying on mesh planes (planar metal sheets
+    /// and conducting sheets) are resolved below the cell size when
+    /// [`conformal`](Self::conformal) is set (default
+    /// [`ConformalOutlines::Slanted`]).
+    pub conformal_outlines: ConformalOutlines,
     /// Time integration of Lorentz/Drude poles (default
     /// [`Scheme::Leapfrog`](crate::engine::dispersive::Scheme::Leapfrog),
     /// the scheme openEMS uses, so XML models give the same signals; see
@@ -233,6 +244,43 @@ impl CompileOptions {
         self.conformal = on;
         self
     }
+
+    /// Returns `self` with [`conformal_outlines`](Self::conformal_outlines)
+    /// set to `outlines`.
+    ///
+    /// ```
+    /// use ems::compile::{CompileOptions, ConformalOutlines};
+    /// let o = CompileOptions::default()
+    ///     .with_conformal(true)
+    ///     .with_conformal_outlines(ConformalOutlines::Off);
+    /// assert_eq!(o.conformal_outlines, ConformalOutlines::Off);
+    /// ```
+    #[must_use]
+    pub fn with_conformal_outlines(mut self, outlines: ConformalOutlines) -> Self {
+        self.conformal_outlines = outlines;
+        self
+    }
+}
+
+/// The outlines of sheets on mesh planes that
+/// [`CompileOptions::conformal`] resolves below the cell size (planar
+/// metal sheets and conducting sheets on Cartesian grids; see
+/// [Conformal PEC](self#conformal-pec)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ConformalOutlines {
+    /// None: every sheet on a mesh plane keeps csx's staircase (an
+    /// in-plane edge is on the sheet when its midpoint is).
+    Off,
+    /// Where the outline is oblique to the mesh (diagonal and curved
+    /// outlines). Edges crossed by an axis-aligned outline keep the
+    /// staircase, so axis-aligned sheets are discretised as without
+    /// conformal PEC, whether their outline is on mesh lines or between
+    /// them.
+    #[default]
+    Slanted,
+    /// Every outline, axis-aligned ones between mesh lines included.
+    All,
 }
 
 impl Default for CompileOptions {
@@ -245,6 +293,7 @@ impl Default for CompileOptions {
             mesh_check: true,
             conformal: false,
             conformal_options: ConformalOptions::default(),
+            conformal_outlines: ConformalOutlines::default(),
             dispersive_scheme: DispersiveScheme::Leapfrog,
         }
     }
@@ -510,6 +559,16 @@ pub struct Compiled {
     /// [`sheet`]); installed by [`build`](Self::build) as one
     /// [`ConductingSheet`] operator.
     pub sheets: Vec<SheetEdge>,
+    /// Open length fractions `(axis, node, f)` of the
+    /// [`sheets`](Self::sheets) edges that the outline of their sheet
+    /// crosses ([`CompileOptions::conformal_outlines`]; they are cut edges
+    /// of [`conformal`](Self::conformal) too): the sheet covers the rest
+    /// of the edge ([`ConductingSheet::cut`]).
+    pub sheet_cuts: Vec<(Axis, [usize; 3], f64)>,
+    /// The faces `(normal, node)` in the planes of conducting sheets that
+    /// such an outline cuts (cut faces of [`conformal`](Self::conformal)
+    /// too; [`ConductingSheet::cut_face`]).
+    pub sheet_cut_faces: Vec<(Axis, [usize; 3])>,
     /// Highest frequency of interest \[Hz\] ([`Fdtd::get_max_frequency`]),
     /// used to grade the conducting-sheet layers.
     pub max_frequency: Option<f64>,
@@ -1043,6 +1102,14 @@ impl Compiled {
             let mut s = ConductingSheet::new(self.max_frequency);
             for &e in &self.sheets {
                 s.push(e);
+            }
+            // Sheet edges their sheet's outline cuts (conformal PEC): the
+            // ladder covers the rest of the edge.
+            for &(axis, node, open) in &self.sheet_cuts {
+                s.cut(axis, node, open);
+            }
+            for &(axis, node) in &self.sheet_cut_faces {
+                s.cut_face(axis, node);
             }
             h.sheets = Some(s.add_to(engine)?);
         }
@@ -1912,17 +1979,36 @@ pub fn compile(
         );
     }
     // (Cylindrical grids: solid metal only, see compile::conformal.)
+    let (mut sheet_cuts, mut sheet_cut_faces) = (Vec::new(), Vec::new());
     let conformal = if opts.conformal {
         let pec: [&[bool]; 3] = [
             materials.pec_mask(Axis::X),
             materials.pec_mask(Axis::Y),
             materials.pec_mask(Axis::Z),
         ];
-        let threads = fdtd.resolved_threads();
-        let geo = conformal::geometry(model, &pec, opts.snap_tolerance, threads, &mut warnings);
+        let geo = conformal::geometry(
+            model,
+            &conformal::Request {
+                pec,
+                snap: opts.snap_tolerance,
+                threads: fdtd.resolved_threads(),
+                outlines: opts.conformal_outlines,
+                // openEMS's sheet model (files) has no cut edges.
+                sheet_edges: (!fdtd.get_openems_run()).then_some(&sheet_map.edges[..]),
+            },
+            &mut warnings,
+        );
         for &(axis, k, v) in &geo.pec {
             materials.pec_mask_mut(axis)[k] = v;
         }
+        // Cut conducting-sheet edges csx did not select (their midpoint
+        // is open).
+        for (e, name) in geo.sheet_edges {
+            sheet_map.edges.push(e);
+            sheet_map.names.push(name);
+        }
+        sheet_cuts = geo.sheet_cuts;
+        sheet_cut_faces = geo.sheet_cut_faces;
         let pec = if cyl {
             cylindrical::conformal_sheets_in_zones(&grid, geo.conformal, &mut warnings)
         } else {
@@ -2097,6 +2183,8 @@ pub fn compile(
         thin_wires,
         oblique_wires,
         sheets: sheet_edges,
+        sheet_cuts,
+        sheet_cut_faces,
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,
         openems_sheet_branches,

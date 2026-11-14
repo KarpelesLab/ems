@@ -41,7 +41,7 @@ pub(super) struct SheetMap {
 }
 
 /// Local cell size around line `i` of `lines`.
-fn local_cell(lines: &[f64], i: usize) -> f64 {
+pub(super) fn local_cell(lines: &[f64], i: usize) -> f64 {
     let lo = if i > 0 { lines[i] - lines[i - 1] } else { 0.0 };
     let hi = if i + 1 < lines.len() {
         lines[i + 1] - lines[i]
@@ -177,7 +177,7 @@ pub(super) fn plane_line(
 
 /// Capacitance and conductance shares of the `+` side of the sheet edge
 /// along `d` at `node` with normal `nrm` (module docs).
-fn shares(
+pub(super) fn shares(
     model: &csx::ContinuousStructure,
     d: usize,
     node: [usize; 3],

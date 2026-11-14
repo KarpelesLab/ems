@@ -371,7 +371,7 @@ fn surface<'a>(prim: &'a Primitive, default_cs: CoordSystem) -> Option<Sheet<'a>
 
 /// Whether csx maps the sheet with bounding box `b` onto the PEC mask
 /// (flat in one axis and on a mesh plane).
-fn on_mesh_plane(b: &BoundingBox, lines: [&[f64]; 3], snap: f64) -> bool {
+pub(super) fn on_mesh_plane(b: &BoundingBox, lines: [&[f64]; 3], snap: f64) -> bool {
     (0..3).any(|a| {
         let l = lines[a];
         let i = l.partition_point(|&x| x < b.min[a]).min(l.len() - 1);
@@ -692,7 +692,7 @@ fn other_primitives<'a>(
 /// containing the midpoint, or any other primitive near the edge
 /// (conservative: sheets, wires and conducting sheets select edges by
 /// their own rules).
-fn covered(
+pub(super) fn covered(
     model: &csx::ContinuousStructure,
     others: &[(&Primitive, bool)],
     p0: Vec3,

@@ -7,10 +7,13 @@
 //! A point is *in metal* when the highest-priority material or metal
 //! property containing it (csx priority query over materials and metals)
 //! is a `Metal` property and the containing primitive is a solid
-//! (dimension 3). Curves, wires, conducting sheets and metal sheets on
-//! mesh planes stay with csx's PEC mask; metal sheets off the mesh planes
-//! (oblique or curved) are split cell by cell instead, see `sheets`
-//! (src/compile/conformal/sheets.rs).
+//! (dimension 3). Curves and wires stay with csx's PEC mask; metal sheets
+//! off the mesh planes (oblique or curved) are split cell by cell instead,
+//! see `sheets` (src/compile/conformal/sheets.rs); metal sheets and
+//! conducting sheets on mesh planes keep csx's edges except along
+//! outlines oblique to the mesh, whose in-plane edges and faces are cut
+//! like those of solid metal, see `planar`
+//! (src/compile/conformal/planar.rs).
 //!
 //! # Edges
 //!
@@ -73,6 +76,7 @@ use crate::engine::{ConformalEdge, ConformalFace, ConformalPec};
 use csx::{BoundingBox, CoordSystem, PropertyKind, PropertyType, TypeMask, Vec3};
 use std::collections::HashMap;
 
+mod planar;
 mod sheets;
 
 /// Bisection steps per transition.
@@ -89,6 +93,14 @@ pub(super) struct Geometry {
     pub conformal: ConformalPec,
     /// `(axis, engine index, pec)` overrides of the PEC mask.
     pub pec: Vec<(Axis, usize, bool)>,
+    /// Conducting-sheet edges to add (cut edges csx did not select), with
+    /// their property names (`planar`).
+    pub sheet_edges: Vec<(crate::engine::SheetEdge, String)>,
+    /// `(axis, node, open fraction)` of the conducting-sheet edges their
+    /// sheet's outline cuts (`planar`).
+    pub sheet_cuts: Vec<(Axis, [usize; 3], f64)>,
+    /// `(normal, node)` of the cut faces in the planes of those sheets.
+    pub sheet_cut_faces: Vec<(Axis, [usize; 3])>,
 }
 
 /// Open intervals of one edge: transition parameters (sorted, in (0, 1))
@@ -196,28 +208,36 @@ impl Ctx<'_> {
                 q => self.metal(at(q as f64 / SAMPLES as f64)),
             };
         }
-        let mut transitions = Vec::new();
-        for q in 0..SAMPLES {
-            if states[q] == states[q + 1] {
-                continue;
-            }
-            let (mut lo, mut hi) = (q as f64 / SAMPLES as f64, (q + 1) as f64 / SAMPLES as f64);
-            for _ in 0..BISECT {
-                let mid = 0.5 * (lo + hi);
-                if self.metal(at(mid)) == states[q] {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            transitions.push(0.5 * (lo + hi));
-        }
-        Profile {
-            start_metal: s0,
-            transitions,
-        }
-        .snapped()
+        refine(&states, |t| self.metal(at(t)))
     }
+}
+
+/// The profile of an edge from its states at the `SAMPLES + 1` equally
+/// spaced samples and the state `metal(t)` at any parameter: every state
+/// change between two samples is bisected, transitions at the ends are
+/// snapped onto them.
+fn refine(states: &[bool; SAMPLES + 1], metal: impl Fn(f64) -> bool) -> Profile {
+    let mut transitions = Vec::new();
+    for q in 0..SAMPLES {
+        if states[q] == states[q + 1] {
+            continue;
+        }
+        let (mut lo, mut hi) = (q as f64 / SAMPLES as f64, (q + 1) as f64 / SAMPLES as f64);
+        for _ in 0..BISECT {
+            let mid = 0.5 * (lo + hi);
+            if metal(mid) == states[q] {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        transitions.push(0.5 * (lo + hi));
+    }
+    Profile {
+        start_metal: states[0],
+        transitions,
+    }
+    .snapped()
 }
 
 /// Union of the bounding boxes of solid metal primitives, in the grid's
@@ -276,19 +296,31 @@ fn par<T: Send>(
     })
 }
 
-/// Computes the conformal geometry of `model` on its (Cartesian) grid:
-/// solid metal and thin PEC sheets (`sheets`). `pec` is the
-/// engine-layout PEC mask after csx and sheets; `snap` is csx's relative
-/// snapping tolerance; `threads` parallelises the point queries (the
-/// result does not depend on it). csx warnings about the sheets handled
-/// here are removed from `warnings`.
+/// What [`geometry`] needs besides the model.
+pub(super) struct Request<'a> {
+    /// The engine-layout PEC mask after csx and sheets.
+    pub pec: [&'a [bool]; 3],
+    /// csx's relative snapping tolerance.
+    pub snap: f64,
+    /// Threads of the point queries (the result does not depend on it).
+    pub threads: usize,
+    /// Outlines of sheets on mesh planes (`planar`).
+    pub outlines: super::ConformalOutlines,
+    /// The conducting-sheet edges csx selected, or `None` where the
+    /// outlines of conducting sheets are not cut (openEMS's sheet model).
+    pub sheet_edges: Option<&'a [crate::engine::SheetEdge]>,
+}
+
+/// Computes the conformal geometry of `model` on its grid: solid metal,
+/// thin PEC sheets off the mesh planes (`sheets`) and the outlines of
+/// sheets on mesh planes (`planar`, Cartesian grids). csx warnings about
+/// the sheets handled here are removed from `warnings`.
 pub(super) fn geometry(
     model: &csx::ContinuousStructure,
-    pec: &[&[bool]; 3],
-    snap: f64,
-    threads: usize,
+    req: &Request<'_>,
     warnings: &mut Vec<String>,
 ) -> Geometry {
+    let (pec, snap, threads) = (&req.pec, req.snap, req.threads);
     let (mut out, solid) = solid_geometry(model, pec, threads);
     // The metal test of the solid geometry (grid coordinates), for sheets
     // ending on a metal surface.
@@ -301,12 +333,58 @@ pub(super) fn geometry(
         lines: [0, 1, 2].map(|a| model.grid.lines(a)),
     };
     let solid_at = |p: Vec3| !solid.is_empty() && ctx.metal(p);
-    let (edges, faces, pec) = if model.grid.coord_system == CoordSystem::Cylindrical {
+    let (edges, faces, sheet_pec) = if model.grid.coord_system == CoordSystem::Cylindrical {
         sheets::cylindrical_geometry(model, snap, threads, &solid, &solid_at, warnings)
     } else {
         sheets::geometry(model, snap, threads, &solid, &solid_at, warnings)
     };
-    out.pec.extend(pec);
+    out.pec.extend(sheet_pec);
+    // Outlines of the sheets on mesh planes, around what is cut already.
+    let mut mask: [Vec<bool>; 3] = pec.map(<[bool]>::to_vec);
+    for &(axis, k, v) in &out.pec {
+        mask[axis.index()][k] = v;
+    }
+    let mut taken_edges: std::collections::HashSet<planar::Key> = solid.keys().copied().collect();
+    taken_edges.extend(edges.iter().map(|e| (e.axis.index(), e.node)));
+    let taken_faces: std::collections::HashSet<planar::Key> = out
+        .conformal
+        .faces()
+        .iter()
+        .map(|f| (f.axis.index(), f.node))
+        .chain(faces.iter().map(|f| (f.axis.index(), f.node)))
+        .collect();
+    let sheet_edges: std::collections::HashSet<planar::Key> = req
+        .sheet_edges
+        .unwrap_or(&[])
+        .iter()
+        .map(|e| (e.axis.index(), e.node))
+        .collect();
+    let outlines = planar::geometry(
+        model,
+        &mask,
+        snap,
+        threads,
+        req.outlines,
+        req.sheet_edges.is_some(),
+        &planar::Taken {
+            edges: &taken_edges,
+            faces: &taken_faces,
+            sheet_edges: &sheet_edges,
+        },
+    );
+    out.pec.extend(outlines.pec);
+    for e in outlines.edges {
+        out.conformal.push_edge(e);
+    }
+    for (f, centroid) in outlines.faces {
+        out.conformal.push_face_with_centroid(f, centroid);
+    }
+    for (axis, node) in outlines.walls {
+        out.conformal.push_wall(axis, node);
+    }
+    out.sheet_edges = outlines.sheet_edges;
+    out.sheet_cuts = outlines.sheet_cuts;
+    out.sheet_cut_faces = outlines.sheet_cut_faces;
     for e in edges {
         out.conformal.push_sheet_edge(e);
     }
@@ -364,6 +442,9 @@ fn solid_geometry(
     let mut out = Geometry {
         conformal: ConformalPec::new(),
         pec: Vec::new(),
+        sheet_edges: Vec::new(),
+        sheet_cuts: Vec::new(),
+        sheet_cut_faces: Vec::new(),
     };
     let bb = metal_bbox(model);
     if bb.is_empty() || !(bb.min.is_finite() && bb.max.is_finite()) {
