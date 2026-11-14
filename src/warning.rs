@@ -87,6 +87,12 @@ pub enum WarningCode {
     /// `sheet.other`: any other finding about conducting sheets (values
     /// without effect, edges approximated as PEC, edges on the axis).
     Sheet,
+    /// `metal.lossy`: a finding about lossy metal
+    /// ([`CompileOptions::with_lossy_metal`](crate::CompileOptions::with_lossy_metal)):
+    /// a name that is no `Metal` property, edges that stay perfect
+    /// conductors (zero-thickness metal, cylindrical grids, conformal cut
+    /// cells), metal inside openEMS's PML.
+    LossyMetal,
     /// `dispersive.ignored`: dispersive poles that were ignored.
     DispersiveIgnored,
     /// `lumped.stability`: a lumped element whose update may be unstable,
@@ -160,6 +166,9 @@ const WORDINGS: &[(&[&str], WarningCode)] = {
         (&["clamped to the mesh"], BoxClamped),
         (&["conformal PEC: estimated stability"], ConformalStability),
         (&["conducting-sheet edge(s) inside the PML"], SheetInPml),
+        (&["lossy metal"], LossyMetal),
+        (&["sheet roughness of "], Sheet),
+        (&["conducting sheets on a cylindrical grid"], Sheet),
         // Lumped elements and excitations on sheets are theirs.
         (&["lumped element ", "may become unstable"], LumpedStability),
         (&["lumped element ", "inductor update"], LumpedStability),
@@ -239,6 +248,7 @@ impl WarningCode {
             Self::ConformalStability => "conformal.stability",
             Self::SheetInPml => "sheet.in_pml",
             Self::Sheet => "sheet.other",
+            Self::LossyMetal => "metal.lossy",
             Self::DispersiveIgnored => "dispersive.ignored",
             Self::LumpedStability => "lumped.stability",
             Self::LumpedValue => "lumped.value",
@@ -544,6 +554,26 @@ mod tests {
             "3232 conducting-sheet edge(s) inside the PML do not get the PML correction; keep sheets out of the absorbing layers",
             SheetInPml,
             None,
+        ),
+        (
+            r#"lossy metal "copper": no property of that name; ignored"#,
+            LossyMetal,
+            Some("copper"),
+        ),
+        (
+            "318 edge(s) of lossy metal are zero-thickness metal or wires and stay perfect conductors; use a ConductingSheet for a lossy sheet",
+            LossyMetal,
+            None,
+        ),
+        (
+            "lossy metal with conformal PEC: the surface impedance is on the edges wholly in the metal; the cut cells along its outline stay perfectly conducting",
+            LossyMetal,
+            None,
+        ),
+        (
+            r#"sheet roughness of "strip" ignored: it needs SheetModel::SurfaceImpedance on a Cartesian grid"#,
+            Sheet,
+            Some("strip"),
         ),
         (
             r#"ConductingSheet "cu": conductivity 0 S/m and thickness 0 m must be > 0; the sheet has no effect"#,

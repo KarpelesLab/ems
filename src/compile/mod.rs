@@ -165,6 +165,7 @@ mod openems_sheet;
 pub mod planewave;
 pub mod sar;
 pub mod sheet;
+mod surface;
 mod wire;
 
 pub(crate) use mode::SAMPLING_ATTR as MODE_SAMPLING_ATTR;
@@ -180,9 +181,9 @@ use crate::engine::dispersive::Scheme as DispersiveScheme;
 use crate::engine::openems_sheet::OpenEmsSheetBranches;
 use crate::engine::{CoeffRounding, CurlOrder};
 use crate::engine::{
-    ConductingSheet, ConformalOptions, ConformalPec, ConformalReport, Dispersive, EdgeMaterials,
-    EdgePole, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires, OperatorHandle, SheetEdge,
-    ThinWire, TimeStep,
+    ConductingSheet, Conductor, ConformalOptions, ConformalPec, ConformalReport, Dispersive,
+    EdgeMaterials, EdgePole, Engine, FaceCondition, FaceConditions, Grid, ObliqueWires,
+    OperatorHandle, Roughness, SheetEdge, SolidEdge, SurfaceImpedance, ThinWire, TimeStep,
 };
 use crate::fdtd::{Boundary, Cpml, Face, Fdtd};
 use crate::{Error, Result};
@@ -230,9 +231,92 @@ pub struct CompileOptions {
     /// the scheme openEMS uses, so XML models give the same signals; see
     /// [`dispersive`]).
     pub dispersive_scheme: DispersiveScheme,
+    /// `Metal` properties that are lossy conductors, by name: their solid
+    /// surfaces get a surface impedance instead of `E_tan = 0`
+    /// ([`crate::engine::surface`]; default none: every metal is a
+    /// perfect conductor). See [`with_lossy_metal`](Self::with_lossy_metal).
+    pub lossy_metals: Vec<(String, Conductor)>,
+    /// How `ConductingSheet` properties are integrated (default
+    /// [`SheetModel::Ladder`]).
+    pub sheet_model: SheetModel,
+    /// Surface roughness of `ConductingSheet` properties, by name, for
+    /// [`SheetModel::SurfaceImpedance`] (default none: smooth).
+    pub sheet_roughness: Vec<(String, Roughness)>,
+    /// Band `(f_lo, f_hi)` \[Hz\] over which the surface impedances are
+    /// fitted; `None` (default): from a hundredth of the run's highest
+    /// frequency ([`Fdtd::get_max_frequency`]) to that frequency.
+    pub surface_band: Option<(f64, f64)>,
+}
+
+/// Time-domain model of csx `ConductingSheet` properties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum SheetModel {
+    /// A ladder across the thickness, graded to the skin depth
+    /// ([`crate::engine::sheet`]): about 50 unknowns per edge for 35 µm of
+    /// copper at 10 GHz.
+    #[default]
+    Ladder,
+    /// The rational fit of the sheet's even and odd impedances
+    /// ([`crate::engine::surface`]): the same two-port at any thickness,
+    /// under ten unknowns per face and mode, a roughness factor
+    /// ([`CompileOptions::with_sheet_roughness`]), and the CPML's stretch
+    /// on sheet edges inside an absorbing layer. Cartesian grids; on a
+    /// cylindrical grid the ladder is used.
+    SurfaceImpedance,
 }
 
 impl CompileOptions {
+    /// Returns `self` with the `Metal` property `name` made a lossy
+    /// conductor: a surface impedance (skin effect, roughness) on every
+    /// face of its solid primitives ([`crate::engine::surface`]). Edges
+    /// that another metal covers too stay perfect conductors, as do its
+    /// zero-thickness primitives (use a `ConductingSheet` for those).
+    ///
+    /// ```
+    /// use ems::engine::surface::{Conductor, Roughness};
+    /// let o = ems::CompileOptions::default().with_lossy_metal(
+    ///     "copper",
+    ///     Conductor::new(5.8e7).with_roughness(Roughness::HammerstadJensen { rms: 1e-6 }),
+    /// );
+    /// assert_eq!(o.lossy_metals.len(), 1);
+    /// ```
+    #[must_use]
+    pub fn with_lossy_metal(mut self, name: impl Into<String>, conductor: Conductor) -> Self {
+        self.lossy_metals.push((name.into(), conductor));
+        self
+    }
+
+    /// Returns `self` with [`sheet_model`](Self::sheet_model) set.
+    ///
+    /// ```
+    /// use ems::compile::SheetModel;
+    /// let o = ems::CompileOptions::default().with_sheet_model(SheetModel::SurfaceImpedance);
+    /// assert_eq!(o.sheet_model, SheetModel::SurfaceImpedance);
+    /// ```
+    #[must_use]
+    pub fn with_sheet_model(mut self, model: SheetModel) -> Self {
+        self.sheet_model = model;
+        self
+    }
+
+    /// Returns `self` with the surface roughness `roughness` on both
+    /// faces of the `ConductingSheet` property `name`
+    /// ([`SheetModel::SurfaceImpedance`] only).
+    #[must_use]
+    pub fn with_sheet_roughness(mut self, name: impl Into<String>, roughness: Roughness) -> Self {
+        self.sheet_roughness.push((name.into(), roughness));
+        self
+    }
+
+    /// Returns `self` with the surface impedances fitted over
+    /// `f_lo..f_hi` \[Hz\] ([`surface_band`](Self::surface_band)).
+    #[must_use]
+    pub fn with_surface_band(mut self, f_lo: f64, f_hi: f64) -> Self {
+        self.surface_band = Some((f_lo, f_hi));
+        self
+    }
+
     /// Returns `self` with [`conformal`](Self::conformal) set to `on`.
     ///
     /// ```
@@ -295,6 +379,10 @@ impl Default for CompileOptions {
             conformal_options: ConformalOptions::default(),
             conformal_outlines: ConformalOutlines::default(),
             dispersive_scheme: DispersiveScheme::Leapfrog,
+            lossy_metals: Vec::new(),
+            sheet_model: SheetModel::Ladder,
+            sheet_roughness: Vec::new(),
+            surface_band: None,
         }
     }
 }
@@ -569,6 +657,18 @@ pub struct Compiled {
     /// such an outline cuts (cut faces of [`conformal`](Self::conformal)
     /// too; [`ConductingSheet::cut_face`]).
     pub sheet_cut_faces: Vec<(Axis, [usize; 3])>,
+    /// Conducting-sheet edges integrated with the rational surface
+    /// impedance instead ([`SheetModel::SurfaceImpedance`]), with their
+    /// roughness; installed by [`build`](Self::build) in the
+    /// [`SurfaceImpedance`] operator.
+    pub surface_sheets: Vec<(SheetEdge, Roughness)>,
+    /// Edges of lossy metal ([`CompileOptions::with_lossy_metal`]);
+    /// installed by [`build`](Self::build) in the [`SurfaceImpedance`]
+    /// operator, which finds the ones on the metal's surface.
+    pub solid_edges: Vec<SolidEdge>,
+    /// Fit band of the surface impedances
+    /// ([`CompileOptions::surface_band`]).
+    pub surface_band: Option<(f64, f64)>,
     /// Highest frequency of interest \[Hz\] ([`Fdtd::get_max_frequency`]),
     /// used to grade the conducting-sheet layers.
     pub max_frequency: Option<f64>,
@@ -629,6 +729,9 @@ pub struct BoundaryHandles {
     pub openems_pml: Option<OperatorHandle<OpenEmsPml>>,
     /// The conducting-sheet operator, if the model has conducting sheets.
     pub sheets: Option<OperatorHandle<ConductingSheet>>,
+    /// The surface-impedance operator, if the model has lossy metal or
+    /// conducting sheets with [`SheetModel::SurfaceImpedance`].
+    pub surface: Option<OperatorHandle<SurfaceImpedance>>,
     /// openEMS's sheet branches ([`Compiled::openems_sheet_branches`]).
     pub(crate) openems_sheet_branches: Option<OperatorHandle<OpenEmsSheetBranches>>,
     /// One operator per [`Compiled::abc`] sheet, in the same order.
@@ -653,7 +756,7 @@ impl Compiled {
     /// operators, first the [`CpmlBoundary`] (or [`OpenEmsPml`]), then the [`MurBoundary`],
     /// then the [`Dispersive`] medium (after the CPML, so that a medium
     /// reaching into the PML is coupled implicitly with it), then the
-    /// [`ConductingSheet`]s, then the [`ObliqueWires`], then the
+    /// [`ConductingSheet`]s and the [`SurfaceImpedance`], then the [`ObliqueWires`], then the
     /// [`AbsorbingSheet`]s (last, so that they see the final interior E).
     ///
     /// # Errors
@@ -1112,6 +1215,20 @@ impl Compiled {
                 s.cut_face(axis, node);
             }
             h.sheets = Some(s.add_to(engine)?);
+        }
+        // After the CPML: the operator takes the layers' stretch from it.
+        if !(self.solid_edges.is_empty() && self.surface_sheets.is_empty()) {
+            let mut s = SurfaceImpedance::new(self.max_frequency);
+            if let Some((lo, hi)) = self.surface_band {
+                s = s.with_band(lo, hi);
+            }
+            for &e in &self.solid_edges {
+                s.push_solid(e);
+            }
+            for &(e, r) in &self.surface_sheets {
+                s.push_sheet(e, r);
+            }
+            h.surface = Some(s.add_to(engine)?);
         }
         if let Some(w) = &self.oblique_wires {
             h.oblique_wires = Some(engine.add_operator(w.clone()));
@@ -1941,6 +2058,64 @@ pub fn compile(
             &mut warnings,
         );
     }
+    let solid_edges = surface::solid_edges(
+        model,
+        &mg,
+        &opts.lossy_metals,
+        &DiscretizeOptions::default()
+            .with_subsampling(opts.subsampling)
+            .with_threads(fdtd.resolved_threads())
+            .with_snap_tolerance(opts.snap_tolerance),
+        &node_map,
+        cyl,
+        &mut warnings,
+    )?;
+    if !solid_edges.is_empty() && opts.conformal {
+        warnings.push(
+            "lossy metal with conformal PEC: the surface impedance is on the edges wholly \
+             in the metal; the cut cells along its outline stay perfectly conducting"
+                .into(),
+        );
+    }
+    if !solid_edges.is_empty() && fdtd.get_openems_run() && !opts.conformal {
+        warnings.push(
+            "lossy metal inside openEMS's PML is not stretched with the layer; keep it out \
+             of the absorbing layers of openEMS files"
+                .into(),
+        );
+    }
+    // The rational sheet model and the roughness of each sheet edge.
+    let surface_sheets = opts.sheet_model == SheetModel::SurfaceImpedance && !cyl;
+    if opts.sheet_model == SheetModel::SurfaceImpedance && cyl && !sheet_map.edges.is_empty() {
+        warnings.push(
+            "conducting sheets on a cylindrical grid use the ladder model \
+             (SheetModel::SurfaceImpedance needs a Cartesian grid)"
+                .into(),
+        );
+    }
+    for (name, _) in &opts.sheet_roughness {
+        match model.property_by_name(name).map(|p| &p.kind) {
+            Some(PropertyKind::ConductingSheet(_)) if surface_sheets => {}
+            Some(PropertyKind::ConductingSheet(_)) => warnings.push(format!(
+                "sheet roughness of {name:?} ignored: it needs SheetModel::SurfaceImpedance \
+                 on a Cartesian grid"
+            )),
+            _ => warnings.push(format!(
+                "sheet roughness of {name:?} ignored: no ConductingSheet property of that name"
+            )),
+        }
+    }
+    let sheet_roughness: Vec<Roughness> = sheet_map
+        .names
+        .iter()
+        .map(|n| {
+            opts.sheet_roughness
+                .iter()
+                .rev()
+                .find(|r| &r.0 == n)
+                .map_or(Roughness::Smooth, |r| r.1)
+        })
+        .collect();
     let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
     for &(d, idx) in &sheet_map.pec {
         sheet_pec[d][idx] = true;
@@ -2057,7 +2232,9 @@ pub fn compile(
     if cyl {
         cylindrical::drop_ignored_boundaries(&grid, &mut mur, &mut pml, &mut warnings);
     }
-    sheet::pml_warning(&sheet_map.edges, grid.nodes(), &pml, &mut warnings);
+    if !surface_sheets {
+        sheet::pml_warning(&sheet_map.edges, grid.nodes(), &pml, &mut warnings);
+    }
     let oblique_wires = wire::oblique_operator(
         &oblique,
         &grid,
@@ -2123,6 +2300,25 @@ pub fn compile(
         } else {
             (sheet_map.edges, Vec::new(), Vec::new(), Vec::new())
         };
+    // (openEMS files: the edges left over from openEMS's model are not in
+    // the order of the names any more; they are smooth.)
+    let (sheet_edges, surface_sheets) = if surface_sheets {
+        let rough = |i: usize| {
+            if fdtd.get_openems_run() {
+                Roughness::Smooth
+            } else {
+                sheet_roughness[i]
+            }
+        };
+        let s = sheet_edges
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| (e, rough(i)))
+            .collect();
+        (Vec::new(), s)
+    } else {
+        (sheet_edges, Vec::new())
+    };
     // openEMS's multigrid (files, design §5.16.11): the plain fine grid
     // with `OpenemsMultigrid`, the time step resolved on the zoned grid.
     let openems_multigrid = openems_multigrid_ring(
@@ -2185,6 +2381,9 @@ pub fn compile(
         sheets: sheet_edges,
         sheet_cuts,
         sheet_cut_faces,
+        surface_sheets,
+        solid_edges,
+        surface_band: opts.surface_band,
         max_frequency: fdtd.get_max_frequency(),
         openems_sheets,
         openems_sheet_branches,

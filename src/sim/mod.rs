@@ -465,6 +465,15 @@ impl CompiledModel {
         if let Some(w) = boundaries.conformal.as_ref().and_then(|r| r.warning()) {
             warnings.push(w);
         }
+        if let Some(h) = &boundaries.surface {
+            let thin = engine.operator(h).thin();
+            if thin > 0 {
+                warnings.push(format!(
+                    "{thin} edge(s) of lossy metal are zero-thickness metal or wires and stay \
+                     perfect conductors; use a ConductingSheet for a lossy sheet"
+                ));
+            }
+        }
         if boundaries.pml_poles_ignored > 0 {
             warnings.push(format!(
                 "{} dispersive pole(s) on edges inside a PML layer ignored (openEMS's layer \
