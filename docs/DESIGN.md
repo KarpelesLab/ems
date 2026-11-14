@@ -131,6 +131,7 @@ part of M1 (§3).
 |---|---|---|
 | M2 | Dispersive materials via ADE (Lorentz, Drude as zero-ω₀ Lorentz, Debye) — **done** (`engine::dispersive`, see §6) | Lorentz/Debye properties |
 | M2 | ConductingSheet (thin lossy conductor) surface model — **done** (`engine::sheet`, §5.9) | ConductingSheet |
+| — | Surface impedance on solid lossy metal and on sheets (rational skin-effect fit, roughness, CPML stretch) — **done** (`engine::surface`, §5.9.1; not an openEMS feature) | `Metal` / `ConductingSheet` plus compile options |
 | M2 | MSL and rectangular waveguide port helpers — **done** (`port::MslPort`, `port::RectWaveguidePort`, §5.5) | probes, excitations with weighting |
 | M2 | openEMS-compatible probe/dump output files (paths, text layout, HDF5 layout) | — |
 | M2 | AbsorbingBC sheets — **done** (`engine::boundary::abc`) | AbsorbingBC |
@@ -1186,7 +1187,8 @@ cavity, against 1.4e-3 without the correction term).
 primitives; edges of line, curve or volume primitives (no normal) fall back
 to PEC with a warning. PEC wins over a sheet. Sheets with `σ ≤ 0` or
 `t ≤ 0` have no effect (warning). Sheet edges inside a CPML lose the CPML
-correction (warning).
+correction (warning); the rational sheet model of §5.9.1 carries the
+layer's stretch instead.
 
 **Cylindrical grids** (§5.15). Sheets on `ρ = const`, `α = const` and
 `z = const` surfaces use the same ladder with physical lengths: `g = w/l`
@@ -1222,6 +1224,132 @@ the exact slab, and within 1e-3 of the discrete ladder itself (the
 remainder is the layer discretisation); thick sheet (`t/δ = 4.4…11`)
 reflection loss `1 − |Γ| ≈ 2R_s/η0` within 0.3 %; passive and
 thread-count independent in a 3-D cavity.
+
+#### 5.9.1 Surface impedance: solid lossy metal, rational sheets, roughness
+
+`engine::surface::SurfaceImpedance` (wave 21) is a second, cheaper
+conductor model next to the ladder, and the only one for solid metal. It
+is opt-in: `CompileOptions::with_lossy_metal(name, Conductor)` for a csx
+`Metal` property, `CompileOptions::with_sheet_model(SheetModel::SurfaceImpedance)`
+for the `ConductingSheet` properties (`with_sheet_roughness` adds a
+roughness, `with_surface_band` sets the fit band, default `f_max/100` to
+`f_max`). Without these options metal is PEC and sheets use the ladder, as
+before; openEMS files are not affected. csx needs no change: the option
+names the property.
+
+**Impedances.** A solid face is the half space `Z_s = √(jωμ0/σ)`. A sheet
+is the two-port of §5.9; it is symmetric, so the sum and the difference of
+its faces are two one-ports, `Z_e = Z11 + Z12 = Z_c·coth(γt/2)` and
+`Z_o = Z11 − Z12 = Z_c·tanh(γt/2)`: the resistive sheet for `t ≪ δ`
+(`Z_e → 2/(σt)`, `Z_o → 0`), two half spaces for `t ≫ δ`, the shielding in
+between. The displacement current in the conductor is left out (with it
+these are no R–L functions). Roughness multiplies the resistance by
+Hammerstad–Jensen's `1 + (2/π)·atan(1.4·(Δ/δ)²)` or Huray's
+`1 + (3/2)·SR/(1 + δ/a + δ²/(2a²))`.
+
+**Fit.** Each impedance is replaced over the band by
+`r0 + Σ r_p·s/(s + a_p)`, `r ≥ 0` (a resistor and parallel R–L sections,
+the Foster form of an R–L impedance): corners three per two decades from
+a decade below to a decade above the band, one far above (an inductance),
+for a sheet also the first six poles of its own partial fractions
+(`a_m = m²π²/(μ0σt²)`, odd `m` for `Z_o`, even for `Z_e`), the `r` by
+non-negative least squares (Lawson–Hanson) on the relative resistance and
+reactance. Non-negative terms are passive whatever the fit error. A half
+space over two decades: 7 sections, 0.5 % (two corners per decade: 10
+sections, 0.07 %); a sheet with its own poles: ~1e-6. A rough surface's
+`R_s·K + j·R_s` is not causal: the reactance gets a weight of 0.02 and
+takes the value that goes with the resistance (0.9…2.5 times the smooth
+one).
+
+**Solid metal.** The surface edges are PEC in the engine and get a face
+voltage instead of zero. Faces of the mesh whose four edges are PEC lie in
+the metal or on its surface and stay without field (`db = 0`); the other
+faces around an edge are its dual loop outside the metal, whose circulation
+is the current on the conductor surface inside the dual face. That surface
+has the width `w`: per such face, half a cell along the face's normal on
+each side where the neighbouring parallel edge is PEC too (the dual length
+on a flat face, half of each of the two faces at a convex edge, as cadlab's
+solver does). Then `C·du/dt + G·u + h = S`, `u = (l/w)·Z_s ∗ h`, `C`, `G`
+of the part of the dual face outside the metal (sampled by the compile
+step). Edges inside the metal and re-entrant edges stay 0; edges with
+field on two opposite sides (zero-thickness metal, wires) are not solid
+and stay PEC (warning). The compile step finds the edges of a lossy metal
+by discretising the model a second time without it: an edge another metal
+covers too stays PEC.
+
+**Sheets.** The split faces of §5.9 (`u+` in the engine's array, `u−` in
+the operator, the H updates below corrected for `u− − u+`), joined by
+`Z_e` and `Z_o` instead of the ladder. The width of an edge's strip of
+the sheet follows the rule of solid metal: half a cell on each side where
+the sheet goes on (a parallel sheet edge, or metal), so an edge on the
+border of a sheet carries half a cell of conductor. (The ladder gives it
+the whole dual length, which makes a strip `n` cells wide conduct like
+`n + 1`.) What a source adds to a sheet edge is added to both faces.
+
+**Time stepping.** Trapezoidal at `(n + ½)·dt`: a section advances as
+`v̄ = (2v + 2r·(h̄ − h))/(2 + a·dt)`, so a one-port is `x̄ = Z∞·h̄ + e`
+and the face equations are solved in closed form (one division per solid
+edge, a 2 × 2 system per sheet edge). No time-step limit of its own.
+
+**CPML.** The operator computes the circulations of its edges itself, so
+it applies the layer's stretch itself: every derivative term along a layer
+normal gets `S_p/κ + ψ`, `ψ ← b·ψ + a·S_p` with the layer's coefficients
+at the edge (`CpmlBoundary::e_profile`), and the H corrections of sheets
+likewise (`h_profile`). The CPML is linear in the derivative terms, so
+this is the stretched update of the split faces. A flat solid face has no
+derivative along an in-plane normal in its loop (one dual edge above it);
+sheets have (their crossing dual edges), and so have metal edges parallel
+to the layer.
+
+**Cost** (67 200 cells, a ground plane of 13 264 sheet edges or a plate of
+26 528 surface edges, 35 µm copper, 6 GHz, one thread; PEC: 286 Mcells/s):
+ladder 11–16 Mcells/s and 48 nodes per edge; rational sheet 98 Mcells/s,
+2 × 10 values per edge; solid metal 131 Mcells/s, 8 values per edge. The
+hooks are serial (they do not scale with the thread count).
+
+**Validation** (`tests/validation_surface_impedance.rs`,
+`tests/surface_impedance_model.rs`):
+
+| Case | Reference | Result |
+|---|---|---|
+| Plane wave on a solid block, `σ = 1e4 S/m`, 2–12 GHz | `Γ = (Z_s − η0)/(Z_s + η0)` | `1 − \|Γ\|` within 0.5 %, `Γ` within 1e-3 |
+| Thin sheet (`η0σt = 3.77`) / thick-ish sheet (`t/δ = 1.8…4.4`) across a TEM line | exact slab | `\|T\|` within 0.0008 / 0.0055 dB, 0.04° (ladder: 0.27 dB) |
+| Thick sheet (`t/δ = 4.4…11`), smooth and Hammerstad–Jensen (`K = 1.4…1.9`) | `1 − \|Γ\| = K·2R_s/η0` | within 0.05 % / 0.6 % |
+| TM110 of a 40 × 24 mm box between solid copper plates 0.5 mm apart (7.26 GHz) | `Q = h/(δ·K)`: 645 smooth, 483 (Hammerstad–Jensen 0.5 µm), 358 (Huray 0.5 µm, SR 2) | −0.2 %, +0.2 %, +0.5 % (through csx `Metal` boxes: +0.2 %, +1.1 %) |
+| Parallel-plate line, solid plates `σ = 1e6 S/m`, 2 mm apart, 3–9 GHz, into the CPML | `α = R_s/(η0·h)` | within 0.6 % |
+| Lossy strip (solid, 35 µm sheet, 2 µm sheet) between lossy plates into the CPML | echo of the layer with PEC conductors (−86 dB) | within 0.1 dB of it |
+| A sheet without effect (`σt = 1e-18 S`) in the plane of E along a line, through both layers | the line without the sheet | −119 dB from it; +1.7 dB without the stretch |
+| Plate capacitor discharged by a resistive strip two cells wide (`σt = 5e-5 S`) | `τ = R·C = 8.854 ns` with the strip's own width | 8.854 ns (a whole dual cell per border edge: a third less) |
+| Block and sheet in a closed cavity, graded mesh | energy | only decays; identical for 1 and 3 threads |
+
+**Against another solver** (cadlab's `sim.sparams`, its built-in FDTD with
+a surface impedance on every copper face, and ems behind the same region,
+mesh, ports and time step; a 24 mm × 1 mm microstrip on 0.5 mm of
+`ε_r = 4`, `tan δ = 0.02`, 35 µm copper of 58 MS/m, 0.5 mm cells, 6 GHz;
+conductor part = `|S21|` less the run with perfect copper):
+
+| Copper | Before (ladder) | Now | cadlab built-in |
+|---|---|---|---|
+| Solid (`Metal` volumes, `with_lossy_metal`; before: two ladder sheets a copper thickness apart), 1.05 / 3.03 / 6 GHz | 0.015 / 0.040 / 0.089 dB, 17 281 steps, 306 s | 0.0176 / 0.0308 / 0.0446 dB, 12 065 steps (as perfect copper), 20 s | 0.0176 / 0.0300 / 0.0438 dB, 11 360 steps, 30 s |
+| Sheet (`ConductingSheet`, `SheetModel::SurfaceImpedance`), 1.05 / 3.03 / 5.5 GHz | 0.010 / 0.019 dB (1.05 / 3.03 GHz), 71 s | 0.0126 / 0.0247 / 0.0331 dB, 10 s | 0.0144 / 0.0247 / 0.0336 dB, 12 s |
+
+The sheet's gain in loss is the border rule above (the strip is two cells
+wide); its 6 GHz point, at the edge of the pulse's band, reads 0.047
+against 0.036 dB. On cadlab's four-layer via transition (130 626 cells,
+solid copper, 4 GHz) the copper's part of `|S21|` is 0.015 / 0.022 /
+0.033 / 0.044 / 0.047 dB at 0.54 / 1.03 / 2.02 / 3.01 / 4.00 GHz against
+0.015 / 0.022 / 0.034 / 0.045 / 0.052 dB, in 98 s against 128 s (ladder
+sheets: 270 s). (The two solvers differ on that structure with perfect
+copper already, by 0.05…0.2 dB above 3 GHz: its geometry, not its loss.)
+
+**Limits.** Cartesian grids (on cylindrical grids lossy metal stays PEC
+and sheets use the ladder, with warnings). Solid metal must be thicker
+than a few skin depths at the lowest frequency of interest: its faces are
+independent half spaces and the resistance does not go to the DC value of
+a thin conductor. Conformal cut cells along a lossy metal's outline stay
+perfectly conducting (warning). Lossy metal in openEMS's own PML (openEMS
+files) is not stretched (warning). The H-side stretch of sheets is covered
+by the layer-echo case only (the sheet without effect has `u− = u+`).
 
 ### 5.10 Near-field to far-field transform
 
@@ -6581,7 +6709,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-02, after wave 20)
+### Status (2026-11-14, after wave 21)
 
 | Step | State |
 |---|---|
@@ -6778,7 +6906,20 @@ resonator at 4 cells per width −1.2 % instead of −5.8 %; the TE cutoffs
 of holes in sheet stacks at second order); conducting sheets keep their
 ladder on the covered part of a cut edge.
 
+Wave 22 (native, opt-in; §5.9.1): a surface impedance on the faces of
+solid lossy metal (`CompileOptions::with_lossy_metal`) and a rational
+model of conducting sheets (`SheetModel::SurfaceImpedance`), both a
+non-negative fit of the skin-effect impedance integrated in closed form
+per edge (`engine::surface`), with Hammerstad–Jensen and Huray roughness
+and the CPML's stretch on these edges. Six to nine times the ladder's
+speed on a ground plane, a tenth of its memory; the plate cavity's
+`Q = h/(δK)` within 0.5 %, the thick-ish sheet within 0.006 dB of the
+slab. Defaults and openEMS files are unchanged.
+
 Remaining:
+- Surface impedance (§5.9.1): the hooks are serial; conformal cut cells
+  of lossy metal stay PEC; Cartesian grids only; the DC resistance of
+  solid metal thinner than the skin depth is not modelled.
 - Cylindrical (§5.16.11): magnetic poles in cell 0 off the seam
   (1e-4…2e-2), sheets reaching the axis (2e-2…4), Debye boxes over the axis
   (2e-4), a Lorentz box's time step (`mix_117`, 0.2 %), a dielectric over
