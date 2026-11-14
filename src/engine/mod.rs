@@ -164,6 +164,7 @@ mod rows;
 pub(crate) mod run;
 pub mod sheet;
 mod slab;
+pub mod surface;
 pub mod timestep;
 pub mod timestep_cyl;
 pub mod wire;
@@ -205,6 +206,7 @@ pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
 pub use run::{EnergyMeasure, Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
+pub use surface::{Conductor, Roughness, SolidEdge, SurfaceImpedance};
 pub use timestep::TimestepMethod;
 pub use wire::ThinWire;
 
@@ -641,6 +643,11 @@ impl Engine {
         } else {
             CurlOrder::Paired
         }
+    }
+
+    /// The array shape and slab partition of the fields.
+    pub(crate) fn fields_layout(&self) -> fields::Layout {
+        self.shared.store.layout.clone()
     }
 
     /// Exclusive access to all field values (e.g. to set initial
