@@ -50,6 +50,26 @@
 //! 5–17 %; the material's `ε∞` instead of the edge's by 2–7 %). Weighting
 //! functions of the pole parameters are evaluated at the midpoint.
 //!
+//! # Averaged poles
+//!
+//! With [`PoleWeighting::Averaged`](super::PoleWeighting)
+//! ([`CompileOptions::pole_weighting`](super::CompileOptions::pole_weighting);
+//! not for openEMS files) an E edge's poles are weighted like its static
+//! `ε`: the four quarter cells of its dual face are sampled at their
+//! centres, a quarter in metal is left out, and each of the others gives
+//! the poles of the material found there with its share of the remaining
+//! area (`Δε·w` for a Debye pole, `ω_p²·w` for a Lorentz or Drude pole,
+//! whose `√ε` factor is then the material's own `ε∞`); equal poles of
+//! several quarters are one pole. This is the polarisation current
+//! through the edge's dual face, of which the material fills that share.
+//! With the full poles an edge in the surface of a laminate, half of
+//! whose dual face is air, has twice the loss of the laminate there: a
+//! microstrip of zero-thickness copper on 0.5 mm of `ε_r` = 4 with a
+//! Debye fit of `tan δ` = 0.02 lost 9 % more in the laminate than the
+//! same line on a mesh with a cell of copper thickness above the surface
+//! (design §5.16.2). Magnetic poles and cylindrical grids keep the
+//! midpoint rule.
+//!
 //! The poles are integrated with the scheme of
 //! [`CompileOptions::dispersive_scheme`](super::CompileOptions::dispersive_scheme)
 //! (openEMS's explicit leapfrog by default, see
@@ -175,6 +195,78 @@ struct Sampler<'a> {
     /// openEMS's α index ranges of the boxes (files only).
     limits: Limits<'a>,
     closed: bool,
+    /// E edges take the poles of the quarters of their dual face, by
+    /// area (module docs, *Averaged poles*).
+    averaged: bool,
+}
+
+/// `pole` with `w` times its strength.
+fn scaled(pole: Pole, w: f64) -> Pole {
+    match pole {
+        Pole::Debye { delta_eps, tau } => Pole::Debye {
+            delta_eps: delta_eps * w,
+            tau,
+        },
+        Pole::Lorentz {
+            omega_p,
+            omega_0,
+            gamma,
+        } => Pole::Lorentz {
+            omega_p: omega_p * w.sqrt(),
+            omega_0,
+            gamma,
+        },
+        Pole::Drude { omega_p, gamma } => Pole::Drude {
+            omega_p: omega_p * w.sqrt(),
+            gamma,
+        },
+    }
+}
+
+/// Adds `pole` to `out`: to a pole there with the same resonance and
+/// damping, or as a new one.
+fn merge(out: &mut Vec<Pole>, pole: Pole) {
+    for q in out.iter_mut() {
+        match (q, pole) {
+            (
+                Pole::Debye { delta_eps, tau },
+                Pole::Debye {
+                    delta_eps: d,
+                    tau: t,
+                },
+            ) if *tau == t => {
+                *delta_eps += d;
+                return;
+            }
+            (
+                Pole::Lorentz {
+                    omega_p,
+                    omega_0,
+                    gamma,
+                },
+                Pole::Lorentz {
+                    omega_p: p,
+                    omega_0: o,
+                    gamma: g,
+                },
+            ) if *omega_0 == o && *gamma == g => {
+                *omega_p = omega_p.hypot(p);
+                return;
+            }
+            (
+                Pole::Drude { omega_p, gamma },
+                Pole::Drude {
+                    omega_p: p,
+                    gamma: g,
+                },
+            ) if *gamma == g => {
+                *omega_p = omega_p.hypot(p);
+                return;
+            }
+            _ => {}
+        }
+    }
+    out.push(pole);
 }
 
 impl Sampler<'_> {
@@ -262,6 +354,44 @@ impl Sampler<'_> {
             Field::Magnetic => n[1],
         };
         let mut out = Vec::new();
+        if self.averaged && field == Field::Electric && raw.is_none() {
+            // The quarters of the dual face: (position, half-cell
+            // length) on each side along an axis.
+            let sides = |a: usize| {
+                let (l, i) = (self.lines[a], n[a]);
+                let lo =
+                    (i > 0).then(|| (l[i] - 0.25 * (l[i] - l[i - 1]), 0.5 * (l[i] - l[i - 1])));
+                let hi = (i + 1 < l.len())
+                    .then(|| (l[i] + 0.25 * (l[i + 1] - l[i]), 0.5 * (l[i + 1] - l[i])));
+                [lo, hi]
+            };
+            let mut parts: Vec<(f64, Vec<Pole>)> = Vec::new();
+            let mut area = 0.0;
+            for (p1, w1) in sides(t1).into_iter().flatten() {
+                for (p2, w2) in sides(t2).into_iter().flatten() {
+                    let mut q = p;
+                    q[t1] = p1;
+                    q[t2] = p2;
+                    // (Metal: no part of the dual face, as for the
+                    // static values.)
+                    let Some(medium) = self.model.medium_at(q, self.cs) else {
+                        continue;
+                    };
+                    area += w1 * w2;
+                    let mut poles = Vec::new();
+                    self.sample(q, field, d, index, medium.epsilon[d], &mut poles, None);
+                    if !poles.is_empty() {
+                        parts.push((w1 * w2, poles));
+                    }
+                }
+            }
+            for (w, poles) in parts {
+                for pole in poles {
+                    merge(&mut out, scaled(pole, w / area));
+                }
+            }
+            return out;
+        }
         self.sample(p, field, d, index, edge_inf, &mut out, raw);
         out
     }
@@ -293,6 +423,7 @@ pub(super) fn dispersive_poles(
     materials: &EdgeMaterials,
     openems: Option<&Grid>,
     alpha_ranges: &AlphaRanges,
+    averaged: bool,
     warnings: &mut Vec<String>,
 ) -> (EdgePoles, Vec<OpenEmsPole>) {
     let dispersive =
@@ -323,6 +454,7 @@ pub(super) fn dispersive_poles(
         model,
         limits: alpha_ranges.limits(model),
         closed: openems.is_some_and(|g| g.is_closed()),
+        averaged: averaged && cs == CoordSystem::Cartesian && openems.is_none(),
     };
     let dims = node_map.nodes();
     // csx normalises a cylindrical bounding box's α range to [−π, π)

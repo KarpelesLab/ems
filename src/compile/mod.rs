@@ -249,6 +249,10 @@ pub struct CompileOptions {
     /// the scheme openEMS uses, so XML models give the same signals; see
     /// [`dispersive`]).
     pub dispersive_scheme: DispersiveScheme,
+    /// How the poles of dispersive materials are given to the edges at
+    /// their surfaces (default [`PoleWeighting::Midpoint`], as openEMS;
+    /// see [`with_pole_weighting`](Self::with_pole_weighting)).
+    pub pole_weighting: PoleWeighting,
     /// `Metal` properties that are lossy conductors, by name: their solid
     /// surfaces get a surface impedance instead of `E_tan = 0`
     /// ([`crate::engine::surface`]; default none: every metal is a
@@ -264,6 +268,25 @@ pub struct CompileOptions {
     /// fitted; `None` (default): from a hundredth of the run's highest
     /// frequency ([`Fdtd::get_max_frequency`]) to that frequency.
     pub surface_band: Option<(f64, f64)>,
+}
+
+/// Which poles an E edge at the surface of a dispersive material gets
+/// ([`CompileOptions::pole_weighting`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum PoleWeighting {
+    /// The full poles of the material at the edge's midpoint (the
+    /// default): what openEMS does, so its files give its signals. An
+    /// edge in the surface of the material has the material's whole
+    /// dispersion and loss although half of its dual face lies outside.
+    #[default]
+    Midpoint,
+    /// The poles of the materials in the four quarters of the edge's dual
+    /// face, each with its share of the area: the weighting of the static
+    /// `ε` ([`dispersive`]). Cartesian grids and electric poles; openEMS
+    /// files, cylindrical grids and magnetic poles keep the midpoint
+    /// rule.
+    Averaged,
 }
 
 /// Time-domain model of csx `ConductingSheet` properties.
@@ -302,6 +325,23 @@ impl CompileOptions {
     #[must_use]
     pub fn with_lossy_metal(mut self, name: impl Into<String>, conductor: Conductor) -> Self {
         self.lossy_metals.push((name.into(), conductor));
+        self
+    }
+
+    /// Returns `self` with [`pole_weighting`](Self::pole_weighting) set.
+    /// A program that builds its own models wants
+    /// [`PoleWeighting::Averaged`]: the loss of a laminate under a
+    /// conductor on its surface then does not depend on how the mesh
+    /// divides the space above it.
+    ///
+    /// ```
+    /// use ems::compile::PoleWeighting;
+    /// let o = ems::CompileOptions::default().with_pole_weighting(PoleWeighting::Averaged);
+    /// assert_eq!(o.pole_weighting, PoleWeighting::Averaged);
+    /// ```
+    #[must_use]
+    pub fn with_pole_weighting(mut self, w: PoleWeighting) -> Self {
+        self.pole_weighting = w;
         self
     }
 
@@ -448,6 +488,7 @@ impl Default for CompileOptions {
             conformal_solids: ConformalOutlines::All,
             conformal_bridges: true,
             dispersive_scheme: DispersiveScheme::Leapfrog,
+            pole_weighting: PoleWeighting::Midpoint,
             lossy_metals: Vec::new(),
             sheet_model: SheetModel::Ladder,
             sheet_roughness: Vec::new(),
@@ -2323,6 +2364,7 @@ pub fn compile(
         &materials,
         openems_poles.then_some(&grid),
         &alpha_ranges,
+        opts.pole_weighting == PoleWeighting::Averaged && !fdtd.get_openems_run(),
         &mut warnings,
     );
     let thin_wires = wire::thin_wires(

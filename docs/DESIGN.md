@@ -4190,6 +4190,25 @@ faces on the mesh and off it, and on a coarse filled line:
   its midpoint (closed bounds, priority), and the `ε` in `ω_p²` is the
   edge's averaged static `ε` (on a vacuum interface `(1 + ε∞)/2`).
   Volume-fraction averaging (ems's earlier rule) was 5–17 % off on slabs.
+  That is openEMS, not the continuum: the polarisation current through
+  an edge's dual face comes from the part of the face in the material.
+  `CompileOptions::with_pole_weighting(PoleWeighting::Averaged)` (not for
+  openEMS files; the default stays the midpoint rule) weights the poles
+  like the static `ε`: the four quarters of the dual face sampled at
+  their centres, metal left out, `Δε·w` or `ω_p²·w` with the quarter's
+  share `w` of the rest and the material's own `ε∞` in `ω_p²`, equal
+  poles merged. A parallel-plate line whose lower quarter is a Debye
+  material, `E` tangential to its surface on a mesh line, two cells of
+  material (`tests/pole_weighting.rs`, 2–6 GHz): the attenuation is
+  within 0.35 % of the transverse resonance with the averaged poles and
+  24 to 25 % above it with the full ones (half a cell more of two).
+  Found on cadlab's 60 mm microstrip (1 mm on 0.5 mm of `ε_r` = 4,
+  `tan δ` = 0.02 as Debye terms, 0.5 mm cells, perfect copper, |S21| at
+  9 GHz): 1.645 dB with copper volumes 35 µm thick (a thin cell above
+  the laminate) and 1.772 dB with zero-thickness copper, where cadlab's
+  own solver, which averages, has 1.611 and 1.615 dB; averaged, ems has
+  1.617 and 1.632 dB (what is left is radiation: 0.021 and 0.023 dB on
+  the lossless line against 0.014 and 0.006 dB).
 - Lorentz and Drude poles use an explicit leapfrog ADE (branch current at
   half steps driven by `E^n`, Kashiwa–Fukai polarisation current;
   `engine::dispersive::Scheme::Leapfrog`, now the compile default);
