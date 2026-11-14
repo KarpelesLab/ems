@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8](https://github.com/KarpelesLab/ems/compare/v0.0.7...v0.0.8) - 2026-11-14
+
+### Other
+
+- conformal PEC on copper of about a cell (5.13.3), status after wave 23
+- a via stub of one cell and a strip narrower than a cell with conformal PEC
+- Conformal PEC on copper of about a cell: integrated faces, round copper crossed along a diameter, whole edges where a cut would break a conductor
+- Conformal PEC: small faces keep their current where the time step allows (ConformalOptions::keep_stable)
+
 ## [0.0.7](https://github.com/KarpelesLab/ems/compare/v0.0.6...v0.0.7) - 2026-11-14
 
 ### Other
