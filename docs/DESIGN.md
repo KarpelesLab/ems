@@ -1973,7 +1973,9 @@ onto it. A face's open area `f_A` is the shoelace area of the polygon of
 its open corners and transition points in perimeter order (straight chords
 across the metal: exact for planar walls; a corner is open if either edge
 meeting there is open at it), its centroid the point the scheme
-interpolates small faces at. Edges with `f_e = 0` become PEC, cut edges
+interpolates small faces at; a face that polygon cannot describe (metal
+crossing it between two opposite sides, a corner or a radius of about a
+cell inside it) is integrated instead (§5.13.3). Edges with `f_e = 0` become PEC, cut edges
 non-PEC (unless their PEC came from a sheet/wire), and so do the edges of
 faces without open area: their open part lies on the metal surface. E
 excitations on cut edges are scaled by `f_e`.
@@ -2205,8 +2207,8 @@ face is that of its polygon in `(ρ, α)`, `O(h²/ρ)` from the area-weighted
 one).
 
 **Limitations.** Solid metal here, thin sheets in §5.13.1; metal
-intruding into a face without crossing its edges and features thinner than
-half a cell between the edge samples are not seen. Voltage probes on cut
+intruding into a face none of whose edges it crosses and features thinner
+than half a cell between the edge samples are not seen. Voltage probes on cut
 edges read `E·l_open`. The power-iteration check costs a few hundred
 matrix–vector products on the whole grid at setup (single thread); the
 operator is serial (0.25 vs 0.075 ms per step on the 25 × 25 × 50 guide
@@ -2574,12 +2576,18 @@ faces alone. Relative errors, staircase / conformal:
 
 | hole | 1 mm | 0.5 mm | 0.25 mm |
 |---|---|---|---|
-| circle `r` = 10 mm (720-gon), TE11 | −6.74 / +0.0315 % | −3.27 / +0.0049 % | −1.66 / +0.0015 % |
-| rectangle 20 × 13 mm at 17°, TE10 | −8.28 / +0.130 % | −4.60 / +0.024 % | −2.28 / +0.0100 % |
+| circle `r` = 10 mm (720-gon), TE11 | −6.74 / +0.0315 % | −3.27 / +0.0092 % | −1.66 / +0.0018 % |
+| rectangle 20 × 13 mm at 17°, TE10 | −8.28 / −0.055 % | −4.60 / −0.0132 % | −2.28 / −0.0025 % |
 
-The solid-metal scheme on the same cross sections reads +0.031 /
+The solid-metal scheme on the same cross sections read +0.031 /
 +0.0086 % and +0.130 / +0.024 % (§5.13): for these fields the stack is the
-same discrete problem, so this checks the geometry.
+same discrete problem, so this checks the geometry. (The rectangle's
+row was +0.130 / +0.024 / +0.0100 % here too until the faces its four
+corners fall in were integrated, §5.13.3: the chord cut the corner off.
+The circle's 0.5 and 0.25 mm values were +0.0049 and +0.0015 %; the
+edges next to its four extreme points are cut now, where the outline
+crosses them within 0.6° of their normal, and 3 and 6 small faces keep
+their current.)
 
 *A strip.* Half-wave resonator: a strip 12 × 1 mm on 0.5 mm of `ε_r` = 4
 over the PEC floor of a closed box (20 × 20 × 3.8 mm, two cells in the
@@ -2628,15 +2636,222 @@ over 150 periods for 35 µm copper, the sheet above and 1 µm films of
 **Limitations.** Cartesian grids. The covered part of a cut face is taken
 as free of normal flux, right for a good conductor (`ωμ0·σt·h ≫ 1`); a
 resistive film that flux passes through is better left to the staircase
-(`ConformalOutlines::Off`). A polygon corner inside a face is cut off by
-the chord; a strip narrower than a cell between the samples of every edge
-it crosses is not seen (as its staircase). A zero-thickness sheet's rim
+(`ConformalOutlines::Off`). A strip narrower than a cell between the
+samples of every edge it crosses is not seen (as its staircase). A zero-thickness sheet's rim
 loss has no mesh limit (the current density grows as `r^-½` towards the
 rim), so Q depends on the cells with or without the option. The energy
 look-ahead of the small faces next to conducting-sheet edges reads the
 kernel's value on those edges before the sheet operator replaces it (the
 fields are not affected). Sources and lumped elements on a cut edge act
 on its open part.
+
+#### 5.13.3 Copper of about a cell
+
+Three things that only show where the copper is about as large as the
+cells: a via with its pad and its clearance, a track a cell wide, and the
+threshold for small faces on a mesh that has room for them. All three
+were found by cadlab (§4.1), whose S-parameter runs staircased such
+regions; none is an option the caller has to tune.
+
+**Faces the polygon misses.** The open area of a face was the polygon of
+its open corners and transitions in perimeter order (§5.13). That walk
+pairs each transition with the next one along the perimeter, which is
+right for one surface crossing two neighbouring sides, and wrong for
+metal crossing the face between two opposite sides while both of them
+are open at their ends: a post, a barrel or a strip narrower than the
+face. The two transitions of one side were joined along that side and
+the face kept its whole area, so the flux went through the copper while
+the edges beside it carried `C/f_e`. It is also only as good as its
+chords: a corner inside the face is cut off, and on a pad of one cell in
+radius the chord misses a fifth of the face. A face is now integrated
+instead (16 rows, every change of state on a row bisected: the same
+point queries as the edges) where one of its sides has two transitions
+or more, or where the surface is more than 0.06 of the shorter side
+away from the middle of one of the chords (two point queries per chord);
+the centroid comes from the same rows. A circle of four cells in radius
+and more keeps the polygon; a corner in a face does not: the rotated
+rectangle of §5.13.2 went from +0.130 / +0.024 / +0.0100 % to −0.055 /
+−0.0132 / −0.0025 % (order 2.1, 2.4), its four corner cells being the
+only faces that changed. The tables of §5.13 and §5.13.1 were measured
+with the polygon and not again; their rectangle rows have corners in
+faces too. Cartesian grids; solid metal and the outlines of §5.13.2.
+
+**Round copper crossed along a diameter.** With
+`ConformalOutlines::Slanted` an edge is cut where the surface crossing it
+is oblique to the mesh, tested half a percent of the edge to either side.
+A post centred on a line of nodes, or a pad on a node, meets all four
+edges along their normal and was left to the staircase: a wire of the
+lattice radius (§5.14) whatever its radius. A crossing now also cuts the
+edge when the surface bends away within a quarter of the edge to either
+side (at 0.05 and 0.25 of the edge: the crossing on the line beside the
+edge has moved by more than the angle of the slant test allows, and the
+metal is still found within a quarter of the edge of it). A line beside
+the edge with no metal at all (a corner of a box next to the edge) or
+with metal throughout says nothing, so boxes and axis-aligned sheets
+keep the staircase, corner cells included.
+
+**Narrow slanted conductors** (`CompileOptions::conformal_bridges`,
+default on). A cut edge is its open part in series with its covered
+part. Where a conductor is wide, whole edges inside it carry the current
+and the cut edges place its rim; a strip without a row of whole edges
+along it would be a chain of pieces coupled by the femtofarads of its cut
+edges. Wherever two nodes in the conductor are diagonal neighbours in a
+mesh plane, the conductor contains the line between them, and neither of
+the two paths of two edges around the cell between them conducts, the
+path whose less covered edge is covered most is kept whole (PEC, or a
+whole sheet edge), as the staircase has it. Other edges keep their cuts;
+a conductor with whole edges on one of the paths is not touched; two
+conductors a fraction of a cell apart are not joined (the line between
+their nodes crosses the gap), where the staircase can short them. At 45°
+that covers strips from 0.71 of a cell (below it a strip need not
+contain a node at all, and is unresolved as its staircase is).
+`ConformalReport::bridges` counts the edges.
+
+**Lumped elements and barrels at a sheet.** Three rules for where the
+cut cells of one scheme meet something else; cadlab's matching network
+(a series inductor and a shunt capacitor between rounded pads of lossy
+sheet copper, a via to the ground plane) read `|S11|` 0.790 and `|S21|`
+0.575 with conformal cells where its staircase reads 0.581 and 0.791 and
+cadlab's solver 0.573 and 0.798, and §10 had put that down to a track in
+pieces.
+
+1. *The end of a lumped element's column.* The columns of an element
+   end on the copper of its pads. Where the outline of a pad cuts the
+   edge that continues a column into the pad (a rounded corner), the
+   column ended on the open part of that edge, a capacitor of a few
+   femtofarads in series with it: the network had lost the outer columns
+   of its inductor. Such an edge stays whole where its midpoint is in
+   the copper, as the staircase has it (metal sheets, conducting sheets
+   and solid metal). This was the 0.575.
+2. *An edge that carries a lumped element* is not cut by the outline of
+   a conducting sheet: a cut edge of a conducting sheet is a sheet edge
+   (§5.13.2), whose operator replaces the update the element acts on.
+   Metal sheets and solid metal cut such edges as before; the element
+   acts on the open part.
+3. *An edge in a sheet on its mesh plane* (a barrel through a pad or a
+   plane) is not cut by solid metal crossing it: the sheet covers it
+   from end to end, so it has no open part, and a conducting sheet's
+   edge is its operator's. Cut by the barrel, the edges where the via
+   of the network meets its pad and the plane moved the result by 0.025
+   in `|S21|` and 0.048 in `|S11|` with lossy sheets (0.007 and 0.008
+   with perfect ones).
+
+**Small faces the time step allows** (`ConformalOptions::keep_stable`,
+default on). The threshold of §5.13 is a rule for any mesh: at the
+Courant limit of cubic cells a face of less than half its area cannot
+keep its own current. A board has layers a fifth or a tenth as thick as
+its cells are wide; its time step is set by that thickness, and the
+faces in the plane of the copper are far from their limit. There the
+interpolation costs more than it saves: a bent microstrip two cells wide
+read 141.0° of 300° where the finer mesh reads 157.5°, and 153.1° with
+the threshold lowered by hand to 0.05.
+
+A face below the threshold keeps its own current and its true area
+where both cells it belongs to are stable at the time step by
+themselves. The test is the element bound (B. Irons, G. Treharne, 1971):
+the curl-curl operator `KᵀL⁻¹K` and the capacitance `C` are sums over
+the cells, each edge giving every cell around it the share of its
+capacitance that lies in the cell (a quarter of its dual face) and each
+face giving both its cells their half of its dual edge, so
+
+`uᵀKᵀL⁻¹Ku = Σ_c u_cᵀA_c u_c ≤ Σ_c λ_c·u_cᵀC_c u_c ≤ max_c λ_c · uᵀCu`
+
+and the largest eigenvalue of the grid is at most that of its worst
+cell: a symmetric problem of six faces and twelve edges, solved by Jacobi
+rotations. For a cell of a uniform grid `λ_c·dt²/4` is the Courant
+number squared, `c²dt²(1/Δx² + 1/Δy² + 1/Δz²)`, exactly (unit test), so
+nothing is given away on cubes: a cell at the Courant limit has room
+only where the edges of the small face are cut short themselves (3 to
+30 of the 500 small faces of the stacks of §5.13.2), and the cubic-cell
+tables move in their last digit at most. A cut cell enters with `C/f_e` and
+`L·f_A`; the face is kept if `λ_c·dt²/4 ≤ max_stability²` in both its
+cells with every face of them at its true area. Unlike the power
+iteration of §5.13 this is a bound: an uncut cell passes at any time step
+at or below the Courant limit of the smallest cell at the vacuum speed,
+so where every cut cell passes (`ConformalReport::bounded`) the lossless
+scheme is stable by proof and the estimate is not what the run rests
+on. Cells that fail keep the threshold and its machinery. Cartesian
+grids, outside absorbing layers; rejected: lowering the threshold while
+the estimate stays below a margin (cadlab's workaround: three compiles,
+and an estimate from below as the criterion).
+
+**Validation** (`tests/conformal_small.rs`, `tests/conformal_outline.rs`,
+unit tests of `compile::conformal`, `compile::conformal::planar` and
+`engine::conformal`).
+
+*A via stub.* A post of 0.3 mm from the PEC floor of a closed box
+(6 × 6 mm) through 1 mm of `ε_r` = 4 (cells of 0.125 mm in z), ending
+on a plane on top of the laminate (a shorting post) or on a pad of
+0.6 mm in a round clearance of 1 mm in that plane (a via stub), with
+the line of nodes nearest to its axis as a wire, as cadlab's models
+have it. The box's lowest mode has its `E_z` maximum on the post. Cells
+of 0.3 mm in x and y (the post one cell across, the pad two, the
+clearance ring two thirds of one), the axis at four places in its cell;
+errors against 0.1 mm conformal cells (22.19 and 15.49 GHz; 0.05 mm:
+22.28 and 15.46 GHz, staircase 22.15 and 15.28 GHz):
+
+| | on a node | (0.5, 0.2) | (0.5, 0.5) | (0.25, 0.1) |
+|---|---|---|---|---|
+| shorting post, staircase | −5.3 % | −5.9 % | −6.5 % | |
+| shorting post, conformal before | −5.3 % | −5.9 % | −6.5 % | |
+| shorting post, conformal | −1.2 % | −2.3 % | −6.5 % | |
+| via stub, staircase | −12.5 % | +29 % | −5.2 % | +33 % |
+| via stub, conformal before | −8.8 % | −4.7 % | −0.3 % | −2.6 % |
+| via stub, conformal | −0.4 % | −2.4 % | −0.3 % | −2.6 % |
+
+The staircase's pad is four edges or none that the post's line of nodes
+reaches, hence +29 and +33 %. A post in the middle of a cell, touching
+no line of nodes, has nothing to carry its current but the wire: its row
+is the staircase's.
+
+*cadlab's via transition* (four layers, 0.3 mm drill, 0.6 mm pads and
+1 mm clearances in sheets, 0.3 mm cells, perfect sheet copper, 101 598
+cells), `|S21|` at 4 GHz: staircase −0.440 dB; conformal before
+−0.579 dB; now −0.390 dB (−0.378 dB with the threshold at 0.05);
+cadlab's solver −0.375 dB conformal and −0.426 dB as a staircase. On
+0.2 mm cells (2.66 million): conformal −0.297 dB (−0.298 dB before: the
+barrel is a cell and a half across there), ems's staircase −0.368 dB,
+cadlab's −0.348 dB. The whole difference on 0.3 mm cells was the area
+of the faces the barrel crosses: integrating them alone takes −0.578
+to −0.378 dB; the bends and the whole edges change nothing here. Lossy
+copper, 0.3 mm cells: sheets −0.430 dB (cadlab's solver −0.428 dB, the
+staircase −0.492 dB), solid copper with a surface impedance −0.396 dB
+(−0.408 dB, −0.456 dB; before −0.598 dB).
+
+*A bent microstrip* (cadlab's 45° line, 1 mm wide, two cells across,
+`arg S21` at 10 GHz, perfect sheet copper): threshold 0.5 as it was
+141.0°; lowered by cadlab to 0.05 153.1°; now, with ems's default,
+154.7° (cadlab's solver 154.8°); on 0.25 mm cells 157.7° (157.5°).
+
+*A strip 0.2 mm wide at 45°* on 0.25 mm cells (0.8 of a cell; the
+resonator of §5.13.2, lowest resonance and Q):
+
+| | along x, `All` | 45° staircase | 45° every edge cut | 45° now (66 whole edges) |
+|---|---|---|---|---|
+| PEC | 7.254 GHz | 6.362 GHz (−12.3 %) | 7.695 GHz | 6.849 GHz (−5.6 %) |
+| conducting sheet, 2e5 S/m | 7.158 GHz, Q 33 | 6.262 GHz (−12.5 %), Q 26 | 7.695 GHz, Q 44 000 | 6.685 GHz (−6.6 %), Q 23 |
+
+With every edge cut the sheet has no loss: no current runs through its
+copper, the strip is a row of pieces. (The whole sheet edges are walls
+for the small faces beside them, like the edges a sheet covers whole;
+without that the sheet read 5.865 GHz.) At 0.3 mm (1.2 cells) every row
+has whole edges and none is kept: 7.055 GHz, PEC, where the staircase
+reads 6.403 GHz and the strip along x 7.204 GHz (0.125 mm cells: 7.120
+against 7.108 GHz).
+
+*cadlab's matching network* (152 280 cells, lossy sheet copper, `|S11|`
+and `|S21|` at 2.44 GHz): conformal cells before 0.790 and 0.575; now
+0.573 and 0.798; staircase 0.581 and 0.791; cadlab's solver 0.573 and
+0.798. Perfect sheets: 0.574 and 0.800.
+
+**Limitations.** A post or a barrel that contains no line of nodes is
+not a conductor along its axis for the scheme (there is no edge to be
+PEC and the current through a dual face is not an unknown): it needs
+the wire the model gives it, and reads as that wire. A fat-wire model
+on the nearest line of nodes (the thin-wire model of §5.14 with
+`r0 > r_eq`) would be the remedy. A strip under 0.71 of a cell at 45°
+is not seen by the whole-edge rule. The integration costs about 1100
+point queries per face it is used on (a few hundred faces on a board).
 
 ### 5.14 Thin wires
 
@@ -6765,7 +6980,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-14, after wave 21)
+### Status (2026-11-14, after wave 23)
 
 | Step | State |
 |---|---|
@@ -6979,28 +7194,41 @@ strip with conformal cells, grew in a closed box) and take the cut edges
 beside them as conductor for their width (a copper strip at 45°: Q 602
 against 639 along x, before 392).
 
+Wave 23 (native; §5.13.3): conformal PEC on copper of about a cell, what
+cadlab's S-parameter runs staircased. Faces the open polygon misses
+(metal crossing a face between two opposite sides, a corner or a radius
+of about a cell in it) are integrated: a via transition on 0.3 mm cells
+read −0.58 dB at 4 GHz for −0.44 dB as a staircase and reads −0.39 dB
+(cadlab's solver −0.375 dB; on 0.2 mm cells −0.30 dB, staircases −0.35
+and −0.37 dB), a via stub
+of one cell within 2.6 % of the resolved one where the staircase is 5 to
+33 % off. Round copper crossed along a diameter is cut with
+`ConformalOutlines::Slanted`. Small faces keep their current where the
+cells around them are stable at the time step by a cell-wise bound
+(`ConformalOptions::keep_stable`; a bent microstrip two cells wide 154.7°
+for 141.0°, cadlab's solver 154.8°), which is a proof where every cut
+cell passes (`ConformalReport::bounded`). Whole edges where a cut would
+break a conductor: narrow slanted strips
+(`CompileOptions::conformal_bridges`), the ends of a lumped element's
+columns, a lumped element's edges in a conducting sheet, a sheet's edges
+under a barrel (cadlab's matching network `|S21|` 0.798 for 0.575,
+cadlab's solver 0.798). These change results of models with conformal
+PEC (a default-off option): all are corrections; `keep_stable` and
+`conformal_bridges` can be switched off. openEMS files are unchanged.
+
 Remaining:
 - Surface impedance (§5.9.1): the hooks are serial; the covered parts of
   the edges conformal PEC cuts along lossy solid metal stay PEC (their
   neighbours carry the surface); the loss of a strip two cells wide
   depends on its direction by up to a third; Cartesian grids only; the DC
   resistance of solid metal thinner than the skin depth is not modelled.
-- Conformal PEC on features of about a cell (found with cadlab, §4.1's
-  consumer; it works around all three). A strip under 1.5 cells wide at
-  45° has no row of whole edges along it, and a cut edge is its open part
-  in series with its covered part: the strip is in pieces (a matching
-  network read `|S21|` 0.57 for 0.79 as a staircase). Round copper of a
-  cell: on a four-layer via transition (0.3 mm drill, 0.6 mm pads and
-  clearances in sheets, 0.3 mm cells) `|S21|` at 4 GHz is −0.44 dB as a
-  staircase, −0.35 dB on 0.2 mm cells in cadlab's solver, and −0.58 dB
-  with conformal cells (the outlines of the sheets move it by 0.13 dB,
-  the barrel by 0.04 dB): further from the finer mesh than the staircase.
-  And the threshold for small faces (`merge_below` and `deviation_area`
-  0.5) costs a strip two cells wide 13° of 300° of phase where 0.05
-  costs 1°; a board mesh, with cells much thinner than wide, has the
-  margin for it (stability estimate 0.64 to 0.85), cubic cells do not
-  (1.19 at 0.1): a threshold from the time step and the cells would
-  serve both.
+- Conformal PEC on copper of about a cell (§5.13.3): a post or a barrel
+  that contains no line of nodes is not a conductor along its axis for
+  the scheme and reads as the wire the model gives it (a fat-wire model
+  on the nearest line of nodes would be the remedy); a strip under 0.71
+  of a cell at 45° is not seen by the rule that keeps strips in one
+  piece; where a cell fails the cell-wise bound its small faces keep the
+  threshold of 0.5 (cubic cells at the Courant limit: all of them).
 - Cylindrical (§5.16.11): magnetic poles in cell 0 off the seam
   (1e-4…2e-2), sheets reaching the axis (2e-2…4), Debye boxes over the axis
   (2e-4), a Lorentz box's time step (`mix_117`, 0.2 %), a dielectric over
