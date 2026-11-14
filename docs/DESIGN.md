@@ -199,6 +199,99 @@ Design rules:
   wraps `csx::Error`. Compiling is fallible; stepping is not.
 - **I/O.** No hidden I/O; writing files is always an explicit call.
 
+### 4.1 Driving ems from another program
+
+Four pieces for a program that builds models and runs ems itself (found
+with cadlab's S-parameter command as the consumer). None changes a default.
+
+**Typed warnings** (`ems::warning`, `Simulation::diagnostics`). The warning
+lists stay lines of text (`Simulation::warnings`, `Compiled::warnings`,
+`io::openems::read_model`; the `ems` program prints them as before).
+`Warning::parse` reads a line back into a `WarningCode` (`mesh.in_pml`,
+`box.snapped`, `sheet.in_pml`, `lumped.edges`, …: 32 codes, `as_str` is the
+stable text), the property the line is about (the name quoted in its head,
+or the location of a mesh-check line) and the primitive index; `collect`
+merges the lines of one code about one property into one entry with a
+count, so a property with twenty primitives in an absorbing layer is one
+entry of count 20. The codes are assigned from the wording, in one table
+(csx's discretisation warnings are text too, so a table is needed in any
+case); the module's tests hold one line per wording of every
+`warnings.push` site, and a line the table does not know is
+`WarningCode::Other`, never an error. A site whose wording changes has to
+change in that test.
+
+**One compile for several runs** (`CompiledModel`). The excitation is part
+of the model, so an N-port S-parameter run used to compile N models that
+differ in one property. `CompiledModel::new` compiles once (discretisation,
+mesh check); `simulation_driving(&[names])` builds a new `Simulation` that
+drives only the named excitations, `simulation()` all of them.
+`Simulation::with_options` is now `CompiledModel::new(..)?.into_simulation()`,
+one code path. Nothing is reset: every run gets a new engine from the
+compiled data, so fields, CPML, poles, sheets, lumped elements and probes
+start from zero by construction, and the run equals a fresh compile of the
+model without the other excitations bit for bit (`tests/compiled_model.rs`:
+probes, element currents, every field value and the energies, on a board
+with Debye laminate, conducting sheets, lumped ports and CPML, and on the
+same board with perfect copper; one port after the other and the first
+again). Limits: where the compile step gives an edge that two excitations
+claim to one of them (openEMS files), it stays with that one; the warnings
+and property ids are those of the whole model. Cost per run on a board region of 67 200 cells, one
+thread: 0.007 s against 0.08 s for a compile (plain laminate, metal), 0.03 s
+against 0.11 s (two Debye terms, conducting sheets); on 537 600 cells 0.05
+against 0.63 s and 0.26 against 0.90 s. The compiled data stays alive next
+to the engine: 100 bytes per node (220 with the pole list of a Debye
+laminate).
+
+**Voltage of a multi-column lumped port** (`LumpedPort::average_voltage`,
+§5.5). Default: the column nearest to the centre of the port box, as
+before. Opt-in: the mean over all columns, from one voltage probe per
+column (`port_ut<n>_col<k>`). With csx's equal resistance per edge the
+element current is `(V̄ − V_s)/R` for the mean `V̄`, so the mean voltage
+and the element current satisfy the port's circuit equation exactly (in
+time: `|V̄ + R·i| / max|V̄|` = 3·10⁻¹⁶ at an undriven port, 2·10⁻² for the
+centre column, `tests/port_voltage.rs`) and an undriven port has no
+incident wave at its own resistance. On a 2 mm strip with 5 columns the
+two analyses are up to 0.02 apart in `|S11|` and 0.009 in `|S21|` from 1 to
+8 GHz. Not measured: which is closer to the structure's S-parameters (the
+analytic port cases have equal columns).
+
+**Memory.** Counted with a counting allocator on the board region above
+(67 200 cells, 73 437 nodes, 8 CPML cells, one thread; bytes allocated, not
+RSS):
+
+| Model | live while running | peak (compile and build) |
+|---|---|---|
+| plain laminate, metal | 7.0 MB (unchanged) | 20.0 → 14.3 MB |
+| two Debye terms, metal | 35.4 → 13.9 MB | 65.5 → 43.0 MB |
+| two Debye terms, conducting sheets | 64.0 → 43.8 MB | 82.4 → 62.1 MB |
+
+What was removed, all without touching a result: the copy of the edge
+materials the engine builder took (96 bytes per node at the peak; the
+builder reads the compiled map in place); the csx material arrays living
+next to their engine-layout copies (each is released as it is reordered);
+in the dispersive operator the request lists kept after installation
+(64 bytes per pole), a 72-byte `Option` per pole for the source of openEMS
+coefficients that only openEMS files have (now a sparse list), a heap
+vector per edge during installation (one flat list) and the spare capacity
+of arrays grown by `push`. A pole now takes 69 bytes of state (four `f64`
+constants, two `f64` state values, 20 bytes of `f32` openEMS state that
+other runs do not use) plus 38 per edge.
+
+What remains, by size:
+- Conducting sheets: 28.7 MB for 7 300 sheet edges, 3.9 kB per edge. Every
+  edge carries its own ladder (about 70 layers at this conductivity and
+  f_max: `a`, `h`, `two_c`, `cp`, `inv_den`, `u` as `f64` per layer, and
+  the couplings), although the constants are the same for every edge of a
+  sheet with the same cell geometry. Not touched here (the sheet engine is
+  being reworked).
+- The engine: 72 bytes per node (fields and coefficients in `f32`), the
+  CPML state, and while compiling the `f64` edge materials (96 bytes per
+  node) plus csx's material grid.
+- The dispersive state in `f64` (the kernel is `f32`): halving it would
+  change results.
+- `Compiled` keeps the pole list (88 bytes per pole) for as long as it
+  lives; `Simulation::with_options` drops it after the build.
+
 ## 5. Numerical formulation
 
 ### 5.1 Grid
