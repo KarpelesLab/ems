@@ -1805,9 +1805,9 @@ so existing results are unchanged. Geometry in `compile::conformal`, scheme
 in `engine::conformal`.
 
 **Geometry.** "In metal" = the highest-priority material/metal at the point
-is a `Metal` property with a solid (3-D) primitive; curves, wires and
-sheets on mesh planes keep csx's PEC mask, sheets off the mesh planes are
-split (§5.13.1). Nodes and edge midpoints in the bounding box
+is a `Metal` property with a solid (3-D) primitive; curves and wires keep
+csx's PEC mask, sheets off the mesh planes are split (§5.13.1), sheets on
+mesh planes keep the mask except along slanted outlines (§5.13.2). Nodes and edge midpoints in the bounding box
 of the solid metal are queried; an edge whose three samples differ is
 sampled at 9 points and each transition bisected (2⁻³⁰ of the edge), giving
 the open fraction `f_e`; transitions within 1e-6 of an edge end are moved
@@ -2303,6 +2303,156 @@ grid with α cells of `h` at 12 mm) −0.346 / −0.086 / −0.0206 % at
 factor 0.88–0.98, energy constant to 1e-7 after the source, 1 vs 3
 threads bit-identical. Three refinements: `cylindrical_sheet_table`
 (`--ignored`).
+
+#### 5.13.2 Outlines of sheets on mesh planes
+
+Same switch; `CompileOptions::conformal_outlines` selects the outlines
+(`Slanted`, the default; `All`; `Off`). Applies to planar `Metal` sheets
+and to `ConductingSheet`s that csx puts on a mesh plane, on Cartesian
+grids. csx takes an in-plane edge as covered when its midpoint is, so a
+diagonal or curved outline (a routed track, a round pad) was a staircase
+whatever the option: a strip 1 mm wide at 45° on 0.25 mm cells resonated
+5.8 % low (table below). Geometry in `compile::conformal::planar`.
+
+**Scheme.** No split unknowns are needed: the in-plane edges and the faces
+of the sheet's plane lie in that plane, where the field outside the sheet
+is single valued. Faraday's law on the open part of such a face has the
+open parts of its edges and the outline in its contour, and `E` tangential
+to the sheet vanishes there, so it is the Dey–Mittra form of §5.13 with
+the open lengths and the open area; the faces normal to the plane keep
+their area (no thickness). The outlines therefore only add `ConformalEdge`s
+and `ConformalFace`s (with centroids) to the solid-metal scheme, and the
+small faces, the deviation currents, the stability check and the absorbing
+layers are those of §5.13.
+
+**Geometry.** All sheets of a plane together (a point is covered if a
+primitive contains it, tested at the primitive's own normal coordinate, as
+csx does). Every in-plane edge near them is sampled at 9 points, state
+changes are bisected, transitions within `1e-6` of an end snapped. A
+face's open area is the polygon of open corners and transitions with
+chords. An outline running along an edge (cover differing `1e-6` of the
+edge to its two sides at three points) leaves the edge to csx's midpoint
+test. With `Slanted`, an edge is cut only if at one of its transitions the
+outline is oblique to the mesh (the cover `5e-5` of the edge before or
+after the transition changes within `5e-3` of an edge to either side:
+more than about 0.6° from the edge's normal); other edges keep the
+midpoint rule, so an axis-aligned sheet is discretised as without the
+option whether its outline is on mesh lines or between them, and meshes
+laid out for the staircase (thirds rule at strip edges) keep their
+meaning. Faces are cut if one of their edges is. A cut edge of a metal
+sheet leaves the PEC mask unless another primitive may have put it there
+(as in §5.13.1); the cut edges of a face without open area under metal
+become PEC. Edges and faces cut by solid metal or by an oblique sheet are
+left to those schemes.
+
+**Conducting sheets.** The sheet operator (`engine::sheet`) puts its
+ladder on the covered part of a cut edge, in series with the open part
+(the Dey–Mittra edge, `C/f`): both carry the current of the edge's four
+dual edges, the ladder has `g = w/((1 − f)·l)` and the face capacitances
+`C/(1 − f)`; cut edges whose midpoint is open become sheet edges
+(`Compiled::sheet_cuts`). Three things were needed, each found by a run
+that diverged or misread the loss:
+
+1. Edges the sheet covers whole are not PEC, so the solid-metal scheme
+   took the faces inside the sheet as hosts and merge partners of the
+   small faces outside (blow-up within 200 steps). They are declared as
+   walls (`ConformalPec::push_wall`): closed for interpolation and
+   merging, coefficients unchanged.
+2. The small faces and their hosts are computed by the conformal operator
+   from the array values (`db = 0` in the kernel), where a sheet edge held
+   `u+`; the sheet operator corrects the kernel's faces afterwards but
+   cannot correct those. Such a face drove the two faces of the ladder by
+   `f±` and read `u+` alone, which is not passive. Sheet edges next to
+   such a face now store `f+·u+ + f−·u−`, and the corrections of their
+   other dual edges are taken against it.
+3. A cut face has less inductance than a whole one; the open parts of its
+   edges have more capacitance in proportion, the ladders' face voltages
+   do not (blow-up within 600 steps). The face capacitances of the sheet
+   edges around cut faces are multiplied by 8 (`sheet::CUT_FACE_LOADING`;
+   on strips at six angles 1 diverges on most, 2 on one, 4 and 8 on none,
+   at a stability factor of 0.987 on cubic cells); these voltages are
+   `Z_s/η` of the fields around, so the energy added is negligible on a
+   good conductor (4 and 8 give the same frequency and Q to four digits). Taking the ladders out of the cut faces' contours instead
+   (the sheet as PEC for the in-plane Faraday law) was stable too but lost
+   the current that wraps around the rim, where a strip's loss is largest:
+   Q 140 instead of 37 on the strip below.
+
+openEMS's sheet model (files) has no cut edges: conducting sheets keep the
+staircase there, metal sheets are cut.
+
+**Validation** (`tests/conformal_outline.rs`).
+
+*Analytic.* A stack of identical PEC sheets on the three mesh planes of a
+slab two cells thick between PMC faces, each with the same hole: for
+fields uniform across the slab the hole is a cavity, its lowest resonances
+the TE cutoffs of the cross section, and `H` is carried by the in-plane
+faces alone. Relative errors, staircase / conformal:
+
+| hole | 1 mm | 0.5 mm | 0.25 mm |
+|---|---|---|---|
+| circle `r` = 10 mm (720-gon), TE11 | −6.74 / +0.0315 % | −3.27 / +0.0049 % | −1.66 / +0.0015 % |
+| rectangle 20 × 13 mm at 17°, TE10 | −8.28 / +0.130 % | −4.60 / +0.024 % | −2.28 / +0.0100 % |
+
+The solid-metal scheme on the same cross sections reads +0.031 /
++0.0086 % and +0.130 / +0.024 % (§5.13): for these fields the stack is the
+same discrete problem, so this checks the geometry.
+
+*A strip.* Half-wave resonator: a strip 12 × 1 mm on 0.5 mm of `ε_r` = 4
+over the PEC floor of a closed box (20 × 20 × 3.8 mm, two cells in the
+substrate), centre off the nodes, turned about its centre; lowest
+resonance in GHz:
+
+| cells | along x, staircase | along x, `All` | 45° staircase | 45° conformal | 17° staircase | 17° conformal |
+|---|---|---|---|---|---|---|
+| 0.5 mm | 5.808 | 6.776 | 6.078 | 6.568 | 5.592 | 6.507 |
+| 0.25 mm | 6.307 | 6.800 | 6.413 | 6.724 | 6.232 | 6.748 |
+| 0.125 mm | 6.561 | 6.806 | 6.675 | 6.801 | 6.506 | 6.790 |
+
+The strip's sides along x fall between mesh lines (0.05 and 0.20 of a
+cell at 0.25 mm), which the staircase rounds to lines; `All` is within
+0.5 % from 0.5 mm on and is taken as the reference (6.81 GHz). At
+0.25 mm the 45° strip is −5.8 % as a staircase and −1.2 % conformal, at
+0.125 mm −2.0 % and −0.1 %.
+
+*A conducting strip* (the same, 35 µm at 2e5 S/m: 2.6 skin depths,
+`R_s` = 0.36 Ω; frequency in GHz and Q from the decay of the probe):
+
+| cells | along x, staircase | along x, `All` | 45° staircase | 45° conformal | 17° staircase | 17° conformal |
+|---|---|---|---|---|---|---|
+| 0.5 mm | 5.773, 66.7 | 6.732, 67.7 | 6.040, 65.7 | 6.514, 50.7 | 5.555, 60.3 | 6.453, 51.2 |
+| 0.25 mm | 6.264, 61.9 | 6.749, 58.0 | 6.367, 58.4 | 6.645, 37.3 | 6.186, 57.1 | 6.687, 48.4 |
+| 0.125 mm | 6.507, 52.9 | 6.743, 48.4 | 6.611, 47.9 | 6.713, 36.9 | 6.447, 48.6 | 6.715, 41.7 |
+
+The frequencies follow the PEC strip (0.3 to 1.2 % below it: the sheet's
+internal inductance). The Q is not settled by these runs. The 45°
+conformal value does not move from 0.25 to 0.125 mm (37.3, 36.9), while
+the strip along x and every staircase lose about 17 % of their Q per
+halving and are still falling at 0.125 mm; at 0.25 mm the conformal Q
+runs from 58 along x over 55 (5°), 48 (17°), 45 (30°) to 37 (45°). A
+rough estimate from the strip's surface resistance (`β/2α` with
+`α = R_s/(2·Z_0·W)` times 1.3 to 1.9 for the crowding at the rims)
+gives 25 to 35. So the loss depends on the direction by up to a third
+at four cells per width, with the oblique outlines, which resolve the
+rim below the cell size, closest to the estimate; no run here has an
+exact reference for the loss. Copper (5.8e7 S/m) at 0.25 mm: Q 874 at
+5° to 584 at 45°, frequency within 0.1 % of the PEC strip.
+
+Stability estimates 0.876–0.988 (those of the PEC outlines); no growth
+over 150 periods for 35 µm copper, the sheet above and 1 µm films of
+100 Ω and 1 kΩ per square at six angles and two cell sizes.
+
+**Limitations.** Cartesian grids. The covered part of a cut face is taken
+as free of normal flux, right for a good conductor (`ωμ0·σt·h ≫ 1`); a
+resistive film that flux passes through is better left to the staircase
+(`ConformalOutlines::Off`). A polygon corner inside a face is cut off by
+the chord; a strip narrower than a cell between the samples of every edge
+it crosses is not seen (as its staircase). A zero-thickness sheet's rim
+loss has no mesh limit (the current density grows as `r^-½` towards the
+rim), so Q depends on the cells with or without the option. The energy
+look-ahead of the small faces next to conducting-sheet edges reads the
+kernel's value on those edges before the sheet operator replaces it (the
+fields are not affected). Sources and lumped elements on a cut edge act
+on its open part.
 
 ### 5.14 Thin wires
 
@@ -6621,6 +6771,13 @@ tools are committed (`scripts/openems-oracle/tools/`). The feature sweep now
 runs 182 models (`features.py` and the `sweep_*` fixtures): 162 exact, the
 same differences as before plus `sheet_triangle_r` at 3e-14.
 
+Wave 21 (native): outlines of sheets on mesh planes with conformal PEC
+(§5.13.2): slanted and curved outlines of planar metal sheets and of
+conducting sheets get open lengths and open areas (a 45° microstrip
+resonator at 4 cells per width −1.2 % instead of −5.8 %; the TE cutoffs
+of holes in sheet stacks at second order); conducting sheets keep their
+ladder on the covered part of a cut edge.
+
 Remaining:
 - Cylindrical (§5.16.11): magnetic poles in cell 0 off the seam
   (1e-4…2e-2), sheets reaching the axis (2e-2…4), Debye boxes over the axis
@@ -6649,7 +6806,10 @@ Remaining:
 - SAR averaging: ties decided by openEMS's rounding, whole-cell cubes,
   ~1 % of small C95.3 face cubes (§5.12).
 - Native: small solid conformal faces still merged in CPML layers, sheets
-  ending short of a surface (slits), sources on sheet-cut edges; lossy
+  ending short of a surface (slits), sources on sheet-cut edges; outlines
+  of sheets on the mesh surfaces of cylindrical grids, polygon corners
+  inside a face, the rim loss of conducting sheets by direction
+  (§5.13.2); lossy
   backgrounds for NF2FF and surface-wave power; plane waves on non-uniform
   meshes across layers and the Bloch variant in layers; fused steps for
   energy steps, multigrid, plane waves and conformal operators; temporal
