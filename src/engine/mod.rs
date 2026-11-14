@@ -236,6 +236,13 @@ enum Materials {
     Edges(Box<EdgeMaterials>),
 }
 
+/// The material input of a build, borrowed.
+#[derive(Debug, Clone, Copy)]
+enum MaterialsRef<'a> {
+    Cells(&'a CellMaterials),
+    Edges(&'a EdgeMaterials),
+}
+
 impl EngineBuilder {
     /// Per-cell material map (default: vacuum, no PEC edges). Replaces a
     /// map set with [`edge_materials`](Self::edge_materials).
@@ -296,22 +303,36 @@ impl EngineBuilder {
     /// # Errors
     /// Invalid time step or materials, or a [`FaceCondition::Periodic`]
     /// face whose opposite face is not periodic.
-    pub fn build(self) -> Result<Engine> {
+    pub fn build(mut self) -> Result<Engine> {
+        let materials = self.materials.take();
+        self.build_from(materials.as_ref().map(|m| match m {
+            Materials::Cells(m) => MaterialsRef::Cells(m),
+            Materials::Edges(m) => MaterialsRef::Edges(m),
+        }))
+    }
+
+    /// [`build`](Self::build) with the per-edge materials `m`, read in
+    /// place (any map set on the builder is ignored).
+    pub(crate) fn build_with_edges(self, m: &EdgeMaterials) -> Result<Engine> {
+        self.build_from(Some(MaterialsRef::Edges(m)))
+    }
+
+    fn build_from(self, materials: Option<MaterialsRef<'_>>) -> Result<Engine> {
         let grid = self.grid;
         let faces = cylindrical::effective_faces(&grid, &self.faces);
         let periodic = Periodic::from_faces(&faces, grid.nodes())?;
         let axis = cylindrical::AxisMerge::new(&grid);
         let multigrid = multigrid::Multigrid::new(&grid);
-        let dt = match (self.timestep, &self.materials) {
-            (TimeStep::OpenEms(o), Some(Materials::Edges(m))) => o.resolve(&grid, m)?,
-            (TimeStep::OpenEms(o), Some(Materials::Cells(m))) => {
+        let dt = match (self.timestep, &materials) {
+            (TimeStep::OpenEms(o), Some(MaterialsRef::Edges(m))) => o.resolve(&grid, m)?,
+            (TimeStep::OpenEms(o), Some(MaterialsRef::Cells(m))) => {
                 o.resolve(&grid, &EdgeMaterials::from_cells(&grid, m)?)?
             }
             (t, _) => t.resolve(&grid)?,
         };
-        let coeffs = match &self.materials {
-            Some(Materials::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
-            Some(Materials::Edges(m)) => {
+        let coeffs = match &materials {
+            Some(MaterialsRef::Cells(m)) => Coefficients::compute(&grid, m, &self.faces, dt)?,
+            Some(MaterialsRef::Edges(m)) => {
                 Coefficients::from_edges_rounded(&grid, m, &self.faces, dt, self.rounding)?
             }
             None => Coefficients::from_edges_rounded(

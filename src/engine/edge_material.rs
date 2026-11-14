@@ -77,6 +77,54 @@ impl EdgeMaterials {
         }
     }
 
+    /// A map for `grid` whose arrays are still empty; every axis must be
+    /// given with [`set_axis`](Self::set_axis) before use. (The compile
+    /// step moves its arrays in, instead of copying them over a vacuum
+    /// map.)
+    pub(crate) fn unfilled(grid: &Grid) -> Self {
+        Self {
+            nodes: grid.nodes(),
+            eps_r: Default::default(),
+            kappa: Default::default(),
+            mu_r: Default::default(),
+            sigma_m: Default::default(),
+            pec: Default::default(),
+        }
+    }
+
+    /// Sets the arrays of the edges along `axis` (one value per node,
+    /// engine layout).
+    ///
+    /// # Panics
+    /// If an array does not have one value per node.
+    pub(crate) fn set_axis(
+        &mut self,
+        axis: Axis,
+        eps_r: Vec<f64>,
+        kappa: Vec<f64>,
+        mu_r: Vec<f64>,
+        sigma_m: Vec<f64>,
+        pec: Vec<bool>,
+    ) {
+        let n: usize = self.nodes.iter().product();
+        assert!(
+            [
+                eps_r.len(),
+                kappa.len(),
+                mu_r.len(),
+                sigma_m.len(),
+                pec.len()
+            ] == [n; 5],
+            "edge material arrays must have one value per node"
+        );
+        let a = axis.index();
+        self.eps_r[a] = eps_r;
+        self.kappa[a] = kappa;
+        self.mu_r[a] = mu_r;
+        self.sigma_m[a] = sigma_m;
+        self.pec[a] = pec;
+    }
+
     /// Converts a per-cell map into effective edge values, so that
     /// [`Coefficients::from_edges`](super::Coefficients::from_edges)
     /// reproduces [`primary_edge_cg`] / [`dual_edge_lr`] (up to rounding):

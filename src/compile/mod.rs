@@ -615,7 +615,8 @@ impl Compiled {
         &self,
         sources: &ModelSources,
     ) -> Result<(Engine, BoundaryHandles)> {
-        let mut engine = self.builder().build()?;
+        // (The materials are read in place: no copy of the map.)
+        let mut engine = self.bare_builder().build_with_edges(&self.materials)?;
         engine.set_curl_order(self.curl_order);
         let h = self.add_boundary_operators(&mut engine, sources)?;
         Ok((engine, h))
@@ -623,8 +624,12 @@ impl Compiled {
 
     /// The engine builder of [`build`](Self::build), before any operator.
     pub(crate) fn builder(&self) -> crate::engine::EngineBuilder {
+        self.bare_builder().edge_materials(self.materials.clone())
+    }
+
+    /// [`builder`](Self::builder) without the materials.
+    fn bare_builder(&self) -> crate::engine::EngineBuilder {
         Engine::builder(self.grid.clone())
-            .edge_materials(self.materials.clone())
             .faces(self.faces)
             .timestep(self.timestep)
             .threads(self.threads)
@@ -1873,29 +1878,26 @@ pub fn compile(
     for &(d, idx) in &sheet_map.pec {
         sheet_pec[d][idx] = true;
     }
-    let mut materials = EdgeMaterials::vacuum(&grid);
+    // Each csx array is released as soon as it is in engine layout, so
+    // that the two sets of material arrays never exist side by side.
+    let mut materials = EdgeMaterials::unfilled(&grid);
     for axis in Axis::ALL {
         let a = axis.index();
-        materials
-            .eps_r_mut(axis)
-            .copy_from_slice(&node_map.reorder(&mg.epsilon[a]));
-        materials
-            .kappa_mut(axis)
-            .copy_from_slice(&node_map.reorder(&mg.kappa[a]));
-        materials
-            .mu_r_mut(axis)
-            .copy_from_slice(&node_map.reorder(&mg.mue[a]));
-        materials
-            .sigma_m_mut(axis)
-            .copy_from_slice(&node_map.reorder(&mg.sigma[a]));
+        let moved = |csx: &mut Vec<f64>| {
+            let out = node_map.reorder(csx);
+            *csx = Vec::new();
+            out
+        };
+        let eps_r = moved(&mut mg.epsilon[a]);
+        let kappa = moved(&mut mg.kappa[a]);
+        let mu_r = moved(&mut mg.mue[a]);
+        let sigma_m = moved(&mut mg.sigma[a]);
         let pec: Vec<bool> = mg.pec[a]
             .iter()
             .zip(&sheet_pec[a])
             .map(|(&p, &s)| p || s)
             .collect();
-        materials
-            .pec_mask_mut(axis)
-            .copy_from_slice(&node_map.reorder(&pec));
+        materials.set_axis(axis, eps_r, kappa, mu_r, sigma_m, node_map.reorder(&pec));
     }
     let mut openems_seam_alpha0 = Vec::new();
     if fdtd.get_cell_constant_material() {
