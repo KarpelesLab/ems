@@ -656,13 +656,19 @@ impl ConformalPec {
         };
         self.validate(n, &copies)?;
         let dt = engine.dt();
-        let base = engine.coefficients().clone();
-        let mut co = base.clone();
-        for e in &self.edges {
-            let (_, cb) = co.e_mut(e.axis);
-            let k = index(n, e.node);
-            cb[k] = (cb[k] as f64 * e.fraction) as f32;
-        }
+        // The engine's coefficients with the edge scaling. (Whole-grid
+        // arrays are held as briefly as the rounds allow: the estimate
+        // below runs on five more of them in `f64`.)
+        let scaled = |base: &Coefficients| {
+            let mut co = base.clone();
+            for e in &self.edges {
+                let (_, cb) = co.e_mut(e.axis);
+                let k = index(n, e.node);
+                cb[k] = (cb[k] as f64 * e.fraction) as f32;
+            }
+            co
+        };
+        let mut scaled_now = Some(scaled(&engine.coefficients()));
         let mut seeds: Vec<(usize, usize)> = Vec::new();
         for f in &self.faces {
             for (a, p) in face_edges(f.axis, f.node) {
@@ -673,8 +679,8 @@ impl ConformalPec {
             sheets::Prepared::new(
                 &self.sheet_edges,
                 &self.sheet_faces,
-                &co,
-                &base,
+                scaled_now.as_ref().expect("set above"),
+                &engine.coefficients(),
                 n,
                 dt,
                 &copies,
@@ -689,7 +695,7 @@ impl ConformalPec {
             .map(|f| (f.axis.index(), index(n, f.node)))
             .collect();
         let (kept, bounded) = if self.options.keep_stable && !cyl {
-            self.stable_faces(&co, &grid, dt)
+            self.stable_faces(scaled_now.as_ref().expect("set above"), &grid, dt)
         } else {
             (HashSet::new(), false)
         };
@@ -697,6 +703,10 @@ impl ConformalPec {
         let mut tau = self.options.merge_below.clamp(0.0, 1.0);
         let rounds = self.options.max_rounds.max(1);
         for round in 0..rounds {
+            let co = match scaled_now.take() {
+                Some(co) => co,
+                None => scaled(&engine.coefficients()),
+            };
             let built = sheet.as_ref().map(|p| {
                 // The faces the solid-metal scheme drives next to the
                 // sheets (hosts, merge partners of its small faces) are
@@ -742,9 +752,17 @@ impl ConformalPec {
                 report.sheet_hosts = b.report.hosts;
             }
             let last = round + 1 == rounds || tau >= 1.0;
+            drop(co);
+            // The round's coefficients go into the engine's arrays (they
+            // differ at the cut cells only); a rejected round takes them
+            // out again.
+            let changes = changed(&coeffs, &engine.coefficients());
+            drop(coeffs);
+            let undo = exchange(&mut engine.coefficients_mut(), &changes);
+            drop(changes);
             if self.options.iterations > 0 {
                 let s = stability(
-                    &coeffs,
+                    &engine.coefficients(),
                     n,
                     &gterms,
                     &bterms,
@@ -756,7 +774,7 @@ impl ConformalPec {
                 report.verified = s <= self.options.max_stability;
             }
             if report.verified || last {
-                *engine.coefficients_mut() = coeffs;
+                drop(bterms);
                 // Before the merge groups, whose energy look-ahead reads
                 // the corrected edge voltages.
                 if let Some(b) = built {
@@ -767,6 +785,7 @@ impl ConformalPec {
                 }
                 return Ok(report);
             }
+            exchange(&mut engine.coefficients_mut(), &undo);
             tau = (tau * 1.25).min(1.0);
         }
         unreachable!("the last round returns")
@@ -2225,6 +2244,31 @@ impl Operator for MergedFaces {
     }
 }
 
+/// The values of `new` that differ from `old` (bit patterns): array,
+/// index, value.
+fn changed(new: &Coefficients, old: &Coefficients) -> Vec<(u8, u32, f32)> {
+    let mut out = Vec::new();
+    for (lane, (a, b)) in new.data.iter().zip(&old.data).enumerate() {
+        for (k, (x, y)) in a.iter().zip(b).enumerate() {
+            if x.to_bits() != y.to_bits() {
+                out.push((lane as u8, k as u32, *x));
+            }
+        }
+    }
+    out
+}
+
+/// Writes `changes` into `co` and returns the values they replaced.
+fn exchange(co: &mut Coefficients, changes: &[(u8, u32, f32)]) -> Vec<(u8, u32, f32)> {
+    changes
+        .iter()
+        .map(|&(lane, k, v)| {
+            let slot = &mut co.data[lane as usize][k as usize];
+            (lane, k, core::mem::replace(slot, v))
+        })
+        .collect()
+}
+
 /// Estimated stability factor `s = √λ_max(S)/2` of the lossless leapfrog
 /// scheme with coefficients `co` on a grid with `nodes` nodes (no merge
 /// groups), `S = √cb·Kᵀ·db·K·√cb` (`s < 1`: stable; see the
@@ -2331,7 +2375,7 @@ fn stability(
             v[a][k] += 1.0;
         }
     }
-    let mut h: [Vec<f64>; 3] = core::array::from_fn(|_| vec![0.0; len]);
+    let mut h: Vec<f64> = vec![0.0; len];
     let mut w: [Vec<f64>; 4] = core::array::from_fn(|a| vec![0.0; sq[a].len()]);
     let mut lambda = 0.0;
     for _ in 0..iterations.max(1) {
@@ -2357,19 +2401,20 @@ fn stability(
 /// `w = S·v` with `S = √cb·(PK)ᵀ·(dt/L)·(PK)·√cb`, using the kernel's curl
 /// convention (face `a` at `p`: `u_c(p+e_b) − u_c(p) − u_b(p+e_c) + u_b(p)`
 /// with `(b, c) = a.others()`); merged faces have `db = 0` and are covered
-/// by `groups` (`(dt/L_g, terms)`); `h` is scratch.
+/// by `groups` (`(dt/L_g, terms)`); `h` is scratch (one array: the faces
+/// of one normal at a time). `√cb·v` is formed where it is read, not held
+/// as arrays of its own (this runs on the whole grid next to the engine).
 fn apply_s(
     n: [usize; 3],
     sq: &[Vec<f64>; 4],
     db: &[&[f32]; 3],
     (groups, blocks): (&[GroupTerms], &[BlockTerms<'_>]),
     v: &[Vec<f64>; 4],
-    h: &mut [Vec<f64>; 3],
+    h: &mut [f64],
     w: &mut [Vec<f64>; 4],
 ) {
     let stride = [n[1] * n[2], n[2], 1];
-    let x: [Vec<f64>; 4] =
-        core::array::from_fn(|a| v[a].iter().zip(&sq[a]).map(|(v, s)| v * s).collect());
+    let x = |a: usize, k: usize| v[a][k] * sq[a][k];
     for wa in w.iter_mut() {
         wa.fill(0.0);
     }
@@ -2377,7 +2422,7 @@ fn apply_s(
         let a = axis.index();
         let (bb, cc) = axis.others();
         let (b, c) = (bb.index(), cc.index());
-        let ha = &mut h[a];
+        let ha = &mut *h;
         for i in 0..n[0] {
             for j in 0..n[1] {
                 for k in 0..n[2] {
@@ -2388,7 +2433,7 @@ fn apply_s(
                         ha[q] = 0.0;
                         continue;
                     }
-                    let curl = x[c][q + stride[b]] - x[c][q] - x[b][q + stride[c]] + x[b][q];
+                    let curl = x(c, q + stride[b]) - x(c, q) - x(b, q + stride[c]) + x(b, q);
                     ha[q] = d * curl;
                 }
             }
@@ -2406,7 +2451,7 @@ fn apply_s(
         }
     }
     for (d, terms) in groups {
-        let curl: f64 = terms.iter().map(|&(a, k, s)| s * x[a][k]).sum();
+        let curl: f64 = terms.iter().map(|&(a, k, s)| s * x(a, k)).sum();
         let f = d * curl;
         for &(a, k, s) in terms {
             w[a][k] += s * f;
@@ -2415,7 +2460,7 @@ fn apply_s(
     for (terms, m, dt) in blocks {
         let mut y: Vec<f64> = terms
             .iter()
-            .map(|t| t.iter().map(|&(a, k, s)| s * x[a][k]).sum())
+            .map(|t| t.iter().map(|&(a, k, s)| s * x(a, k)).sum())
             .collect();
         m.solve(&mut y);
         for (t, y) in terms.iter().zip(y) {
