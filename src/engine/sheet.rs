@@ -444,6 +444,10 @@ struct EdgeState {
     copies: Vec<[usize; 3]>,
     /// Edge capacitance of the kernel (`C`, for the energy correction).
     c_edge: f64,
+    /// First node / layer of the constants in their arrays (shared by
+    /// the edges with the same ladder).
+    k0: usize,
+    ka: usize,
     /// First node / layer in the flat arrays; nodes `n0..n0 + nn`.
     n0: usize,
     nn: usize,
@@ -506,12 +510,14 @@ pub struct ConductingSheet {
     dt: f64,
     edges: Vec<EdgeState>,
     couplings: Vec<Coupling>,
-    /// Per node: `2C_k/dt`, Thomas `c'_k` and `1/den_k`, voltage `u_k`.
+    /// Per node of the distinct ladders: `2C_k/dt`, Thomas `c'_k` and
+    /// `1/den_k`; per node of every edge: voltage `u_k`.
     two_c: Vec<f64>,
     cp: Vec<f64>,
     inv_den: Vec<f64>,
     u: Vec<f64>,
-    /// Per layer: `dt/(2L_k)`, current `h_k`.
+    /// Per layer of the distinct ladders: `dt/(2L_k)`; per layer of every
+    /// edge: current `h_k`.
     a: Vec<f64>,
     h: Vec<f64>,
     scratch: Vec<f64>,
@@ -688,6 +694,10 @@ impl ConductingSheet {
             .map(|&(a, p)| (a.index(), p))
             .collect();
         let outlines = !cut_faces.is_empty();
+        // The distinct ladders: constants → their place in the arrays.
+        // (Looked up only: the order of the map does not matter.)
+        let mut ladders: std::collections::HashMap<Vec<u64>, (usize, usize)> =
+            std::collections::HashMap::new();
         let mut last = None;
         for &i in &order {
             let e = self.entries[i];
@@ -759,7 +769,8 @@ impl ConductingSheet {
             // Ladder.
             let dz = layer_profile(e.conductivity, e.thickness, f_max);
             let nn = dz.len() + 1;
-            let (n0, l0) = (self.u.len(), self.a.len());
+            let (n0, l0) = (self.u.len(), self.h.len());
+            let mut a: Vec<f64> = Vec::with_capacity(nn - 1);
             let mut g_node = vec![0.0; nn];
             let mut c_node = vec![0.0; nn];
             for (j, &z) in dz.iter().enumerate() {
@@ -767,7 +778,7 @@ impl ConductingSheet {
                     g_node[kk] += 0.5 * e.conductivity * z * geo;
                     c_node[kk] += 0.5 * EPS0 * z * geo;
                 }
-                self.a.push(dt * geo / (2.0 * MU0 * z));
+                a.push(dt * geo / (2.0 * MU0 * z));
                 self.h.push(0.0);
             }
             // Around a cut face: loaded (module docs).
@@ -786,7 +797,7 @@ impl ConductingSheet {
             c_node[nn - 1] += load * (1.0 - sc) * c_cov;
             g_node[nn - 1] += (1.0 - sg) * g_cov;
             // Thomas factorisation of the constant matrix.
-            let a = &self.a[l0..];
+            let mut consts: Vec<[f64; 3]> = Vec::with_capacity(nn);
             let mut prev_cp = 0.0;
             for kk in 0..nn {
                 let a_up = if kk + 1 < nn { a[kk] } else { 0.0 };
@@ -795,12 +806,28 @@ impl ConductingSheet {
                 let diag = two_c + g_node[kk] + a_up + a_dn;
                 let den = diag + a_dn * prev_cp;
                 let cp = -a_up / den;
-                self.two_c.push(two_c);
-                self.cp.push(cp);
-                self.inv_den.push(1.0 / den);
+                consts.push([two_c, cp, 1.0 / den]);
                 self.u.push(0.0);
                 prev_cp = cp;
             }
+            // The constants of the ladder are kept once for all edges
+            // that have the same ones (the edges of a sheet on cells of
+            // one size, in one medium): the key is their bit patterns.
+            let key: Vec<u64> = a
+                .iter()
+                .chain(consts.iter().flatten())
+                .map(|v| v.to_bits())
+                .collect();
+            let (k0, ka) = *ladders.entry(key).or_insert_with(|| {
+                let at = (self.two_c.len(), self.a.len());
+                for k in &consts {
+                    self.two_c.push(k[0]);
+                    self.cp.push(k[1]);
+                    self.inv_den.push(k[2]);
+                }
+                self.a.extend_from_slice(&a);
+                at
+            });
 
             // Couplings: the four dual edges around the dual face of every
             // copy, with their sign in the E update (engine kernel
@@ -881,6 +908,8 @@ impl ConductingSheet {
                 n0,
                 nn,
                 l0,
+                k0,
+                ka,
                 c0,
                 nc: self.couplings.len() - c0,
                 gap,
@@ -958,11 +987,11 @@ impl Operator for ConductingSheet {
             let (n0, nn, l0) = (e.n0, e.nn, e.l0);
             let u = &mut self.u[n0..n0 + nn];
             let (two_c, cp, inv_den) = (
-                &self.two_c[n0..n0 + nn],
-                &self.cp[n0..n0 + nn],
-                &self.inv_den[n0..n0 + nn],
+                &self.two_c[e.k0..e.k0 + nn],
+                &self.cp[e.k0..e.k0 + nn],
+                &self.inv_den[e.k0..e.k0 + nn],
             );
-            let a = &self.a[l0..l0 + nn - 1];
+            let a = &self.a[e.ka..e.ka + nn - 1];
             let h = &mut self.h[l0..l0 + nn - 1];
             // Forward sweep: x holds d'_k.
             for k in 0..nn {
@@ -1025,7 +1054,7 @@ impl Operator for ConductingSheet {
         for e in &self.edges {
             let (n0, nn, l0) = (e.n0, e.nn, e.l0);
             for k in 0..nn {
-                w += 0.25 * self.two_c[k + n0] * self.dt * self.u[n0 + k] * self.u[n0 + k];
+                w += 0.25 * self.two_c[k + e.k0] * self.dt * self.u[n0 + k] * self.u[n0 + k];
             }
             // The engine's field sum has ½·C·(array value)².
             let face = if e.mix == 0.0 {
@@ -1043,7 +1072,7 @@ impl Operator for ConductingSheet {
             };
             w -= 0.5 * e.c_edge * stored * stored;
             for j in 0..nn - 1 {
-                let l = self.dt / (2.0 * self.a[l0 + j]);
+                let l = self.dt / (2.0 * self.a[e.ka + j]);
                 w += 0.5 * l * self.h[l0 + j] * self.h[l0 + j];
             }
         }
