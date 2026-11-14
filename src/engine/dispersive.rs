@@ -789,6 +789,10 @@ pub(crate) fn openems_debye_step(
     flush(u_star - flush(u_star - un))
 }
 
+/// Poles of an edge whose common term the trapezoidal loop keeps between
+/// its two passes ([`Side::correct`]).
+const HELD: usize = 16;
+
 /// How a pole is integrated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -987,17 +991,31 @@ impl Side {
                 let o = off[e] as usize;
                 let cb = coef[ax][gi * p + o] as f64;
                 let half_prev = 0.5 * prev[e];
+                let (cidx, j, q) = (&cidx[p0..p1], &mut j[p0..p1], &mut q[p0..p1]);
+                let (j, q) = (&mut j[..cidx.len()], &mut q[..cidx.len()]);
+                // `a·j − q/C + ½·u^n` of each pole is formed once for
+                // the sum and for the pole's update (the poles of an
+                // edge beyond the buffer form it twice, as all did).
+                let mut held = [0.0; HELD];
                 let mut s = 0.0;
-                for k in p0..p1 {
+                for k in 0..cidx.len() {
                     let c = &consts[cidx[k] as usize];
-                    s += (c.a * j[k] - q[k] * c.inv_c + half_prev) * c.inv_z;
+                    let t = c.a * j[k] - q[k] * c.inv_c + half_prev;
+                    if let Some(h) = held.get_mut(k) {
+                        *h = t;
+                    }
+                    s += t * c.inv_z;
                 }
                 let plane = f.plane_mut(Axis::ALL[ax], gi);
                 let u_new = ((plane[o] as f64 - cb * s) / (1.0 + 0.5 * cb * sum_inv_z[e])) as f32;
                 let half_new = 0.5 * u_new as f64;
-                for k in p0..p1 {
+                for k in 0..cidx.len() {
                     let c = &consts[cidx[k] as usize];
-                    let jb = (c.a * j[k] - q[k] * c.inv_c + half_prev + half_new) * c.inv_z;
+                    let t = match held.get(k) {
+                        Some(&t) => t,
+                        None => c.a * j[k] - q[k] * c.inv_c + half_prev,
+                    };
+                    let jb = (t + half_new) * c.inv_z;
                     q[k] += dt * jb;
                     j[k] = 2.0 * jb - j[k];
                 }

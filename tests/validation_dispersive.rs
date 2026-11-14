@@ -704,9 +704,11 @@ fn cylindrical_poles_follow_the_alpha_range() {
 /// every pole's next state in a list for openEMS's and the leapfrog
 /// poles): the same values bit for bit. One leapfrog pole on an edge the
 /// field does not reach in the run puts a medium on the general loop.
+/// With three poles per edge and with eighteen (the loop keeps a term of
+/// each pole between its two passes, for sixteen of them).
 #[test]
 fn trapezoidal_poles_alone_are_the_general_update_bit_for_bit() {
-    let run = |general: bool, threads: usize| {
+    let run = |poles: usize, general: bool, threads: usize| {
         let g = Grid::uniform([40, 8, 6], [1e-3; 3]).unwrap();
         let mut mats = CellMaterials::new(&g, Material::VACUUM);
         let blk = [1..12, 1..6, 1..5];
@@ -717,17 +719,15 @@ fn trapezoidal_poles_alone_are_the_general_update_bit_for_bit() {
             .build()
             .unwrap();
         let mut d = Dispersive::new().with_scheme(Scheme::Leapfrog);
-        d.fill_cells(
-            &g,
-            blk,
-            Field::Electric,
-            &[
-                Pole::debye(0.2, 3e-11),
-                Pole::debye(0.1, 4e-12),
-                Pole::debye(0.15, 2e-10),
-            ],
-        )
-        .unwrap();
+        let mut list = vec![
+            Pole::debye(0.2, 3e-11),
+            Pole::debye(0.1, 4e-12),
+            Pole::debye(0.15, 2e-10),
+        ];
+        list.extend(
+            (3..poles).map(|k| Pole::debye(0.01 * k as f64, 1e-12 * 1.4f64.powi(k as i32))),
+        );
+        d.fill_cells(&g, blk, Field::Electric, &list).unwrap();
         if general {
             let w = TAU2PI * 20e9;
             d.push(
@@ -760,9 +760,12 @@ fn trapezoidal_poles_alone_are_the_general_update_bit_for_bit() {
             .collect();
         (bits, w.to_bits())
     };
-    let short = run(false, 1);
-    assert!(short.0.iter().any(|&b| b != 0));
-    assert_eq!(short, run(true, 1));
-    assert_eq!(short, run(false, 3));
-    assert_eq!(short, run(true, 3));
+    for poles in [3, 18] {
+        let short = run(poles, false, 1);
+        assert!(short.0.iter().any(|&b| b != 0));
+        assert_eq!(short, run(poles, true, 1), "{poles} poles");
+        assert_eq!(short, run(poles, false, 3), "{poles} poles");
+        assert_eq!(short, run(poles, true, 3), "{poles} poles");
+    }
+    assert_ne!(run(3, false, 1), run(18, false, 1));
 }
