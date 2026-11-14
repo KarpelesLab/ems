@@ -845,6 +845,10 @@ struct Side {
     /// Edges corrected after the lumped elements by [`LatePoles`] (empty
     /// when there are none).
     late: Vec<bool>,
+    /// Whether every pole of the side is integrated with the trapezoidal
+    /// rule and none with openEMS's arithmetic ([`correct`](Self::correct)
+    /// then runs without the general case's bookkeeping).
+    trapezoidal: bool,
 }
 
 /// The integration constants of one pole (see [`Branch`]).
@@ -881,6 +885,7 @@ impl Default for Side {
             mixed: Vec::new(),
             coef: Vec::new(),
             late: Vec::new(),
+            trapezoidal: false,
         }
     }
 }
@@ -948,6 +953,59 @@ impl Side {
     /// `edges`.
     fn correct(&mut self, f: &mut SlabMut<'_>, coef: [&[f32]; 3], dt: f64, edges: Range<usize>) {
         let p = f.nodes()[1] * f.nodes()[2];
+        if self.trapezoidal {
+            // Every pole of the medium is a trapezoidal one (a Debye
+            // laminate): the expressions of `step_edge` for such an edge,
+            // on the state in place (a pole's update reads its own state
+            // only).
+            let Self {
+                axis,
+                plane: planes,
+                off,
+                prev,
+                sum_inv_z,
+                pole_end,
+                cidx,
+                consts,
+                j,
+                q,
+                late,
+                ..
+            } = self;
+            let mut p0 = edges
+                .start
+                .checked_sub(1)
+                .map_or(0, |e| pole_end[e] as usize);
+            for e in edges {
+                let p1 = pole_end[e] as usize;
+                if late.get(e).copied().unwrap_or(false) {
+                    p0 = p1;
+                    continue;
+                }
+                let ax = axis[e] as usize;
+                let gi = planes[e] as usize;
+                let o = off[e] as usize;
+                let cb = coef[ax][gi * p + o] as f64;
+                let half_prev = 0.5 * prev[e];
+                let mut s = 0.0;
+                for k in p0..p1 {
+                    let c = &consts[cidx[k] as usize];
+                    s += (c.a * j[k] - q[k] * c.inv_c + half_prev) * c.inv_z;
+                }
+                let plane = f.plane_mut(Axis::ALL[ax], gi);
+                let u_new = ((plane[o] as f64 - cb * s) / (1.0 + 0.5 * cb * sum_inv_z[e])) as f32;
+                let half_new = 0.5 * u_new as f64;
+                for k in p0..p1 {
+                    let c = &consts[cidx[k] as usize];
+                    let jb = (c.a * j[k] - q[k] * c.inv_c + half_prev + half_new) * c.inv_z;
+                    q[k] += dt * jb;
+                    j[k] = 2.0 * jb - j[k];
+                }
+                plane[o] = u_new;
+                p0 = p1;
+            }
+            return;
+        }
         let mut next = Vec::new();
         for e in edges {
             if self.late.get(e).copied().unwrap_or(false) {
@@ -2014,6 +2072,13 @@ impl Operator for Dispersive {
         for slab in &mut slabs {
             slab.e.shrink_to_fit();
             slab.h.shrink_to_fit();
+            for side in [&mut slab.e, &mut slab.h] {
+                side.trapezoidal = !any_oe
+                    && side
+                        .cidx
+                        .iter()
+                        .all(|&id| side.consts[id as usize].kind == Kind::Trapezoidal);
+            }
         }
         let parts = Arc::new(Parts {
             dt: self.dt,

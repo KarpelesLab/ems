@@ -698,3 +698,71 @@ fn cylindrical_poles_follow_the_alpha_range() {
     assert_eq!(z.len(), 3 * 7 * 4, "{z:?}");
     assert!(z.iter().all(|n| (3..=5).contains(&n[1])));
 }
+
+/// A medium whose poles are all trapezoidal is corrected by a loop of its
+/// own (a Debye laminate: half the time of the general one, which keeps
+/// every pole's next state in a list for openEMS's and the leapfrog
+/// poles): the same values bit for bit. One leapfrog pole on an edge the
+/// field does not reach in the run puts a medium on the general loop.
+#[test]
+fn trapezoidal_poles_alone_are_the_general_update_bit_for_bit() {
+    let run = |general: bool, threads: usize| {
+        let g = Grid::uniform([40, 8, 6], [1e-3; 3]).unwrap();
+        let mut mats = CellMaterials::new(&g, Material::VACUUM);
+        let blk = [1..12, 1..6, 1..5];
+        mats.fill_box(blk.clone(), Material::dielectric(3.8));
+        let mut e = Engine::builder(g.clone())
+            .materials(mats)
+            .threads(threads)
+            .build()
+            .unwrap();
+        let mut d = Dispersive::new().with_scheme(Scheme::Leapfrog);
+        d.fill_cells(
+            &g,
+            blk,
+            Field::Electric,
+            &[
+                Pole::debye(0.2, 3e-11),
+                Pole::debye(0.1, 4e-12),
+                Pole::debye(0.15, 2e-10),
+            ],
+        )
+        .unwrap();
+        if general {
+            let w = TAU2PI * 20e9;
+            d.push(
+                Field::Electric,
+                Axis::Y,
+                [37, 4, 3],
+                Pole::lorentz(w, w, 3e9),
+            );
+        }
+        let h = d.add_to(&mut e).unwrap();
+        {
+            let mut f = e.fields_mut();
+            for (q, n) in [[3, 3, 2], [5, 2, 3], [2, 4, 2], [6, 5, 3]]
+                .iter()
+                .enumerate()
+            {
+                f.u.set(Axis::ALL[q % 3], *n, 1.0 + q as f32);
+            }
+        }
+        // 24 steps: the field is 24 cells from the pole's edge at most.
+        e.run(24);
+        let _ = h;
+        let w = e.energy();
+        let bits: Vec<u32> = Axis::ALL
+            .into_iter()
+            .flat_map(|a| {
+                let (u, i) = (e.u_component(a), e.i_component(a));
+                u.into_iter().chain(i).map(f32::to_bits).collect::<Vec<_>>()
+            })
+            .collect();
+        (bits, w.to_bits())
+    };
+    let short = run(false, 1);
+    assert!(short.0.iter().any(|&b| b != 0));
+    assert_eq!(short, run(true, 1));
+    assert_eq!(short, run(false, 3));
+    assert_eq!(short, run(true, 3));
+}

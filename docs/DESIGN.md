@@ -7273,7 +7273,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-14, after wave 24)
+### Status (2026-11-15, after wave 25)
 
 | Step | State |
 |---|---|
@@ -7538,19 +7538,63 @@ own solver. No result changes except where noted.
   length stop (50 dB), in both solvers; at 70 dB ems reads 0.0365 and
   cadlab's solver 0.0352 dB.
 
+Wave 25 (native; §5.8, §5.9.1, §5.16.2), the gaps cadlab's decision on
+its default solver named (its D89). Results change for lossy conductors
+only, as described; the pole weighting is an option.
+
+- *The end criterion with lossy copper* (§5.8): the magnetic energy
+  inside a conductor (the sections of a surface impedance, the
+  inductances of a ladder) decays with the conductor's own `L/R` and was
+  what such a run ended on below −55 dB. Operators report it
+  (`Operator::energy_held`), the criterion leaves it out. cadlab's bent
+  line to −70 dB: 22 497 → 7 777 steps with sheets (its own solver
+  7 648), 57 697 → 13 729 with solid copper (13 440); its via transition
+  to −60 dB 69 313 → 49 473 (49 920).
+- *Lossy metal that crosses the cells* (§5.9.1): the width of the
+  surface an edge carries comes from the surface (its trace across the
+  edge's dual face and along the edge), the edges beside cut cells get
+  twice the capacitance, per surface edge of a face, floor edges under a
+  wall count their open part, a conductor one row of edges wide is no longer taken
+  for metal without thickness, and the edge beside the rim of a flat
+  surface gets the loss the scheme has with the rim on a mesh line. A
+  box cavity turned about z: Q within 0.4 % of the closed form on 0.5 mm
+  cells at every angle (0.0.9: −6 to −19 %, two cases unstable). A strip
+  of thin copper between mesh lines or oblique: within −7 to +8.5 % of
+  the same strip with its rims on mesh lines (−23 to −27 %). cadlab's
+  bent line: 12 to 13 % above its own solver, now 1 to 2 % below.
+- *Dispersive poles at a material's surface* (§5.16.2): openEMS's rule
+  gives an edge in the surface the full poles; `PoleWeighting::Averaged`
+  gives it its share. cadlab's 60 mm line with solid copper read +6.5 /
+  +6.8 / +7.2 % against its reference at 8 / 8.5 / 9 GHz for a limit of
+  6 %; the two points over its own solver were the laminate's loss in
+  the surface edges, not the copper's (the copper's part was equal:
+  0.128 dB in both at 9 GHz). Averaged: +4.9 / +4.5 / +5.3 % (cadlab's
+  solver +4.8 / +4.3 / +4.9 %).
+- *Debye laminates on one thread*: a medium whose poles are all
+  trapezoidal is corrected by a loop of its own, bit-identical to the
+  general one (`trapezoidal_poles_alone_are_the_general_update_bit_for_bit`).
+  cadlab's small via region (25 194 cells, 2 × 32 961 steps, a Debye
+  laminate and lossy solid copper, one thread): 97 → 52 s (its own
+  solver 34 s; three threads 37 → 24 s). Of the 97 s, 78 were the poles
+  (9 s without them and with perfect copper, 13 s with lossy copper).
+
 Remaining:
 - Memory (§4.1): the compile step peaks at csx's material grid (111
   bytes per node); the fields and coefficients are 72 bytes per node.
 - Surface impedance (§5.9.1): where conformal PEC merges faces the hooks
   are serial;
   the covered parts of the edges conformal PEC cuts along lossy solid
-  metal stay PEC (their neighbours carry the surface), and the loss of
-  an oblique strip is 3 to 4 % above that of the same strip along the
-  mesh at four cells per width and 7 to 9 % at eight: not from those
-  parts (two ways of giving them their loss were tried, §5.9.1), cause
-  not established; the loss of a strip two cells wide
-  depends on its direction by up to a third; Cartesian grids only; the DC
+  metal stay PEC (their neighbours carry the surface); the loss at the
+  rim of a flat surface is that of the scheme with rims on mesh lines by
+  a fitted share of the rim's half cell, within 8.5 % at two cells per
+  width and 2 % at eight, and that scheme is not converged at the rim
+  itself (Q of a 35 µm strip falls by 18 % from two to eight cells per
+  width); a cavity carved out of lossy metal by a material of higher
+  priority keeps perfect faces along the mesh; Cartesian grids only; the DC
   resistance of solid metal thinner than the skin depth is not modelled.
+- Dispersive media: the poles' state is `f64` behind an index per pole;
+  a Debye laminate still takes ems 1.5 times cadlab's solver's time on
+  one thread on a region of 25 000 cells.
 - Conformal PEC on copper of about a cell (§5.13.3): a post or a barrel
   that contains no line of nodes is not a conductor along its axis for
   the scheme and reads as the wire the model gives it (a fat-wire model
