@@ -43,7 +43,7 @@
 use super::boundary::upml::{self, PmlProfile};
 use super::coeffs::Coefficients;
 use super::dispersive::{OpenEmsPole, openems_debye_coefficients, openems_debye_step};
-use super::edge_material::EdgeMaterials;
+use super::edge_material::{EdgeMaterials, MaterialValues};
 use super::fields::Fields;
 use super::grid::Grid;
 use super::kernel::{flush, oe_e, oe_h};
@@ -367,7 +367,7 @@ impl OpenemsSeam {
                     .map(|j| grid.dual_face_area(Axis::Z, [0, j, k]))
                     .collect();
                 let area: f64 = parts.iter().sum();
-                let avg = |v: &[f64]| -> f64 {
+                let avg = |v: MaterialValues<'_>| -> f64 {
                     if copies.iter().all(|&c| v[c] == v[copies[0]]) {
                         v[copies[0]]
                     } else {

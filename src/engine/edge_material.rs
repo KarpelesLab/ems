@@ -44,15 +44,206 @@ use crate::{Error, Result};
 /// face (area-weighted arithmetic mean, the parallel combination), and
 /// `mu_r` the average over the dual edge (length-weighted *harmonic* mean,
 /// the series combination). See [`Coefficients`](super::Coefficients).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// # Storage
+///
+/// On most models few values are distinct (a handful of materials, the
+/// averages on their interfaces), so an array may be held as a table of
+/// its distinct values with one small index per node
+/// ([`compact`](Self::compact): about 2 bytes per node and array instead
+/// of 8). The read accessors return a [`MaterialValues`] view that is indexed like
+/// a slice either way; the `_mut` accessors return a slice and expand the
+/// array they are called on. The values are the same `f64` bit patterns in
+/// both forms, so nothing computed from them changes.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct EdgeMaterials {
     nodes: [usize; 3],
-    eps_r: [Vec<f64>; 3],
-    kappa: [Vec<f64>; 3],
-    mu_r: [Vec<f64>; 3],
-    sigma_m: [Vec<f64>; 3],
+    eps_r: [Lane; 3],
+    kappa: [Lane; 3],
+    mu_r: [Lane; 3],
+    sigma_m: [Lane; 3],
     pec: [Vec<bool>; 3],
+}
+
+impl PartialEq for EdgeMaterials {
+    /// Equal values (whatever the storage of either side).
+    fn eq(&self, o: &Self) -> bool {
+        let same = |a: &[Lane; 3], b: &[Lane; 3]| {
+            a.iter()
+                .zip(b)
+                .all(|(x, y)| x.len() == y.len() && x.iter().eq(y.iter()))
+        };
+        self.nodes == o.nodes
+            && self.pec == o.pec
+            && same(&self.eps_r, &o.eps_r)
+            && same(&self.kappa, &o.kappa)
+            && same(&self.mu_r, &o.mu_r)
+            && same(&self.sigma_m, &o.sigma_m)
+    }
+}
+
+/// The indices of a pooled [`Lane`].
+#[derive(Debug, Clone)]
+enum PoolIndex {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+}
+
+/// One material array: one `f64` per node, or the distinct values and an
+/// index per node.
+#[derive(Debug, Clone)]
+enum Lane {
+    Dense(Vec<f64>),
+    Pooled { values: Vec<f64>, index: PoolIndex },
+}
+
+impl Default for Lane {
+    fn default() -> Self {
+        Self::Dense(Vec::new())
+    }
+}
+
+impl Lane {
+    fn len(&self) -> usize {
+        match self {
+            Self::Dense(v) => v.len(),
+            Self::Pooled {
+                index: PoolIndex::U8(i),
+                ..
+            } => i.len(),
+            Self::Pooled {
+                index: PoolIndex::U16(i),
+                ..
+            } => i.len(),
+        }
+    }
+
+    #[inline]
+    fn at(&self, k: usize) -> &f64 {
+        match self {
+            Self::Dense(v) => &v[k],
+            Self::Pooled {
+                values,
+                index: PoolIndex::U8(i),
+            } => &values[i[k] as usize],
+            Self::Pooled {
+                values,
+                index: PoolIndex::U16(i),
+            } => &values[i[k] as usize],
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = f64> + '_ {
+        (0..self.len()).map(|k| *self.at(k))
+    }
+
+    /// The values as a slice, expanding a pooled array.
+    fn dense_mut(&mut self) -> &mut Vec<f64> {
+        if let Self::Pooled { .. } = self {
+            *self = Self::Dense(self.iter().collect());
+        }
+        match self {
+            Self::Dense(v) => v,
+            Self::Pooled { .. } => unreachable!("expanded above"),
+        }
+    }
+
+    /// Pools `v` if it has at most 65 536 distinct bit patterns (and is
+    /// then smaller that way).
+    fn pooled(v: Vec<f64>) -> Self {
+        const MOST: usize = 1 << 16;
+        let mut values: Vec<f64> = Vec::new();
+        let mut ids: std::collections::HashMap<u64, u16> = std::collections::HashMap::new();
+        let mut index: Vec<u16> = Vec::with_capacity(v.len());
+        // (Runs of one value are the rule: the last one is not looked up.)
+        let mut last: Option<(u64, u16)> = None;
+        for x in &v {
+            let bits = x.to_bits();
+            let id = match last {
+                Some((b, id)) if b == bits => id,
+                _ => match ids.get(&bits) {
+                    Some(&id) => id,
+                    None => {
+                        if values.len() == MOST {
+                            return Self::Dense(v);
+                        }
+                        let id = values.len() as u16;
+                        values.push(*x);
+                        ids.insert(bits, id);
+                        id
+                    }
+                },
+            };
+            last = Some((bits, id));
+            index.push(id);
+        }
+        drop(v);
+        values.shrink_to_fit();
+        let index = if values.len() <= 1 << 8 {
+            PoolIndex::U8(index.iter().map(|&i| i as u8).collect())
+        } else {
+            PoolIndex::U16(index)
+        };
+        Self::Pooled { values, index }
+    }
+
+    fn compact(&mut self) {
+        if let Self::Dense(v) = self {
+            *self = Self::pooled(std::mem::take(v));
+        }
+    }
+}
+
+/// A read-only material array of [`EdgeMaterials`]: one value per node,
+/// indexed like a slice ([storage](EdgeMaterials#storage)).
+///
+/// ```
+/// use ems::engine::{EdgeMaterials, Grid, Material};
+/// use ems::Axis;
+/// let g = Grid::uniform([2, 2, 2], [1e-3; 3]).unwrap();
+/// let m = EdgeMaterials::new(&g, Material::dielectric(4.0));
+/// let eps = m.eps_r(Axis::X);
+/// assert_eq!((eps.len(), eps[5]), (27, 4.0));
+/// assert!(eps.iter().all(|e| e == 4.0));
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialValues<'a>(&'a Lane);
+
+impl MaterialValues<'_> {
+    /// Number of values (one per node).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are no values.
+    pub fn is_empty(&self) -> bool {
+        self.0.len() == 0
+    }
+
+    /// The value at `index`, if in range.
+    pub fn get(&self, index: usize) -> Option<f64> {
+        (index < self.0.len()).then(|| *self.0.at(index))
+    }
+
+    /// The values in order.
+    pub fn iter(&self) -> impl Iterator<Item = f64> + '_ {
+        self.0.iter()
+    }
+
+    /// The values as a vector.
+    pub fn to_vec(&self) -> Vec<f64> {
+        self.0.iter().collect()
+    }
+}
+
+impl core::ops::Index<usize> for MaterialValues<'_> {
+    type Output = f64;
+
+    #[inline]
+    fn index(&self, index: usize) -> &f64 {
+        self.0.at(index)
+    }
 }
 
 impl EdgeMaterials {
@@ -66,7 +257,13 @@ impl EdgeMaterials {
     /// `sigma_m[a]`.
     pub fn new(grid: &Grid, background: Material) -> Self {
         let n = grid.num_nodes();
-        let fill = |v: [f64; 3]| v.map(|x| vec![x; n]);
+        // (One value: a table of one entry.)
+        let fill = |v: [f64; 3]| {
+            v.map(|x| Lane::Pooled {
+                values: vec![x],
+                index: PoolIndex::U8(vec![0; n]),
+            })
+        };
         Self {
             nodes: grid.nodes(),
             eps_r: fill(background.eps_r),
@@ -118,10 +315,10 @@ impl EdgeMaterials {
             "edge material arrays must have one value per node"
         );
         let a = axis.index();
-        self.eps_r[a] = eps_r;
-        self.kappa[a] = kappa;
-        self.mu_r[a] = mu_r;
-        self.sigma_m[a] = sigma_m;
+        self.eps_r[a] = Lane::pooled(eps_r);
+        self.kappa[a] = Lane::pooled(kappa);
+        self.mu_r[a] = Lane::pooled(mu_r);
+        self.sigma_m[a] = Lane::pooled(sigma_m);
         self.pec[a] = pec;
     }
 
@@ -159,15 +356,15 @@ impl EdgeMaterials {
                             let (cap, g) = primary_edge_cg(grid, cells, axis, p);
                             let k_ = grid.delta(axis, p[a])
                                 / (grid.dual_delta(ab, p[b]) * grid.dual_delta(ac, p[c]));
-                            out.eps_r[a][idx] = cap * k_ / EPS0;
-                            out.kappa[a][idx] = g * k_;
+                            out.eps_r[a].dense_mut()[idx] = cap * k_ / EPS0;
+                            out.kappa[a].dense_mut()[idx] = g * k_;
                         }
                         if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
                             let (l, r) = dual_edge_lr(grid, cells, axis, p);
                             let k_ = grid.dual_delta(axis, p[a])
                                 / (grid.delta(ab, p[b]) * grid.delta(ac, p[c]));
-                            out.mu_r[a][idx] = l * k_ / MU0;
-                            out.sigma_m[a][idx] = r * k_;
+                            out.mu_r[a].dense_mut()[idx] = l * k_ / MU0;
+                            out.sigma_m[a].dense_mut()[idx] = r * k_;
                         }
                     }
                 }
@@ -249,8 +446,8 @@ impl EdgeMaterials {
                                 }
                             }
                             if w > 0.0 {
-                                out.eps_r[a][idx] = eps / w;
-                                out.kappa[a][idx] = kap / w;
+                                out.eps_r[a].dense_mut()[idx] = eps / w;
+                                out.kappa[a].dense_mut()[idx] = kap / w;
                             }
                         }
                         if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
@@ -269,8 +466,8 @@ impl EdgeMaterials {
                                 sig += half * m.sigma_m[a] / (m.mu_r[a] * m.mu_r[a]);
                             }
                             let mu = l / inv;
-                            out.mu_r[a][idx] = mu;
-                            out.sigma_m[a][idx] = mu * mu * sig / l;
+                            out.mu_r[a].dense_mut()[idx] = mu;
+                            out.sigma_m[a].dense_mut()[idx] = mu * mu * sig / l;
                         }
                     }
                 }
@@ -285,20 +482,20 @@ impl EdgeMaterials {
     }
 
     /// Relative permittivity of the E edges along `axis`.
-    pub fn eps_r(&self, axis: Axis) -> &[f64] {
-        &self.eps_r[axis.index()]
+    pub fn eps_r(&self, axis: Axis) -> MaterialValues<'_> {
+        MaterialValues(&self.eps_r[axis.index()])
     }
     /// Electric conductivity \[S/m\] of the E edges along `axis`.
-    pub fn kappa(&self, axis: Axis) -> &[f64] {
-        &self.kappa[axis.index()]
+    pub fn kappa(&self, axis: Axis) -> MaterialValues<'_> {
+        MaterialValues(&self.kappa[axis.index()])
     }
     /// Relative permeability of the H dual edges along `axis`.
-    pub fn mu_r(&self, axis: Axis) -> &[f64] {
-        &self.mu_r[axis.index()]
+    pub fn mu_r(&self, axis: Axis) -> MaterialValues<'_> {
+        MaterialValues(&self.mu_r[axis.index()])
     }
     /// Magnetic loss \[Ω/m\] of the H dual edges along `axis`.
-    pub fn sigma_m(&self, axis: Axis) -> &[f64] {
-        &self.sigma_m[axis.index()]
+    pub fn sigma_m(&self, axis: Axis) -> MaterialValues<'_> {
+        MaterialValues(&self.sigma_m[axis.index()])
     }
     /// PEC flags of the E edges along `axis` (padding entries are ignored).
     pub fn pec_mask(&self, axis: Axis) -> &[bool] {
@@ -307,23 +504,50 @@ impl EdgeMaterials {
 
     /// Mutable relative permittivity of the E edges along `axis`.
     pub fn eps_r_mut(&mut self, axis: Axis) -> &mut [f64] {
-        &mut self.eps_r[axis.index()]
+        self.eps_r[axis.index()].dense_mut()
     }
     /// Mutable electric conductivity of the E edges along `axis`.
     pub fn kappa_mut(&mut self, axis: Axis) -> &mut [f64] {
-        &mut self.kappa[axis.index()]
+        self.kappa[axis.index()].dense_mut()
     }
     /// Mutable relative permeability of the H dual edges along `axis`.
     pub fn mu_r_mut(&mut self, axis: Axis) -> &mut [f64] {
-        &mut self.mu_r[axis.index()]
+        self.mu_r[axis.index()].dense_mut()
     }
     /// Mutable magnetic loss of the H dual edges along `axis`.
     pub fn sigma_m_mut(&mut self, axis: Axis) -> &mut [f64] {
-        &mut self.sigma_m[axis.index()]
+        self.sigma_m[axis.index()].dense_mut()
     }
     /// Mutable PEC flags of the E edges along `axis`.
     pub fn pec_mask_mut(&mut self, axis: Axis) -> &mut [bool] {
         &mut self.pec[axis.index()]
+    }
+
+    /// Takes the material values of `other` (same nodes), keeping the PEC
+    /// mask.
+    pub(crate) fn take_values(&mut self, other: Self) {
+        assert_eq!(self.nodes, other.nodes, "edge materials of another grid");
+        self.eps_r = other.eps_r;
+        self.kappa = other.kappa;
+        self.mu_r = other.mu_r;
+        self.sigma_m = other.sigma_m;
+    }
+
+    /// Stores every array with at most 65 536 distinct values as a table
+    /// of those values and an index per node ([storage](Self#storage)).
+    /// The values do not change. A later `_mut` accessor expands the
+    /// array it is called on again.
+    pub fn compact(&mut self) {
+        for lanes in [
+            &mut self.eps_r,
+            &mut self.kappa,
+            &mut self.mu_r,
+            &mut self.sigma_m,
+        ] {
+            for l in lanes {
+                l.compact();
+            }
+        }
     }
 
     fn flat(&self, node: [usize; 3]) -> usize {
@@ -341,8 +565,8 @@ impl EdgeMaterials {
     /// If the node is out of range.
     pub fn set_edge(&mut self, axis: Axis, node: [usize; 3], eps_r: f64, kappa: f64) {
         let i = self.flat(node);
-        self.eps_r[axis.index()][i] = eps_r;
-        self.kappa[axis.index()][i] = kappa;
+        self.eps_r[axis.index()].dense_mut()[i] = eps_r;
+        self.kappa[axis.index()].dense_mut()[i] = kappa;
     }
 
     /// Sets `mu_r`, `sigma_m` of the H dual edge along `axis` at `node`.
@@ -351,8 +575,8 @@ impl EdgeMaterials {
     /// If the node is out of range.
     pub fn set_face(&mut self, axis: Axis, node: [usize; 3], mu_r: f64, sigma_m: f64) {
         let i = self.flat(node);
-        self.mu_r[axis.index()][i] = mu_r;
-        self.sigma_m[axis.index()][i] = sigma_m;
+        self.mu_r[axis.index()].dense_mut()[i] = mu_r;
+        self.sigma_m[axis.index()].dense_mut()[i] = sigma_m;
     }
 
     /// Marks the E edge along `axis` at `node` as PEC.
@@ -395,7 +619,7 @@ impl EdgeMaterials {
                         let p = [i, j, k];
                         let idx = (i * n[1] + j) * n[2] + k;
                         if p[a] + 1 < n[a] && !self.pec[a][idx] {
-                            let (e, g) = (self.eps_r[a][idx], self.kappa[a][idx]);
+                            let (e, g) = (*self.eps_r[a].at(idx), *self.kappa[a].at(idx));
                             if !(e.is_finite() && e > 0.0 && g.is_finite() && g >= 0.0) {
                                 return Err(Error::Invalid(format!(
                                     "E edge {axis}:{p:?}: invalid eps_r {e} / kappa {g}"
@@ -403,7 +627,7 @@ impl EdgeMaterials {
                             }
                         }
                         if p[b] + 1 < n[b] && p[c] + 1 < n[c] {
-                            let (m, s) = (self.mu_r[a][idx], self.sigma_m[a][idx]);
+                            let (m, s) = (*self.mu_r[a].at(idx), *self.sigma_m[a].at(idx));
                             if !(m.is_finite() && m > 0.0 && s.is_finite() && s >= 0.0) {
                                 return Err(Error::Invalid(format!(
                                     "H edge {axis}:{p:?}: invalid mu_r {m} / sigma_m {s}"
@@ -456,6 +680,87 @@ mod tests {
         }
         // A homogeneous edge has exactly the cell value.
         assert!((e.eps_r(Axis::Z)[g.index([2, 1, 1])] - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compact_keeps_every_value() {
+        let g = Grid::new([
+            vec![0.0, 1.0, 2.5, 3.0, 4.5],
+            vec![0.0, 0.5, 1.5, 3.0],
+            (0..=3300).map(|k| k as f64).collect(),
+        ])
+        .unwrap();
+        let mut dense = EdgeMaterials::new(&g, Material::dielectric(2.0).with_kappa(0.1));
+        let n = g.num_nodes();
+        // One value, a few values (one byte each), a few hundred (two
+        // bytes), more than 65 536 (kept as they are); ±0 and NaN patterns
+        // are values of their own.
+        for (k, v) in dense.kappa_mut(Axis::Y).iter_mut().enumerate() {
+            *v = (k % 7) as f64;
+        }
+        for (k, v) in dense.mu_r_mut(Axis::Z).iter_mut().enumerate() {
+            *v = 1.0 + (k % 300) as f64;
+        }
+        for (k, v) in dense.sigma_m_mut(Axis::X).iter_mut().enumerate() {
+            *v = k as f64;
+        }
+        assert!(n > 1 << 16);
+        dense.eps_r_mut(Axis::Z)[3] = -0.0;
+        dense.eps_r_mut(Axis::Z)[4] = 0.0;
+        dense.eps_r_mut(Axis::Z)[5] = f64::NAN;
+        let mut m = dense.clone();
+        m.compact();
+        let lanes = |m: &EdgeMaterials| {
+            [&m.eps_r, &m.kappa, &m.mu_r, &m.sigma_m].map(|l| {
+                l.each_ref().map(|l| match l {
+                    Lane::Dense(_) => 8,
+                    Lane::Pooled {
+                        index: PoolIndex::U8(_),
+                        ..
+                    } => 1,
+                    Lane::Pooled {
+                        index: PoolIndex::U16(_),
+                        ..
+                    } => 2,
+                })
+            })
+        };
+        assert_eq!(
+            lanes(&m),
+            [[1, 1, 1], [1, 1, 1], [1, 1, 2], [8, 1, 1]],
+            "bytes per node"
+        );
+        for axis in Axis::ALL {
+            for (a, b) in [
+                (m.eps_r(axis), dense.eps_r(axis)),
+                (m.kappa(axis), dense.kappa(axis)),
+                (m.mu_r(axis), dense.mu_r(axis)),
+                (m.sigma_m(axis), dense.sigma_m(axis)),
+            ] {
+                assert_eq!(a.len(), n);
+                assert!((0..n).all(|k| a[k].to_bits() == b[k].to_bits()));
+                assert!(
+                    a.iter()
+                        .zip(b.iter())
+                        .all(|(x, y)| x.to_bits() == y.to_bits())
+                );
+                assert_eq!(a.get(n), None);
+            }
+        }
+        // Writing expands the array written to, and only that one.
+        m.set_edge(Axis::Y, [1, 1, 1], 9.0, 0.5);
+        dense.set_edge(Axis::Y, [1, 1, 1], 9.0, 0.5);
+        assert_eq!(lanes(&m)[1], [1, 8, 1]);
+        assert_eq!(m.kappa(Axis::Y)[g.index([1, 1, 1])], 0.5);
+        // (NaN is not equal to itself: compare without it.)
+        m.eps_r_mut(Axis::Z)[5] = 1.0;
+        dense.eps_r_mut(Axis::Z)[5] = 1.0;
+        assert_eq!(m, dense);
+        m.compact();
+        assert_eq!(m, dense);
+        assert_eq!(lanes(&m)[1], [1, 1, 1]);
+        m.set_face(Axis::X, [0, 0, 0], 3.0, 0.0);
+        assert_ne!(m, dense);
     }
 
     #[test]

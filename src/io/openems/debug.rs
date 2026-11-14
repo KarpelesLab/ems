@@ -80,7 +80,7 @@ use std::path::{Path, PathBuf};
 
 use super::dump::{f32_bytes, vtk_binary, vtk_rectilinear, vtk_structured_cyl};
 use crate::engine::cylindrical::e_edge_copies;
-use crate::engine::{Coefficients, EdgeMaterials, Grid};
+use crate::engine::{Coefficients, EdgeMaterials, Grid, MaterialValues};
 use crate::{Axis, Error, Result};
 
 /// File name of [`material_dump`] on Cartesian grids
@@ -242,7 +242,7 @@ pub fn material_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
     // A primary edge stored in several copies (cylindrical axis and seam)
     // shows the physical edge: the copies' values weighted by their parts
     // of the dual face.
-    let edge = |vals: &[f64], a: Axis, p: [usize; 3]| -> f64 {
+    let edge = |vals: MaterialValues<'_>, a: Axis, p: [usize; 3]| -> f64 {
         let p = primary(a, p);
         let copies = lay.copies(a, p);
         if copies.len() == 1 {
@@ -263,7 +263,7 @@ pub fn material_dump(grid: &Grid, mats: &EdgeMaterials) -> Result<String> {
     let eps = lay.vectors(|a, p| edge(mats.eps_r(a), a, p));
     // The seam `H_α` of a closed grid: both copies' halves of the dual
     // edge in series.
-    let seam = |vals: &[f64], a: Axis, p: [usize; 3]| -> f64 {
+    let seam = |vals: MaterialValues<'_>, a: Axis, p: [usize; 3]| -> f64 {
         let own = vals[dual(a, p)];
         if a != Axis::Y || p[1] != 0 || !grid.is_closed() {
             return own;

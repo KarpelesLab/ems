@@ -2464,6 +2464,9 @@ pub fn compile(
         }
         None => grid,
     };
+    // The materials stay with the compiled model: as tables of their
+    // distinct values (whatever a step above expanded).
+    materials.compact();
     Ok(Compiled {
         openems_multigrid,
         openems_seam_alpha0,

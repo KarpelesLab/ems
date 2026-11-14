@@ -89,13 +89,6 @@ pub(crate) fn apply(
     } else {
         EdgeMaterials::from_cells(grid, &cm)?
     };
-    for axis in crate::Axis::ALL {
-        materials.eps_r_mut(axis).copy_from_slice(em.eps_r(axis));
-        materials.kappa_mut(axis).copy_from_slice(em.kappa(axis));
-        materials.mu_r_mut(axis).copy_from_slice(em.mu_r(axis));
-        materials
-            .sigma_m_mut(axis)
-            .copy_from_slice(em.sigma_m(axis));
-    }
+    materials.take_values(em);
     Ok(())
 }

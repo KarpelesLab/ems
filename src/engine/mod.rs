@@ -189,7 +189,7 @@ pub use dump::{
     FreqDump, MemorySink, Schedule, Snapshot, TimeDump, VtrSeries,
 };
 pub use edge_dft::{CellBox, EdgeDft};
-pub use edge_material::EdgeMaterials;
+pub use edge_material::{EdgeMaterials, MaterialValues};
 pub use excite::{Amplitude, EdgeSource, SourceKind};
 pub use fields::{FieldArrays, Fields};
 #[cfg(feature = "xml")]

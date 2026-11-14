@@ -355,7 +355,8 @@ pub(super) fn oblique_wires(
     let cs = model.coord_system;
     let mut set = ObliqueSet::default();
     let cyl = model.grid.coord_system == CoordSystem::Cylindrical;
-    let vacuum = EdgeMaterials::vacuum(grid);
+    // (Whole-grid arrays: only for a model with such a wire.)
+    let mut vacuum: Option<EdgeMaterials> = None;
     // (property index, primitive index) to remove.
     let mut remove: Vec<(usize, usize)> = Vec::new();
     for (pk, p) in model.properties().iter().enumerate() {
@@ -381,7 +382,8 @@ pub(super) fn oblique_wires(
                 pts.iter().map(|q| [q[0] * unit, q[1] * unit, q[2] * unit]),
                 radius,
             );
-            match ObliqueWires::new(grid, &vacuum, core::slice::from_ref(&ow), |_, _| false) {
+            let vacuum = vacuum.get_or_insert_with(|| EdgeMaterials::vacuum(grid));
+            match ObliqueWires::new(grid, vacuum, core::slice::from_ref(&ow), |_, _| false) {
                 Ok(_) => {
                     set.wires.push(ow);
                     set.labels.push(label);
