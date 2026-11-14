@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/KarpelesLab/ems/compare/v0.0.8...v0.0.9) - 2026-11-14
+
+### Other
+
+- memory by step and what was removed (4.1), surface impedance in the slabs, the capacitance beside cut cells, the band edge and the directions of a lossy strip (5.9.1), status after wave 24
+- Surface impedance: solid edges beside a cut cell get the capacitance its faces need
+- lossy metal's second discretisation runs before the first
+- Surface impedance: the edges are run by the engine's threads, slab by slab
+- conducting-sheet ladders share their constants
+- conformal PEC applies itself on the engine's own coefficients
+- edge materials as tables of their distinct values
+- dispersive poles as a compact list, one set of constants per distinct pole
+
 ## [0.0.8](https://github.com/KarpelesLab/ems/compare/v0.0.7...v0.0.8) - 2026-11-14
 
 ### Other
