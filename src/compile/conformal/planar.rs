@@ -31,12 +31,16 @@
 //! them is sampled at 9 points; state changes are bisected and
 //! transitions at the ends snapped as for solid metal. The open area of
 //! an in-plane face is the polygon of its open corners and transition
-//! points, with straight chords for the outline.
+//! points, with straight chords for the outline, or the integral over
+//! the face where that polygon does not hold (a strip narrower than the
+//! face, a corner or a pad of a cell in it; `polygon_holds`).
 //!
 //! By default ([`ConformalOutlines::Slanted`]) only transitions where the
 //! outline is oblique to the mesh (more than about 0.6° from the normal
 //! of the edge, tested by the cover on both sides of the transition half
-//! a percent of the edge to either side of it) cut an edge. An edge
+//! a percent of the edge to either side of it) or bends away from the
+//! line through the transition within a quarter of the edge (a round pad
+//! crossed along a diameter; [`curved`]) cut an edge. An edge
 //! crossed by an axis-aligned outline only keeps csx's midpoint rule, so
 //! axis-aligned sheets are discretised as without the option, whether
 //! their outline is on mesh lines or between them (meshes made for the
@@ -56,6 +60,11 @@
 //!   [`ConformalFace`]s; the open parts of the edges of a face without
 //!   open area under a metal sheet are PEC (as for solid metal).
 //!
+//! A strip without a row of whole edges along it keeps the edges that
+//! carry it whole (`bridges`). An edge that carries a lumped element is
+//! not cut by a conducting sheet's outline: as a sheet edge it would be
+//! the sheet operator's, which replaces the update the element acts on.
+//!
 //! Edges and faces already cut by solid metal or by an oblique sheet are
 //! left to those schemes. Where a metal sheet and a conducting sheet
 //! cover parts of the same edge, the covered part is taken as the kind
@@ -69,7 +78,10 @@ use csx::{BoundingBox, CoordSystem, PropertyKind, Vec3};
 use super::super::ConformalOutlines;
 use super::super::sheet::{local_cell, plane_line, shares};
 use super::sheets::{covered, on_mesh_plane};
-use super::{Profile, SAMPLES, face_fraction, open_centroid, par, range, refine};
+use super::{
+    Conductor, Profile, SAMPLES, bridges, face_fraction, integrated_open, open_centroid, par,
+    polygon_holds, range, refine,
+};
 use crate::axis::Axis;
 use crate::engine::{ConformalEdge, ConformalFace, SheetEdge};
 
@@ -81,6 +93,39 @@ const SHEET: u8 = 2;
 /// it.
 pub(super) const SLANT_ALONG: f64 = 5e-5;
 pub(super) const SLANT_ACROSS: f64 = 5e-3;
+
+/// Offsets across the edge, in edge lengths, at which a surface that
+/// crosses an edge along its normal is tested for curvature
+/// ([`curved`]), and how far along the edge the surface is looked for.
+const CURVE_ACROSS: [f64; 2] = [0.05, 0.25];
+const CURVE_DEPTH: f64 = 0.25;
+
+/// Whether a surface crossing an edge bends away from the plane normal to
+/// the edge within a quarter of the edge to either side: a round post or
+/// pad of a few cells and less, crossed along a diameter, is no surface
+/// along the mesh although its tangent is. `inside` is the direction
+/// along the edge into the metal (−1 or 1); `metal(dt, w)` is the state
+/// `dt` of the edge after the crossing and `w` of it to the side.
+///
+/// On a line beside the edge the crossing of a flat surface along the
+/// mesh is where it is on the edge. It counts as moved when it is more
+/// than [`SLANT_ALONG`]`/`[`SLANT_ACROSS`] of the offset away (the angle
+/// of the slant test) and still within [`CURVE_DEPTH`] of the edge: the
+/// metal has receded from the crossing and is found deeper, or reaches
+/// past it and ends before that depth. A line beside the edge that has no
+/// metal at all (the edge crosses the surface next to a corner of a box)
+/// or metal throughout (a wall along the edge) says nothing, so boxes and
+/// axis-aligned sheets keep their staircase.
+pub(super) fn curved(inside: f64, metal: impl Fn(f64, f64) -> bool) -> bool {
+    CURVE_ACROSS.iter().any(|&w| {
+        let d = w * SLANT_ALONG / SLANT_ACROSS;
+        [w, -w].into_iter().any(|w| {
+            let receded = !metal(inside * d, w) && metal(inside * CURVE_DEPTH, w);
+            let advanced = metal(-inside * d, w) && !metal(-inside * CURVE_DEPTH, w);
+            receded || advanced
+        })
+    })
+}
 
 /// An edge `(axis index, node)` or a face `(normal index, node)`.
 pub(super) type Key = (usize, [usize; 3]);
@@ -101,6 +146,8 @@ pub(super) struct Outlines {
     pub sheet_cuts: Vec<(Axis, [usize; 3], f64)>,
     /// `(normal, node)` of the cut faces in the planes with such edges.
     pub sheet_cut_faces: Vec<(Axis, [usize; 3])>,
+    /// Edges kept whole for the strips they carry (`bridges`).
+    pub bridges: usize,
     /// Edges a conducting sheet covers whole, next to its cut edges:
     /// closed for the small faces' interpolation and merging
     /// ([`ConformalPec::push_wall`](crate::engine::ConformalPec::push_wall)).
@@ -236,6 +283,47 @@ fn planes<'a>(
     out
 }
 
+/// The sheets on the mesh planes of a model, for the solid-metal scheme:
+/// an in-plane edge a sheet covers whole is that sheet's (PEC, or a sheet
+/// edge), whatever solid metal crosses it.
+pub(super) struct Sheets<'a> {
+    planes: BTreeMap<(usize, usize), Plane<'a>>,
+    lines: [&'a [f64]; 3],
+}
+
+impl<'a> Sheets<'a> {
+    pub(super) fn new(model: &'a csx::ContinuousStructure, snap: f64) -> Self {
+        let cartesian = model.grid.coord_system == CoordSystem::Cartesian;
+        Self {
+            planes: if cartesian {
+                planes(model, snap, true)
+            } else {
+                BTreeMap::new()
+            },
+            lines: [0, 1, 2].map(|a| model.grid.lines(a)),
+        }
+    }
+
+    /// Whether a metal sheet or a conducting sheet on a mesh plane covers
+    /// the edge along `a` from node `n` from end to end.
+    pub(super) fn whole(&self, a: usize, n: [usize; 3]) -> bool {
+        if self.planes.is_empty() {
+            return false;
+        }
+        let l = self.lines;
+        let len = l[a][n[a] + 1] - l[a][n[a]];
+        (0..3).filter(|&nrm| nrm != a).any(|nrm| {
+            self.planes.get(&(nrm, n[nrm])).is_some_and(|plane| {
+                [0.02, 0.5, 0.98].into_iter().all(|t| {
+                    let mut p = Vec3::new(l[0][n[0]], l[1][n[1]], l[2][n[2]]);
+                    p.0[a] += t * len;
+                    plane.cover(p) != 0
+                })
+            })
+        })
+    }
+}
+
 /// Middle of the first covered interval of `p`.
 fn first_covered(p: &Profile) -> f64 {
     let mut metal = p.start_metal;
@@ -263,6 +351,17 @@ struct Touched {
     sheet: Option<(String, f64, f64)>,
 }
 
+/// Which outlines [`geometry`] cuts.
+#[derive(Clone, Copy)]
+pub(super) struct Rules {
+    /// The outlines to cut.
+    pub mode: ConformalOutlines,
+    /// Conducting sheets too (not for openEMS's sheet model).
+    pub conducting: bool,
+    /// Whether narrow slanted strips keep whole edges (`bridges`).
+    pub bridge: bool,
+}
+
 /// The primitives the caller's schemes already cut, and the conducting
 /// sheet edges that exist.
 pub(super) struct Taken<'a> {
@@ -272,6 +371,11 @@ pub(super) struct Taken<'a> {
     pub faces: &'a HashSet<Key>,
     /// Edges csx selected for a conducting sheet.
     pub sheet_edges: &'a HashSet<Key>,
+    /// Edges that carry a lumped element.
+    pub lumped: &'a HashSet<Key>,
+    /// Edges that continue the column of a lumped element beyond its
+    /// ends.
+    pub terminals: &'a HashSet<Key>,
 }
 
 /// Cut edges and faces of the outlines of the sheets on mesh planes of
@@ -282,10 +386,14 @@ pub(super) fn geometry(
     pec: &[Vec<bool>; 3],
     snap: f64,
     threads: usize,
-    mode: ConformalOutlines,
-    conducting: bool,
+    rules: Rules,
     taken: &Taken<'_>,
 ) -> Outlines {
+    let Rules {
+        mode,
+        conducting,
+        bridge,
+    } = rules;
     let mut out = Outlines::default();
     if mode == ConformalOutlines::Off || model.grid.coord_system != CoordSystem::Cartesian {
         return out;
@@ -406,9 +514,17 @@ pub(super) fn geometry(
                                 || side(SLANT_ALONG, w) != side(SLANT_ALONG, 0.0)
                         })
                     };
+                    // (Or curves away from the line through it.)
+                    let bent = |t: f64| {
+                        let (before, after) = (cov(t - SLANT_ALONG), cov(t + SLANT_ALONG));
+                        before != after
+                            && curved(if before { -1.0 } else { 1.0 }, |dt, w| {
+                                plane.cover(at(t + dt, w)) != 0
+                            })
+                    };
                     let cut = !profile.transitions.is_empty()
                         && (mode == ConformalOutlines::All
-                            || profile.transitions.iter().any(|&t| slanted(t)));
+                            || profile.transitions.iter().any(|&t| slanted(t) || bent(t)));
                     let t0 = first_covered(&profile);
                     let kind = plane.cover(at(t0, 0.0));
                     let sheet = (kind & METAL == 0)
@@ -443,6 +559,13 @@ pub(super) fn geometry(
             if f <= 0.0 || f >= 1.0 {
                 continue;
             }
+            // The terminal of a lumped element's column: the edge that
+            // continues the column into the copper stays whole where the
+            // staircase has it as copper, or the column would hang on its
+            // open part.
+            if taken.terminals.contains(&t.key) && t.profile.metal_at(0.5) {
+                continue;
+            }
             let idx = eidx(n);
             if t.kind & METAL != 0 {
                 let mut m = n;
@@ -450,10 +573,85 @@ pub(super) fn geometry(
                 if pec[d][idx] && covered(model, &others, point(n), point(m), None) {
                     continue;
                 }
-            } else if pec[d][idx] || t.sheet.is_none() {
+            } else if pec[d][idx] || t.sheet.is_none() || taken.lumped.contains(&t.key) {
+                // (A lumped element's edge is its own: as a sheet edge it
+                // would be the sheet operator's, which replaces the
+                // update the element acts on.)
                 continue;
             }
             cuts.push(q);
+        }
+        // Narrow slanted strips stay in one piece: the edges that carry
+        // them stay whole (`bridges`).
+        if bridge {
+            let cut0: HashSet<Key> = cuts.iter().map(|&q| touched[q].key).collect();
+            let nodes: Vec<[usize; 3]> = rb
+                .clone()
+                .flat_map(|i| rc.clone().map(move |j| (i, j)))
+                .map(|(i, j)| node(i, j))
+                .filter(|&n| state(n))
+                .collect();
+            let whole = bridges(
+                &nodes,
+                &[(b, c)],
+                dims,
+                &Conductor {
+                    covered: &state,
+                    joined: &|u, w| {
+                        let (p, q) = (point(u), point(w));
+                        (1..8).all(|m| plane.cover(p + (q - p) * (m as f64 / 8.0)) != 0)
+                    },
+                    conducts: &|key: Key| {
+                        !cut0.contains(&key)
+                            && !taken.edges.contains(&key)
+                            && (pec[key.0][eidx(key.1)]
+                                || taken.sheet_edges.contains(&key)
+                                || by_key.get(&key).is_some_and(|&q| {
+                                    let p = &touched[q].profile;
+                                    p.start_metal && p.transitions.is_empty()
+                                }))
+                    },
+                    coverage: &|key: Key| {
+                        by_key
+                            .get(&key)
+                            .map_or(0.0, |&q| 1.0 - touched[q].profile.open_fraction())
+                    },
+                },
+            );
+            for key in whole {
+                let Some(&q) = by_key.get(&key) else { continue };
+                if taken.edges.contains(&key) {
+                    continue;
+                }
+                let t = &touched[q];
+                let ax = Axis::from_index(key.0).expect("axis in 0..3");
+                if t.kind & METAL != 0 {
+                    if !pec[key.0][eidx(key.1)] {
+                        out.pec.push((ax, eidx(key.1), true));
+                    }
+                } else if let Some((name, s, th)) = &t.sheet {
+                    // (A conductor from end to end, like the edges the
+                    // sheet covers whole.)
+                    out.walls.push((ax, key.1));
+                    if !taken.sheet_edges.contains(&key) {
+                        out.sheet_edges.push((
+                            SheetEdge {
+                                axis: ax,
+                                node: key.1,
+                                normal: axis,
+                                conductivity: *s,
+                                thickness: *th,
+                                upper_share: shares(model, key.0, key.1, nrm),
+                            },
+                            name.clone(),
+                        ));
+                    }
+                } else {
+                    continue;
+                }
+                cuts.retain(|&c| c != q);
+                out.bridges += 1;
+            }
         }
         let is_cut: HashSet<Key> = cuts.iter().map(|&q| touched[q].key).collect();
         let conducting = cuts.iter().any(|&q| touched[q].kind & METAL == 0);
@@ -496,7 +694,17 @@ pub(super) fn geometry(
                     profile(&keys[2]),
                     profile(&keys[3]),
                 ];
-                let fa = face_fraction(e.clone(), lb, lc);
+                let at = |u: f64, v: f64| {
+                    let mut p = point(n);
+                    p.0[b] += u * lb;
+                    p.0[c] += v * lc;
+                    plane.cover(p) != 0
+                };
+                let (fa, centroid) = if polygon_holds(&e, lb, lc, at) {
+                    (face_fraction(e.clone(), lb, lc), open_centroid(&e, lb, lc))
+                } else {
+                    integrated_open(at)
+                };
                 if fa <= 0.0 {
                     let mut centre = point(n);
                     centre.0[b] += 0.5 * lb;
@@ -519,7 +727,7 @@ pub(super) fn geometry(
                             node: n,
                             fraction: fa,
                         },
-                        open_centroid(&e, lb, lc),
+                        centroid,
                     ));
                 }
             }
@@ -598,12 +806,17 @@ mod tests {
             &pec,
             1e-6,
             2,
-            mode,
-            true,
+            Rules {
+                mode,
+                conducting: true,
+                bridge: true,
+            },
             &Taken {
                 edges: &none,
                 faces: &none,
                 sheet_edges: &none,
+                lumped: &none,
+                terminals: &none,
             },
         )
     }
@@ -644,6 +857,174 @@ mod tests {
         assert!((fa([3, 2, 1]).unwrap() - 0.2).abs() < 1e-6);
         assert!((fa([1, 3, 1]).unwrap() - 0.3).abs() < 1e-6);
         assert!(o.sheet_cuts.is_empty() && o.walls.is_empty());
+    }
+
+    /// Covered: `lo ≤ x − y ≤ hi` (a strip at 45°).
+    fn band(lo: f64, hi: f64) -> Vec<(f64, f64)> {
+        vec![
+            (lo - 20.0, -20.0),
+            (hi - 20.0, -20.0),
+            (20.0 + hi, 20.0),
+            (20.0 + lo, 20.0),
+        ]
+    }
+
+    #[test]
+    fn narrow_diagonal_strips_keep_whole_edges() {
+        // 0.8 of a cell wide: the x edges of row j are covered from
+        // j + 0.3 to j + 1.43, so every edge the strip touches is cut and
+        // only the nodes (j + 1, j) are in it.
+        for conducting in [false, true] {
+            let m = model(&band(0.3, 1.43), conducting);
+            let o = run(&m, ConformalOutlines::Slanted);
+            // From (j + 1, j) to (j + 2, j + 1) over (j + 1, j + 1): the
+            // y edge and the x edge covered 0.7 (the other path's are
+            // covered 0.43).
+            assert_eq!(o.bridges, 2 * 7, "{conducting}");
+            let whole = |axis: Axis, node: [usize; 3]| {
+                let cut = o.edges.iter().any(|e| e.axis == axis && e.node == node);
+                let on = if conducting {
+                    o.sheet_edges
+                        .iter()
+                        .any(|(e, _)| e.axis == axis && e.node == node)
+                        && !o.sheet_cuts.iter().any(|c| c.0 == axis && c.1 == node)
+                } else {
+                    o.pec
+                        .contains(&(axis, (node[0] * 9 + node[1]) * 3 + 1, true))
+                };
+                !cut && on
+            };
+            for j in 0..7 {
+                assert!(whole(Axis::Y, [j + 1, j, 1]), "{conducting} {j}");
+                assert!(whole(Axis::X, [j + 1, j + 1, 1]), "{conducting} {j}");
+                // (Conductors for the small faces beside them, too.)
+                assert_eq!(o.walls.contains(&(Axis::Y, [j + 1, j, 1])), conducting);
+            }
+            // The other edges keep their cuts.
+            let f = |axis: Axis, node: [usize; 3]| {
+                o.edges
+                    .iter()
+                    .find(|e| e.axis == axis && e.node == node)
+                    .map(|e| e.fraction)
+            };
+            assert!((f(Axis::X, [4, 3, 1]).unwrap() - 0.57).abs() < 1e-6);
+            assert!((f(Axis::Y, [4, 2, 1]).unwrap() - 0.57).abs() < 1e-6);
+            // Without the option every edge is cut.
+            let n = 9 * 9 * 3;
+            let pec = [vec![false; n], vec![false; n], vec![false; n]];
+            let none = HashSet::new();
+            let taken = Taken {
+                edges: &none,
+                faces: &none,
+                sheet_edges: &none,
+                lumped: &none,
+                terminals: &none,
+            };
+            let all = geometry(
+                &m,
+                &pec,
+                1e-6,
+                1,
+                Rules {
+                    mode: ConformalOutlines::Slanted,
+                    conducting: true,
+                    bridge: false,
+                },
+                &taken,
+            );
+            assert_eq!(all.bridges, 0);
+            assert_eq!(all.edges.len(), o.edges.len() + o.bridges);
+            assert!(!all.pec.iter().any(|x| x.2));
+        }
+        // Three cells wide: rows of whole edges, nothing to keep.
+        // (The mask of this test has no edge of csx, so the strip's whole
+        // edges are named by their cover.)
+        let m = model(&band(0.3, 3.6), false);
+        let n = 9 * 9 * 3;
+        let mut pec = [vec![false; n], vec![false; n], vec![false; n]];
+        for i in 0..9usize {
+            for j in 0..9usize {
+                let d = i as f64 - j as f64;
+                // x edge from (i, j) to (i + 1, j), y edge to (i, j + 1).
+                pec[0][(i * 9 + j) * 3 + 1] = d >= 0.3 && d + 1.0 <= 3.6;
+                pec[1][(i * 9 + j) * 3 + 1] = d - 1.0 >= 0.3 && d <= 3.6;
+            }
+        }
+        let none = HashSet::new();
+        let taken = Taken {
+            edges: &none,
+            faces: &none,
+            sheet_edges: &none,
+            lumped: &none,
+            terminals: &none,
+        };
+        let o = geometry(
+            &m,
+            &pec,
+            1e-6,
+            1,
+            Rules {
+                mode: ConformalOutlines::Slanted,
+                conducting: true,
+                bridge: true,
+            },
+            &taken,
+        );
+        assert_eq!(o.bridges, 0);
+        assert!(!o.edges.is_empty());
+    }
+
+    #[test]
+    fn round_outlines_crossed_along_a_diameter_are_cut() {
+        // A pad of 1.3 cells in radius about the node (4, 4): the four
+        // edges along its diameters meet the outline along their normal.
+        let pad: Vec<(f64, f64)> = (0..720)
+            .map(|q| {
+                let t = core::f64::consts::TAU * q as f64 / 720.0;
+                (4.0 + 1.3 * t.cos(), 4.0 + 1.3 * t.sin())
+            })
+            .collect();
+        let m = model(&pad, false);
+        let o = run(&m, ConformalOutlines::Slanted);
+        let f = |axis: Axis, node: [usize; 3]| {
+            o.edges
+                .iter()
+                .find(|e| e.axis == axis && e.node == node)
+                .map(|e| e.fraction)
+        };
+        for (axis, node) in [
+            (Axis::X, [5, 4, 1]),
+            (Axis::X, [2, 4, 1]),
+            (Axis::Y, [4, 5, 1]),
+            (Axis::Y, [4, 2, 1]),
+        ] {
+            let got = f(axis, node).unwrap_or_else(|| panic!("{axis:?} {node:?} is not cut"));
+            assert!((got - 0.7).abs() < 1e-4, "{axis:?} {node:?} {got}");
+        }
+        // The cell (4, 4) is cut along the arc from (5, 4.83) to
+        // (4.83, 5), which leaves 0.013 of it open.
+        let fa = o
+            .faces
+            .iter()
+            .find(|(f, _)| f.node == [4, 4, 1])
+            .map(|(f, _)| f.fraction)
+            .unwrap();
+        let r: f64 = 1.3;
+        let disc = {
+            let n = 100_000;
+            (0..n)
+                .map(|q| {
+                    let x = (q as f64 + 0.5) / n as f64;
+                    (r * r - x * x).sqrt().min(1.0) / n as f64
+                })
+                .sum::<f64>()
+        };
+        assert!((fa - (1.0 - disc)).abs() < 2e-3, "{fa} {}", 1.0 - disc);
+        // A rectangle whose corner is a tenth of a cell beside the edges
+        // that cross its sides stays a staircase.
+        let m = model(&[(1.3, 2.2), (5.1, 2.2), (5.1, 4.1), (1.3, 4.1)], false);
+        let o = run(&m, ConformalOutlines::Slanted);
+        assert!(o.edges.is_empty() && o.faces.is_empty() && o.pec.is_empty());
     }
 
     #[test]
@@ -707,6 +1088,101 @@ mod tests {
                 .iter()
                 .any(|w| o.edges.iter().any(|e| (e.axis, e.node) == *w))
         );
+        // An edge that carries a lumped element is not cut: it stays the
+        // element's, not the sheet operator's.
+        let n = 9 * 9 * 3;
+        let pec = [vec![false; n], vec![false; n], vec![false; n]];
+        let none = HashSet::new();
+        let first = (o.edges[0].axis.index(), o.edges[0].node);
+        let lumped: HashSet<Key> = [first].into_iter().collect();
+        let taken = Taken {
+            edges: &none,
+            faces: &none,
+            sheet_edges: &none,
+            lumped: &lumped,
+            terminals: &none,
+        };
+        let l = geometry(
+            &m,
+            &pec,
+            1e-6,
+            1,
+            Rules {
+                mode: ConformalOutlines::Slanted,
+                conducting: true,
+                bridge: true,
+            },
+            &taken,
+        );
+        assert_eq!(l.edges.len(), o.edges.len() - 1);
+        assert_eq!(l.sheet_edges.len(), o.sheet_edges.len() - 1);
+        assert!(!l.edges.iter().any(|e| (e.axis.index(), e.node) == first));
+        // (A metal sheet's edge is cut all the same: the element acts on
+        // its open part.)
+        let metal = geometry(
+            &model(&diagonal(0.7), false),
+            &pec,
+            1e-6,
+            1,
+            Rules {
+                mode: ConformalOutlines::Slanted,
+                conducting: true,
+                bridge: true,
+            },
+            &taken,
+        );
+        assert!(
+            metal
+                .edges
+                .iter()
+                .any(|e| (e.axis.index(), e.node) == first)
+        );
+        // The edge that continues a lumped element's column into the
+        // copper is not cut where its midpoint is covered (metal or
+        // sheet), and is cut where it is not.
+        for (d, conducting) in [(0.4, false), (0.4, true), (0.7, false)] {
+            let m = model(&diagonal(d), conducting);
+            let all = geometry(
+                &m,
+                &pec,
+                1e-6,
+                1,
+                Rules {
+                    mode: ConformalOutlines::Slanted,
+                    conducting: true,
+                    bridge: true,
+                },
+                &Taken {
+                    edges: &none,
+                    faces: &none,
+                    sheet_edges: &none,
+                    lumped: &none,
+                    terminals: &none,
+                },
+            );
+            let key = (all.edges[0].axis.index(), all.edges[0].node);
+            let terminals: HashSet<Key> = [key].into_iter().collect();
+            let t = geometry(
+                &m,
+                &pec,
+                1e-6,
+                1,
+                Rules {
+                    mode: ConformalOutlines::Slanted,
+                    conducting: true,
+                    bridge: true,
+                },
+                &Taken {
+                    edges: &none,
+                    faces: &none,
+                    sheet_edges: &none,
+                    lumped: &none,
+                    terminals: &terminals,
+                },
+            );
+            let cut = t.edges.iter().any(|e| (e.axis.index(), e.node) == key);
+            assert_eq!(cut, d > 0.5, "{d} {conducting}");
+        }
         // Without conducting sheets (openEMS's sheet model) nothing.
         let n = 9 * 9 * 3;
         let pec = [vec![false; n], vec![false; n], vec![false; n]];
@@ -715,8 +1191,21 @@ mod tests {
             edges: &none,
             faces: &none,
             sheet_edges: &none,
+            lumped: &none,
+            terminals: &none,
         };
-        let o = geometry(&m, &pec, 1e-6, 1, ConformalOutlines::Slanted, false, &taken);
+        let o = geometry(
+            &m,
+            &pec,
+            1e-6,
+            1,
+            Rules {
+                mode: ConformalOutlines::Slanted,
+                conducting: false,
+                bridge: true,
+            },
+            &taken,
+        );
         assert!(o.edges.is_empty() && o.sheet_cuts.is_empty());
     }
 }

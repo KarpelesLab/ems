@@ -32,7 +32,9 @@
 //! With [`ConformalOutlines::Slanted`](super::ConformalOutlines) for
 //! solid metal ([`CompileOptions::conformal_solids`](super::CompileOptions::conformal_solids);
 //! Cartesian grids) an edge is cut only if the surface is oblique to the
-//! mesh at one of its transitions (`Ctx::oblique`); an edge that only
+//! mesh at one of its transitions, or bends away from the plane normal
+//! to the edge within a quarter of the edge (a round post crossed along
+//! a diameter; `Ctx::oblique`); an edge that only
 //! surfaces along the mesh cross keeps csx's staircase, and a face is
 //! cut if one of its edges is. A box, or the straight side of a prism,
 //! is then discretised as without conformal PEC whether its faces are on
@@ -51,8 +53,20 @@
 //! second-order accurate for smooth ones). Its area by the shoelace
 //! formula gives `f_A`, its centroid the position the engine interpolates
 //! small faces at. A corner is open if either edge meeting there is open
-//! at it. Metal intruding into a face without crossing its edges is not
-//! seen.
+//! at it.
+//!
+//! The polygon pairs every transition with the next one around the
+//! perimeter. That is wrong for metal that crosses the face between two
+//! opposite sides while both are open at their ends (a post, a barrel, a
+//! strip narrower than the face: the polygon is the whole face, and the
+//! flux would go through the metal), and its chords cut off a corner
+//! inside the face and miss a fifth of the face on a pad of one cell in
+//! radius. Where a side has two transitions or more, or the surface is
+//! more than `SAGITTA` of the shorter side away from the middle of a
+//! chord (`polygon_holds`), the face is integrated instead
+//! (`integrated_open`: rows of point queries with every change of state
+//! bisected, design §5.13.3; Cartesian grids). Metal intruding into a
+//! face none of whose edges it crosses is not seen.
 //!
 //! # Cylindrical grids
 //!
@@ -79,6 +93,14 @@
 //! zero-area faces and held an undamped local resonance; it happens
 //! whenever the surface passes through mesh nodes, e.g. a centred
 //! circle of radius `5·h` through `(±3h, ±4h)`).
+//!
+//! # Narrow slanted metal
+//!
+//! A cut edge is its open part in series with its covered part, so metal
+//! without a row of whole edges along it would be a chain of pieces. With
+//! [`CompileOptions::conformal_bridges`](super::CompileOptions::conformal_bridges)
+//! (the default) the edges that carry it from one of its nodes to the
+//! diagonal neighbour stay whole (`bridges`, design §5.13.3).
 //!
 //! # Sources
 //!
@@ -115,6 +137,9 @@ pub(super) struct Geometry {
     pub sheet_cuts: Vec<(Axis, [usize; 3], f64)>,
     /// `(normal, node)` of the cut faces in the planes of those sheets.
     pub sheet_cut_faces: Vec<(Axis, [usize; 3])>,
+    /// Edges kept whole for the narrow slanted conductors they carry
+    /// (`bridges`).
+    pub bridges: usize,
 }
 
 /// Open intervals of one edge: transition parameters (sorted, in (0, 1))
@@ -165,6 +190,11 @@ impl Profile {
         open
     }
 
+    /// Whether the edge is in metal at the parameter `t`.
+    fn metal_at(&self, t: f64) -> bool {
+        self.start_metal ^ (self.transitions.iter().filter(|&&x| x <= t).count() % 2 == 1)
+    }
+
     /// Open length fraction.
     fn open_fraction(&self) -> f64 {
         let mut metal = self.start_metal;
@@ -209,11 +239,18 @@ impl Ctx<'_> {
             p.0[o] += w * len;
             self.metal(p)
         };
-        [(a + 1) % 3, (a + 2) % 3].into_iter().any(|o| {
+        let flat = [(a + 1) % 3, (a + 2) % 3].into_iter().any(|o| {
             [SLANT_ACROSS, -SLANT_ACROSS]
                 .into_iter()
                 .any(|w| at(-SLANT_ALONG, o, w) && at(SLANT_ALONG, o, w))
-        })
+        });
+        flat || {
+            let (before, after) = (at(-SLANT_ALONG, a, 0.0), at(SLANT_ALONG, a, 0.0));
+            before != after
+                && [(a + 1) % 3, (a + 2) % 3]
+                    .into_iter()
+                    .any(|o| planar::curved(if before { -1.0 } else { 1.0 }, |dt, w| at(dt, o, w)))
+        }
     }
 
     fn node(&self, n: [usize; 3]) -> Vec3 {
@@ -276,6 +313,93 @@ fn refine(states: &[bool; SAMPLES + 1], metal: impl Fn(f64) -> bool) -> Profile 
         transitions,
     }
     .snapped()
+}
+
+/// The edge between two neighbouring nodes: `(axis index, lower node)`.
+fn edge_between(u: [usize; 3], v: [usize; 3]) -> (usize, [usize; 3]) {
+    let a = (0..3).find(|&a| u[a] != v[a]).unwrap_or(0);
+    (a, if u[a] < v[a] { u } else { v })
+}
+
+/// What [`bridges`] asks about the conductor.
+struct Conductor<'a> {
+    /// Whether the node is in the conductor.
+    covered: &'a dyn Fn([usize; 3]) -> bool,
+    /// Whether the straight line between two nodes is in the conductor.
+    joined: &'a dyn Fn([usize; 3], [usize; 3]) -> bool,
+    /// Whether the edge conducts along its whole length as discretised (a
+    /// PEC or sheet edge that is not cut).
+    conducts: &'a dyn Fn((usize, [usize; 3])) -> bool,
+    /// Covered fraction of the edge.
+    coverage: &'a dyn Fn((usize, [usize; 3])) -> f64,
+}
+
+/// The edges that keep a narrow slanted conductor in one piece (design
+/// §5.13.3).
+///
+/// A cut edge is its open part in series with its covered part: current
+/// along the conductor has to pass the open part as displacement current.
+/// Where the conductor is wide, whole edges inside it carry the current
+/// and the cut edges only place its rim. A strip under about a cell and a
+/// half wide at 45° has no row of whole edges, so every path along it
+/// would cross open parts and the strip would be a chain of pieces
+/// coupled by capacitors of a few femtofarads.
+///
+/// So wherever two nodes in the conductor are diagonal neighbours in a
+/// mesh plane (`planes`: pairs of axis indices), the conductor contains
+/// the line between them, and neither of the two paths of two edges
+/// around the cell between them conducts, the path whose less covered
+/// edge is covered most is returned: its edges are to be whole conductor
+/// edges, as the staircase has them. A conductor with whole edges on one
+/// of the paths is not touched, so a resolved outline keeps every cut;
+/// two conductors a fraction of a cell apart are not joined (the line
+/// between their nodes crosses the gap), where the staircase can short
+/// them.
+fn bridges(
+    nodes: &[[usize; 3]],
+    planes: &[(usize, usize)],
+    dims: [usize; 3],
+    c: &Conductor<'_>,
+) -> Vec<(usize, [usize; 3])> {
+    let mut kept: Vec<(usize, [usize; 3])> = Vec::new();
+    let mut set: std::collections::HashSet<(usize, [usize; 3])> = Default::default();
+    for &u in nodes {
+        for &(b, cc) in planes {
+            for up in [true, false] {
+                // w = u + e_b ± e_c.
+                if u[b] + 1 >= dims[b] || (up && u[cc] + 1 >= dims[cc]) || (!up && u[cc] == 0) {
+                    continue;
+                }
+                let mut w = u;
+                w[b] += 1;
+                w[cc] = if up { w[cc] + 1 } else { w[cc] - 1 };
+                if !(c.covered)(w) {
+                    continue;
+                }
+                let (mut v1, mut v2) = (u, u);
+                v1[b] = w[b];
+                v2[cc] = w[cc];
+                let paths = [v1, v2].map(|v| [edge_between(u, v), edge_between(v, w)]);
+                let on = |k: (usize, [usize; 3])| set.contains(&k) || (c.conducts)(k);
+                if paths.iter().any(|p| p.iter().all(|&k| on(k))) || !(c.joined)(u, w) {
+                    continue;
+                }
+                let score =
+                    |p: &[(usize, [usize; 3]); 2]| (c.coverage)(p[0]).min((c.coverage)(p[1]));
+                let best = if score(&paths[1]) > score(&paths[0]) {
+                    paths[1]
+                } else {
+                    paths[0]
+                };
+                for k in best {
+                    if !(c.conducts)(k) && set.insert(k) {
+                        kept.push(k);
+                    }
+                }
+            }
+        }
+    }
+    kept
 }
 
 /// Union of the bounding boxes of solid metal primitives, in the grid's
@@ -346,6 +470,10 @@ pub(super) struct Request<'a> {
     pub outlines: super::ConformalOutlines,
     /// Which surfaces of solid metal cut the edges they cross.
     pub solids: super::ConformalOutlines,
+    /// Whether narrow slanted conductors keep whole edges (`bridges`).
+    pub bridges: bool,
+    /// The edges `(axis index, node)` that carry a lumped element.
+    pub lumped: &'a std::collections::HashSet<(usize, [usize; 3])>,
     /// The conducting-sheet edges csx selected, or `None` where the
     /// outlines of conducting sheets are not cut (openEMS's sheet model).
     pub sheet_edges: Option<&'a [crate::engine::SheetEdge]>,
@@ -361,7 +489,26 @@ pub(super) fn geometry(
     warnings: &mut Vec<String>,
 ) -> Geometry {
     let (pec, snap, threads) = (&req.pec, req.snap, req.threads);
-    let (mut out, solid) = solid_geometry(model, pec, threads, req.solids);
+    let bridge = req.bridges;
+    // The edges that continue a lumped element's column beyond its ends.
+    let dims = [0, 1, 2].map(|a| model.grid.lines(a).len());
+    let mut terminals: std::collections::HashSet<(usize, [usize; 3])> = Default::default();
+    for &(a, n) in req.lumped {
+        if n[a] > 0 {
+            let mut m = n;
+            m[a] -= 1;
+            terminals.insert((a, m));
+        }
+        if n[a] + 2 < dims[a] {
+            let mut m = n;
+            m[a] += 1;
+            terminals.insert((a, m));
+        }
+    }
+    terminals.retain(|k| !req.lumped.contains(k));
+    let sheets = planar::Sheets::new(model, snap);
+    let (mut out, solid) =
+        solid_geometry(model, pec, threads, req.solids, bridge, &terminals, &sheets);
     // The metal test of the solid geometry (grid coordinates), for sheets
     // ending on a metal surface.
     let index = model.spatial_index(
@@ -404,12 +551,17 @@ pub(super) fn geometry(
         &mask,
         snap,
         threads,
-        req.outlines,
-        req.sheet_edges.is_some(),
+        planar::Rules {
+            mode: req.outlines,
+            conducting: req.sheet_edges.is_some(),
+            bridge,
+        },
         &planar::Taken {
             edges: &taken_edges,
             faces: &taken_faces,
             sheet_edges: &sheet_edges,
+            lumped: req.lumped,
+            terminals: &terminals,
         },
     );
     out.pec.extend(outlines.pec);
@@ -425,6 +577,7 @@ pub(super) fn geometry(
     out.sheet_edges = outlines.sheet_edges;
     out.sheet_cuts = outlines.sheet_cuts;
     out.sheet_cut_faces = outlines.sheet_cut_faces;
+    out.bridges += outlines.bridges;
     for e in edges {
         out.conformal.push_sheet_edge(e);
     }
@@ -477,6 +630,9 @@ fn solid_geometry(
     pec: &[&[bool]; 3],
     threads: usize,
     mode: super::ConformalOutlines,
+    bridge: bool,
+    terminals: &std::collections::HashSet<(usize, [usize; 3])>,
+    sheets: &planar::Sheets<'_>,
 ) -> (Geometry, SolidProfiles) {
     let lines = [0, 1, 2].map(|a| model.grid.lines(a));
     let dims = lines.map(<[f64]>::len);
@@ -486,6 +642,7 @@ fn solid_geometry(
         sheet_edges: Vec::new(),
         sheet_cuts: Vec::new(),
         sheet_cut_faces: Vec::new(),
+        bridges: 0,
     };
     let bb = metal_bbox(model);
     if bb.is_empty()
@@ -569,9 +726,19 @@ fn solid_geometry(
         if f <= 0.0 {
             out.pec.push((axis, k, true));
         } else if f < 1.0 {
-            if (pec[a][k] && !sm) || !oblique {
+            if (pec[a][k] && !sm)
+                || !oblique
+                || (sm && terminals.contains(&(a, n)))
+                || sheets.whole(a, n)
+            {
                 // PEC from a sheet or wire: keep it. A surface along the
-                // mesh: csx's staircase decides.
+                // mesh: csx's staircase decides. The edge that continues
+                // a lumped element's column into the metal stays whole,
+                // or the column would hang on its open part. An edge in
+                // a sheet on its mesh plane (a barrel through a pad or a
+                // plane) is the sheet's, a conductor from end to end: it
+                // has no open part, and a conducting sheet's edge is its
+                // operator's.
             } else {
                 out.pec.push((axis, k, false));
                 cut.push(ConformalEdge {
@@ -582,6 +749,44 @@ fn solid_geometry(
             }
         }
         profiles.insert((a, n), prof);
+    }
+    // Narrow slanted metal stays in one piece: the edges that carry it
+    // stay whole (`bridges`; Cartesian grids).
+    if !cyl && bridge {
+        let nodes: Vec<[usize; 3]> = rx
+            .clone()
+            .flat_map(|i| {
+                let (ry, rz) = (ry.clone(), rz.clone());
+                ry.flat_map(move |j| rz.clone().map(move |k| [i, j, k]))
+            })
+            .filter(|&n| state(n))
+            .collect();
+        let is_cut: std::collections::HashSet<(usize, [usize; 3])> =
+            cut.iter().map(|e| (e.axis.index(), e.node)).collect();
+        let whole = bridges(
+            &nodes,
+            &[(0, 1), (1, 2), (2, 0)],
+            dims,
+            &Conductor {
+                covered: &state,
+                joined: &|u, w| {
+                    let (p, q) = (ctx.node(u), ctx.node(w));
+                    (1..8).all(|m| ctx.metal(p + (q - p) * (m as f64 / 8.0)))
+                },
+                conducts: &|key| {
+                    !is_cut.contains(&key)
+                        && (pec[key.0][eidx(key.1)]
+                            || profiles.get(&key).is_some_and(|p| p.open_fraction() <= 0.0))
+                },
+                coverage: &|key| profiles.get(&key).map_or(0.0, |p| 1.0 - p.open_fraction()),
+            },
+        );
+        for (a, n) in whole {
+            let axis = Axis::from_index(a).expect("axis in 0..3");
+            out.pec.push((axis, eidx(n), true));
+            cut.retain(|e| (e.axis, e.node) != (axis, n));
+            out.bridges += 1;
+        }
     }
     // Edges of faces without open area: the face is metal up to its
     // boundary, so an open part of such an edge lies on the metal surface,
@@ -631,11 +836,25 @@ fn solid_geometry(
                     let lb = lines[b][n[b] + 1] - lines[b][n[b]];
                     let lc = lines[c][n[c] + 1] - lines[c][n[c]];
                     let e = [profile(b, n), profile(c, nb), profile(b, nc), profile(c, n)];
+                    let at = |u: f64, v: f64| {
+                        let mut p = ctx.node(n);
+                        p.0[b] += u * lb;
+                        p.0[c] += v * lc;
+                        ctx.metal(p)
+                    };
+                    let whole = !cyl
+                        && e.iter().any(|p| !p.transitions.is_empty())
+                        && !polygon_holds(&e, lb, lc, at);
                     // z faces of a cylindrical grid: b = ρ, c = α.
-                    let fa = if cyl && axis == Axis::Z {
-                        face_fraction_annular(e.clone(), lines[0][n[0]], lb, lc)
+                    let (fa, centroid) = if whole {
+                        integrated_open(at)
+                    } else if cyl && axis == Axis::Z {
+                        (
+                            face_fraction_annular(e.clone(), lines[0][n[0]], lb, lc),
+                            open_centroid(&e, lb, lc),
+                        )
                     } else {
-                        face_fraction(e.clone(), lb, lc)
+                        (face_fraction(e.clone(), lb, lc), open_centroid(&e, lb, lc))
                     };
                     if fa <= 0.0 {
                         surface.extend(keys);
@@ -643,7 +862,6 @@ fn solid_geometry(
                     }
                     // (A face is cut if one of its edges is.)
                     if fa < 1.0 && (all || keys.iter().any(|key| is_cut.contains(key))) {
-                        let centroid = open_centroid(&e, lb, lc);
                         out.conformal.push_face_with_centroid(
                             ConformalFace {
                                 axis,
@@ -678,6 +896,12 @@ fn solid_geometry(
 /// The open polygon of a face (see [`face_fraction`]) in local `(u, v)`
 /// coordinates.
 fn open_polygon(e: &[Profile; 4], lb: f64, lc: f64) -> Vec<(f64, f64)> {
+    tagged_polygon(e, lb, lc).into_iter().map(|p| p.0).collect()
+}
+
+/// [`open_polygon`] with, for each point, the face side (0…3) it is a
+/// transition on (`None`: a corner).
+fn tagged_polygon(e: &[Profile; 4], lb: f64, lc: f64) -> Vec<((f64, f64), Option<usize>)> {
     let pos = |q: usize, t: f64| match q {
         0 => (t * lb, 0.0),
         1 => (lb, t * lc),
@@ -699,21 +923,67 @@ fn open_polygon(e: &[Profile; 4], lb: f64, lc: f64) -> Vec<(f64, f64)> {
             }
         })
         .collect();
-    let mut poly: Vec<(f64, f64)> = Vec::new();
+    let mut poly = Vec::new();
     for (q, (start_metal, ts, _)) in walk.iter().enumerate() {
         let t0 = if q < 2 { 0.0 } else { 1.0 };
         // A corner is open if either edge meeting there is open at it
         // (they can disagree when a surface through the corner was snapped
         // onto it on one edge only).
         if !start_metal || !walk[(q + 3) % 4].2 {
-            poly.push(pos(q, t0));
+            poly.push((pos(q, t0), None));
         }
         for &t in ts {
-            poly.push(pos(q, t));
+            poly.push((pos(q, t), Some(q)));
         }
     }
     poly
 }
+
+/// Whether the open polygon of a face ([`open_polygon`]) can be trusted
+/// with its area; `metal(u, v)` is the state at a point of the face in
+/// units of its sides. It cannot where one side of the face has two
+/// transitions or more (metal crossing the face between two opposite
+/// sides, a post or a strip narrower than the face, is paired wrongly by
+/// the walk around the perimeter: the polygon keeps the whole face), nor
+/// where the surface is more than [`SAGITTA`] of the shorter side away
+/// from one of the chords at its middle (a corner in the face, or a
+/// radius of about a cell). Such faces are integrated
+/// ([`integrated_open`]).
+fn polygon_holds(e: &[Profile; 4], lb: f64, lc: f64, metal: impl Fn(f64, f64) -> bool) -> bool {
+    if e.iter().any(|p| p.transitions.len() >= 2) {
+        return false;
+    }
+    let poly = tagged_polygon(e, lb, lc);
+    let d = SAGITTA * lb.min(lc);
+    for q in 0..poly.len() {
+        let ((x0, y0), s0) = poly[q];
+        let ((x1, y1), s1) = poly[(q + 1) % poly.len()];
+        let (Some(s0), Some(s1)) = (s0, s1) else {
+            continue;
+        };
+        if s0 == s1 {
+            continue;
+        }
+        let len = (x1 - x0).hypot(y1 - y0);
+        if len <= 0.0 {
+            continue;
+        }
+        let (nx, ny) = ((y1 - y0) / len * d, -(x1 - x0) / len * d);
+        let (mx, my) = (0.5 * (x0 + x1), 0.5 * (y0 + y1));
+        let at = |sx: f64, sy: f64| metal((mx + sx) / lb, (my + sy) / lc);
+        if at(nx, ny) == at(-nx, -ny) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Largest distance of the surface from a chord of the open polygon, in
+/// units of the shorter side of the face, for which the polygon's area is
+/// used ([`polygon_holds`]): the sagitta of a chord across a cell of side
+/// `h` on a circle of radius `R` is about `h²/(4R)`, so circles of four
+/// cells in radius and more keep the polygon.
+const SAGITTA: f64 = 0.06;
 
 /// Centroid of the open polygon of a face (see [`face_fraction`]) in
 /// units of the sides `lb`, `lc`, `[0.5, 0.5]` if it is degenerate. On a
@@ -738,6 +1008,123 @@ fn open_centroid(e: &[Profile; 4], lb: f64, lc: f64) -> [f64; 2] {
         (cx / (3.0 * a2 * lb)).clamp(0.0, 1.0),
         (cy / (3.0 * a2 * lc)).clamp(0.0, 1.0),
     ]
+}
+
+/// Rows of [`integrated_open`].
+const ROWS: usize = 16;
+
+/// Open length, its first moment and the number of state changes along
+/// the line `v` of the unit face: the state is sampled at the
+/// `SAMPLES + 1` points of an edge and every change bisected, as on the
+/// edges.
+fn open_row(metal: &impl Fn(f64, f64) -> bool, v: f64) -> (f64, f64, usize) {
+    const STEPS: usize = 24;
+    let (mut len, mut moment, mut changes) = (0.0, 0.0, 0);
+    let mut state = metal(0.0, v);
+    let mut last = 0.0;
+    for q in 1..=SAMPLES {
+        let u1 = q as f64 / SAMPLES as f64;
+        let s1 = metal(u1, v);
+        if s1 == state {
+            continue;
+        }
+        let (mut lo, mut hi) = ((q - 1) as f64 / SAMPLES as f64, u1);
+        for _ in 0..STEPS {
+            let mid = 0.5 * (lo + hi);
+            if metal(mid, v) == state {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let t = 0.5 * (lo + hi);
+        if !state {
+            len += t - last;
+            moment += 0.5 * (t * t - last * last);
+        }
+        last = t;
+        state = s1;
+        changes += 1;
+    }
+    if !state {
+        len += 1.0 - last;
+        moment += 0.5 * (1.0 - last * last);
+    }
+    (len, moment, changes)
+}
+
+/// Open area fraction and open-area centroid (in units of the sides) of a
+/// face by direct integration: `metal(u, v)` is the state at the point
+/// `(u, v)` of the unit face. The face is cut into [`ROWS`] rows along
+/// `v`, each with the open length on its centre line ([`open_row`]).
+/// Where two neighbouring rows differ in their number of state changes, a
+/// surface along the rows may lie between their centre lines (the side of
+/// a box, a corner): the height at which the number changes is bisected,
+/// and the strip between the two lines is integrated in two parts, below
+/// that height and above it. Unlike the polygon of
+/// [`open_polygon`] this sees metal that crosses the face between two
+/// opposite edges (a post or a strip thinner than the face, both of whose
+/// edges are open at their ends), metal that bulges into the face without
+/// crossing an edge, corners, and the curvature of an outline whose
+/// radius is about a cell.
+fn integrated_open(metal: impl Fn(f64, f64) -> bool) -> (f64, [f64; 2]) {
+    const STEPS: usize = 20;
+    /// Rows of each part of a strip in which the state changes differ.
+    const SUB: usize = 8;
+    let h = 1.0 / ROWS as f64;
+    let rows: Vec<(f64, f64, usize)> = (0..ROWS)
+        .map(|r| open_row(&metal, (r as f64 + 0.5) * h))
+        .collect();
+    let (mut area, mut mu, mut mv) = (0.0, 0.0, 0.0);
+    for (r, &(len, moment, _)) in rows.iter().enumerate() {
+        area += len * h;
+        mu += moment * h;
+        mv += len * h * (r as f64 + 0.5) * h;
+    }
+    for r in 0..ROWS - 1 {
+        let (a, b) = (rows[r], rows[r + 1]);
+        if a.2 == b.2 {
+            continue;
+        }
+        // The row `a` holds up to `v`, the row `b` from there.
+        let (mut lo, mut hi) = ((r as f64 + 0.5) * h, (r as f64 + 1.5) * h);
+        for _ in 0..STEPS {
+            let mid = 0.5 * (lo + hi);
+            if open_row(&metal, mid).2 == a.2 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        // Between the two centre lines the midpoint rule gave each row
+        // half of the strip; each part is integrated by itself instead
+        // (a surface that touches a row, a circle's lowest point, makes
+        // the open length a square root of the height there).
+        let (va, vb) = ((r as f64 + 0.5) * h, (r as f64 + 1.5) * h);
+        area -= 0.5 * h * (a.0 + b.0);
+        mu -= 0.5 * h * (a.1 + b.1);
+        mv -= 0.5 * h * (a.0 * va + b.0 * vb);
+        for (from, to) in [(va, lo), (hi, vb)] {
+            let step = (to - from) / SUB as f64;
+            for q in 0..SUB {
+                let at = from + (q as f64 + 0.5) * step;
+                let (len, moment, _) = open_row(&metal, at);
+                area += len * step;
+                mu += moment * step;
+                mv += len * step * at;
+            }
+        }
+    }
+    if area <= 1e-9 {
+        return (0.0, [0.5, 0.5]);
+    }
+    if area >= 1.0 - 1e-9 {
+        return (1.0, [0.5, 0.5]);
+    }
+    (
+        area,
+        [(mu / area).clamp(0.0, 1.0), (mv / area).clamp(0.0, 1.0)],
+    )
 }
 
 /// [`face_fraction`] for a z face of a cylindrical grid, `u = ρ − ρ0`
@@ -894,6 +1281,102 @@ mod tests {
             (c[0] - 1.0 / 6.0).abs() < 1e-12 && (c[1] - 1.0 / 6.0).abs() < 1e-12,
             "{c:?}"
         );
+    }
+
+    #[test]
+    fn faces_the_polygon_misses_are_integrated() {
+        let open = || p(false, &[]);
+        // A post through the face between two opposite sides, both open at
+        // their ends: the walk around the perimeter joins the two
+        // transitions of a side and keeps the whole face.
+        let band = |u: f64, _v: f64| (0.3..0.7).contains(&u);
+        let e = [p(false, &[0.3, 0.7]), open(), p(false, &[0.3, 0.7]), open()];
+        assert_eq!(face_fraction(e.clone(), 1.0, 1.0), 1.0);
+        assert!(!polygon_holds(&e, 1.0, 1.0, band));
+        let (f, c) = integrated_open(band);
+        assert!((f - 0.6).abs() < 1e-6, "{f}");
+        assert!(
+            (c[0] - 0.5).abs() < 1e-6 && (c[1] - 0.5).abs() < 1e-6,
+            "{c:?}"
+        );
+        // A straight cut: the polygon is exact and is kept.
+        let half = |u: f64, v: f64| u + v < 0.8;
+        let e = [p(true, &[0.8]), open(), open(), p(true, &[0.8])];
+        assert!(polygon_holds(&e, 1.0, 1.0, half));
+        let (f, c) = integrated_open(half);
+        assert!((f - 0.68).abs() < 2e-3, "{f}");
+        let want = open_centroid(&e, 1.0, 1.0);
+        assert!((c[0] - want[0]).abs() < 5e-3 && (c[1] - want[1]).abs() < 5e-3);
+        // The same transitions with a square corner between them: the
+        // chord is off by a quarter of the face.
+        let corner = |u: f64, v: f64| u < 0.8 && v < 0.8;
+        assert!(!polygon_holds(&e, 1.0, 1.0, corner));
+        let (f, _) = integrated_open(corner);
+        assert!((f - 0.36).abs() < 1e-6, "{f}");
+        // A quarter disc of radius 0.8 of the face (a pad of a cell): the
+        // chord misses 0.18 of the face.
+        let disc = |u: f64, v: f64| u.hypot(v) < 0.8;
+        assert!(!polygon_holds(&e, 1.0, 1.0, disc));
+        let (f, _) = integrated_open(disc);
+        let want = 1.0 - 0.25 * core::f64::consts::PI * 0.64;
+        assert!((f - want).abs() < 2e-3, "{f} {want}");
+        // … and of ten faces in radius about a far centre: kept.
+        let big = |u: f64, v: f64| (u + 6.6).hypot(v + 6.6) < 10.0;
+        let t = (100.0f64 - 6.6 * 6.6).sqrt() - 6.6;
+        let e = [p(true, &[t]), open(), open(), p(true, &[t])];
+        assert!(polygon_holds(&e, 1.0, 1.0, big));
+        // A disc inside the face, crossing no side.
+        let (f, _) = integrated_open(|u, v| (u - 0.5).hypot(v - 0.5) < 0.4);
+        assert!(
+            (f - (1.0 - core::f64::consts::PI * 0.16)).abs() < 3e-3,
+            "{f}"
+        );
+        // Nothing and everything.
+        assert_eq!(integrated_open(|_, _| false).0, 1.0);
+        assert_eq!(integrated_open(|_, _| true).0, 0.0);
+    }
+
+    #[test]
+    fn bridges_keep_a_diagonal_of_nodes_connected() {
+        // Nodes (i, i, 0) in a conductor along the diagonal of the x–y
+        // plane; the x edge from each is covered 0.7, the y edge 0.4.
+        let nodes: Vec<[usize; 3]> = (0..4).map(|i| [i, i, 0]).collect();
+        let covered = |n: [usize; 3]| n[0] == n[1] && n[0] < 4 && n[2] == 0;
+        let coverage = |k: (usize, [usize; 3])| match k.0 {
+            0 => 0.7,
+            1 => 0.4,
+            _ => 0.0,
+        };
+        let run = |joined: bool, conducts: &dyn Fn((usize, [usize; 3])) -> bool| {
+            bridges(
+                &nodes,
+                &[(0, 1), (1, 2), (2, 0)],
+                [5, 5, 2],
+                &Conductor {
+                    covered: &covered,
+                    joined: &|_, _| joined,
+                    conducts,
+                    coverage: &coverage,
+                },
+            )
+        };
+        // The path over (i + 1, i): the x edge from (i, i) and the y edge
+        // from (i + 1, i). Its edges are covered 0.7 and 0.4; the other
+        // path's (y from (i, i), x from (i, i + 1)) 0.4 and 0.7: a tie,
+        // the first path.
+        let got = run(true, &|_| false);
+        let want: Vec<(usize, [usize; 3])> = (0..3)
+            .flat_map(|i| [(0, [i, i, 0]), (1, [i + 1, i, 0])])
+            .collect();
+        assert_eq!(got, want);
+        // The conductor does not contain the line between the nodes (two
+        // conductors): nothing.
+        assert!(run(false, &|_| false).is_empty());
+        // One of the two paths conducts already: nothing.
+        assert!(run(true, &|k| k.0 == 1 || k.1[0] == k.1[1]).is_empty());
+        // One of its edges does: only the other is returned.
+        let got = run(true, &|k| k.0 == 0 && k.1[0] == k.1[1]);
+        assert_eq!(got, (0..3).map(|i| (1, [i + 1, i, 0])).collect::<Vec<_>>());
     }
 
     #[test]

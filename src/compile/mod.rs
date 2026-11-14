@@ -80,6 +80,14 @@
 //! on the covered part of a cut edge, [`Compiled::sheet_cuts`]). A cut
 //! edge's voltage `u` is then the voltage over its open part, `E·l_open`.
 //!
+//! A cut edge is its open part in series with its covered part, so some
+//! edges stay whole (design §5.13.3): those that carry a slanted
+//! conductor without a row of whole edges along it
+//! ([`CompileOptions::conformal_bridges`]), the edge that continues the
+//! column of a lumped element into the copper of its pad, an edge of a
+//! conducting sheet that carries a lumped element, and an edge in a sheet
+//! on its mesh plane that solid metal crosses (a barrel through a pad).
+//!
 //! # Dispersive materials
 //!
 //! csx `LorentzMaterial` (Drude/Lorentz) and `DebyeMaterial` properties
@@ -231,6 +239,11 @@ pub struct CompileOptions {
     /// [`ConformalOutlines::All`]; see
     /// [`with_conformal_solids`](Self::with_conformal_solids)).
     pub conformal_solids: ConformalOutlines,
+    /// Keeps slanted conductors narrower than about a cell and a half in
+    /// one piece when [`conformal`](Self::conformal) is set (default
+    /// `true`; see
+    /// [`with_conformal_bridges`](Self::with_conformal_bridges)).
+    pub conformal_bridges: bool,
     /// Time integration of Lorentz/Drude poles (default
     /// [`Scheme::Leapfrog`](crate::engine::dispersive::Scheme::Leapfrog),
     /// the scheme openEMS uses, so XML models give the same signals; see
@@ -373,6 +386,30 @@ impl CompileOptions {
         self.conformal_solids = surfaces;
         self
     }
+
+    /// Returns `self` with [`conformal_bridges`](Self::conformal_bridges)
+    /// set to `on`.
+    ///
+    /// A cut edge is its open part in series with its covered part, so a
+    /// slanted track without a row of whole edges along it (under about a
+    /// cell and a half wide at 45°) would be a chain of pieces coupled by
+    /// a few femtofarads. With the option (the default) the edges that
+    /// carry such a conductor from one of its nodes to the next stay
+    /// whole, as the staircase has them; the other edges keep their cuts,
+    /// and a conductor with whole edges along it is not touched (design
+    /// §5.13.3). `false`: every edge an outline crosses is cut.
+    ///
+    /// ```
+    /// let o = ems::CompileOptions::default()
+    ///     .with_conformal(true)
+    ///     .with_conformal_bridges(false);
+    /// assert!(!o.conformal_bridges);
+    /// ```
+    #[must_use]
+    pub fn with_conformal_bridges(mut self, on: bool) -> Self {
+        self.conformal_bridges = on;
+        self
+    }
 }
 
 /// The outlines of sheets on mesh planes that
@@ -409,6 +446,7 @@ impl Default for CompileOptions {
             conformal_options: ConformalOptions::default(),
             conformal_outlines: ConformalOutlines::default(),
             conformal_solids: ConformalOutlines::All,
+            conformal_bridges: true,
             dispersive_scheme: DispersiveScheme::Leapfrog,
             lossy_metals: Vec::new(),
             sheet_model: SheetModel::Ladder,
@@ -2201,6 +2239,14 @@ pub fn compile(
             materials.pec_mask(Axis::Y),
             materials.pec_mask(Axis::Z),
         ];
+        let lumped_edges: std::collections::HashSet<(usize, [usize; 3])> = mg
+            .lumped
+            .iter()
+            .map(|l| {
+                let (axis, node) = node_map.edge(l.edge);
+                (axis.index(), node)
+            })
+            .collect();
         let geo = conformal::geometry(
             model,
             &conformal::Request {
@@ -2209,6 +2255,8 @@ pub fn compile(
                 threads: fdtd.resolved_threads(),
                 outlines: opts.conformal_outlines,
                 solids: opts.conformal_solids,
+                bridges: opts.conformal_bridges,
+                lumped: &lumped_edges,
                 // openEMS's sheet model (files) has no cut edges.
                 sheet_edges: (!fdtd.get_openems_run()).then_some(&sheet_map.edges[..]),
             },
@@ -2225,11 +2273,13 @@ pub fn compile(
         }
         sheet_cuts = geo.sheet_cuts;
         sheet_cut_faces = geo.sheet_cut_faces;
-        let pec = if cyl {
+        let bridges = geo.bridges;
+        let mut pec = if cyl {
             cylindrical::conformal_sheets_in_zones(&grid, geo.conformal, &mut warnings)
         } else {
             geo.conformal
         };
+        pec.set_bridges(bridges);
         Some(pec.with_options(opts.conformal_options))
     } else {
         None
