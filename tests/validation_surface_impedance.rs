@@ -11,6 +11,9 @@
 //!   `α = R_s/(η0·h)`, running into the CPML;
 //! * a lossy strip between lossy plates running into the CPML: the layer
 //!   reflects it like a perfectly conducting one;
+//! * a resistive strip between the plates of a capacitor: the discharge
+//!   time `R·C` with the strip's own width (its border edges carry half a
+//!   cell);
 //! * passivity and thread-count independence in a 3-D cavity.
 
 mod common;
@@ -581,6 +584,83 @@ fn sheet_edges_are_stretched_like_the_kernel() {
     );
     assert!(e_with < 1e-4, "{e_with}");
     assert!(e_plain > 1e-2, "{e_plain}");
+}
+
+/// A plate capacitor (10 × 10 mm, 2 mm apart, magnetic side walls) with a
+/// resistive strip between its plates, two cells (2 mm) wide: it discharges
+/// with `τ = R·C`, `R = h/(σt·w)`. The strip's three lines of edges carry
+/// ½ + 1 + ½ cells of sheet; with a whole dual cell on each (the ladder's
+/// width at a border) `τ` would be a third shorter.
+#[test]
+fn resistive_strip_discharges_a_plate_capacitor() {
+    let _t = Timer::start("resistive_strip_discharges_a_plate_capacitor");
+    let g = Grid::uniform([10, 10, 2], [1e-3; 3]).unwrap();
+    let mut faces = FaceConditions::all(FaceCondition::Pmc);
+    faces[Face::ZMin] = FaceCondition::Pec;
+    faces[Face::ZMax] = FaceCondition::Pec;
+    let mut e = Engine::builder(g).faces(faces).threads(1).build().unwrap();
+    let (sigma, t) = (10.0, 5e-6);
+    let mut s = SurfaceImpedance::new(Some(1e9));
+    for (axis, node) in box_edges([5, 4, 0], [5, 6, 2]) {
+        s.push_sheet(
+            SheetEdge {
+                axis,
+                node,
+                normal: Axis::X,
+                conductivity: sigma,
+                thickness: t,
+                upper_share: None,
+            },
+            Roughness::Smooth,
+        );
+    }
+    let h = s.add_to(&mut e).unwrap();
+    // Six z edges and the two y edges between the plates (those on the
+    // plates are PEC).
+    assert_eq!(
+        (e.operator(&h).sheet_edges(), e.operator(&h).skipped()),
+        (8, 4)
+    );
+    {
+        let mut f = e.fields_mut();
+        for i in 0..=10 {
+            for j in 0..=10 {
+                for k in 0..2 {
+                    f.u.set(Axis::Z, [i, j, k], 0.5);
+                }
+            }
+        }
+    }
+    let p = e.add_operator(Probe::voltage(Axis::Z, [1, 8, 0]));
+    e.run(6000);
+    let dt = e.dt();
+    let v = e.operator(&p).values();
+    // Least-squares slope of ln v over 2…11 ns.
+    let pts: Vec<(f64, f64)> = v
+        .iter()
+        .enumerate()
+        .map(|(n, x)| (n as f64 * dt, *x))
+        .filter(|(t, x)| *t > 2e-9 && *x > 0.0)
+        .map(|(t, x)| (t, x.ln()))
+        .collect();
+    assert!(pts.len() > 4000, "{}", pts.len());
+    let m = pts.len() as f64;
+    let (sx, sy) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+    let (mx, my) = (sx / m, sy / m);
+    let slope = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum::<f64>()
+        / pts.iter().map(|p| (p.0 - mx).powi(2)).sum::<f64>();
+    let tau = -1.0 / slope;
+    let (r, c) = (
+        2e-3 / (sigma * t * 2e-3),
+        ems::constants::EPS0 * 1e-4 / 2e-3,
+    );
+    eprintln!(
+        "τ = {:.4} ns, R·C = {:.4} ns ({:+.2} %)",
+        tau * 1e9,
+        r * c * 1e9,
+        100.0 * (tau / (r * c) - 1.0)
+    );
+    assert!((tau / (r * c) - 1.0).abs() < 0.02, "{tau} vs {}", r * c);
 }
 
 /// A solid block and a rational sheet in a closed cavity on a graded mesh:

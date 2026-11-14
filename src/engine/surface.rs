@@ -94,8 +94,12 @@
 //! voltages `u+` (the engine's value) and `u−`, each with its share of the
 //! edge's capacitance and of the dual loop, and the H updates on the `−`
 //! side are corrected for `u− − u+`. The two faces are joined by `Z_e` and
-//! `Z_o` instead of the ladder. A voltage that another operator (a source)
-//! adds to a sheet edge is added to both faces.
+//! `Z_o` instead of the ladder. The width `w` of the edge's strip of the
+//! sheet is, as for solid metal, half a cell on each side where the sheet
+//! goes on (a parallel sheet edge or metal): an edge on the border of a
+//! sheet carries half a cell of conductor, not the whole dual length the
+//! ladder gives it. A voltage that another operator (a source) adds to a
+//! sheet edge is added to both faces.
 //!
 //! *Time stepping.* Face voltages, currents and sections are integrated
 //! with the trapezoidal rule centred at `(n + ½)·dt`, driven by the H
@@ -1272,6 +1276,12 @@ impl SurfaceImpedance {
         // ---- Sheets ----
         type SheetKey = (f64, f64, Roughness);
         let mut sheet_fits: Vec<(SheetKey, [u32; 2])> = Vec::new();
+        // (Looked up only: the order of the map does not matter.)
+        let sheet_normals: std::collections::HashMap<(usize, [usize; 3]), usize> = self
+            .sheet_entries
+            .iter()
+            .map(|(e, _)| ((e.axis.index(), e.node), e.normal.index()))
+            .collect();
         let mut order: Vec<usize> = (0..self.sheet_entries.len()).collect();
         order.sort_by_key(|&i| {
             let e = &self.sheet_entries[i].0;
@@ -1296,7 +1306,29 @@ impl SurfaceImpedance {
             let k = e.node[nrm.index()];
             let (up, dn) = (half(nrm, k, true), half(nrm, k, false));
             let f_up = up / (up + dn);
-            let g = grid.dual_delta(t_ax, e.node[t_ax.index()]) / grid.edge_length(d, e.node);
+            // Width of the edge's strip of the sheet: half a cell on each
+            // side where the sheet goes on (a parallel edge of the same
+            // sheet plane, or metal); a single line of edges takes the
+            // dual length.
+            let mut w = 0.0;
+            for up in [false, true] {
+                let mut q = e.node;
+                let kt = q[t_ax.index()];
+                if up {
+                    q[t_ax.index()] += 1;
+                } else if kt == 0 {
+                    continue;
+                } else {
+                    q[t_ax.index()] -= 1;
+                }
+                if sheet_normals.get(&(d.index(), q)) == Some(&nrm.index()) || is_pec(d, q) {
+                    w += half(t_ax, kt, up);
+                }
+            }
+            if w <= 0.0 {
+                w = grid.dual_delta(t_ax, e.node[t_ax.index()]);
+            }
+            let g = w / grid.edge_length(d, e.node);
             let (sc, sg) = e.upper_share.unwrap_or((f_up, f_up));
             let key = (e.conductivity, e.thickness, rough);
             let port = match sheet_fits.iter().find(|f| f.0 == key) {
