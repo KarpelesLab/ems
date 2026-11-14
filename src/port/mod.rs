@@ -80,6 +80,9 @@ pub struct PortProperties {
     pub voltage: (String, PropertyId),
     /// The current `ProbeBox`: `port_it<n>`.
     pub current: (String, PropertyId),
+    /// The voltage `ProbeBox`es of the port's columns, `port_ut<n>_col<k>`
+    /// ([`LumpedPort::average_voltage`]; empty without it).
+    pub voltage_columns: Vec<(String, PropertyId)>,
 }
 
 /// A lumped port written into a csx model: a `LumpedElement` resistor
@@ -118,6 +121,9 @@ pub struct PortProperties {
 ///   transverse axis the centre is moved to the mesh line nearest to it
 ///   (if the model has lines there), so a multi-column port's probe lies
 ///   on a column of port edges instead of between two.
+/// * With [`average_voltage`](Self::average_voltage) the port voltage of
+///   [`analyze`](Self::analyze) is instead the mean over all columns of
+///   port edges; see [Voltage of a multi-column port](#voltage-of-a-multi-column-port).
 /// * The **current** probe covers the box's cross-section in its middle
 ///   dual plane (a box flat along `axis` on the mesh line just above that
 ///   plane, normal `axis`, which openEMS reads the same way; if the model
@@ -147,6 +153,48 @@ pub struct PortProperties {
 /// reference-plane error (`|S11| = tan(K/4)` for a matched line with phase
 /// advance `K` per cell, instead of `tan²(K/4)`).
 ///
+/// # Voltage of a multi-column port
+///
+/// A port box wider than one mesh line has several columns of edges
+/// between its terminals, `p` in parallel, and csx gives every edge the
+/// same resistance (`R·p/s` for `s` edges in series). The columns do not
+/// carry the same voltage unless the field is uniform across the port:
+/// under a strip the columns at its rim see the fringe field.
+///
+/// * By default the port voltage is that of **one column**, the one
+///   nearest to the centre of the box (the `port_ut<n>` probe, what an
+///   openEMS script reads).
+/// * With [`average_voltage`](Self::average_voltage) it is the **mean
+///   over the columns**, `V = (1/p)·Σ V_col`, from one more voltage probe
+///   per column (`port_ut<n>_col<k>`, on every mesh line inside the box
+///   on the transverse axes, rim lines included; `port_ut<n>` is written
+///   as before).
+///
+/// What the choice changes: the element current is
+/// `i = Σ_col (V_col − V_s)/(R·p) = (V − V_s)/R` with the mean `V` (`V_s`
+/// the Thevenin source voltage, `i` and `V` half a step apart in time, as
+/// the element's trapezoidal update takes them), so the mean voltage and
+/// the element current satisfy the port's own circuit equation
+/// `V = V_s − R·I` exactly, and an undriven port has no incident wave,
+/// `a = (V + R·I)/(2√R) = 0`, at its own resistance. The voltage of one
+/// column satisfies it only as far as the columns agree; on the 2 mm wide
+/// strip of `tests/port_voltage.rs` (5 columns on a 0.5 mm mesh, 1.6 mm
+/// above ground, 1 to 8 GHz) the centre column reads `|a/b|` of 0.003 to
+/// 0.024 at the undriven port where the mean reads at most 1.2·10⁻⁴ (the
+/// half step between `V` and `I`), and the two analyses differ by up to
+/// 0.02 in `|S11|` and 0.009 in `|S21|`. Which of the two is closer to the
+/// S-parameters of the structure is not established here (no analytic
+/// reference has columns that differ); the default is unchanged.
+///
+/// The mean counts every column the same, as csx distributes the
+/// element. It needs the mesh lines in the model when the port is added
+/// (without lines inside the box there is one column, through the
+/// centre), and a column whose edges are PEC (dropped from the element
+/// with a warning) still counts, reading 0. In openEMS files
+/// ([`Fdtd::openems_run`](crate::Fdtd::openems_run)) the element is
+/// spread like a material, not in equal parts, and the identity above
+/// does not hold exactly.
+///
 /// **Analysing written results by hand.** `port_it<n>` is kept as an
 /// H-loop probe (openEMS `ProbeBox` semantics), so a hand analysis of
 /// `port_ut<n>` / `port_it<n>` (e.g. the CSV files of the `run_xml`
@@ -167,6 +215,7 @@ pub struct LumpedPort {
     amplitude: Option<f64>,
     delay: f64,
     priority: i32,
+    average_voltage: bool,
     props: Option<PortProperties>,
 }
 
@@ -184,8 +233,24 @@ impl LumpedPort {
             amplitude: None,
             delay: 0.0,
             priority: 0,
+            average_voltage: false,
             props: None,
         }
+    }
+
+    /// Takes the port voltage as the mean over all columns of port edges
+    /// instead of the centre column's (default off); see
+    /// [Voltage of a multi-column port](#voltage-of-a-multi-column-port).
+    /// The model must have its mesh lines when the port is added.
+    pub fn average_voltage(mut self, on: bool) -> Self {
+        self.average_voltage = on;
+        self
+    }
+
+    /// Whether the port voltage is the mean over the port's columns
+    /// ([`average_voltage`](Self::average_voltage)).
+    pub fn is_average_voltage(&self) -> bool {
+        self.average_voltage
     }
 
     /// Excites the port with a Thevenin voltage of `amplitude` \[V\] times
@@ -323,6 +388,48 @@ impl LumpedPort {
         let v_id = model.add_property(Property::probe(ut.clone(), vp));
         model.add_primitive(v_id, prim(vs, vt))?;
 
+        // One voltage probe per column of port edges: every mesh line
+        // inside the box on the transverse axes (the centre without any).
+        let mut voltage_columns = Vec::new();
+        if self.average_voltage {
+            let lines = |d: usize| -> Vec<f64> {
+                let (lo, hi) = (start[d].min(stop[d]), start[d].max(stop[d]));
+                let tol = 1e-9 * (hi - lo);
+                let inside: Vec<f64> = model
+                    .grid
+                    .lines(d)
+                    .iter()
+                    .copied()
+                    .filter(|x| *x >= lo - tol && *x <= hi + tol)
+                    .collect();
+                if inside.is_empty() {
+                    vec![mid[d]]
+                } else {
+                    inside
+                }
+            };
+            let (b, c) = ((a + 1) % 3, (a + 2) % 3);
+            let (lb, lc) = (lines(b), lines(c));
+            for &xb in &lb {
+                for &xc in &lc {
+                    let (mut cs, mut ct) = (vs, vt);
+                    (cs[b], ct[b]) = (xb, xb);
+                    (cs[c], ct[c]) = (xc, xc);
+                    let name = format!("{ut}_col{}", voltage_columns.len());
+                    if model.property_by_name(&name).is_some() {
+                        return Err(Error::Invalid(format!(
+                            "the model already has a property named {name:?}"
+                        )));
+                    }
+                    let mut vp = ProbeBox::new(ProbeType::Voltage);
+                    vp.number = n;
+                    let id = model.add_property(Property::probe(name.clone(), vp));
+                    model.add_primitive(id, prim(cs, ct))?;
+                    voltage_columns.push((name, id));
+                }
+            }
+        }
+
         // The current loop: a box flat along the port axis in the middle
         // dual plane of the port (openEMS skips current boxes that extend
         // along their normal). A flat box on mesh line `k` loops on the
@@ -363,6 +470,7 @@ impl LumpedPort {
             excitation,
             voltage: (ut, v_id),
             current: (it, i_id),
+            voltage_columns,
         });
         Ok(self)
     }
@@ -377,7 +485,9 @@ impl LumpedPort {
     }
 
     /// Frequency-domain analysis with reference impedance `z_ref`: `V(f)`
-    /// is the DFT of the voltage probe and `I(f)` that of minus the port
+    /// is the DFT of the voltage probe (with
+    /// [`average_voltage`](Self::average_voltage): the mean of the DFTs of
+    /// the column probes) and `I(f)` that of minus the port
     /// element's terminal current ([`Results::lumped_current`], sign
     /// flipped again for a reversed port), each with its own sample times
     /// ([`ProbeResult::dft`](crate::ProbeResult::dft)), so the half-step
@@ -403,7 +513,18 @@ impl LumpedPort {
                 .probe(name)
                 .ok_or_else(|| Error::Invalid(format!("no probe {name:?} in the results")))
         };
-        let v = get(&p.voltage.0)?.dft(freqs)?;
+        let v = if p.voltage_columns.is_empty() {
+            get(&p.voltage.0)?.dft(freqs)?
+        } else {
+            let mut sum = vec![Complex64::new(0.0, 0.0); freqs.len()];
+            for (name, _) in &p.voltage_columns {
+                for (s, x) in sum.iter_mut().zip(get(name)?.dft(freqs)?) {
+                    *s += x;
+                }
+            }
+            let columns = p.voltage_columns.len() as f64;
+            sum.into_iter().map(|s| s * (1.0 / columns)).collect()
+        };
         let el = results.lumped_current(&p.element.0).ok_or_else(|| {
             Error::Invalid(format!(
                 "no lumped element {:?} in the results",
