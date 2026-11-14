@@ -256,42 +256,110 @@ two analyses are up to 0.02 apart in `|S11|` and 0.009 in `|S21|` from 1 to
 8 GHz. Not measured: which is closer to the structure's S-parameters (the
 analytic port cases have equal columns).
 
-**Memory.** Counted with a counting allocator on the board region above
-(67 200 cells, 73 437 nodes, 8 CPML cells, one thread; bytes allocated, not
-RSS):
+**Memory.** Counted with a counting allocator (bytes allocated, not
+RSS). A first pass, on the board region above (67 200 cells, 73 437
+nodes, 8 CPML cells, one thread): plain laminate and metal 7.0 MB while running
+and 20.0 → 14.3 MB at the peak; two Debye terms and metal 35.4 → 13.9
+and 65.5 → 43.0 MB; two Debye terms and ladder sheets 64.0 → 43.8 and
+82.4 → 62.1 MB (the engine builder's copy of the edge materials, the csx
+arrays beside their engine-layout copies, the request lists and the
+per-pole `Option` of the dispersive operator).
 
-| Model | live while running | peak (compile and build) |
+The second pass (wave 24), on cadlab's `sim.sparams` regions, where its
+own solver takes a fifth to a tenth of what ems did (the whole command,
+above the level before it: cadlab's region and its csx model included;
+peak / median of samples every 5 ms, three threads; cadlab's lossy copper
+is the rational sheet or solid metal of §5.9.1, its laminate a
+Djordjevic–Sarkar fit of Debye terms):
+
+| Region | cadlab's solver | ems before | ems now |
+|---|---|---|---|
+| microstrip, lossy sheet copper and laminate, 67 200 cells | 7.2 / 6.8 MB | 67.3 / 50.2 | 26.4 / 22.4 |
+| the same, perfect copper | 5.5 / 5.5 | 61.3 / 42.5 | 19.2 / 16.5 |
+| the same, lossy solid copper, 85 320 cells | 9.6 / 8.0 | 84.7 / 57.0 | 33.4 / 27.4 |
+| bent line, conformal cells, lossy sheet, 135 660 cells | 12.1 / 10.6 | 62.2 / 39.2 | 33.7 / 25.3 |
+| the same, lossy solid copper, 184 110 cells | 17.1 / 12.8 | 84.9 / 48.6 | 38.2 / 31.0 |
+| the same on 0.25 mm cells, perfect sheet, 578 680 cells | 28.4 / 28.4 | 251.6 / 107.3 | 106.9 / 59.1 |
+| lossy sheet, 578 680 cells | 39.1 / 34.5 | 254.2 / 136.2 | 109.5 / 83.1 |
+| lossy solid copper, 679 320 cells | 50.9 / 38.9 | 305.4 / 157.1 | 136.1 / 98.6 |
+
+(cadlab's own figures are differences of the resident set, which does
+not grow for a run that follows a larger one in the same process: 7 MB
+for its solver on 579 000 cells, where it allocates 28 to 51 MB, 50 to
+80 bytes per cell.) Where the memory was, on the first region (MB live
+after each step, the peak within the step in brackets; 5.1 are cadlab's
+before the compile):
+
+| Step | before | now |
 |---|---|---|
-| plain laminate, metal | 7.0 MB (unchanged) | 20.0 → 14.3 MB |
-| two Debye terms, metal | 35.4 → 13.9 MB | 65.5 → 43.0 MB |
-| two Debye terms, conducting sheets | 64.0 → 43.8 MB | 82.4 → 62.1 MB |
+| csx discretisation | 12.9 (16.0) | 12.9 (16.0) |
+| materials in engine layout | 14.2 | 8.3 |
+| pole list | 30.5 | 11.7 |
+| compiled model kept | 28.7 | 9.8 |
+| engine: fields and coefficients | +5.3 | +5.3 |
+| conformal PEC applied | +0 (+18.5) | +0 (+7.0) |
+| CPML | +1.1 | +1.1 |
+| dispersive operator | +13.6 (+36.8) | +5.8 (+10.1) |
+| surface impedance (13 300 sheet edges) | +5.1 | +5.1 |
+| probe records of a run | +3.6 | +3.6 |
 
-What was removed, all without touching a result: the copy of the edge
-materials the engine builder took (96 bytes per node at the peak; the
-builder reads the compiled map in place); the csx material arrays living
-next to their engine-layout copies (each is released as it is reordered);
-in the dispersive operator the request lists kept after installation
-(64 bytes per pole), a 72-byte `Option` per pole for the source of openEMS
-coefficients that only openEMS files have (now a sparse list), a heap
-vector per edge during installation (one flat list) and the spare capacity
-of arrays grown by `push`. A pole now takes 69 bytes of state (four `f64`
-constants, two `f64` state values, 20 bytes of `f32` openEMS state that
-other runs do not use) plus 38 per edge.
+What was removed, without touching a result (the fields, probes and
+energies of nine board models with every combination of Debye laminate,
+ladder or rational sheets, solid lossy metal and conformal cells, hashed
+against master at one and three threads, fused steps forced on and off;
+and cadlab's touchstone files of seven regions):
+
+- *Edge materials* (`EdgeMaterials`): four `f64` per edge and axis, 96
+  bytes per node, kept by the compiled model for as long as it lives. A
+  model has a handful of materials and the averages on their interfaces:
+  each array is a table of its distinct values with one or two bytes per
+  node (up to 65 536 values, else the array stays as it is), 15 bytes
+  per node with the PEC masks. The accessors return a view that is
+  indexed like the slice they returned; the `_mut` ones expand the
+  array.
+- *The pole list* (`engine::dispersive::EdgePoles`): 64 bytes per pole in
+  a vector grown by `push`; the distinct poles once and 16 bytes per
+  entry.
+- *The dispersive operator*: it copied the list, sorted a second copy and
+  built a branch per pole before laying out its state. It takes the
+  compact list as it is, orders it by index, computes a branch per
+  distinct pole and edge geometry, and holds per pole an index into the
+  distinct constants (4 bytes for 33) and its two `f64` of state; the
+  `f32` coefficients and state of openEMS's poles (20 bytes per pole)
+  exist only in a medium that has such poles. 20 bytes per pole and 38
+  per edge.
+- *Conformal PEC* (`ConformalPec::apply`): three copies of the twelve
+  coefficient arrays and fifteen whole-grid `f64` arrays of the stability
+  estimate, 264 bytes per node on top of the engine and the peak of every
+  run with conformal cells. The round's coefficients go into the
+  engine's arrays as the list of values that differ (taken out again if
+  the round is rejected) and the estimate forms `√cb·v` where it reads
+  it: 96 bytes per node.
+- *Ladder sheets*: the constants of a ladder (32 bytes per layer) once
+  per distinct ladder, not per edge; 16 bytes of state per layer remain,
+  half of the 3.9 kB per edge of 35 µm copper.
+- The second discretisation that finds a lossy metal's edges runs before
+  the first and keeps its PEC masks only; the scan for oblique wires
+  built vacuum materials for the whole grid before it had found a wire.
 
 What remains, by size:
-- Conducting sheets: 28.7 MB for 7 300 sheet edges, 3.9 kB per edge. Every
-  edge carries its own ladder (about 70 layers at this conductivity and
-  f_max: `a`, `h`, `two_c`, `cp`, `inv_den`, `u` as `f64` per layer, and
-  the couplings), although the constants are the same for every edge of a
-  sheet with the same cell geometry. Not touched here (the sheet engine is
-  being reworked).
-- The engine: 72 bytes per node (fields and coefficients in `f32`), the
-  CPML state, and while compiling the `f64` edge materials (96 bytes per
-  node) plus csx's material grid.
+- The engine: 72 bytes per node (six fields and twelve coefficients in
+  `f32`; the kernels read pooled rows, §6, but the arrays exist) and the
+  CPML state.
+- While compiling: csx's material grid, 111 bytes per node (twelve `f64`
+  arrays, PEC and sheet masks), which is the peak of a model without
+  conformal cells; then conformal PEC, 96 (two copies of the
+  coefficients while a round is built, ten `f64` per node in the
+  estimate).
+- Solid lossy metal: 88 bytes per edge in the compiled list and about
+  200 in the operator (a board of 679 000 cells with a solid copper
+  plane has 99 000 such edges: 8 and 19 MB).
 - The dispersive state in `f64` (the kernel is `f32`): halving it would
   change results.
-- `Compiled` keeps the pole list (88 bytes per pole) for as long as it
-  lives; `Simulation::with_options` drops it after the build.
+- The rational sheet: about 380 bytes per sheet edge (two ports of ten
+  sections, the couplings and corrections of both faces).
+- The compiled model next to the engine: 15 bytes per node and 16 per
+  pole.
 
 ## 5. Numerical formulation
 
@@ -1264,25 +1332,43 @@ one).
 **Solid metal.** The surface edges are PEC in the engine and get a face
 voltage instead of zero. Faces of the mesh whose four edges are PEC lie in
 the metal or on its surface and stay without field (`db = 0`); the other
-faces around an edge are its dual loop outside the metal, whose circulation
-is the current on the conductor surface inside the dual face. That surface
-has the width `w`: per such face, half a cell along the face's normal on
-each side where the neighbouring parallel edge is PEC too (the dual length
-on a flat face, half of each of the two faces at a convex edge, as cadlab's
-solver does). Then `C·du/dt + G·u + h = S`, `u = (l/w)·Z_s ∗ h`, `C`, `G`
-of the part of the dual face outside the metal (sampled by the compile
-step), `C` at least that of the quarters of the dual face next to a face
-with field, in vacuum. The samples are taken on the drawn metal, which
-reaches past the edges of its staircase (and past the whole edges next to
-a conformal outline), so an edge at the end of a strip could have every
-sample in metal and no capacitance: it is then a resistor `Z∞/g` in the
-loops of its faces, integrated explicitly, and a strip of 2e5 S/m grew
-from the corners of its end within 20 periods (copper, with a smaller
-`Z∞`, only with conformal cells and after 100). Edges inside the metal and re-entrant edges stay 0; edges with
-field on two opposite sides (zero-thickness metal, wires) are not solid
-and stay PEC (warning). The compile step finds the edges of a lossy metal
-by discretising the model a second time without it: an edge another metal
-covers too stays PEC.
+faces around an edge are its dual loop outside the metal, whose
+circulation is the current on the conductor surface inside the dual face.
+That surface has the width `w`: per such face, half a cell along the
+face's normal on each side where the neighbouring parallel edge is PEC too
+(the dual length on a flat face, half of each of the two faces at a convex
+edge, as cadlab's solver does). Then `C·du/dt + G·u + h = S`, `u =
+(l/w)·Z_s ∗ h`, `C`, `G` of the part of the dual face outside the metal
+(sampled by the compile step), `C` at least that of the quarters of the
+dual face next to a face with field, in vacuum. The samples are taken on
+the drawn metal, which reaches past the edges of its staircase (and past
+the whole edges next to a conformal outline), so an edge at the end of a
+strip could have every sample in metal and no capacitance: it is then a
+resistor `Z∞/g` in the loops of its faces, integrated explicitly, and a
+strip of 2e5 S/m grew from the corners of its end within 20 periods
+(copper, with a smaller `Z∞`, only with conformal cells and after 100).
+Beside a cell that conformal PEC cuts that is not enough. In the edge's
+update the trapezoidal admittance is `(g/Z)·cos(ω·dt/2)`: at the highest
+frequency of the mesh it is nothing, and the edge is its capacitance
+alone, an ordinary edge where conformal PEC took a perfect conductor when
+it decided which small faces the time step allows (§5.13.3); a face of a
+tenth of its area has ten times the `dt/L`. Such an edge gets `C ≥ 2·dt·Σ
+dt/L` over the faces around it, those the merged faces drive included
+(`MergedFaces::edge_diagonal`): with `C = dt·Σ dt/L` the diagonal of
+`dt²·C⁻¹KᵀL⁻¹K` for the edge is 1 (an edge of cubic cells at the Courant
+limit has 4/3), and that is where growth set in when the factor was varied
+(none at 1, growth within 40 periods at 0.5; 2 is used). Next to `g/Z`
+this capacitance is nothing: the results that were stable before did not
+move in four digits. Without it the copper strip below grew at 45° and 17°
+on cells of 0.125 mm (0.1 mm in z, where the time step leaves the small
+faces little room), the strip of 2e5 S/m at 30° on 0.25 mm cells, and
+cadlab's bent line of solid copper on 0.25 mm cells came back not passive
+after 7553 steps (679 320 cells; it ends after 10 881 now, as with ems
+0.0.7, and is passive). Edges inside the metal and re-entrant edges stay
+0; edges with field on two opposite sides (zero-thickness metal, wires)
+are not solid and stay PEC (warning). The compile step finds the edges of
+a lossy metal by discretising the model a second time without it: an edge
+another metal covers too stays PEC.
 
 **Sheets.** The split faces of §5.9 (`u+` in the engine's array, `u−` in
 the operator, the H updates below corrected for `u− − u+`), joined by
@@ -1323,11 +1409,36 @@ derivative along an in-plane normal in its loop (one dual edge above it);
 sheets have (their crossing dual edges), and so have metal edges parallel
 to the layer.
 
+**Threads.** The edges are run by the engine's threads, each on its
+x-slab right after the kernel of the half-step (`SlabHooks`, plane by
+plane in fused steps, §6.1), each edge by the expressions of the serial
+hooks from the same values, its state in its slab: bit-identical for any
+thread count and to the serial hooks (`slabs_equal_the_serial_hooks`: 1
+to 7 threads, fused or not, CPML stretches on both sides, a source
+writing between steps). An edge's circulation reads currents of its own
+x-plane and of the one before it, which the E half-step may read. The H
+corrections of a sheet go with their dual edges; one in the last plane
+of a slab needs the face voltages of a sheet edge in the first plane of
+the next slab, which leaves them, with the array value it wrote, in a
+slot after its E update; both slabs form what a source has added since
+by one expression that changes nothing when applied twice. The energy
+sums the edges of all slabs in edge order. Slab hooks run before every
+serial hook, so where an operator registered earlier has serial hooks
+after a half-step (the merged faces of conformal PEC, the ladder) the
+edges stay in the serial hooks, in registration order
+(`SurfaceImpedance::runs_in_slabs`). Conformal PEC registers its merged
+faces only where a small face fails the cell-wise bound of §5.13.3:
+cadlab's bent lines, whose thin layers leave every cut cell room, run in
+the slabs (lossy sheet 131 → 207 Mcells/s on 135 660 cells, solid copper
+258 → 321 on 184 110).
+
 **Cost** (67 200 cells, a ground plane of 13 264 sheet edges or a plate of
 26 528 surface edges, 35 µm copper, 6 GHz, one thread; PEC: 286 Mcells/s):
 ladder 11–16 Mcells/s and 48 nodes per edge; rational sheet 98 Mcells/s,
-2 × 10 values per edge; solid metal 131 Mcells/s, 8 values per edge. The
-hooks are serial (they do not scale with the thread count).
+2 × 10 values per edge; solid metal 131 Mcells/s, 8 values per edge. On
+three threads (136 617 nodes, a microstrip with its ground plane, perfect
+copper 441 Mcells/s): the sheet 121 → 192 Mcells/s, solid metal 169 →
+279; on one thread 88 → 85 and 114 → 112.
 
 **Validation** (`tests/validation_surface_impedance.rs`,
 `tests/surface_impedance_model.rs`):
@@ -1359,8 +1470,31 @@ conductor part = `|S21|` less the run with perfect copper):
 | Sheet (`ConductingSheet`, `SheetModel::SurfaceImpedance`), 1.05 / 3.03 / 5.5 GHz | 0.010 / 0.019 dB (1.05 / 3.03 GHz), 71 s | 0.0126 / 0.0247 / 0.0331 dB, 10 s | 0.0144 / 0.0247 / 0.0336 dB, 12 s |
 
 The sheet's gain in loss is the border rule above (the strip is two cells
-wide); its 6 GHz point, at the edge of the pulse's band, reads 0.047
-against 0.036 dB. On cadlab's four-layer via transition (130 626 cells,
+wide). Its 6 GHz point, at the edge of the pulse's band, read 0.047
+against 0.036 dB: that is where the records stop, in neither model. The
+conductor part is the difference of two runs, each ended when its energy
+has fallen by 50 dB, at different steps (6305 with lossy copper, 6145
+with perfect copper); a record cut there leaves a ripple on `|S21|` that
+is largest where the pulse has least energy (cadlab's own solver moves
+by 0.026 dB at 6 GHz between 50 and 70 dB, ems by 0.007 dB). Run to
+70 dB (28 000 and 22 000 steps) both solvers give a smooth `√f`:
+
+| GHz | 1.05 | 2.04 | 3.03 | 4.02 | 5.01 | 5.5 | 6.0 |
+|---|---|---|---|---|---|---|---|
+| ems, 50 dB | 0.0125 | 0.0226 | 0.0246 | 0.0308 | 0.0300 | 0.0332 | 0.0476 |
+| ems, 70 dB | 0.0153 | 0.0213 | 0.0257 | 0.0295 | 0.0331 | 0.0348 | 0.0365 |
+| cadlab built-in, 50 dB | 0.0144 | 0.0208 | 0.0247 | 0.0287 | 0.0318 | 0.0336 | 0.0360 |
+| cadlab built-in, 70 dB | 0.0148 | 0.0206 | 0.0248 | 0.0285 | 0.0321 | 0.0337 | 0.0352 |
+
+(dB; unchanged to four digits at 90 dB.) The two are 3.4 to 3.7 % apart
+at every frequency, the band edge included. The fit is not in it either:
+a half space over the band is within 0.5 % up to its last sample
+(`half_space_fit`), and the parallel-plate line below holds
+`α = R_s/(η0·h)` from 3 to 9 GHz of a 12 GHz band. (With lossy copper a
+run does not reach 90 dB in 100 000 steps: what is left is the field of
+a direct current in the copper, which decays with `L/R`.) A consumer
+that subtracts two runs needs records of the same depth, 70 dB here. On
+cadlab's four-layer via transition (130 626 cells,
 solid copper, 4 GHz) the copper's part of `|S21|` is 0.015 / 0.022 /
 0.033 / 0.044 / 0.047 dB at 0.54 / 1.03 / 2.02 / 3.01 / 4.00 GHz against
 0.015 / 0.022 / 0.034 / 0.045 / 0.052 dB, in 98 s against 128 s (ladder
@@ -1374,7 +1508,40 @@ independent half spaces and the resistance does not go to the DC value of
 a thin conductor. The covered parts of the edges a lossy metal's outline
 cuts stay perfectly conducting (warning; their neighbours carry the
 surface, so the loss of a strip is within 6 % of the same strip along the
-mesh at four cells per width, and within 16 % at two). At two cells per
+mesh at four cells per width, and within 16 % at two). That loss is too
+high, not too low, and more so on a finer mesh (the strip of the table,
+1 mm wide and 0.1 mm thick, `tests/conformal_outline.rs`,
+`solid_strip_direction_table`):
+
+| Q | along x | 45° | 17° | 30° |
+|---|---|---|---|---|
+| 2e5 S/m, 0.25 mm cells | 37.8 | 36.4 | 36.5 | 36.3 |
+| 2e5 S/m, 0.125 mm cells | 38.5 | 35.5 | 35.9 | 35.3 |
+| copper, 0.25 mm cells | 623 | 602 | 602 | 597 |
+| copper, 0.125 mm cells | 627 | 573 | 581 | 570 |
+
+So the loss the covered parts do not have is not what separates the
+directions (3 to 4 % at four cells per width, 7 to 9 % at eight), and
+giving it to them makes the difference larger. Two forms were tried and
+are not in the code:
+
+- *An impedance in series with the open part* (the covered part with the
+  capacitance `C/(1 − f)`, as a sheet's): at the highest frequencies of
+  the mesh the trapezoidal admittance vanishes and the cut edge has the
+  capacitance of its whole length again, where the cut cells are stable
+  for `C/f`. It grew within a few periods at every angle.
+- *Its surface added to the whole edge in line with it*
+  (`Z_s·(l·w + A)/w²`, the same current density on both), with the
+  widths of the whole edges beside the outline measured on the drawn
+  metal instead of taken from the covered fractions of their
+  neighbours: stable, and each dual cell's copper counted once, but Q
+  33.1 at 45° and 34.3 at 17° for 37.8 (copper 545 and 562 for 623).
+
+What makes an oblique rim lossier than one along the mesh is not
+established; the table is the state. (cadlab's own solver reads 9 to
+11 % less loss than ems on its bent line of solid copper, and 13 % less
+than itself with sheet copper of the same line, which ems does not: 0.037 /
+0.048 / 0.058 dB at 3 / 5 / 7 GHz for both coppers.) At two cells per
 width the rational sheet's loss depends on the direction too (Q 34 along
 x and at 17°, 50 at 45°, as the ladder's): most of its edges are cut
 edges, each taken with half a cell of conductor on either side. Lossy metal in openEMS's own PML (openEMS
@@ -6415,7 +6582,9 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
 ```
 
 - **Storage**: six `Vec<f32>` field arrays plus twelve `f32` coefficient
-  arrays, all node-shaped.
+  arrays, all node-shaped. (What the compile step keeps beside them, the
+  edge materials and the pole list, is held as tables of distinct values:
+  §4.1.)
   - Index is `(i·ny + j)·nz + k`; z is contiguous for autovectorisation.
   - Padding entries (e.g. `u_x` at `i = nx−1`) have zero coefficients and stay 0.
   - Memory: about 72 bytes/cell. Large grids are memory-bandwidth bound
@@ -6458,7 +6627,8 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
 - **Kernel**: `update_h()` then `update_e()`, written with slice iterators so
   LLVM vectorises the k-loop.
 - **Operators** (`Operator` trait): CPML, openEMS's PML (files), Mur, sources, lumped elements,
-  probes, dumps, dispersive media (ADE), oblique thin wires (§5.14.1,
+  probes, dumps, dispersive media (ADE), the surface impedance of lossy
+  conductors (§5.9.1, slab hooks), oblique thin wires (§5.14.1,
   serial `pre_e`/`post_e`), and later NF2FF.
   - Dispersive media (`engine::dispersive::Dispersive`): each Drude /
     Lorentz / Debye pole is a series R–L–C branch per edge (polarisation
@@ -6980,7 +7150,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-14, after wave 23)
+### Status (2026-11-14, after wave 24)
 
 | Step | State |
 |---|---|
@@ -7216,10 +7386,46 @@ cadlab's solver 0.798). These change results of models with conformal
 PEC (a default-off option): all are corrections; `keep_stable` and
 `conformal_bridges` can be switched off. openEMS files are unchanged.
 
+Wave 24 (native; §4.1, §5.9.1), from what cadlab measured against its
+own solver. No result changes except where noted.
+
+- *Memory* (§4.1): the edge materials and the pole list as tables of
+  their distinct values, one set of integration constants per distinct
+  pole and ladder, conformal PEC applied on the engine's own
+  coefficients. A board region of 67 200 cells with a Debye laminate and
+  sheet copper: 67 MB at the peak and 50 while running, now 26 and 22
+  (cadlab's own solver 7); 579 000 cells with conformal cells: 252 and
+  107, now 107 and 59 (28). Bit-identical: the fields, probes and
+  energies of nine board models hashed against master at one and three
+  threads, fused or not, and cadlab's touchstone files of seven regions
+  (before the fix below, which changes the two with solid lossy copper).
+- *Surface impedance in the slabs* (§5.9.1): the edges of solid lossy
+  metal and of rational sheets are run by the engine's threads,
+  bit-identical to the serial hooks they replace for any thread count
+  (three threads: sheet 121 → 192 Mcells/s, solid metal 169 → 279).
+  Where conformal PEC merges faces they stay serial (its operator is).
+- *Lossy solid metal beside cut cells was unstable* (a fix; §5.9.1): its
+  surface edges were perfect conductors for conformal PEC and ordinary
+  edges at the highest frequencies of the mesh. They get the capacitance
+  the small faces beside them need. A copper strip on 0.125 mm cells and
+  cadlab's bent line of solid copper on 0.25 mm cells grew or came back
+  not passive; results that were stable are unchanged in four digits.
+- *The band edge of a conductor loss* (§5.9.1): 0.048 against 0.036 dB
+  at 6 GHz on cadlab's sheet line is where two records of different
+  length stop (50 dB), in both solvers; at 70 dB ems reads 0.0365 and
+  cadlab's solver 0.0352 dB.
+
 Remaining:
-- Surface impedance (§5.9.1): the hooks are serial; the covered parts of
-  the edges conformal PEC cuts along lossy solid metal stay PEC (their
-  neighbours carry the surface); the loss of a strip two cells wide
+- Memory (§4.1): the compile step peaks at csx's material grid (111
+  bytes per node); the fields and coefficients are 72 bytes per node.
+- Surface impedance (§5.9.1): where conformal PEC merges faces the hooks
+  are serial;
+  the covered parts of the edges conformal PEC cuts along lossy solid
+  metal stay PEC (their neighbours carry the surface), and the loss of
+  an oblique strip is 3 to 4 % above that of the same strip along the
+  mesh at four cells per width and 7 to 9 % at eight: not from those
+  parts (two ways of giving them their loss were tried, §5.9.1), cause
+  not established; the loss of a strip two cells wide
   depends on its direction by up to a third; Cartesian grids only; the DC
   resistance of solid metal thinner than the skin depth is not modelled.
 - Conformal PEC on copper of about a cell (§5.13.3): a post or a barrel

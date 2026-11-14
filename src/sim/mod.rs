@@ -314,9 +314,9 @@ pub struct Simulation {
 /// # Cost
 ///
 /// The compiled data stays alive next to the engines built from it: about
-/// 100 bytes per mesh node (the `f64` edge materials; 220 with the pole
-/// list of a two-term Debye laminate), where an engine itself takes 72
-/// bytes per node plus its operators. Use
+/// 15 bytes per mesh node (the edge materials as tables of their distinct
+/// values; 60 with the pole list of a three-term Debye laminate), where an
+/// engine itself takes 72 bytes per node plus its operators. Use
 /// [`into_simulation`](Self::into_simulation) for a single run. Building
 /// a simulation costs the coefficient and operator setup only. Measured on
 /// a board region of 67 200 cells (two lumped ports, 8 CPML cells, one
