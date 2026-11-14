@@ -245,6 +245,330 @@ pub struct Simulation {
     bloch: Option<Box<BlochState>>,
 }
 
+/// A model compiled once for several runs: the discretised model
+/// ([`Compiled`]) with everything [`Simulation::with_options`] derives from
+/// the csx model, from which [`simulation`](Self::simulation) and
+/// [`simulation_driving`](Self::simulation_driving) build a fresh
+/// [`Simulation`] each time, without discretising the model again.
+///
+/// An N-port S-parameter run drives one port per run. Write every port
+/// with its excitation into one model, compile it once, and build the
+/// simulation of each run with only that port's excitation driven:
+///
+/// ```
+/// use csx::ContinuousStructure;
+/// use ems::port::LumpedPort;
+/// use ems::{Axis, CompileOptions, CompiledModel, Fdtd, Waveform};
+///
+/// let mut model = ContinuousStructure::new();
+/// model.grid.delta_unit = 1e-3;
+/// for a in 0..3 {
+///     model.grid.set_lines(a, (0..=12).map(|i| i as f64))?;
+/// }
+/// let ports = [3.0, 9.0]
+///     .iter()
+///     .zip(1..)
+///     .map(|(&x, n)| {
+///         LumpedPort::new(n, 50.0, [x, 6.0, 5.0], [x, 6.0, 7.0], Axis::Z)
+///             .excite(1.0)
+///             .add_to(&mut model)
+///     })
+///     .collect::<Result<Vec<_>, _>>()?;
+/// let fdtd = Fdtd::new()
+///     .waveform(Waveform::gaussian(1e9, 1e9))
+///     .max_timesteps(50)
+///     .threads(1);
+///
+/// let compiled = CompiledModel::new(&model, &fdtd, &CompileOptions::default())?;
+/// assert_eq!(compiled.excitations(), ["port_excite_1", "port_excite_2"]);
+/// for port in &ports {
+///     let excitation = &port.properties().unwrap().excitation.as_ref().unwrap().0;
+///     let mut sim = compiled.simulation_driving(&[excitation.as_str()])?;
+///     let res = sim.run()?;
+///     assert_eq!(res.outcome().unwrap().steps, 50);
+/// }
+/// # Ok::<(), ems::Error>(())
+/// ```
+///
+/// # What a run is equal to
+///
+/// Every simulation is built from scratch on the compiled data (a new
+/// engine: fields, absorbing layers, dispersive poles, sheets, lumped
+/// elements, probes and dumps all start from zero), so
+///
+/// * [`simulation`](Self::simulation) is [`Simulation::with_options`] on
+///   the same model, and
+/// * [`simulation_driving`](Self::simulation_driving) is
+///   [`Simulation::with_options`] on the model without the other
+///   excitations (the properties removed, or never written),
+///
+/// bit for bit in every recorded value (`tests/compiled_model.rs`), as
+/// long as the model's excitations do not share edges: where the compile
+/// step gives an edge two excitations claim to one of them (openEMS
+/// files: to the one of highest priority), the edge stays with that one,
+/// undriven in a run that does not drive it. The warnings of the
+/// whole model are reported in every run, those about undriven
+/// excitations included, and the ids of the properties are those of the
+/// whole model.
+///
+/// # Cost
+///
+/// The compiled data stays alive next to the engines built from it: about
+/// 100 bytes per mesh node (the `f64` edge materials; 220 with the pole
+/// list of a two-term Debye laminate), where an engine itself takes 72
+/// bytes per node plus its operators. Use
+/// [`into_simulation`](Self::into_simulation) for a single run. Building
+/// a simulation costs the coefficient and operator setup only. Measured on
+/// a board region of 67 200 cells (two lumped ports, 8 CPML cells, one
+/// thread): 0.007 s against 0.08 s for a compile from the model with a
+/// plain laminate and metal, 0.03 s against 0.11 s with two Debye terms
+/// and conducting sheets; on 537 600 cells 0.05 s against 0.63 s and
+/// 0.26 s against 0.90 s.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct CompiledModel {
+    compiled: Compiled,
+    fdtd: Fdtd,
+    /// The mesh-check lines of the warnings ([`CompileOptions::mesh_check`]).
+    mesh_warnings: Vec<String>,
+    /// Names and ids of the model's properties.
+    property_ids: Vec<(String, u32)>,
+}
+
+impl CompiledModel {
+    /// Compiles `model` with `fdtd` and `opts`, as
+    /// [`Simulation::with_options`] does (the mesh check included).
+    ///
+    /// # Errors
+    /// See [`compile`](crate::compile::compile).
+    pub fn new(
+        model: &csx::ContinuousStructure,
+        fdtd: &Fdtd,
+        opts: &CompileOptions,
+    ) -> Result<Self> {
+        let compiled = compile(model, fdtd, opts)?;
+        let mesh_warnings = if opts.mesh_check {
+            mesh_warnings(model, fdtd, &compiled, opts)?
+        } else {
+            Vec::new()
+        };
+        let property_ids = model
+            .properties()
+            .iter()
+            .map(|p| (p.name.clone(), p.id()))
+            .collect();
+        Ok(Self {
+            compiled,
+            fdtd: fdtd.clone(),
+            mesh_warnings,
+            property_ids,
+        })
+    }
+
+    /// The compiled model.
+    pub fn compiled(&self) -> &Compiled {
+        &self.compiled
+    }
+
+    /// The solver settings the model was compiled with.
+    pub fn fdtd(&self) -> &Fdtd {
+        &self.fdtd
+    }
+
+    /// The names of the model's enabled excitations (field excitations,
+    /// then plane waves; each once), which
+    /// [`simulation_driving`](Self::simulation_driving) selects from.
+    pub fn excitations(&self) -> Vec<&str> {
+        let src = &self.compiled.sources;
+        let mut names: Vec<&str> = Vec::new();
+        for n in src
+            .excitations
+            .iter()
+            .map(|e| e.name.as_str())
+            .chain(src.plane_waves.iter().map(|p| p.name.as_str()))
+        {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+        names
+    }
+
+    /// A new simulation driving every excitation of the model: what
+    /// [`Simulation::with_options`] returns for it.
+    ///
+    /// # Errors
+    /// See [`Compiled::build`]; also invalid lumped-element values.
+    pub fn simulation(&self) -> Result<Simulation> {
+        self.assemble(self.compiled.sources.clone())
+    }
+
+    /// A new simulation in which only the excitations named in `driven`
+    /// are driven (none for an empty list); everything else of the model
+    /// (the lumped elements of the other ports, probes, dumps) is as in
+    /// [`simulation`](Self::simulation). See
+    /// [the type docs](Self#what-a-run-is-equal-to) for what the run is
+    /// equal to.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`](crate::Error::Invalid) for a name that is not
+    /// one of [`excitations`](Self::excitations); else as
+    /// [`simulation`](Self::simulation).
+    pub fn simulation_driving(&self, driven: &[&str]) -> Result<Simulation> {
+        let all = self.excitations();
+        if let Some(unknown) = driven.iter().find(|n| !all.contains(n)) {
+            return Err(crate::Error::Invalid(format!(
+                "no enabled excitation named {unknown:?} in the compiled model (it has {all:?})"
+            )));
+        }
+        let mut sources = self.compiled.sources.clone();
+        sources
+            .excitations
+            .retain(|e| driven.contains(&e.name.as_str()));
+        sources
+            .plane_waves
+            .retain(|p| driven.contains(&p.name.as_str()));
+        self.assemble(sources)
+    }
+
+    /// The simulation driving every excitation, releasing the compiled
+    /// data (no copy of the model sources is made).
+    ///
+    /// # Errors
+    /// See [`simulation`](Self::simulation).
+    pub fn into_simulation(mut self) -> Result<Simulation> {
+        let sources = std::mem::take(&mut self.compiled.sources);
+        self.assemble(sources)
+    }
+
+    /// Builds the engine(s) for `sources` (the model's, or a part of its
+    /// excitations) and maps them.
+    fn assemble(&self, sources: ModelSources) -> Result<Simulation> {
+        let (compiled, fdtd) = (&self.compiled, &self.fdtd);
+        let k = bloch::wavevector(fdtd, &sources.plane_waves, compiled.grid.nodes())?;
+        let (mut engine, boundaries, imag) = match k {
+            None => {
+                let (e, h) = compiled.build_driving(&sources)?;
+                (e, h, None)
+            }
+            Some(k) => {
+                let psi = BlochPair::phase_for(&compiled.grid, k);
+                let (coupling, b) = BlochCoupling::new(compiled.builder(), psi)?;
+                let mut re = b.clone().build()?;
+                let mut im = b.build()?;
+                let h = compiled.add_boundary_operators(&mut re, &sources)?;
+                compiled.add_boundary_operators(&mut im, &sources)?;
+                (re, h, Some((im, coupling, k)))
+            }
+        };
+        let mut warnings = compiled.warnings.clone();
+        if let Some(w) = boundaries.conformal.as_ref().and_then(|r| r.warning()) {
+            warnings.push(w);
+        }
+        if boundaries.pml_poles_ignored > 0 {
+            warnings.push(format!(
+                "{} dispersive pole(s) on edges inside a PML layer ignored (openEMS's layer \
+                 replaces their update; the static medium remains)",
+                boundaries.pml_poles_ignored
+            ));
+        }
+        if boundaries.debye_poles_ignored > 0 {
+            warnings.push(format!(
+                "{} Debye pole(s) with a relaxation time below 3 time steps ignored (openEMS's rule; \
+                 the static medium remains)",
+                boundaries.debye_poles_ignored
+            ));
+        }
+        warnings.extend(self.mesh_warnings.iter().cloned());
+        let part = |part| k.map(|k| BlochMap { part, k });
+        let layers = boundaries
+            .openems_pml
+            .as_ref()
+            .map(|h| engine.operator(h).layers().clone());
+        let sheet_edges = compiled
+            .openems_sheets
+            .iter()
+            .map(|&(a, p, _)| (a, p))
+            .collect();
+        let mut mapped = map::map_sources(
+            &mut engine,
+            &sources,
+            &compiled.node_map,
+            fdtd,
+            &mut warnings,
+            part(WavePart::Real),
+            layers.as_ref(),
+            Some((&compiled.materials, compiled.coefficient_rounding)),
+            &sheet_edges,
+            map::LateCorrections {
+                dispersive: boundaries.dispersive.as_ref(),
+                sheet_branches: boundaries.openems_sheet_branches.as_ref(),
+            },
+        )?;
+        // openEMS forms the coefficients of its poles from the edge's
+        // final circuit, after the lumped elements (design §5.16.3).
+        if let Some(h) = &boundaries.dispersive
+            && !mapped.circuits.is_empty()
+        {
+            let circuits = mapped
+                .circuits
+                .iter()
+                .map(|&(a, p, c)| ((a, p), c))
+                .collect();
+            let co = engine.coefficients();
+            let grid = engine.grid();
+            engine
+                .operator(h)
+                .rebase_openems(|a, p| co.cb(a)[grid.index(p)], &circuits);
+        }
+        let property_id = |name: &str| {
+            self.property_ids
+                .iter()
+                .find(|(n, _)| n == name)
+                .map_or(u32::MAX, |&(_, id)| id)
+        };
+        mapped.lumped_ids = mapped.lumped.iter().map(|(n, _)| property_id(n)).collect();
+        let bloch = match imag {
+            None => None,
+            Some((mut imag, coupling, k)) => {
+                // Same model, same order: the warnings are those of the
+                // real engine.
+                let mut ignored = Vec::new();
+                let mapped = map::map_sources(
+                    &mut imag,
+                    &sources,
+                    &compiled.node_map,
+                    fdtd,
+                    &mut ignored,
+                    part(WavePart::Imag),
+                    layers.as_ref(),
+                    Some((&compiled.materials, compiled.coefficient_rounding)),
+                    &sheet_edges,
+                    // Bloch pairs are not an openEMS run.
+                    map::LateCorrections::default(),
+                )?;
+                Some(Box::new(BlochState {
+                    imag,
+                    coupling,
+                    mapped,
+                    k,
+                }))
+            }
+        };
+        Ok(Simulation {
+            engine,
+            fdtd: fdtd.clone(),
+            delta_unit: compiled.delta_unit,
+            node_map: compiled.node_map,
+            boundaries,
+            sources,
+            mapped,
+            warnings,
+            bloch,
+        })
+    }
+}
+
 /// The second engine of a Bloch run and its coupling to the first.
 #[derive(Debug)]
 struct BlochState {
@@ -282,128 +606,7 @@ impl Simulation {
         fdtd: &Fdtd,
         opts: &CompileOptions,
     ) -> Result<Self> {
-        let compiled = compile(model, fdtd, opts)?;
-        let k = bloch::wavevector(fdtd, &compiled.sources.plane_waves, compiled.grid.nodes())?;
-        let (mut engine, boundaries, imag) = match k {
-            None => {
-                let (e, h) = compiled.build()?;
-                (e, h, None)
-            }
-            Some(k) => {
-                let psi = BlochPair::phase_for(&compiled.grid, k);
-                let (coupling, b) = BlochCoupling::new(compiled.builder(), psi)?;
-                let mut re = b.clone().build()?;
-                let mut im = b.build()?;
-                let h = compiled.add_boundary_operators(&mut re)?;
-                compiled.add_boundary_operators(&mut im)?;
-                (re, h, Some((im, coupling, k)))
-            }
-        };
-        let mut warnings = compiled.warnings.clone();
-        if let Some(w) = boundaries.conformal.as_ref().and_then(|r| r.warning()) {
-            warnings.push(w);
-        }
-        if boundaries.pml_poles_ignored > 0 {
-            warnings.push(format!(
-                "{} dispersive pole(s) on edges inside a PML layer ignored (openEMS's layer \
-                 replaces their update; the static medium remains)",
-                boundaries.pml_poles_ignored
-            ));
-        }
-        if boundaries.debye_poles_ignored > 0 {
-            warnings.push(format!(
-                "{} Debye pole(s) with a relaxation time below 3 time steps ignored (openEMS's rule; \
-                 the static medium remains)",
-                boundaries.debye_poles_ignored
-            ));
-        }
-        if opts.mesh_check {
-            warnings.extend(mesh_warnings(model, fdtd, &compiled, opts)?);
-        }
-        let part = |part| k.map(|k| BlochMap { part, k });
-        let layers = boundaries
-            .openems_pml
-            .as_ref()
-            .map(|h| engine.operator(h).layers().clone());
-        let sheet_edges = compiled
-            .openems_sheets
-            .iter()
-            .map(|&(a, p, _)| (a, p))
-            .collect();
-        let mut mapped = map::map_sources(
-            &mut engine,
-            &compiled.sources,
-            &compiled.node_map,
-            fdtd,
-            &mut warnings,
-            part(WavePart::Real),
-            layers.as_ref(),
-            Some((&compiled.materials, compiled.coefficient_rounding)),
-            &sheet_edges,
-            map::LateCorrections {
-                dispersive: boundaries.dispersive.as_ref(),
-                sheet_branches: boundaries.openems_sheet_branches.as_ref(),
-            },
-        )?;
-        // openEMS forms the coefficients of its poles from the edge's
-        // final circuit, after the lumped elements (design §5.16.3).
-        if let Some(h) = &boundaries.dispersive
-            && !mapped.circuits.is_empty()
-        {
-            let circuits = mapped
-                .circuits
-                .iter()
-                .map(|&(a, p, c)| ((a, p), c))
-                .collect();
-            let co = engine.coefficients();
-            let grid = engine.grid();
-            engine
-                .operator(h)
-                .rebase_openems(|a, p| co.cb(a)[grid.index(p)], &circuits);
-        }
-        mapped.lumped_ids = mapped
-            .lumped
-            .iter()
-            .map(|(n, _)| model.property_id(n).map_or(u32::MAX, |p| p.get()))
-            .collect();
-        let bloch = match imag {
-            None => None,
-            Some((mut imag, coupling, k)) => {
-                // Same model, same order: the warnings are those of the
-                // real engine.
-                let mut ignored = Vec::new();
-                let mapped = map::map_sources(
-                    &mut imag,
-                    &compiled.sources,
-                    &compiled.node_map,
-                    fdtd,
-                    &mut ignored,
-                    part(WavePart::Imag),
-                    layers.as_ref(),
-                    Some((&compiled.materials, compiled.coefficient_rounding)),
-                    &sheet_edges,
-                    // Bloch pairs are not an openEMS run.
-                    map::LateCorrections::default(),
-                )?;
-                Some(Box::new(BlochState {
-                    imag,
-                    coupling,
-                    mapped,
-                    k,
-                }))
-            }
-        };
-        Ok(Self {
-            engine,
-            fdtd: fdtd.clone(),
-            delta_unit: compiled.delta_unit,
-            node_map: compiled.node_map,
-            boundaries,
-            sources: compiled.sources,
-            mapped,
-            warnings,
-            bloch,
-        })
+        CompiledModel::new(model, fdtd, opts)?.into_simulation()
     }
 
     /// The engine.

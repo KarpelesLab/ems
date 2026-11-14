@@ -601,9 +601,23 @@ impl Compiled {
     /// Invalid time step or materials, or boundary operator setup errors
     /// (e.g. a PML thicker than the mesh).
     pub fn build(&self) -> Result<(Engine, BoundaryHandles)> {
+        self.build_driving(&self.sources)
+    }
+
+    /// [`build`](Self::build) with `sources` in the place of
+    /// [`sources`](Self::sources): the engine of a run that drives only
+    /// some of the model's excitations
+    /// ([`CompiledModel::simulation_driving`](crate::CompiledModel::simulation_driving)).
+    /// The boundary operators read the lumped-element edges and, in
+    /// openEMS files, the driven edges (a Mur face holds while an
+    /// excitation on it runs).
+    pub(crate) fn build_driving(
+        &self,
+        sources: &ModelSources,
+    ) -> Result<(Engine, BoundaryHandles)> {
         let mut engine = self.builder().build()?;
         engine.set_curl_order(self.curl_order);
-        let h = self.add_boundary_operators(&mut engine)?;
+        let h = self.add_boundary_operators(&mut engine, sources)?;
         Ok((engine, h))
     }
 
@@ -618,8 +632,13 @@ impl Compiled {
     }
 
     /// Registers the boundary operators of [`build`](Self::build) on
-    /// `engine`.
-    pub(crate) fn add_boundary_operators(&self, engine: &mut Engine) -> Result<BoundaryHandles> {
+    /// `engine`, for a run with `sources` (see
+    /// [`build_driving`](Self::build_driving)).
+    pub(crate) fn add_boundary_operators(
+        &self,
+        engine: &mut Engine,
+        sources: &ModelSources,
+    ) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
         // Seam E edges whose openEMS poles the seam operator runs itself
         // (low node → poles; design §5.16.12); under `Axis::Y` the
@@ -848,7 +867,7 @@ impl Compiled {
             // walls, and the H edge of the same direction and node of an
             // element with an inductor or in series (black box, design
             // §5.16.3).
-            for le in &self.sources.lumped {
+            for le in &sources.lumped {
                 let (a, p) = self.node_map.edge(le.edge);
                 let i = self.grid.index(p);
                 keep.insert((true, a, i));
@@ -914,7 +933,7 @@ impl Compiled {
         // next to a Lorentz medium fits no 1-D update of the corrected
         // values; design §5.16.3).
         if self.openems_pmc {
-            self.add_mur(engine, &mut h)?;
+            self.add_mur(engine, &mut h, &sources.excitations)?;
         }
         if !(self.dispersive.is_empty() && self.dispersive_openems.is_empty()) {
             let layers = h
@@ -1013,7 +1032,7 @@ impl Compiled {
         // openEMS's Mur faces read them before it (files, registered
         // above).
         if !self.openems_pmc {
-            self.add_mur(engine, &mut h)?;
+            self.add_mur(engine, &mut h, &sources.excitations)?;
         }
         if !self.sheets.is_empty() {
             let mut s = ConductingSheet::new(self.max_frequency);
@@ -1041,7 +1060,12 @@ impl Compiled {
 
 impl Compiled {
     /// Registers the [`MurBoundary`] of every Mur face, if any.
-    fn add_mur(&self, engine: &mut Engine, h: &mut BoundaryHandles) -> Result<()> {
+    fn add_mur(
+        &self,
+        engine: &mut Engine,
+        h: &mut BoundaryHandles,
+        excitations: &[ExcitationField],
+    ) -> Result<()> {
         if !self.mur.is_empty() {
             let op = match &self.mur_media {
                 Some(m) => MurBoundary::with_faces_media(engine, &self.mur, &self.materials, m)?,
@@ -1056,7 +1080,7 @@ impl Compiled {
                 Some(d) => {
                     let n = self.grid.nodes();
                     let mut held = Vec::new();
-                    for (e, axis, node) in self.driven_edges() {
+                    for (e, axis, node) in self.driven_edges(excitations) {
                         for &(f, _) in &self.mur {
                             let a = f.axis().index();
                             let plane = if f.is_max() { n[a] - 1 } else { 0 };
@@ -1079,9 +1103,9 @@ impl Compiled {
     /// of a cylindrical axis edge; `false`: H dual edge), for the Mur
     /// faces openEMS holds while an excitation runs
     /// ([`MurBoundary::hold_faces`]).
-    fn driven_edges(&self) -> Vec<(bool, Axis, [usize; 3])> {
+    fn driven_edges(&self, excitations: &[ExcitationField]) -> Vec<(bool, Axis, [usize; 3])> {
         let mut out = Vec::new();
-        for ex in &self.sources.excitations {
+        for ex in excitations {
             let e_side = match ex.excitation_type {
                 ExcitationType::EFieldSoft | ExcitationType::EFieldHard => true,
                 ExcitationType::HFieldSoft | ExcitationType::HFieldHard => false,
