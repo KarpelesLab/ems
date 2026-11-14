@@ -233,6 +233,8 @@ const WORDINGS: &[(&[&str], WarningCode)] = {
         (&["empty primitive"], PrimitiveNoEdges),
         (&["primitive is a single point"], PrimitiveNoEdges),
         (&["no primitive; ignored"], PrimitiveNoEdges),
+        // csx's own check of a model (`ContinuousStructure::validate`).
+        (&["has no primitives"], PrimitiveNoEdges),
         (&["only the first of ", " primitives is used"], Probe),
         (&["property ", "; ignored"], PropertyIgnored),
     ]
@@ -813,6 +815,11 @@ mod tests {
         ),
         (
             r#"property "cu" (Metal): no primitive; ignored"#,
+            PrimitiveNoEdges,
+            Some("cu"),
+        ),
+        (
+            r#"property "cu" has no primitives"#,
             PrimitiveNoEdges,
             Some("cu"),
         ),
