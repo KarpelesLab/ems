@@ -6985,6 +6985,22 @@ Remaining:
   neighbours carry the surface); the loss of a strip two cells wide
   depends on its direction by up to a third; Cartesian grids only; the DC
   resistance of solid metal thinner than the skin depth is not modelled.
+- Conformal PEC on features of about a cell (found with cadlab, §4.1's
+  consumer; it works around all three). A strip under 1.5 cells wide at
+  45° has no row of whole edges along it, and a cut edge is its open part
+  in series with its covered part: the strip is in pieces (a matching
+  network read `|S21|` 0.57 for 0.79 as a staircase). Round copper of a
+  cell: on a four-layer via transition (0.3 mm drill, 0.6 mm pads and
+  clearances in sheets, 0.3 mm cells) `|S21|` at 4 GHz is −0.44 dB as a
+  staircase, −0.35 dB on 0.2 mm cells in cadlab's solver, and −0.58 dB
+  with conformal cells (the outlines of the sheets move it by 0.13 dB,
+  the barrel by 0.04 dB): further from the finer mesh than the staircase.
+  And the threshold for small faces (`merge_below` and `deviation_area`
+  0.5) costs a strip two cells wide 13° of 300° of phase where 0.05
+  costs 1°; a board mesh, with cells much thinner than wide, has the
+  margin for it (stability estimate 0.64 to 0.85), cubic cells do not
+  (1.19 at 0.1): a threshold from the time step and the cells would
+  serve both.
 - Cylindrical (§5.16.11): magnetic poles in cell 0 off the seam
   (1e-4…2e-2), sheets reaching the axis (2e-2…4), Debye boxes over the axis
   (2e-4), a Lorentz box's time step (`mix_117`, 0.2 %), a dielectric over
