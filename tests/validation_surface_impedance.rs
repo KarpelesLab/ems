@@ -27,7 +27,10 @@ use ems::engine::surface::{
     Conductor, ImpedanceFit, Roughness, SolidEdge, SurfaceImpedance, box_edges,
     half_space_impedance,
 };
-use ems::engine::{EdgeMaterials, EdgeSource, Engine, FaceCondition, FaceConditions, Grid, Probe};
+use ems::engine::{
+    EdgeMaterials, EdgeSource, Engine, FaceCondition, FaceConditions, FusedSteps, Grid, Operator,
+    Probe,
+};
 use ems::{Axis, Cpml, Face};
 
 const DZ: f64 = 0.25e-3;
@@ -426,6 +429,10 @@ impl PlateLine {
         };
         let mut stretched = 0;
         if self.before_cpml {
+            // (In the serial hooks, after the layer's own update of these
+            // edges: run by the slabs, the operator would come before the
+            // layer, which would then stretch them as ordinary edges.)
+            e.add_operator(Idle);
             stretched = surface(&mut e);
         }
         let layers = [Face::YMin, Face::YMax].map(|f| (f, Cpml::cells(8)));
@@ -743,4 +750,122 @@ fn passive_and_deterministic() {
     assert_eq!(w, w3);
     assert_eq!(ux, ux3);
     assert_eq!(iy, iy3);
+}
+
+/// An operator that does nothing, with every serial hook: registered
+/// before the surface impedance it keeps that in the serial hooks.
+struct Idle;
+
+impl Operator for Idle {}
+
+/// The edges run by the engine's threads, each on its slab, give the
+/// values of the serial hooks bit for bit: for any thread count, in fused
+/// steps too. A solid block and a rational sheet on a graded mesh, the
+/// sheet running into a CPML on four faces (stretched circulations and
+/// stretched H corrections), slab boundaries through both.
+#[test]
+fn slabs_equal_the_serial_hooks() {
+    let _t = Timer::start("slabs_equal_the_serial_hooks");
+    let run = |threads: usize, serial: bool, fused: FusedSteps| {
+        let g = Grid::new([
+            linspace(0.0, 14e-3, 15),
+            (0..=14).map(|i| 1e-3 * (i as f64).powf(1.1)).collect(),
+            linspace(0.0, 10e-3, 11),
+        ])
+        .unwrap();
+        let mut m = EdgeMaterials::vacuum(&g);
+        let block = ([4, 4, 2], [9, 9, 4]);
+        for (axis, node) in box_edges(block.0, block.1) {
+            m.set_pec_edge(axis, node);
+        }
+        let mut e = Engine::builder(g)
+            .edge_materials(m)
+            .threads(threads)
+            .build()
+            .unwrap();
+        e.set_fused_steps(fused);
+        let layers = [Face::XMin, Face::XMax, Face::YMin, Face::YMax].map(|f| (f, Cpml::cells(3)));
+        let cpml = CpmlBoundary::new(&e, layers).unwrap();
+        e.add_operator(cpml);
+        if serial {
+            e.add_operator(Idle);
+        }
+        let mut s = SurfaceImpedance::new(Some(20e9));
+        s.add_box(
+            block.0,
+            block.1,
+            Conductor::new(5.8e7).with_roughness(Roughness::HammerstadJensen { rms: 1e-6 }),
+        );
+        for (d, o) in [(Axis::X, Axis::Y), (Axis::Y, Axis::X)] {
+            for a in 0..14 {
+                for b in 1..14 {
+                    let mut node = [0, 0, 7];
+                    node[d.index()] = a;
+                    node[o.index()] = b;
+                    s.push_sheet(
+                        SheetEdge {
+                            axis: d,
+                            node,
+                            normal: Axis::Z,
+                            conductivity: 1e6,
+                            thickness: 20e-6,
+                            upper_share: None,
+                        },
+                        Roughness::Smooth,
+                    );
+                }
+            }
+        }
+        let h = s.add_to(&mut e).unwrap();
+        assert_eq!(e.operator(&h).runs_in_slabs(), !serial);
+        assert!(e.operator(&h).stretched() > 100);
+        {
+            let mut f = e.fields_mut();
+            f.u.set(Axis::Y, [3, 4, 5], 1.0);
+            f.u.set(Axis::X, [5, 6, 8], -0.7);
+            f.u.set(Axis::Z, [10, 5, 3], 0.4);
+            // On a sheet edge: both faces take it.
+            f.u.set(Axis::X, [6, 7, 7], 0.3);
+        }
+        let mut w = vec![e.energy().to_bits()];
+        for _ in 0..8 {
+            e.run(40);
+            w.push(e.energy().to_bits());
+            // What a source adds to a sheet edge between steps.
+            let mut f = e.fields_mut();
+            let v = f.u.get(Axis::Y, [7, 5, 7]);
+            f.u.set(Axis::Y, [7, 5, 7], v + 0.01);
+        }
+        let fields: Vec<u32> = Axis::ALL
+            .iter()
+            .flat_map(|&a| {
+                let mut v = e.u_component(a);
+                v.extend(e.i_component(a));
+                v
+            })
+            .map(f32::to_bits)
+            .collect();
+        let lower = e
+            .operator(&h)
+            .lower_voltage(Axis::X, [7, 7, 7])
+            .unwrap()
+            .to_bits();
+        (w, fields, lower)
+    };
+    let want = run(1, true, FusedSteps::Auto);
+    assert!(want.1.iter().any(|&v| f32::from_bits(v) != 0.0));
+    assert_eq!(
+        run(3, true, FusedSteps::Auto),
+        want,
+        "serial hooks, 3 threads"
+    );
+    for threads in [1, 2, 3, 5, 7] {
+        for fused in [FusedSteps::Never, FusedSteps::Always] {
+            assert_eq!(
+                run(threads, false, fused),
+                want,
+                "{threads} threads, {fused:?}"
+            );
+        }
+    }
 }

@@ -645,11 +645,6 @@ impl Engine {
         }
     }
 
-    /// The array shape and slab partition of the fields.
-    pub(crate) fn fields_layout(&self) -> fields::Layout {
-        self.shared.store.layout.clone()
-    }
-
     /// Exclusive access to all field values (e.g. to set initial
     /// conditions).
     pub fn fields_mut(&mut self) -> Fields<'_> {

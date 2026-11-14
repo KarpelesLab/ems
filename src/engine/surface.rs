@@ -130,6 +130,30 @@
 //! faces, and a conductor running into the layer is absorbed with the
 //! wave it guides. Register the CPML before [`SurfaceImpedance::add_to`].
 //!
+//! # Threads
+//!
+//! The edges are run by the engine's threads, each on its x-slab, right
+//! after the kernel of the half-step ([`SlabHooks`]): every edge by the
+//! same expressions from the same values whichever slab it is in, with
+//! its state in its slab, so results are bit-identical for any thread
+//! count, and steps can run fused. Two things cross a slab boundary. An
+//! edge's circulation reads the currents of the plane before its own,
+//! which the E half-step may read. And the H correction of a dual edge in
+//! the last plane of a slab needs the face voltages of a sheet edge in
+//! the first plane of the next one: that slab leaves them, after its E
+//! update, where the other reads them in the next H half-step, together
+//! with the array value, from which both compute what a source has added
+//! since (the same expression on the same values).
+//!
+//! Slab hooks run before every serial hook. Where an operator registered
+//! earlier has serial hooks after a half-step (the merged faces of
+//! conformal PEC, a ladder sheet), the edges stay in the serial hooks, in
+//! registration order as before ([`SurfaceImpedance::runs_in_slabs`]).
+//! Register the operator after the others that work in the slabs (the
+//! CPML, dispersive media, Mur faces), as the compile step does: one
+//! registered later now acts on these edges after their update, not
+//! before it.
+//!
 //! # Validity
 //!
 //! * Cartesian grids.
@@ -155,12 +179,17 @@
 //! look-ahead term of [`super::sheet`]; outside absorbing layers the
 //! engine total only decreases.
 
+use core::ops::Range;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
 use super::Engine;
 use super::boundary::cpml::CpmlBoundary;
 use super::fields::Fields;
 use super::kernel::flush;
 use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
 use super::sheet::{CUT_FACE_LOADING, SheetEdge, skin_depth};
+use super::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0};
 use crate::post::Complex64;
@@ -723,20 +752,26 @@ struct Stretch {
     psi: f64,
 }
 
+/// Where a field value lies. As installed: the x-plane and the offset
+/// `j·nz + k` in it. In the serial hooks: the slab and the offset in its
+/// block. In a slab: 0 and the offset in the slab's block, or 1 and the
+/// offset in the one plane of the neighbour slab the half-step may read.
+type Loc = (u32, u32);
+
 /// A dual edge in a face's circulation: location and weight.
 #[derive(Debug, Clone, Copy)]
 struct Coupling {
     axis: Axis,
-    loc: (u32, u32),
+    loc: Loc,
     w: f64,
 }
 
 /// The H correction of a sheet's `−` side on one dual edge:
-/// `i −= db·(t·(u− − u+)/κ + ψ)`.
+/// `i −= db·(t·(u− − u+)/κ + ψ)`, as the compile step collects it.
 #[derive(Debug, Clone, Copy)]
-struct Correction {
+struct RawCorrection {
     axis: Axis,
-    loc: (u32, u32),
+    loc: Loc,
     /// `db·t`, `t` the weight of the edge in the dual edge's curl.
     dbt: f64,
     /// `db` and the stretch, inside a CPML (else `u32::MAX`).
@@ -746,10 +781,40 @@ struct Correction {
     ecorr: f64,
 }
 
+/// A [`RawCorrection`] where it is applied: with the dual edge, in the
+/// H half-step.
+#[derive(Debug, Clone, Copy)]
+struct Correction {
+    axis: Axis,
+    loc: Loc,
+    /// x-plane of the dual edge.
+    plane: u32,
+    dbt: f64,
+    db: f64,
+    stretch: u32,
+    /// The sheet edge: its index among the sheets of this part, or with
+    /// [`REMOTE`] set the index of its slot in the next slab.
+    edge: u32,
+}
+
+/// Flag of [`Correction::edge`]: the sheet edge lies in the first plane
+/// of the next slab.
+const REMOTE: u32 = 1 << 31;
+
+/// The energy term of a [`RawCorrection`], with its sheet edge.
+#[derive(Debug, Clone, Copy)]
+struct EnergyTerm {
+    axis: Axis,
+    loc: Loc,
+    ecorr: f64,
+}
+
 #[derive(Debug, Clone)]
 struct SolidState {
     axis: Axis,
-    loc: (u32, u32),
+    /// x-plane of the edge.
+    plane: u32,
+    loc: Loc,
     groups: [Group; 2],
     /// `2C/dt`, `1/(2C/dt + G + g/Z∞)`, `g`.
     two_c: f64,
@@ -764,7 +829,7 @@ struct SolidState {
 struct SheetState {
     axis: Axis,
     node: [usize; 3],
-    loc: (u32, u32),
+    loc: Loc,
     /// Groups of the `+` face, then of the `−` face.
     groups: [Group; 4],
     /// `2C±/dt`.
@@ -776,6 +841,8 @@ struct SheetState {
     /// Even and odd ports and their states.
     port: [u32; 2],
     st: [u32; 2],
+    /// Its corrections: raw ones until the operator is registered, then
+    /// their energy terms.
     k0: u32,
     nk: u32,
     u: [f64; 2],
@@ -785,9 +852,56 @@ struct SheetState {
     /// Share of `u−` in the face voltage the array holds,
     /// `u+ + mix·(u− − u+)` (0: `u+`).
     mix: f64,
-    /// The array value written by the last `post_e` (edges with a gap or
+    /// The array value written by the last E update (edges with a gap or
     /// a mix, whose `u+` is not read back from the array).
     written: f32,
+    /// Its term of the look-ahead energy after the last E update.
+    wc: f64,
+    /// Its slot among those its slab publishes for the slab before it,
+    /// or `u32::MAX`.
+    slot: u32,
+}
+
+/// How a sheet edge takes what another operator added to its array value
+/// since the last E update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The array holds `u+`: both faces move with it.
+    Plain,
+    /// The array holds a mix of the faces: both move by the difference.
+    Mix,
+    /// The edge has an open part, which takes the difference.
+    Gap,
+}
+
+impl SheetState {
+    fn mode(&self) -> Mode {
+        if self.gap != u32::MAX {
+            Mode::Gap
+        } else if self.mix != 0.0 {
+            Mode::Mix
+        } else {
+            Mode::Plain
+        }
+    }
+}
+
+/// The face voltages `u`, the array value `written` by the last E update
+/// and what goes to the open part, once the array holds `up`: what other
+/// operators (sources) added to the edge since the last E update acts on
+/// both faces (or on the open part of an edge partly covered). Applying
+/// it twice changes nothing.
+#[inline]
+fn synced(mode: Mode, u: [f64; 2], written: f32, up: f32) -> ([f64; 2], f32, f64) {
+    match mode {
+        Mode::Plain if up != u[0] as f32 => ([up as f64, u[1] + (up as f64 - u[0])], written, 0.0),
+        Mode::Mix if up != written => {
+            let d = up as f64 - written as f64;
+            ([u[0] + d, u[1] + d], up, 0.0)
+        }
+        Mode::Gap if up != written => (u, up, up as f64 - written as f64),
+        _ => (u, written, 0.0),
+    }
 }
 
 /// The open part of a sheet edge the sheet covers partly: an ordinary
@@ -799,6 +913,395 @@ struct Gap {
     cb: f64,
     /// Voltage over the open part.
     u: f64,
+}
+
+/// A sheet edge in the first plane of a slab, as the slab before it sees
+/// it in the H half-step: its face voltages and array value after the
+/// last E update. Written by its own slab in the E half-step, read by
+/// the other one in the H half-step (never at the same time).
+#[derive(Debug, Default)]
+struct Slot {
+    u: [AtomicU64; 2],
+    written: AtomicU32,
+}
+
+/// A sheet edge of the next slab that a correction here needs: where its
+/// array value is, and how it takes what was added to it.
+#[derive(Debug, Clone, Copy)]
+struct Remote {
+    axis: Axis,
+    loc: Loc,
+    mode: Mode,
+}
+
+/// The edges of one slab (or all of them, run in the serial hooks) with
+/// their state.
+#[derive(Debug, Default)]
+struct Part {
+    solids: Vec<SolidState>,
+    sheets: Vec<SheetState>,
+    couplings: Vec<Coupling>,
+    /// Stretches of the circulations (E half-step).
+    stretches: Vec<Stretch>,
+    /// Currents and section voltages of the ports.
+    state: Vec<f64>,
+    gaps: Vec<Gap>,
+    terms: Vec<EnergyTerm>,
+    /// The H corrections on the dual edges of this part, by x-plane (in
+    /// the order of their sheet edges within a plane).
+    corrections: Vec<Correction>,
+    /// Stretches of the corrections (H half-step).
+    h_stretches: Vec<Stretch>,
+    remote: Vec<Remote>,
+}
+
+/// Field access of one half-step: the serial hooks' or a slab's.
+trait Access {
+    fn i(&self, axis: Axis, loc: Loc) -> f32;
+    fn u(&self, axis: Axis, loc: Loc) -> f32;
+    fn set_i(&mut self, axis: Axis, loc: Loc, v: f32);
+    fn set_u(&mut self, axis: Axis, loc: Loc, v: f32);
+}
+
+struct Serial<'a, 'b>(&'a mut Fields<'b>);
+
+impl Access for Serial<'_, '_> {
+    #[inline]
+    fn i(&self, axis: Axis, loc: Loc) -> f32 {
+        self.0.i.at(axis, (loc.0 as usize, loc.1 as usize))
+    }
+    #[inline]
+    fn u(&self, axis: Axis, loc: Loc) -> f32 {
+        self.0.u.at(axis, (loc.0 as usize, loc.1 as usize))
+    }
+    #[inline]
+    fn set_i(&mut self, axis: Axis, loc: Loc, v: f32) {
+        self.0.i.set_at(axis, (loc.0 as usize, loc.1 as usize), v);
+    }
+    #[inline]
+    fn set_u(&mut self, axis: Axis, loc: Loc, v: f32) {
+        self.0.u.set_at(axis, (loc.0 as usize, loc.1 as usize), v);
+    }
+}
+
+/// A slab in its H half-step: `i` written, `u` read.
+struct SlabH<'a, 'b, 'c> {
+    i: &'a mut SlabMut<'b>,
+    u: &'a SlabRef<'c>,
+}
+
+/// The value at `loc` of a slab's readable field.
+#[inline]
+fn read(f: &SlabRef<'_>, axis: Axis, loc: Loc) -> f32 {
+    if loc.0 == 0 {
+        f.block[axis.index()][loc.1 as usize]
+    } else {
+        let (_, block, plane) = f.neighbour.expect("the neighbour plane");
+        block[axis.index()][plane * f.n[1] * f.n[2] + loc.1 as usize]
+    }
+}
+
+impl Access for SlabH<'_, '_, '_> {
+    #[inline]
+    fn i(&self, axis: Axis, loc: Loc) -> f32 {
+        self.i.block[axis.index()][loc.1 as usize]
+    }
+    #[inline]
+    fn u(&self, axis: Axis, loc: Loc) -> f32 {
+        read(self.u, axis, loc)
+    }
+    #[inline]
+    fn set_i(&mut self, axis: Axis, loc: Loc, v: f32) {
+        self.i.block[axis.index()][loc.1 as usize] = v;
+    }
+    fn set_u(&mut self, _: Axis, _: Loc, _: f32) {
+        unreachable!("the H half-step does not write voltages")
+    }
+}
+
+/// A slab in its E half-step: `u` written, `i` read.
+struct SlabE<'a, 'b, 'c> {
+    u: &'a mut SlabMut<'b>,
+    i: &'a SlabRef<'c>,
+}
+
+impl Access for SlabE<'_, '_, '_> {
+    #[inline]
+    fn i(&self, axis: Axis, loc: Loc) -> f32 {
+        read(self.i, axis, loc)
+    }
+    #[inline]
+    fn u(&self, axis: Axis, loc: Loc) -> f32 {
+        self.u.block[axis.index()][loc.1 as usize]
+    }
+    fn set_i(&mut self, _: Axis, _: Loc, _: f32) {
+        unreachable!("the E half-step does not write currents")
+    }
+    #[inline]
+    fn set_u(&mut self, axis: Axis, loc: Loc, v: f32) {
+        self.u.block[axis.index()][loc.1 as usize] = v;
+    }
+}
+
+/// The stretched sum of a group of couplings.
+#[inline]
+fn circulation<A: Access>(
+    g: &Group,
+    couplings: &[Coupling],
+    stretches: &mut [Stretch],
+    f: &A,
+) -> f64 {
+    let mut s = 0.0;
+    for c in &couplings[g.c0 as usize..(g.c0 + g.nc) as usize] {
+        s += c.w * f.i(c.axis, c.loc) as f64;
+    }
+    if g.stretch != u32::MAX {
+        let q = &mut stretches[g.stretch as usize];
+        q.psi = q.b * q.psi + q.a * s;
+        s = s * q.ik + q.psi;
+    }
+    s
+}
+
+impl Part {
+    /// The solid edges in the x-planes `planes` (edges are in plane
+    /// order).
+    fn solids_in(&self, planes: &Range<usize>) -> Range<usize> {
+        let lo = self
+            .solids
+            .partition_point(|e| (e.plane as usize) < planes.start);
+        let hi = self
+            .solids
+            .partition_point(|e| (e.plane as usize) < planes.end);
+        lo..hi
+    }
+
+    /// The sheet edges in the x-planes `planes`.
+    fn sheets_in(&self, planes: &Range<usize>) -> Range<usize> {
+        let lo = self.sheets.partition_point(|e| e.node[0] < planes.start);
+        let hi = self.sheets.partition_point(|e| e.node[0] < planes.end);
+        lo..hi
+    }
+
+    /// The corrections on the dual edges in the x-planes `planes`.
+    fn corrections_in(&self, planes: &Range<usize>) -> Range<usize> {
+        let lo = self
+            .corrections
+            .partition_point(|c| (c.plane as usize) < planes.start);
+        let hi = self
+            .corrections
+            .partition_point(|c| (c.plane as usize) < planes.end);
+        lo..hi
+    }
+
+    /// The H half-step: the sheet edges `sheets` take what was added to
+    /// their array values, and the corrections `corrections` are applied;
+    /// `next` holds the slots of the next slab.
+    fn step_h<A: Access>(
+        &mut self,
+        f: &mut A,
+        sheets: Range<usize>,
+        corrections: Range<usize>,
+        next: Option<&[Slot]>,
+    ) {
+        for e in &mut self.sheets[sheets] {
+            let up = f.u(e.axis, e.loc);
+            let (u, written, open) = synced(e.mode(), e.u, e.written, up);
+            e.u = u;
+            e.written = written;
+            if e.gap != u32::MAX {
+                self.gaps[e.gap as usize].u += open;
+            }
+        }
+        for c in &self.corrections[corrections] {
+            // The face voltages of the edge as its own slab has them
+            // after this half-step (it may not have got there yet).
+            let (mode, u, written, up) = if c.edge & REMOTE == 0 {
+                let e = &self.sheets[c.edge as usize];
+                (e.mode(), e.u, e.written, f.u(e.axis, e.loc))
+            } else {
+                let k = (c.edge & !REMOTE) as usize;
+                let (r, slot) = (&self.remote[k], &next.expect("slots of the next slab")[k]);
+                (
+                    r.mode,
+                    [
+                        f64::from_bits(slot.u[0].load(Ordering::Relaxed)),
+                        f64::from_bits(slot.u[1].load(Ordering::Relaxed)),
+                    ],
+                    f32::from_bits(slot.written.load(Ordering::Relaxed)),
+                    f.u(r.axis, r.loc),
+                )
+            };
+            let (u, _, _) = synced(mode, u, written, up);
+            let mut d = c.dbt * (u[1] - u[0]);
+            if c.stretch != u32::MAX {
+                let q = &mut self.h_stretches[c.stretch as usize];
+                let t = d / c.db;
+                q.psi = q.b * q.psi + q.a * t;
+                d = c.db * (t * q.ik + q.psi);
+            }
+            let v = f.i(c.axis, c.loc);
+            f.set_i(c.axis, c.loc, flush(v - d as f32));
+        }
+    }
+
+    /// The E half-step of the solid edges `solids` and the sheet edges
+    /// `sheets`; `slots` are the slots of this slab.
+    fn step_e<A: Access>(
+        &mut self,
+        ports: &[Port],
+        f: &mut A,
+        solids: Range<usize>,
+        sheets: Range<usize>,
+        slots: &[Slot],
+    ) {
+        let Self {
+            solids: all_solids,
+            sheets: all_sheets,
+            couplings,
+            stretches,
+            state,
+            gaps,
+            terms,
+            ..
+        } = self;
+        for e in &mut all_solids[solids] {
+            let s = circulation(&e.groups[0], couplings, stretches, f)
+                + circulation(&e.groups[1], couplings, stretches, f);
+            let port = &ports[e.port as usize];
+            let st = &mut state[e.st as usize..e.st as usize + port.stride()];
+            let hist = port.history(st);
+            let um = (s + e.two_c * e.u + hist / port.z_inf) * e.inv;
+            port.advance(st, (e.g * um - hist) / port.z_inf);
+            e.u = 2.0 * um - e.u;
+            f.set_u(e.axis, e.loc, flush(e.u as f32));
+        }
+        for e in &mut all_sheets[sheets] {
+            let mut s = [0.0; 2];
+            for (q, g) in e.groups.iter().enumerate() {
+                if g.nc != 0 {
+                    s[q / 2] += circulation(g, couplings, stretches, f);
+                }
+            }
+            let (pe, po) = (&ports[e.port[0] as usize], &ports[e.port[1] as usize]);
+            let (he, ho) = (
+                pe.history(&state[e.st[0] as usize..e.st[0] as usize + pe.stride()]),
+                po.history(&state[e.st[1] as usize..e.st[1] as usize + po.stride()]),
+            );
+            let (je, jo) = (0.5 * he / pe.z_inf, 0.5 * ho / po.z_inf);
+            let r = [
+                s[0] + e.two_c[0] * e.u[0] + je + jo,
+                s[1] + e.two_c[1] * e.u[1] + je - jo,
+            ];
+            let um = [e.m[0] * r[0] + e.m[1] * r[1], e.m[1] * r[0] + e.m[2] * r[1]];
+            pe.advance(
+                &mut state[e.st[0] as usize..e.st[0] as usize + pe.stride()],
+                (e.g * (um[0] + um[1]) - he) / pe.z_inf,
+            );
+            po.advance(
+                &mut state[e.st[1] as usize..e.st[1] as usize + po.stride()],
+                (e.g * (um[0] - um[1]) - ho) / po.z_inf,
+            );
+            e.u = [2.0 * um[0] - e.u[0], 2.0 * um[1] - e.u[1]];
+            // The face voltage in the array value, and the open part: the
+            // kernel's update of an ordinary edge, with the currents of
+            // all its dual edges.
+            let face = e.u[0] + e.mix * (e.u[1] - e.u[0]);
+            let plain = e.gap == u32::MAX && e.mix == 0.0;
+            let up = if e.gap == u32::MAX {
+                flush(face as f32)
+            } else {
+                let gap = &mut gaps[e.gap as usize];
+                gap.u = gap.ca * gap.u + gap.cb * (s[0] + s[1]);
+                flush((gap.u + face) as f32)
+            };
+            e.written = up;
+            f.set_u(e.axis, e.loc, up);
+            let mut s_e = 0.0;
+            for c in &terms[e.k0 as usize..(e.k0 + e.nk) as usize] {
+                s_e += c.ecorr * f.i(c.axis, c.loc) as f64;
+            }
+            e.wc = if plain {
+                s_e * (e.u[1] - up as f64)
+            } else {
+                s_e * (e.u[1] - e.u[0])
+            };
+            if e.slot != u32::MAX {
+                let slot = &slots[e.slot as usize];
+                slot.u[0].store(e.u[0].to_bits(), Ordering::Relaxed);
+                slot.u[1].store(e.u[1].to_bits(), Ordering::Relaxed);
+                slot.written.store(up.to_bits(), Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// The installed edges: one part per slab, each run by the thread of its
+/// slab, or one part run in the serial hooks.
+#[derive(Debug)]
+struct Parts {
+    parts: Vec<Mutex<Part>>,
+    ports: Arc<[Port]>,
+    /// Per slab, the sheet edges of its first plane that the slab before
+    /// it corrects dual edges for.
+    slots: Vec<Vec<Slot>>,
+}
+
+impl Parts {
+    fn part(&self, s: usize) -> std::sync::MutexGuard<'_, Part> {
+        self.parts[s].lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl SlabHooks for Parts {
+    fn post_h_slab(&self, i: &mut SlabMut<'_>, u: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        self.post_h_planes(i, u, ctx, 0..usize::MAX);
+    }
+
+    fn post_e_slab(&self, u: &mut SlabMut<'_>, i: &SlabRef<'_>, ctx: &SlabContext<'_>) {
+        self.post_e_planes(u, i, ctx, 0..usize::MAX);
+    }
+
+    fn fusion(&self) -> Fusion {
+        Fusion::Planes
+    }
+
+    fn post_h_planes(
+        &self,
+        i: &mut SlabMut<'_>,
+        u: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        let mut p = self.part(ctx.slab);
+        let (sheets, corrections) = (p.sheets_in(&planes), p.corrections_in(&planes));
+        if sheets.is_empty() && corrections.is_empty() {
+            return;
+        }
+        let next = self.slots.get(ctx.slab + 1).map(|s| &s[..]);
+        p.step_h(&mut SlabH { i, u }, sheets, corrections, next);
+    }
+
+    fn post_e_planes(
+        &self,
+        u: &mut SlabMut<'_>,
+        i: &SlabRef<'_>,
+        ctx: &SlabContext<'_>,
+        planes: Range<usize>,
+    ) {
+        let mut p = self.part(ctx.slab);
+        let (solids, sheets) = (p.solids_in(&planes), p.sheets_in(&planes));
+        if solids.is_empty() && sheets.is_empty() {
+            return;
+        }
+        p.step_e(
+            &self.ports,
+            &mut SlabE { u, i },
+            solids,
+            sheets,
+            &self.slots[ctx.slab],
+        );
+    }
 }
 
 /// Surface impedance on the faces of solid lossy metal and on conducting
@@ -850,14 +1353,33 @@ pub struct SurfaceImpedance {
     interior: usize,
     thin: usize,
     dt: f64,
+    nodes: [usize; 3],
+    /// Whether the edges can be run by the slabs (see [`Operator::slab_hooks`]).
+    slab_ok: bool,
+    /// The edges as installed, until the operator is registered.
     ports: Vec<Port>,
     solids: Vec<SolidState>,
     sheets: Vec<SheetState>,
     couplings: Vec<Coupling>,
-    corrections: Vec<Correction>,
+    corrections: Vec<RawCorrection>,
     stretches: Vec<Stretch>,
     state: Vec<f64>,
-    w_corr: f64,
+    /// Counts of the installed edges.
+    counts: Counts,
+    /// The edges of a registered operator, and whether the slabs run
+    /// them.
+    parts: Option<Arc<Parts>>,
+    slabs: bool,
+}
+
+/// Counts of the installed edges (kept when the lists go to the parts).
+#[derive(Debug, Clone, Copy, Default)]
+struct Counts {
+    solids: usize,
+    sheets: usize,
+    gaps: usize,
+    stretches: usize,
+    state: usize,
 }
 
 /// The edges of the node box `start..=stop`: every edge between two of
@@ -1005,17 +1527,17 @@ impl SurfaceImpedance {
     /// Number of installed sheet edges the sheet covers in part
     /// ([`cut_sheet`](Self::cut_sheet)).
     pub fn cut_sheet_edges(&self) -> usize {
-        self.gaps.len()
+        self.counts.gaps
     }
 
     /// Number of installed edges of solid metal.
     pub fn solid_edges(&self) -> usize {
-        self.solids.len()
+        self.counts.solids
     }
 
     /// Number of installed sheet edges.
     pub fn sheet_edges(&self) -> usize {
-        self.sheets.len()
+        self.counts.sheets
     }
 
     /// Number of requested edges skipped at installation: duplicates,
@@ -1039,21 +1561,35 @@ impl SurfaceImpedance {
 
     /// Number of derivative terms stretched by a CPML.
     pub fn stretched(&self) -> usize {
-        self.stretches.len()
+        self.counts.stretches
     }
 
     /// Number of state values (currents and section voltages).
     pub fn state_len(&self) -> usize {
-        self.state.len()
+        self.counts.state
     }
 
     /// Voltage of the `−` face of an installed sheet edge (the `+` face
     /// voltage is the engine's `u`).
     pub fn lower_voltage(&self, axis: Axis, node: [usize; 3]) -> Option<f64> {
-        self.sheets
-            .iter()
-            .find(|e| e.axis == axis && e.node == node)
-            .map(|e| e.u[1])
+        let found = |sheets: &[SheetState]| {
+            sheets
+                .iter()
+                .find(|e| e.axis == axis && e.node == node)
+                .map(|e| e.u[1])
+        };
+        match &self.parts {
+            Some(p) => (0..p.parts.len()).find_map(|s| found(&p.part(s).sheets)),
+            None => found(&self.sheets),
+        }
+    }
+
+    /// Whether the edges are run by the engine's threads, each on its
+    /// slab ([`Operator::slab_hooks`]); `false` before registration and
+    /// where an operator registered earlier acts in the serial hooks after
+    /// a half-step (the order of the two would change).
+    pub fn runs_in_slabs(&self) -> bool {
+        self.slabs
     }
 
     fn band(&self, dt: f64) -> Result<(f64, f64)> {
@@ -1169,11 +1705,17 @@ impl SurfaceImpedance {
         let dt = engine.dt();
         self.dt = dt;
         let (f_lo, f_hi) = self.band(dt)?;
-        let layout = engine.fields_layout();
-        let locate = |p: [usize; 3]| {
-            let (s, o) = layout.locate(p);
-            (s as u32, o as u32)
-        };
+        self.nodes = n;
+        // Slab hooks run before every serial hook: only when no operator
+        // registered before this one acts serially after a half-step
+        // (their order would change), as for the Mur faces.
+        self.slab_ok = engine.periodic.is_none()
+            && !engine
+                .ops
+                .iter()
+                .any(|r| r.hooks.intersects(Hooks::POST_H | Hooks::POST_E));
+        // (x-plane, offset in the plane.)
+        let locate = |p: [usize; 3]| (p[0] as u32, (p[1] * n[2] + p[2]) as u32);
         let cpml: Option<CpmlBoundary> = engine.find_operator::<CpmlBoundary>().cloned();
         let cpml = cpml.as_ref().filter(|c| !c.is_cylindrical_rho_max());
         // PEC edges and the faces without field, from the coefficients as
@@ -1368,6 +1910,7 @@ impl SurfaceImpedance {
             let st = self.alloc(port);
             self.solids.push(SolidState {
                 axis: d,
+                plane: e.node[0] as u32,
                 loc: locate(e.node),
                 groups,
                 two_c,
@@ -1538,7 +2081,7 @@ impl SurfaceImpedance {
                         }
                         None => u32::MAX,
                     };
-                    self.corrections.push(Correction {
+                    self.corrections.push(RawCorrection {
                         axis: ax,
                         loc,
                         dbt: dbv * s * wc,
@@ -1593,8 +2136,17 @@ impl SurfaceImpedance {
                 gap,
                 mix,
                 written: 0.0,
+                wc: 0.0,
+                slot: u32::MAX,
             });
         }
+        self.counts = Counts {
+            solids: self.solids.len(),
+            sheets: self.sheets.len(),
+            gaps: self.gaps.len(),
+            stretches: self.stretches.len(),
+            state: self.state.len(),
+        };
         self.installed = true;
         Ok(())
     }
@@ -1611,182 +2163,276 @@ impl SurfaceImpedance {
         Ok(engine.add_operator(self))
     }
 
-    /// The stretched sum of a group of couplings.
-    #[inline]
-    fn circulation(
-        g: &Group,
-        couplings: &[Coupling],
-        stretches: &mut [Stretch],
-        f: &Fields<'_>,
-    ) -> f64 {
-        let mut s = 0.0;
-        for c in &couplings[g.c0 as usize..(g.c0 + g.nc) as usize] {
-            s += c.w * f.i.at(c.axis, (c.loc.0 as usize, c.loc.1 as usize)) as f64;
+    /// The installed edges as parts: one per slab of `starts` (the first
+    /// x-plane of each slab, and the number of planes), or a single part
+    /// for the serial hooks, its locations as slab and offset.
+    fn take_parts(&mut self, starts: &[usize], slabs: bool) -> Parts {
+        let n = self.nodes;
+        let count = if slabs { starts.len() - 1 } else { 1 };
+        let slab_of = |plane: usize| {
+            if slabs {
+                starts.partition_point(|&s| s <= plane) - 1
+            } else {
+                0
+            }
+        };
+        let ports: Arc<[Port]> = std::mem::take(&mut self.ports).into();
+        let mut parts: Vec<Part> = (0..count).map(|_| Part::default()).collect();
+        let mut slots: Vec<usize> = vec![0; count];
+        let couplings = std::mem::take(&mut self.couplings);
+        let stretches = std::mem::take(&mut self.stretches);
+        let raw = std::mem::take(&mut self.corrections);
+        let gaps = std::mem::take(&mut self.gaps);
+        self.state = Vec::new();
+        // A group with its couplings and its stretch, in `p`.
+        let group = |p: &mut Part, g: Group| -> Group {
+            if g.nc == 0 {
+                return g;
+            }
+            let c0 = p.couplings.len() as u32;
+            p.couplings
+                .extend_from_slice(&couplings[g.c0 as usize..(g.c0 + g.nc) as usize]);
+            let stretch = if g.stretch == u32::MAX {
+                u32::MAX
+            } else {
+                p.stretches.push(stretches[g.stretch as usize]);
+                p.stretches.len() as u32 - 1
+            };
+            Group {
+                c0,
+                nc: g.nc,
+                stretch,
+            }
+        };
+        let alloc = |p: &mut Part, port: u32| -> u32 {
+            let at = p.state.len();
+            p.state.resize(at + ports[port as usize].stride(), 0.0);
+            at as u32
+        };
+        for mut e in std::mem::take(&mut self.solids) {
+            let p = &mut parts[slab_of(e.plane as usize)];
+            e.groups = e.groups.map(|g| group(p, g));
+            e.st = alloc(p, e.port);
+            p.solids.push(e);
         }
-        if g.stretch != u32::MAX {
-            let q = &mut stretches[g.stretch as usize];
-            q.psi = q.b * q.psi + q.a * s;
-            s = s * q.ik + q.psi;
+        for mut e in std::mem::take(&mut self.sheets) {
+            let s = slab_of(e.node[0]);
+            let mode = e.mode();
+            let local = parts[s].sheets.len() as u32;
+            for c in &raw[e.k0 as usize..(e.k0 + e.nk) as usize] {
+                // The dual edge lies in the plane of the edge or in the
+                // one before it: in this slab or in the one before.
+                let t = slab_of(c.loc.0 as usize);
+                let edge = if t == s {
+                    local
+                } else {
+                    debug_assert_eq!(t + 1, s);
+                    if e.slot == u32::MAX {
+                        e.slot = slots[s] as u32;
+                        slots[s] += 1;
+                        parts[t].remote.push(Remote {
+                            axis: e.axis,
+                            loc: e.loc,
+                            mode,
+                        });
+                    }
+                    e.slot | REMOTE
+                };
+                let p = &mut parts[t];
+                let stretch = if c.stretch == u32::MAX {
+                    u32::MAX
+                } else {
+                    p.h_stretches.push(stretches[c.stretch as usize]);
+                    p.h_stretches.len() as u32 - 1
+                };
+                p.corrections.push(Correction {
+                    axis: c.axis,
+                    loc: c.loc,
+                    plane: c.loc.0,
+                    dbt: c.dbt,
+                    db: c.db,
+                    stretch,
+                    edge,
+                });
+            }
+            let p = &mut parts[s];
+            let k0 = p.terms.len() as u32;
+            p.terms.extend(
+                raw[e.k0 as usize..(e.k0 + e.nk) as usize]
+                    .iter()
+                    .map(|c| EnergyTerm {
+                        axis: c.axis,
+                        loc: c.loc,
+                        ecorr: c.ecorr,
+                    }),
+            );
+            e.k0 = k0;
+            e.groups = e.groups.map(|g| group(p, g));
+            e.st = [alloc(p, e.port[0]), alloc(p, e.port[1])];
+            if e.gap != u32::MAX {
+                p.gaps.push(gaps[e.gap as usize]);
+                e.gap = p.gaps.len() as u32 - 1;
+            }
+            p.sheets.push(e);
         }
-        s
+        let plane = (n[1] * n[2]) as u32;
+        for (s, p) in parts.iter_mut().enumerate() {
+            if slabs {
+                // By plane; the corrections of a dual edge keep the order
+                // of their sheet edges.
+                p.corrections.sort_by_key(|c| c.plane);
+                // The offset in the slab's block, or in the plane of the
+                // neighbour slab that the half-step reads (the plane
+                // before for the currents of a circulation, the plane
+                // after for the voltage of a sheet edge).
+                let (lo, hi) = (starts[s] as u32, starts[s + 1] as u32);
+                let conv = |l: &mut Loc| {
+                    *l = if (lo..hi).contains(&l.0) {
+                        (0, (l.0 - lo) * plane + l.1)
+                    } else {
+                        (1, l.1)
+                    };
+                };
+                p.solids.iter_mut().for_each(|e| conv(&mut e.loc));
+                p.sheets.iter_mut().for_each(|e| conv(&mut e.loc));
+                p.couplings.iter_mut().for_each(|c| {
+                    debug_assert!((lo..hi).contains(&c.loc.0) || c.loc.0 + 1 == lo);
+                    conv(&mut c.loc);
+                });
+                p.terms.iter_mut().for_each(|c| conv(&mut c.loc));
+                p.corrections.iter_mut().for_each(|c| conv(&mut c.loc));
+                p.remote.iter_mut().for_each(|r| {
+                    debug_assert_eq!(r.loc.0, hi);
+                    conv(&mut r.loc);
+                });
+            } else {
+                // Slab and offset in its block.
+                let conv = |l: &mut Loc| {
+                    let s = starts.partition_point(|&s| s <= l.0 as usize) - 1;
+                    *l = (s as u32, (l.0 - starts[s] as u32) * plane + l.1);
+                };
+                p.solids.iter_mut().for_each(|e| conv(&mut e.loc));
+                p.sheets.iter_mut().for_each(|e| conv(&mut e.loc));
+                p.couplings.iter_mut().for_each(|c| conv(&mut c.loc));
+                p.terms.iter_mut().for_each(|c| conv(&mut c.loc));
+                p.corrections.iter_mut().for_each(|c| conv(&mut c.loc));
+            }
+            p.solids.shrink_to_fit();
+            p.sheets.shrink_to_fit();
+            p.couplings.shrink_to_fit();
+            p.stretches.shrink_to_fit();
+            p.state.shrink_to_fit();
+            p.gaps.shrink_to_fit();
+            p.terms.shrink_to_fit();
+            p.corrections.shrink_to_fit();
+            p.h_stretches.shrink_to_fit();
+            p.remote.shrink_to_fit();
+        }
+        Parts {
+            parts: parts.into_iter().map(Mutex::new).collect(),
+            ports,
+            slots: slots
+                .into_iter()
+                .map(|k| (0..k).map(|_| Slot::default()).collect())
+                .collect(),
+        }
     }
 }
 
 impl Operator for SurfaceImpedance {
     fn hooks(&self) -> Hooks {
         let mut h = Hooks::NONE;
-        if !self.sheets.is_empty() {
+        if self.slabs {
+            return h;
+        }
+        if self.counts.sheets != 0 {
             h |= Hooks::POST_H;
         }
-        if !(self.sheets.is_empty() && self.solids.is_empty()) {
+        if self.counts.sheets + self.counts.solids != 0 {
             h |= Hooks::POST_E;
         }
         h
     }
 
-    fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        for e in &mut self.sheets {
-            // What other operators (sources) added to the edge since the
-            // last E update acts on both faces.
-            let up = f.u.at(e.axis, (e.loc.0 as usize, e.loc.1 as usize));
-            if e.gap == u32::MAX && e.mix == 0.0 {
-                if up != e.u[0] as f32 {
-                    e.u[1] += up as f64 - e.u[0];
-                    e.u[0] = up as f64;
-                }
-            } else if up != e.written {
-                // To the open part of an edge partly covered.
-                let d = up as f64 - e.written as f64;
-                if e.gap == u32::MAX {
-                    e.u[0] += d;
-                    e.u[1] += d;
-                } else {
-                    self.gaps[e.gap as usize].u += d;
-                }
-                e.written = up;
-            }
-            let diff = e.u[1] - e.u[0];
-            for c in &self.corrections[e.k0 as usize..(e.k0 + e.nk) as usize] {
-                let loc = (c.loc.0 as usize, c.loc.1 as usize);
-                let mut d = c.dbt * diff;
-                if c.stretch != u32::MAX {
-                    let q = &mut self.stretches[c.stretch as usize];
-                    let t = d / c.db;
-                    q.psi = q.b * q.psi + q.a * t;
-                    d = c.db * (t * q.ik + q.psi);
-                }
-                let v = f.i.at(c.axis, loc);
-                f.i.set_at(c.axis, loc, flush(v - d as f32));
-            }
+    /// The edges go to the slabs of the engine, each run by its thread
+    /// right after the kernel in the same half-step (bit-identical for
+    /// any thread count: every edge is computed by the same expressions
+    /// from the same values, and what a slab needs of the next one's
+    /// edges is what that slab left after its last E update). Where an
+    /// operator registered earlier has serial hooks after a half-step,
+    /// they stay in the serial hooks, in registration order as before.
+    fn slab_hooks(&mut self, part: &SlabPartition<'_>) -> Option<Arc<dyn SlabHooks>> {
+        if !self.installed || self.parts.is_some() {
+            // Registered without `add_to` (nothing to do) or twice.
+            return None;
         }
+        assert_eq!(
+            part.grid().nodes(),
+            self.nodes,
+            "surface impedance installed for another grid"
+        );
+        let starts: Vec<usize> = (0..part.slabs())
+            .map(|s| part.planes(s).start)
+            .chain([self.nodes[0]])
+            .collect();
+        self.slabs = self.slab_ok && self.counts.sheets + self.counts.solids != 0;
+        let parts = Arc::new(self.take_parts(&starts, self.slabs));
+        self.parts = Some(Arc::clone(&parts));
+        if self.slabs { Some(parts) } else { None }
+    }
+
+    fn post_h(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
+        let Some(parts) = &self.parts else { return };
+        let mut p = parts.part(0);
+        let (sheets, corrections) = (0..p.sheets.len(), 0..p.corrections.len());
+        p.step_h(&mut Serial(f), sheets, corrections, None);
     }
 
     fn post_e(&mut self, f: &mut Fields<'_>, _ctx: &StepContext<'_>) {
-        let Self {
-            ports,
-            solids,
-            sheets,
-            couplings,
-            corrections,
-            stretches,
-            state,
-            gaps,
-            ..
-        } = self;
-        for e in solids.iter_mut() {
-            let s = Self::circulation(&e.groups[0], couplings, stretches, f)
-                + Self::circulation(&e.groups[1], couplings, stretches, f);
-            let port = &ports[e.port as usize];
-            let st = &mut state[e.st as usize..e.st as usize + port.stride()];
-            let hist = port.history(st);
-            let um = (s + e.two_c * e.u + hist / port.z_inf) * e.inv;
-            port.advance(st, (e.g * um - hist) / port.z_inf);
-            e.u = 2.0 * um - e.u;
-            let v = flush(e.u as f32);
-            f.u.set_at(e.axis, (e.loc.0 as usize, e.loc.1 as usize), v);
-        }
-        let mut w_corr = 0.0;
-        for e in sheets.iter_mut() {
-            let mut s = [0.0; 2];
-            for (q, g) in e.groups.iter().enumerate() {
-                if g.nc != 0 {
-                    s[q / 2] += Self::circulation(g, couplings, stretches, f);
-                }
-            }
-            let (pe, po) = (&ports[e.port[0] as usize], &ports[e.port[1] as usize]);
-            let (he, ho) = (
-                pe.history(&state[e.st[0] as usize..e.st[0] as usize + pe.stride()]),
-                po.history(&state[e.st[1] as usize..e.st[1] as usize + po.stride()]),
-            );
-            let (je, jo) = (0.5 * he / pe.z_inf, 0.5 * ho / po.z_inf);
-            let r = [
-                s[0] + e.two_c[0] * e.u[0] + je + jo,
-                s[1] + e.two_c[1] * e.u[1] + je - jo,
-            ];
-            let um = [e.m[0] * r[0] + e.m[1] * r[1], e.m[1] * r[0] + e.m[2] * r[1]];
-            pe.advance(
-                &mut state[e.st[0] as usize..e.st[0] as usize + pe.stride()],
-                (e.g * (um[0] + um[1]) - he) / pe.z_inf,
-            );
-            po.advance(
-                &mut state[e.st[1] as usize..e.st[1] as usize + po.stride()],
-                (e.g * (um[0] - um[1]) - ho) / po.z_inf,
-            );
-            e.u = [2.0 * um[0] - e.u[0], 2.0 * um[1] - e.u[1]];
-            // The face voltage in the array value, and the open part: the
-            // kernel's update of an ordinary edge, with the currents of
-            // all its dual edges.
-            let face = e.u[0] + e.mix * (e.u[1] - e.u[0]);
-            let plain = e.gap == u32::MAX && e.mix == 0.0;
-            let up = if e.gap == u32::MAX {
-                flush(face as f32)
-            } else {
-                let gap = &mut gaps[e.gap as usize];
-                gap.u = gap.ca * gap.u + gap.cb * (s[0] + s[1]);
-                flush((gap.u + face) as f32)
-            };
-            e.written = up;
-            f.u.set_at(e.axis, (e.loc.0 as usize, e.loc.1 as usize), up);
-            let mut s_e = 0.0;
-            for c in &corrections[e.k0 as usize..(e.k0 + e.nk) as usize] {
-                s_e += c.ecorr * f.i.at(c.axis, (c.loc.0 as usize, c.loc.1 as usize)) as f64;
-            }
-            w_corr += if plain {
-                s_e * (e.u[1] - up as f64)
-            } else {
-                s_e * (e.u[1] - e.u[0])
-            };
-        }
-        self.w_corr = w_corr;
+        let Some(parts) = &self.parts else { return };
+        let mut p = parts.part(0);
+        let (solids, sheets) = (0..p.solids.len(), 0..p.sheets.len());
+        p.step_e(&parts.ports, &mut Serial(f), solids, sheets, &[]);
     }
 
     fn energy(&self) -> f64 {
+        let Some(parts) = &self.parts else { return 0.0 };
+        let ports = &parts.ports;
+        let held: Vec<_> = (0..parts.parts.len()).map(|s| parts.part(s)).collect();
+        // (One running sum over all parts, in edge order: independent of
+        // the partition.)
         let mut w = 0.0;
         let dt = self.dt;
-        for e in &self.solids {
-            let port = &self.ports[e.port as usize];
-            let st = &self.state[e.st as usize..e.st as usize + port.stride()];
-            w += 0.25 * e.two_c * dt * e.u * e.u + port.energy(st) / e.g;
-        }
-        for e in &self.sheets {
-            for q in 0..2 {
-                w += 0.25 * e.two_c[q] * dt * e.u[q] * e.u[q];
-                let port = &self.ports[e.port[q] as usize];
-                let st = &self.state[e.st[q] as usize..e.st[q] as usize + port.stride()];
-                w += 0.5 * port.energy(st) / e.g;
+        for p in &held {
+            for e in &p.solids {
+                let port = &ports[e.port as usize];
+                let st = &p.state[e.st as usize..e.st as usize + port.stride()];
+                w += 0.25 * e.two_c * dt * e.u * e.u + port.energy(st) / e.g;
             }
-            // The engine's field sum has ½·C·(array value)².
-            let face = e.u[0] + e.mix * (e.u[1] - e.u[0]);
-            let stored = if e.gap == u32::MAX {
-                face
-            } else {
-                let uo = self.gaps[e.gap as usize].u;
-                w += 0.5 * e.c_edge * uo * uo;
-                uo + face
-            };
-            w -= 0.5 * e.c_edge * stored * stored;
         }
-        w + self.w_corr
+        let mut w_corr = 0.0;
+        for p in &held {
+            for e in &p.sheets {
+                for q in 0..2 {
+                    w += 0.25 * e.two_c[q] * dt * e.u[q] * e.u[q];
+                    let port = &ports[e.port[q] as usize];
+                    let st = &p.state[e.st[q] as usize..e.st[q] as usize + port.stride()];
+                    w += 0.5 * port.energy(st) / e.g;
+                }
+                // The engine's field sum has ½·C·(array value)².
+                let face = e.u[0] + e.mix * (e.u[1] - e.u[0]);
+                let stored = if e.gap == u32::MAX {
+                    face
+                } else {
+                    let uo = p.gaps[e.gap as usize].u;
+                    w += 0.5 * e.c_edge * uo * uo;
+                    uo + face
+                };
+                w -= 0.5 * e.c_edge * stored * stored;
+                w_corr += e.wc;
+            }
+        }
+        w + w_corr
     }
 }
 
