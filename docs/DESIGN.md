@@ -256,6 +256,15 @@ two analyses are up to 0.02 apart in `|S11|` and 0.009 in `|S21|` from 1 to
 8 GHz. Not measured: which is closer to the structure's S-parameters (the
 analytic port cases have equal columns).
 
+**What such a program sets** (cadlab's adapter, as of wave 25):
+`CompileOptions::with_pole_weighting(PoleWeighting::Averaged)`, so that a
+laminate's loss does not depend on the cell above its surface (§5.16.2;
+the default is openEMS's rule); `with_lossy_metal` and
+`SheetModel::SurfaceImpedance` for lossy copper (§5.9.1), with
+`with_conformal_solids` for copper oblique to the mesh. The energy end
+criterion needs nothing: it leaves out what lossy conductors hold inside
+(§5.8), and `RunOutcome::energy` is that measure.
+
 **Memory.** Counted with a counting allocator (bytes allocated, not
 RSS). A first pass, on the board region above (67 200 cells, 73 437
 nodes, 8 CPML cells, one thread): plain laminate and metal 7.0 MB while running

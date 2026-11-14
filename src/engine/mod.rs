@@ -206,7 +206,7 @@ pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
 pub use run::{EnergyMeasure, Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};
 pub use slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
-pub use surface::{Conductor, Roughness, SolidEdge, SurfaceImpedance};
+pub use surface::{Conductor, CutSurface, Roughness, SolidEdge, SurfaceImpedance};
 pub use timestep::TimestepMethod;
 pub use wire::ThinWire;
 
