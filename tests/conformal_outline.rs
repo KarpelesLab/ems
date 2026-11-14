@@ -252,13 +252,14 @@ fn stack_table(name: &str, cells: &[f64], mk: impl Fn(f64) -> Hole) -> Vec<(f64,
             let rep = rep.unwrap();
             eprintln!(
                 "{name}, h = {h} mm: staircase {:+.4} %, conformal {:+.4} % ({} cut edges, {} \
-                 faces, {} interpolated, {} merged, s = {:.4})",
+                 faces, {} interpolated, {} merged, {} kept, s = {:.4})",
                 es * 100.0,
                 ec * 100.0,
                 rep.edges,
                 rep.faces,
                 rep.interpolated,
                 rep.merged,
+                rep.kept,
                 rep.stability
             );
             (es * 100.0, ec * 100.0)
@@ -349,6 +350,10 @@ struct Case {
     roughness: Roughness,
     /// Which surfaces of solid metal are cut.
     solids: ConformalOutlines,
+    /// Width of the strip \[mm\].
+    width: f64,
+    /// Whether narrow slanted conductors keep whole edges.
+    bridges: bool,
 }
 
 impl Case {
@@ -364,13 +369,15 @@ impl Case {
             model: SheetModel::Ladder,
             roughness: Roughness::Smooth,
             solids: ConformalOutlines::All,
+            width: 1.0,
+            bridges: true,
         }
     }
 }
 
-/// A strip 12 mm long and 1 mm wide on 0.5 mm of `ε_r` = 4 over the PEC
-/// floor of a closed box, turned by `deg` about its centre, cells of `h`
-/// mm in x and y. The lowest (half-wave) resonance is driven at one end
+/// A strip 12 mm long and 1 mm wide (or `Case::width`) on 0.5 mm of
+/// `ε_r` = 4 over the PEC floor of a closed box, turned by `deg` about
+/// its centre, cells of `h` mm in x and y. The lowest (half-wave) resonance is driven at one end
 /// and read at the other.
 fn strip(case: Case) -> Strip {
     let Case {
@@ -384,8 +391,10 @@ fn strip(case: Case) -> Strip {
         model,
         roughness,
         solids,
+        width: w,
+        bridges,
     } = case;
-    let (len, w, sub) = (12.0, 1.0, 0.5);
+    let (len, sub) = (12.0, 0.5);
     let ext = 10.0;
     // The strip's centre off the nodes; with `deg` = 0 its long sides
     // fall between mesh lines.
@@ -437,7 +446,8 @@ fn strip(case: Case) -> Strip {
     let fdtd = Fdtd::new().threads(threads).max_frequency(12e9);
     let mut opts = options(outlines)
         .with_sheet_model(model)
-        .with_conformal_solids(solids);
+        .with_conformal_solids(solids)
+        .with_conformal_bridges(bridges);
     if roughness != Roughness::Smooth {
         opts = opts.with_sheet_roughness("strip", roughness);
     }
@@ -845,6 +855,107 @@ fn strip_table() {
                 run(17.0, None),
                 run(17.0, SLANTED)
             );
+        }
+    }
+}
+
+/// A strip 0.2 mm wide at 45° on 0.25 mm cells (0.8 of a cell: no edge
+/// lies in it from end to end, and every edge it touches is cut). A cut
+/// edge is its open part in series with its covered part, so with every
+/// edge cut the strip is a row of pieces: as a conducting sheet it has no
+/// loss to speak of (Q 44 000 where the strip along x has 33), because
+/// no current runs through its copper. With the edges that carry it kept
+/// whole (design §5.13.3) it is a conductor again: Q 23, and a resonance
+/// 6.6 % below the strip along x (5.6 % as PEC) where the staircase is
+/// 12.5 % (12.3 %) below.
+#[test]
+fn narrow_slanted_strips_stay_in_one_piece() {
+    let narrow = |deg: f64, copper: Copper, outlines, bridges: bool| {
+        strip(Case {
+            width: 0.2,
+            bridges,
+            ..Case::new(deg, 0.25, copper, outlines)
+        })
+    };
+    for copper in [LOSSY, Copper::Pec] {
+        let along = narrow(0.0, copper, ALL, true);
+        let stair = narrow(45.0, copper, None, true);
+        let pieces = narrow(45.0, copper, SLANTED, false);
+        let whole = narrow(45.0, copper, SLANTED, true);
+        let rep = whole.report.unwrap();
+        let (es, ew) = (stair.f / along.f - 1.0, whole.f / along.f - 1.0);
+        eprintln!(
+            "{copper:?}, 0.2 mm wide: along x {:.3} GHz (Q {:.0}); at 45°: staircase {:.3} GHz \
+             ({:+.1} %, Q {:.0}), every edge cut {:.3} GHz (Q {:.0}), {} whole edges {:.3} GHz \
+             ({:+.1} %, Q {:.0})",
+            along.f * 1e-9,
+            along.q,
+            stair.f * 1e-9,
+            es * 100.0,
+            stair.q,
+            pieces.f * 1e-9,
+            pieces.q,
+            rep.bridges,
+            whole.f * 1e-9,
+            ew * 100.0,
+            whole.q,
+        );
+        assert_eq!(pieces.report.unwrap().bridges, 0);
+        assert!(rep.bridges > 40, "{rep:?}");
+        assert!(es < -0.10, "staircase {es}");
+        assert!(ew.abs() < 0.08, "whole edges {ew}");
+        if copper == LOSSY {
+            assert!(along.q > 25.0 && along.q < 45.0, "{}", along.q);
+            assert!(pieces.q > 1000.0, "{}", pieces.q);
+            assert!(whole.q > 15.0 && whole.q < 45.0, "{}", whole.q);
+        }
+    }
+}
+
+/// Narrow strips at 45° (`W` mm wide, default 0.3), every copper model
+/// (or the one whose name starts with `COPPER`), with and without the
+/// whole edges that keep them in one piece.
+#[test]
+#[ignore = "slow; run with --release -- --ignored --nocapture"]
+fn narrow_strip_table() {
+    let w: f64 = std::env::var("W")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.3);
+    let only = std::env::var("COPPER").ok();
+    for copper in [
+        Copper::Pec,
+        LOSSY,
+        Copper::SolidPec(0.035),
+        Copper::Solid(0.035, 5.8e7),
+    ] {
+        if only
+            .as_ref()
+            .is_some_and(|o| !format!("{copper:?}").starts_with(o.as_str()))
+        {
+            continue;
+        }
+        for h in [0.25, 0.125] {
+            let mut line = format!("{copper:?}, {w} mm wide, h = {h} mm:");
+            for (name, deg, outlines, bridges) in [
+                ("along x", 0.0, ALL, true),
+                ("45° staircase", 45.0, None, true),
+                ("45° cut", 45.0, SLANTED, false),
+                ("45° bridged", 45.0, SLANTED, true),
+            ] {
+                let r = strip(Case {
+                    width: w,
+                    bridges,
+                    ..Case::new(deg, h, copper, outlines)
+                });
+                line += &format!(
+                    " {name} {:.3} GHz Q {:.0} ({} whole)",
+                    r.f * 1e-9,
+                    r.q,
+                    r.report.map_or(0, |x| x.bridges)
+                );
+            }
+            eprintln!("{line}");
         }
     }
 }
