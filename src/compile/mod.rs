@@ -651,7 +651,9 @@ pub struct Compiled {
     /// [`sheets`](Self::sheets) edges that the outline of their sheet
     /// crosses ([`CompileOptions::conformal_outlines`]; they are cut edges
     /// of [`conformal`](Self::conformal) too): the sheet covers the rest
-    /// of the edge ([`ConductingSheet::cut`]).
+    /// of the edge ([`ConductingSheet::cut`]; for
+    /// [`surface_sheets`](Self::surface_sheets),
+    /// [`SurfaceImpedance::cut_sheet`]).
     pub sheet_cuts: Vec<(Axis, [usize; 3], f64)>,
     /// The faces `(normal, node)` in the planes of conducting sheets that
     /// such an outline cuts (cut faces of [`conformal`](Self::conformal)
@@ -1227,6 +1229,23 @@ impl Compiled {
             }
             for &(e, r) in &self.surface_sheets {
                 s.push_sheet(e, r);
+            }
+            // Sheet edges their sheet's outline cuts (conformal PEC), as
+            // for the ladder.
+            if !self.surface_sheets.is_empty() {
+                for &(axis, node, open) in &self.sheet_cuts {
+                    s.cut_sheet(axis, node, open);
+                }
+                for &(axis, node) in &self.sheet_cut_faces {
+                    s.cut_face(axis, node);
+                }
+            }
+            // The edges solid metal cuts: conductor, in part, for the
+            // surface width of the lossy edges next to them.
+            if !self.solid_edges.is_empty() {
+                for e in self.conformal.iter().flat_map(|c| c.edges()) {
+                    s.cut_edge(e.axis, e.node, e.fraction);
+                }
             }
             h.surface = Some(s.add_to(engine)?);
         }
@@ -2073,7 +2092,8 @@ pub fn compile(
     if !solid_edges.is_empty() && opts.conformal {
         warnings.push(
             "lossy metal with conformal PEC: the surface impedance is on the edges wholly \
-             in the metal; the cut cells along its outline stay perfectly conducting"
+             in the metal, which carry the surface of the cut edges next to them too; the \
+             covered parts of the cut edges along its outline stay perfectly conducting"
                 .into(),
         );
     }
@@ -2105,17 +2125,6 @@ pub fn compile(
             )),
         }
     }
-    let sheet_roughness: Vec<Roughness> = sheet_map
-        .names
-        .iter()
-        .map(|n| {
-            opts.sheet_roughness
-                .iter()
-                .rev()
-                .find(|r| &r.0 == n)
-                .map_or(Roughness::Smooth, |r| r.1)
-        })
-        .collect();
     let mut sheet_pec: [Vec<bool>; 3] = core::array::from_fn(|a| vec![false; mg.pec[a].len()]);
     for &(d, idx) in &sheet_map.pec {
         sheet_pec[d][idx] = true;
@@ -2193,6 +2202,20 @@ pub fn compile(
     } else {
         None
     };
+
+    // (After the outlines: the cut edges csx did not select are sheet
+    // edges of their sheets too.)
+    let sheet_roughness: Vec<Roughness> = sheet_map
+        .names
+        .iter()
+        .map(|n| {
+            opts.sheet_roughness
+                .iter()
+                .rev()
+                .find(|r| &r.0 == n)
+                .map_or(Roughness::Smooth, |r| r.1)
+        })
+        .collect();
 
     // openEMS's pole arithmetic (files, the leapfrog
     // scheme; design §5.16.12).

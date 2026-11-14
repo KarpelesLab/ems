@@ -15,17 +15,22 @@
 //!   resonance must not depend on the direction.
 //! * **Conducting sheets.** The same resonator of a lossy sheet: frequency
 //!   and Q against the strip along x; edges partly covered keep the
-//!   sheet's loss.
+//!   sheet's loss. With the ladder and with the rational sheet model
+//!   (`SheetModel::SurfaceImpedance`), which takes the same cuts.
+//! * **Solid lossy metal.** The same resonator of a strip one cell thick
+//!   with a surface impedance (`CompileOptions::with_lossy_metal`): no
+//!   growth, and a Q that does not depend on the direction.
 //! * Axis-aligned outlines are discretised as without the option.
 
 mod common;
 
 use std::f64::consts::PI;
 
-use csx::primitives::{BoxShape, Polygon};
+use csx::primitives::{BoxShape, LinPoly, Polygon};
 use csx::{ContinuousStructure, Material, Primitive, Property};
-use ems::compile::{CompileOptions, ConformalOutlines, compile};
+use ems::compile::{CompileOptions, ConformalOutlines, SheetModel, compile};
 use ems::constants::C0;
+use ems::engine::surface::{Conductor, Roughness};
 use ems::engine::{ConformalReport, EdgeSource, Probe};
 use ems::{Axis, Boundary, Face, Fdtd};
 
@@ -297,11 +302,14 @@ fn stack_tables() {
 // Microstrip resonators.
 
 /// What the strip is made of.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Copper {
     Pec,
     /// Conducting sheet: conductivity \[S/m\], thickness \[m\].
     Sheet(f64, f64),
+    /// Solid metal of this thickness \[mm\], a mesh cell high, with a
+    /// conductivity \[S/m\] (a surface impedance on its faces).
+    Solid(f64, f64),
 }
 
 struct Strip {
@@ -311,6 +319,8 @@ struct Strip {
     q: f64,
     report: Option<ConformalReport>,
     sheet_cuts: usize,
+    /// Edges partly covered that the rational sheet model installed.
+    surface_cuts: usize,
     /// The probe series.
     values: Vec<f64>,
 }
@@ -331,6 +341,10 @@ struct Case {
     /// step of the grid).
     cubic: bool,
     threads: usize,
+    /// How a conducting sheet is integrated.
+    model: SheetModel,
+    /// Roughness of the sheet (rational model).
+    roughness: Roughness,
 }
 
 impl Case {
@@ -343,6 +357,8 @@ impl Case {
             periods: 40.0,
             cubic: false,
             threads: 3,
+            model: SheetModel::Ladder,
+            roughness: Roughness::Smooth,
         }
     }
 }
@@ -360,6 +376,8 @@ fn strip(case: Case) -> Strip {
         periods,
         cubic,
         threads,
+        model,
+        roughness,
     } = case;
     let (len, w, sub) = (12.0, 1.0, 0.5);
     let ext = 10.0;
@@ -371,6 +389,9 @@ fn strip(case: Case) -> Strip {
     if cubic {
         lz = lines(0.0, 16.0 * h, h);
     } else {
+        if let Copper::Solid(t, _) = copper {
+            lz.push(sub + t);
+        }
         lz.extend([0.8, 1.2, 1.7, 2.3, 3.0, 3.8]);
     }
     let t = deg.to_radians();
@@ -391,6 +412,7 @@ fn strip(case: Case) -> Strip {
     let prop = match copper {
         Copper::Pec => Property::metal("strip"),
         Copper::Sheet(sigma, thickness) => Property::conducting_sheet("strip", sigma, thickness),
+        Copper::Solid(..) => Property::metal("strip"),
     };
     let id = m.add_property(prop);
     let verts = vec![
@@ -399,15 +421,33 @@ fn strip(case: Case) -> Strip {
         at(0.5 * len, 0.5 * w),
         at(-0.5 * len, 0.5 * w),
     ];
-    m.add_primitive(
-        id,
-        Primitive::new(Polygon::new(2, sub, verts)).with_priority(10),
-    )
-    .unwrap();
+    let prim = match copper {
+        Copper::Solid(t, _) => {
+            Primitive::new(LinPoly::new(2, sub, if cubic { h } else { t }, verts))
+        }
+        _ => Primitive::new(Polygon::new(2, sub, verts)),
+    };
+    m.add_primitive(id, prim.with_priority(10)).unwrap();
     let fdtd = Fdtd::new().threads(threads).max_frequency(12e9);
-    let cm = compile(&m, &fdtd, &options(outlines)).unwrap();
+    let mut opts = options(outlines).with_sheet_model(model);
+    if roughness != Roughness::Smooth {
+        opts = opts.with_sheet_roughness("strip", roughness);
+    }
+    if let Copper::Solid(_, sigma) = copper {
+        opts = opts.with_lossy_metal("strip", Conductor::new(sigma));
+    }
+    let cm = compile(&m, &fdtd, &opts).unwrap();
+    assert!(
+        !cm.warnings.iter().any(|w| w.contains("roughness")),
+        "{:?}",
+        cm.warnings
+    );
     let sheet_cuts = cm.sheet_cuts.len();
     let (mut e, hnd) = cm.build().unwrap();
+    let surface_cuts = hnd
+        .surface
+        .as_ref()
+        .map_or(0, |h| e.operator(h).cut_sheet_edges());
     // E_z under the strip, 1 mm from each end.
     let end = |s: f64| {
         let (x, y) = at(s * (0.5 * len - 1.0), 0.0);
@@ -445,6 +485,7 @@ fn strip(case: Case) -> Strip {
         q,
         report: hnd.conformal,
         sheet_cuts,
+        surface_cuts,
         values: v,
     }
 }
@@ -520,37 +561,183 @@ fn conducting_strip_at_45_degrees() {
     assert!(stair.q > 1.25 * conf.q, "{} {}", stair.q, conf.q);
 }
 
+/// The rational sheet model takes the cuts of the outline as the ladder
+/// does (it used to index past its roughness list on the first cut edge
+/// csx had not selected): the resonance is the ladder's, 4 % above the
+/// staircase, and the Q does not depend on the direction of the strip.
+#[test]
+fn surface_impedance_strip_at_45_degrees() {
+    let si = |deg: f64, o| Case {
+        periods: 30.0,
+        model: SheetModel::SurfaceImpedance,
+        ..Case::new(deg, 0.25, LOSSY, o)
+    };
+    let along = strip(si(0.0, ALL));
+    let stair = strip(si(45.0, None));
+    let conf = strip(si(45.0, SLANTED));
+    let slant = strip(si(17.0, SLANTED));
+    let rough = strip(Case {
+        roughness: Roughness::HammerstadJensen { rms: 20e-6 },
+        ..si(45.0, SLANTED)
+    });
+    let ladder = strip(Case {
+        periods: 30.0,
+        ..Case::new(45.0, 0.25, LOSSY, SLANTED)
+    });
+    eprintln!(
+        "rational sheet strip: along x {:.4} GHz, Q {:.1}; at 45°: staircase {:.4} GHz, Q {:.1}; \
+         conformal {:.4} GHz, Q {:.1} ({} of {} cut sheet edges installed), rough Q {:.1}; at \
+         17° {:.4} GHz, Q {:.1}; ladder at 45° {:.4} GHz, Q {:.1}",
+        along.f * 1e-9,
+        along.q,
+        stair.f * 1e-9,
+        stair.q,
+        conf.f * 1e-9,
+        conf.q,
+        conf.surface_cuts,
+        conf.sheet_cuts,
+        rough.q,
+        slant.f * 1e-9,
+        slant.q,
+        ladder.f * 1e-9,
+        ladder.q
+    );
+    assert!(conf.sheet_cuts > 100);
+    // (Cut edges without open area under metal are PEC, not installed.)
+    assert!(conf.surface_cuts > 100 && conf.surface_cuts <= conf.sheet_cuts);
+    assert_eq!((stair.sheet_cuts, stair.surface_cuts), (0, 0));
+    assert!((conf.f / ladder.f - 1.0).abs() < 0.003);
+    assert!(stair.f / conf.f - 1.0 < -0.03);
+    // Measured: 33.8 along x, 36.8 at 45°, 35.2 at 17° (the ladder, with
+    // a whole dual cell of conductor on border edges: 58, 37, 48).
+    for (name, s) in [("45°", &conf), ("17°", &slant)] {
+        assert!(
+            (s.q / along.q - 1.0).abs() < 0.15,
+            "{name}: {} {}",
+            s.q,
+            along.q
+        );
+    }
+    // Twice the surface resistance on cut edges too.
+    assert!(rough.q < 0.7 * conf.q, "{} {}", rough.q, conf.q);
+}
+
 #[test]
 fn conducting_outlines_are_stable_on_cubic_cells() {
     // The largest time step (stability factor 0.987), copper and a
-    // resistive film, long records: no growth.
-    for (copper, deg) in [
-        (Copper::Sheet(5.8e7, 35e-6), 45.0),
-        (LOSSY, 17.0),
-        (Copper::Sheet(1e4, 1e-6), 30.0),
+    // resistive film, long records: no growth. Both sheet models.
+    for model in [SheetModel::Ladder, SheetModel::SurfaceImpedance] {
+        for (copper, deg) in [
+            (Copper::Sheet(5.8e7, 35e-6), 45.0),
+            (LOSSY, 17.0),
+            (Copper::Sheet(1e4, 1e-6), 30.0),
+        ] {
+            let s = strip(Case {
+                periods: 100.0,
+                cubic: true,
+                model,
+                ..Case::new(deg, 0.25, copper, ALL)
+            });
+            let rep = s.report.unwrap();
+            assert!(rep.stability > 0.98 && rep.verified, "{rep:?}");
+            let n = s.values.len();
+            let (head, tail) = (
+                common::peak(&s.values[..n / 4]),
+                common::peak(&s.values[3 * n / 4..]),
+            );
+            assert!(
+                tail.is_finite() && tail < head,
+                "{model:?} {deg}°: {head} {tail}"
+            );
+        }
+    }
+}
+
+/// A strip of solid metal one cell (0.1 mm) thick with a surface
+/// impedance. In a closed box nothing hides a growing mode: before the
+/// surface edges kept the capacitance of their open quarters, a strip of
+/// 2e5 S/m grew from the corners of its end within 20 periods even
+/// without conformal PEC (the drawn metal reaches past the staircase, so
+/// every sample of those edges' dual faces was metal), and a copper strip
+/// at 45° with conformal PEC within 100.
+#[test]
+fn lossy_solid_strip_is_stable() {
+    for (sigma, deg, h, o) in [
+        (2e5, 0.0, 0.5, None),
+        (2e5, 17.0, 0.25, SLANTED),
+        (5.8e7, 45.0, 0.25, SLANTED),
+        (1e4, 45.0, 0.5, SLANTED),
     ] {
         let s = strip(Case {
             periods: 100.0,
-            cubic: true,
-            ..Case::new(deg, 0.25, copper, ALL)
+            ..Case::new(deg, h, Copper::Solid(0.1, sigma), o)
         });
-        let rep = s.report.unwrap();
-        assert!(rep.stability > 0.98 && rep.verified, "{rep:?}");
         let n = s.values.len();
         let (head, tail) = (
             common::peak(&s.values[..n / 4]),
             common::peak(&s.values[3 * n / 4..]),
         );
-        assert!(tail.is_finite() && tail < head, "{deg}°: {head} {tail}");
+        assert!(
+            tail.is_finite() && tail < head,
+            "{sigma} S/m at {deg}°, {h} mm: {head} {tail}"
+        );
     }
+}
+
+/// The loss of that strip does not depend on its direction: the edges
+/// its outline cuts keep a perfectly conducting covered part, but count
+/// as conductor for the surface their neighbours carry. (Counted as open,
+/// the neighbours carried half a cell: Q 24 at 45° where the strip along
+/// x has 39.) The staircase of the 45° strip has a Q of 184: its whole
+/// edges are few and its rim is a row of fins.
+#[test]
+fn lossy_solid_strip_loss_does_not_depend_on_direction() {
+    let run = |deg: f64, o| {
+        strip(Case {
+            periods: 30.0,
+            ..Case::new(deg, 0.25, Copper::Solid(0.1, 2e5), o)
+        })
+    };
+    let along = run(0.0, SLANTED);
+    let diag = run(45.0, SLANTED);
+    let slant = run(17.0, SLANTED);
+    let stair = run(45.0, None);
+    eprintln!(
+        "solid lossy strip: along x {:.4} GHz, Q {:.1}; at 45° {:.4} GHz, Q {:.1} (staircase \
+         {:.4} GHz, Q {:.1}); at 17° {:.4} GHz, Q {:.1}",
+        along.f * 1e-9,
+        along.q,
+        diag.f * 1e-9,
+        diag.q,
+        stair.f * 1e-9,
+        stair.q,
+        slant.f * 1e-9,
+        slant.q
+    );
+    // Measured: 38.7 along x, 36.4 at 45°, 36.7 at 17°.
+    for (name, s) in [("45°", &diag), ("17°", &slant)] {
+        assert!(
+            (s.q / along.q - 1.0).abs() < 0.12,
+            "{name}: {} {}",
+            s.q,
+            along.q
+        );
+        assert!((s.f / along.f - 1.0).abs() < 0.015, "{name}: {}", s.f);
+    }
+    assert!(stair.q > 3.0 * along.q, "{} {}", stair.q, along.q);
 }
 
 #[test]
 fn axis_aligned_outlines_keep_the_staircase() {
     // Long sides between mesh lines, ends too.
-    for cu in [Copper::Pec, LOSSY] {
+    for (cu, model) in [
+        (Copper::Pec, SheetModel::Ladder),
+        (LOSSY, SheetModel::Ladder),
+        (LOSSY, SheetModel::SurfaceImpedance),
+    ] {
         let short = |o| Case {
             periods: 12.0,
+            model,
             ..Case::new(0.0, 0.25, cu, o)
         };
         let off = strip(short(None));
@@ -567,11 +754,16 @@ fn axis_aligned_outlines_keep_the_staircase() {
 
 #[test]
 fn results_do_not_depend_on_the_thread_count() {
-    for cu in [Copper::Pec, LOSSY] {
+    for (cu, model) in [
+        (Copper::Pec, SheetModel::Ladder),
+        (LOSSY, SheetModel::Ladder),
+        (LOSSY, SheetModel::SurfaceImpedance),
+    ] {
         let run = |threads| {
             strip(Case {
                 periods: 6.0,
                 threads,
+                model,
                 ..Case::new(45.0, 0.25, cu, SLANTED)
             })
         };

@@ -85,7 +85,10 @@
 //! C·du/dt + G·u + h = S,      u = (1/g)·Z_s ∗ h
 //! ```
 //!
-//! with `C`, `G` of the part of the dual face outside the metal. Edges
+//! with `C`, `G` of the part of the dual face outside the metal, and `C`
+//! at least that of the quarters of the dual face next to a face with
+//! field, in vacuum (the explicit coupling to those faces needs it: an
+//! edge without capacitance is a resistor in their loops). Edges
 //! inside the metal (no face left) and re-entrant edges keep `u = 0`.
 //! Edges of zero-thickness metal (faces left on two opposite sides) are
 //! not solid metal and stay PEC ([`SurfaceImpedance::thin`]); use a sheet.
@@ -99,7 +102,12 @@
 //! goes on (a parallel sheet edge or metal): an edge on the border of a
 //! sheet carries half a cell of conductor, not the whole dual length the
 //! ladder gives it. A voltage that another operator (a source) adds to a
-//! sheet edge is added to both faces.
+//! sheet edge is added to both faces. An edge the outline of its sheet
+//! cuts ([`SurfaceImpedance::cut_sheet`]) is its open part in series with
+//! the covered part, and the edges around a cut face are loaded and
+//! stored as in
+//! [the ladder](super::sheet#outlines-between-mesh-lines): the two
+//! models take the same cuts.
 //!
 //! *Time stepping.* Face voltages, currents and sections are integrated
 //! with the trapezoidal rule centred at `(n + ½)·dt`, driven by the H
@@ -133,7 +141,11 @@
 //!   resistance does not go to the DC value of a thin conductor.
 //! * The fit holds over its band; outside it stays passive, with the
 //!   resistance levelling off.
-//! * Conformal (cut-cell) metal keeps perfectly conducting partial edges.
+//! * With conformal PEC the covered part of an edge that solid metal cuts
+//!   stays perfectly conducting; the whole edges next to it carry its
+//!   share of the surface ([`SurfaceImpedance::cut_edge`]). Sheets take
+//!   the cuts of their outline as the ladder does
+//!   ([`SurfaceImpedance::cut_sheet`], [`SurfaceImpedance::cut_face`]).
 //!
 //! # Energy
 //!
@@ -148,7 +160,7 @@ use super::boundary::cpml::CpmlBoundary;
 use super::fields::Fields;
 use super::kernel::flush;
 use super::operator::{Hooks, Operator, OperatorHandle, StepContext};
-use super::sheet::{SheetEdge, skin_depth};
+use super::sheet::{CUT_FACE_LOADING, SheetEdge, skin_depth};
 use crate::axis::Axis;
 use crate::constants::{EPS0, MU0};
 use crate::post::Complex64;
@@ -767,6 +779,26 @@ struct SheetState {
     k0: u32,
     nk: u32,
     u: [f64; 2],
+    /// Index of its open part in `gaps` (edges partly covered), or
+    /// `u32::MAX`.
+    gap: u32,
+    /// Share of `u−` in the face voltage the array holds,
+    /// `u+ + mix·(u− − u+)` (0: `u+`).
+    mix: f64,
+    /// The array value written by the last `post_e` (edges with a gap or
+    /// a mix, whose `u+` is not read back from the array).
+    written: f32,
+}
+
+/// The open part of a sheet edge the sheet covers partly: an ordinary
+/// edge in series with the covered part (as in [`super::sheet`]).
+#[derive(Debug, Clone, Copy)]
+struct Gap {
+    /// Kernel coefficients of the edge (`cb` scaled to the open part).
+    ca: f64,
+    cb: f64,
+    /// Voltage over the open part.
+    u: f64,
 }
 
 /// Surface impedance on the faces of solid lossy metal and on conducting
@@ -804,6 +836,15 @@ pub struct SurfaceImpedance {
     band: Option<(f64, f64)>,
     solid_entries: Vec<SolidEdge>,
     sheet_entries: Vec<(SheetEdge, Roughness)>,
+    /// Open fractions of sheet edges partly covered
+    /// ([`cut_sheet`](Self::cut_sheet)).
+    sheet_cuts: Vec<(Axis, [usize; 3], f64)>,
+    /// Faces partly covered by a sheet ([`cut_face`](Self::cut_face)).
+    cut_faces: Vec<(Axis, [usize; 3])>,
+    /// Open fractions of the edges solid metal covers in part
+    /// ([`cut_edge`](Self::cut_edge)).
+    cut_edges: Vec<(Axis, [usize; 3], f64)>,
+    gaps: Vec<Gap>,
     installed: bool,
     skipped: usize,
     interior: usize,
@@ -915,6 +956,56 @@ impl SurfaceImpedance {
     /// on both faces.
     pub fn push_sheet(&mut self, e: SheetEdge, roughness: Roughness) {
         self.sheet_entries.push((e, roughness));
+    }
+
+    /// Declares the sheet edge along `axis` at `node` as covered by the
+    /// sheet over the fraction `1 − open` of its length only (`open` in
+    /// `(0, 1)`; other values and edges that are not pushed are ignored),
+    /// as [`ConductingSheet::cut`](super::ConductingSheet::cut) does for
+    /// the ladder: the engine's coefficient of the edge must be that of
+    /// its open part when the operator is installed (as
+    /// [`ConformalPec::apply`](super::ConformalPec::apply) leaves a cut
+    /// edge). The covered part carries the two face voltages, with
+    /// `g = w/((1 − open)·l)` and the capacitance of its part of the dual
+    /// face, in series with the open part; see
+    /// [Outlines between mesh lines](super::sheet#outlines-between-mesh-lines).
+    pub fn cut_sheet(&mut self, axis: Axis, node: [usize; 3], open: f64) {
+        if open > 0.0 && open < 1.0 {
+            self.sheet_cuts.push((axis, node, open));
+        }
+    }
+
+    /// Declares the cell face of normal `axis` with lowest corner `node`,
+    /// lying in the plane of a sheet, as covered by it in part (a cut
+    /// face of conformal PEC), as
+    /// [`ConductingSheet::cut_face`](super::ConductingSheet::cut_face):
+    /// the sheet edges around it get the capacitance loading
+    /// ([`CUT_FACE_LOADING`]) and hold the voltage the crossing dual
+    /// edges need in the engine's array.
+    pub fn cut_face(&mut self, axis: Axis, node: [usize; 3]) {
+        self.cut_faces.push((axis, node));
+    }
+
+    /// Declares the edge along `axis` at `node` as covered by solid metal
+    /// over the fraction `1 − open` of its length (a cut edge of
+    /// conformal PEC; `open` in `(0, 1)`, other values are ignored). Its
+    /// covered part stays perfectly conducting, but it counts as that
+    /// fraction of a conductor edge for the width of the surface its
+    /// neighbours of solid lossy metal carry: next to an outline oblique
+    /// to the mesh those would otherwise carry half a cell where the
+    /// metal goes on (a copper strip of four cells at 45° had a Q of 392
+    /// where the same strip along the mesh had 639; with the cut edges
+    /// counted, 602).
+    pub fn cut_edge(&mut self, axis: Axis, node: [usize; 3], open: f64) {
+        if open > 0.0 && open < 1.0 {
+            self.cut_edges.push((axis, node, open));
+        }
+    }
+
+    /// Number of installed sheet edges the sheet covers in part
+    /// ([`cut_sheet`](Self::cut_sheet)).
+    pub fn cut_sheet_edges(&self) -> usize {
+        self.gaps.len()
     }
 
     /// Number of installed edges of solid metal.
@@ -1149,6 +1240,21 @@ impl SurfaceImpedance {
             })
         };
 
+        // (Looked up only: the order of the map does not matter.)
+        let cut_edges: std::collections::HashMap<(usize, [usize; 3]), f64> = self
+            .cut_edges
+            .iter()
+            .map(|&(a, p, f)| ((a.index(), p), 1.0 - f))
+            .collect();
+        // The part of the parallel edge at `p` that is a conductor.
+        let cover = |axis: Axis, p: [usize; 3]| {
+            if is_pec(axis, p) {
+                1.0
+            } else {
+                cut_edges.get(&(axis.index(), p)).copied().unwrap_or(0.0)
+            }
+        };
+
         // ---- Solid metal ----
         let mut fits: Vec<(Conductor, u32)> = Vec::new();
         let mut order: Vec<usize> = (0..self.solid_entries.len()).collect();
@@ -1204,9 +1310,7 @@ impl SurfaceImpedance {
                     } else {
                         q[ax.index()] -= 1;
                     }
-                    if is_pec(d, q) {
-                        w += half(ax, k, up);
-                    }
+                    w += cover(d, q) * half(ax, k, up);
                 }
             }
             if w <= 0.0 {
@@ -1215,19 +1319,27 @@ impl SurfaceImpedance {
             }
             let l = grid.edge_length(d, e.node);
             let g = w / l;
-            let (cap, cond) = e.outside.unwrap_or_else(|| {
-                // Quarter (sb, sc) of the dual face: outside if a face
-                // with field borders it.
-                let mut area = 0.0;
-                for sb in [false, true] {
-                    for sc in [false, true] {
-                        if sides[0][usize::from(sb)] || sides[1][usize::from(sc)] {
-                            area += half(b, e.node[b.index()], sb) * half(c, e.node[c.index()], sc);
-                        }
+            // Quarter (sb, sc) of the dual face: outside if a face with
+            // field borders it. In vacuum that is the least capacitance
+            // the edge can have, and what the explicit coupling to its
+            // faces needs: values given for the edge (sampled on the
+            // drawn metal, which reaches past the edges of its staircase)
+            // are raised to it. An edge without capacitance is a resistor
+            // `Z∞/g` in its faces' loops, integrated explicitly: a strip
+            // of 2e5 S/m grew from the corners of its end.
+            let mut area = 0.0;
+            for sb in [false, true] {
+                for sc in [false, true] {
+                    if sides[0][usize::from(sb)] || sides[1][usize::from(sc)] {
+                        area += half(b, e.node[b.index()], sb) * half(c, e.node[c.index()], sc);
                     }
                 }
-                (EPS0 * area / l, 0.0)
-            });
+            }
+            let floor = EPS0 * area / l;
+            let (cap, cond) = match e.outside {
+                Some((cap, cond)) => (cap.max(floor), cond),
+                None => (floor, 0.0),
+            };
             let port = match fits.iter().find(|f| f.0 == e.conductor) {
                 Some(f) => f.1,
                 None => {
@@ -1282,6 +1394,17 @@ impl SurfaceImpedance {
             .iter()
             .map(|(e, _)| ((e.axis.index(), e.node), e.normal.index()))
             .collect();
+        let cuts: std::collections::HashMap<(usize, [usize; 3]), f64> = self
+            .sheet_cuts
+            .iter()
+            .map(|&(a, p, f)| ((a.index(), p), f))
+            .collect();
+        let cut_faces: std::collections::HashSet<(usize, [usize; 3])> = self
+            .cut_faces
+            .iter()
+            .map(|&(a, p)| (a.index(), p))
+            .collect();
+        let outlines = !cut_faces.is_empty();
         let mut order: Vec<usize> = (0..self.sheet_entries.len()).collect();
         order.sort_by_key(|&i| {
             let e = &self.sheet_entries[i].0;
@@ -1303,6 +1426,12 @@ impl SurfaceImpedance {
                 (co.ca(d)[idx] as f64, co.cb(d)[idx] as f64)
             };
             let (c_edge, g_edge) = (dt * (1.0 + ca) / (2.0 * cb), (1.0 - ca) / cb);
+            // An edge partly covered: the kernel's coefficients are those
+            // of the open part (C/f, G/f); the covered part has
+            // C/(1 − f), G/(1 − f) and the conductor of its length.
+            let open = cuts.get(&(d.index(), e.node)).copied();
+            let part = open.map_or(1.0, |f| f / (1.0 - f));
+            let (c_cov, g_cov) = (part * c_edge, part * g_edge);
             let k = e.node[nrm.index()];
             let (up, dn) = (half(nrm, k, true), half(nrm, k, false));
             let f_up = up / (up + dn);
@@ -1329,7 +1458,17 @@ impl SurfaceImpedance {
                 w = grid.dual_delta(t_ax, e.node[t_ax.index()]);
             }
             let g = w / grid.edge_length(d, e.node);
+            let g = open.map_or(g, |f| g / (1.0 - f));
             let (sc, sg) = e.upper_share.unwrap_or((f_up, f_up));
+            // Around a cut face: loaded (as the ladder's faces).
+            let by_cut_face = {
+                let mut lo = e.node;
+                let below = lo[t_ax.index()] > 0;
+                lo[t_ax.index()] = lo[t_ax.index()].saturating_sub(1);
+                cut_faces.contains(&(nrm.index(), e.node))
+                    || (below && cut_faces.contains(&(nrm.index(), lo)))
+            };
+            let load = if by_cut_face { CUT_FACE_LOADING } else { 1.0 };
             let key = (e.conductivity, e.thickness, rough);
             let port = match sheet_fits.iter().find(|f| f.0 == key) {
                 Some(f) => f.1,
@@ -1344,6 +1483,12 @@ impl SurfaceImpedance {
             // Couplings of the two faces and H corrections.
             let mut items: [[Vec<Coupling>; 2]; 2] = Default::default(); // [face][group]
             let k0 = self.corrections.len() as u32;
+            // (dual edge axis, its node, shares of the two faces, sign)
+            let mut dual = Vec::with_capacity(4);
+            // Share of `u−` in the stored voltage: a crossing dual edge
+            // that conformal PEC computes itself (`db = 0` in the kernel)
+            // reads the array and cannot be corrected.
+            let mut mix = 0.0;
             for (ax, m, (side, up), s) in around(d, e.node) {
                 let Some(m) = m else { continue };
                 if face(ax, m).is_none() {
@@ -1356,6 +1501,12 @@ impl SurfaceImpedance {
                 } else {
                     (1.0, 0.0)
                 };
+                if ax == nrm && outlines && db[ax.index()][grid.index(m)] == 0.0 {
+                    mix = w_dn;
+                }
+                dual.push((ax, m, (w_up, w_dn), s));
+            }
+            for (ax, m, (w_up, w_dn), s) in dual {
                 // Derivative along the third axis.
                 let p = Axis::ALL[3 - d.index() - ax.index()];
                 let slot = usize::from(p != d.others().0);
@@ -1373,25 +1524,28 @@ impl SurfaceImpedance {
                         loc,
                         w: s * w_dn,
                     });
-                    let dbv = db[ax.index()][grid.index(m)] as f64;
-                    if dbv != 0.0 {
-                        let da = engine.coefficients().da(ax)[grid.index(m)] as f64;
-                        let stretch = match stretch_at(cpml, n, p, m[p.index()], false) {
-                            Some((ik, a, b)) => {
-                                self.stretches.push(Stretch { ik, a, b, psi: 0.0 });
-                                self.stretches.len() as u32 - 1
-                            }
-                            None => u32::MAX,
-                        };
-                        self.corrections.push(Correction {
-                            axis: ax,
-                            loc,
-                            dbt: dbv * s * w_dn,
-                            db: dbv,
-                            stretch,
-                            ecorr: -0.25 * dt * (1.0 + da) * s * w_dn,
-                        });
-                    }
+                }
+                // The dual edge read the stored voltage, with the share
+                // `mix` of `u−`; its own share is `w_dn`.
+                let wc = w_dn - mix;
+                let dbv = db[ax.index()][grid.index(m)] as f64;
+                if wc != 0.0 && dbv != 0.0 {
+                    let da = engine.coefficients().da(ax)[grid.index(m)] as f64;
+                    let stretch = match stretch_at(cpml, n, p, m[p.index()], false) {
+                        Some((ik, a, b)) => {
+                            self.stretches.push(Stretch { ik, a, b, psi: 0.0 });
+                            self.stretches.len() as u32 - 1
+                        }
+                        None => u32::MAX,
+                    };
+                    self.corrections.push(Correction {
+                        axis: ax,
+                        loc,
+                        dbt: dbv * s * wc,
+                        db: dbv,
+                        stretch,
+                        ecorr: -0.25 * dt * (1.0 + da) * s * wc,
+                    });
                 }
             }
             let (b_ax, c_ax) = d.others();
@@ -1402,16 +1556,26 @@ impl SurfaceImpedance {
                         self.group(&items[f][slot], cpml, n, p, e.node[p.index()]);
                 }
             }
-            let two_c = [2.0 * sc * c_edge / dt, 2.0 * (1.0 - sc) * c_edge / dt];
+            let two_c = [
+                2.0 * load * sc * c_cov / dt,
+                2.0 * load * (1.0 - sc) * c_cov / dt,
+            ];
             let (ye, yo) = (
                 0.5 * g / self.ports[port[0] as usize].z_inf,
                 0.5 * g / self.ports[port[1] as usize].z_inf,
             );
-            let m11 = two_c[0] + sg * g_edge + ye + yo;
-            let m22 = two_c[1] + (1.0 - sg) * g_edge + ye + yo;
+            let m11 = two_c[0] + sg * g_cov + ye + yo;
+            let m22 = two_c[1] + (1.0 - sg) * g_cov + ye + yo;
             let m12 = ye - yo;
             let det = m11 * m22 - m12 * m12;
             let st = [self.alloc(port[0]), self.alloc(port[1])];
+            let gap = match open {
+                Some(_) => {
+                    self.gaps.push(Gap { ca, cb, u: 0.0 });
+                    self.gaps.len() as u32 - 1
+                }
+                None => u32::MAX,
+            };
             self.sheets.push(SheetState {
                 axis: d,
                 node: e.node,
@@ -1426,6 +1590,9 @@ impl SurfaceImpedance {
                 k0,
                 nk: self.corrections.len() as u32 - k0,
                 u: [0.0; 2],
+                gap,
+                mix,
+                written: 0.0,
             });
         }
         self.installed = true;
@@ -1482,9 +1649,21 @@ impl Operator for SurfaceImpedance {
             // What other operators (sources) added to the edge since the
             // last E update acts on both faces.
             let up = f.u.at(e.axis, (e.loc.0 as usize, e.loc.1 as usize));
-            if up != e.u[0] as f32 {
-                e.u[1] += up as f64 - e.u[0];
-                e.u[0] = up as f64;
+            if e.gap == u32::MAX && e.mix == 0.0 {
+                if up != e.u[0] as f32 {
+                    e.u[1] += up as f64 - e.u[0];
+                    e.u[0] = up as f64;
+                }
+            } else if up != e.written {
+                // To the open part of an edge partly covered.
+                let d = up as f64 - e.written as f64;
+                if e.gap == u32::MAX {
+                    e.u[0] += d;
+                    e.u[1] += d;
+                } else {
+                    self.gaps[e.gap as usize].u += d;
+                }
+                e.written = up;
             }
             let diff = e.u[1] - e.u[0];
             for c in &self.corrections[e.k0 as usize..(e.k0 + e.nk) as usize] {
@@ -1511,6 +1690,7 @@ impl Operator for SurfaceImpedance {
             corrections,
             stretches,
             state,
+            gaps,
             ..
         } = self;
         for e in solids.iter_mut() {
@@ -1553,13 +1733,29 @@ impl Operator for SurfaceImpedance {
                 (e.g * (um[0] - um[1]) - ho) / po.z_inf,
             );
             e.u = [2.0 * um[0] - e.u[0], 2.0 * um[1] - e.u[1]];
-            let up = flush(e.u[0] as f32);
+            // The face voltage in the array value, and the open part: the
+            // kernel's update of an ordinary edge, with the currents of
+            // all its dual edges.
+            let face = e.u[0] + e.mix * (e.u[1] - e.u[0]);
+            let plain = e.gap == u32::MAX && e.mix == 0.0;
+            let up = if e.gap == u32::MAX {
+                flush(face as f32)
+            } else {
+                let gap = &mut gaps[e.gap as usize];
+                gap.u = gap.ca * gap.u + gap.cb * (s[0] + s[1]);
+                flush((gap.u + face) as f32)
+            };
+            e.written = up;
             f.u.set_at(e.axis, (e.loc.0 as usize, e.loc.1 as usize), up);
             let mut s_e = 0.0;
             for c in &corrections[e.k0 as usize..(e.k0 + e.nk) as usize] {
                 s_e += c.ecorr * f.i.at(c.axis, (c.loc.0 as usize, c.loc.1 as usize)) as f64;
             }
-            w_corr += s_e * (e.u[1] - up as f64);
+            w_corr += if plain {
+                s_e * (e.u[1] - up as f64)
+            } else {
+                s_e * (e.u[1] - e.u[0])
+            };
         }
         self.w_corr = w_corr;
     }
@@ -1579,7 +1775,16 @@ impl Operator for SurfaceImpedance {
                 let st = &self.state[e.st[q] as usize..e.st[q] as usize + port.stride()];
                 w += 0.5 * port.energy(st) / e.g;
             }
-            w -= 0.5 * e.c_edge * e.u[0] * e.u[0];
+            // The engine's field sum has ½·C·(array value)².
+            let face = e.u[0] + e.mix * (e.u[1] - e.u[0]);
+            let stored = if e.gap == u32::MAX {
+                face
+            } else {
+                let uo = self.gaps[e.gap as usize].u;
+                w += 0.5 * e.c_edge * uo * uo;
+                uo + face
+            };
+            w -= 0.5 * e.c_edge * stored * stored;
         }
         w + self.w_corr
     }
