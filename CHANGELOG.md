@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/KarpelesLab/ems/compare/v0.0.9...v0.0.10) - 2026-11-14
+
+### Other
+
+- what a program that builds its models sets; README; CutSurface exported with the engine
+- a medium of trapezoidal poles alone has its own loop
+- Surface impedance: solid metal that crosses the cells loses what it loses along the mesh
+- Dispersive poles: an edge at a material's surface can take its share of them (PoleWeighting::Averaged)
+- End criterion: the energy inside lossy conductors is not counted
+- Typed warnings: csx's "has no primitives" is primitive.no_edges
+- Run loop: a negative energy invariant is a diverged run, not a decayed one
+
 ## [0.0.9](https://github.com/KarpelesLab/ems/compare/v0.0.8...v0.0.9) - 2026-11-14
 
 ### Other
