@@ -4,10 +4,13 @@
 //! three cell layers at the bottom.
 //!
 //! ```text
-//! cargo run --release --example bench_surface -- [model=sheet] [threads=1] [steps=300] [nx=224] [ny=160] [nz=16] [pml=0]
+//! cargo run --release --example bench_surface -- [model=sheet] [threads=1] [steps=300] [nx=224] [ny=160] [nz=16] [pml=0] [hooks=0] [fused=0]
 //! ```
 //!
 //! `model`: `none`, `sheet`, `solid`, `debye` (eight poles per edge).
+//! `hooks` 1 keeps the surface impedance in the serial hooks, `fused` 1
+//! keeps the steps unfused (as a model with merged conformal faces has
+//! them), 2 forces fused steps.
 //! Prints the update rate, the time per step and edge of the model above
 //! the grid without it (run `none` for that), and a hash of the final
 //! fields and the energy: the same for any thread count, and what a
@@ -19,7 +22,7 @@ use ems::engine::boundary::cpml::CpmlBoundary;
 use ems::engine::dispersive::{Dispersive, Field, Pole};
 use ems::engine::sheet::SheetEdge;
 use ems::engine::surface::{Conductor, Roughness, SurfaceImpedance, box_edges};
-use ems::engine::{EdgeMaterials, Engine, Grid};
+use ems::engine::{EdgeMaterials, Engine, FusedSteps, Grid};
 use ems::{Axis, Cpml, Face};
 
 fn main() {
@@ -29,6 +32,8 @@ fn main() {
     let (threads, steps) = (num(1, 1), num(2, 300) as u64);
     let n = [num(3, 224), num(4, 160), num(5, 16)];
     let pml = num(6, 0);
+    let serial = num(7, 0) == 1;
+    let fused = [FusedSteps::Auto, FusedSteps::Never, FusedSteps::Always][num(8, 0).min(2)];
 
     let grid = Grid::uniform(n, [0.25e-3, 0.25e-3, 0.2e-3]).expect("grid");
     let cells = grid.num_cells() as f64;
@@ -44,6 +49,7 @@ fn main() {
         .threads(threads)
         .build()
         .expect("engine");
+    e.set_fused_steps(fused);
     if pml > 0 {
         let faces = [Face::XMin, Face::XMax, Face::YMin, Face::YMax, Face::ZMax];
         let b = CpmlBoundary::new(&e, faces.map(|f| (f, Cpml::cells(pml)))).expect("cpml");
@@ -53,7 +59,7 @@ fn main() {
     match model {
         "none" => {}
         "sheet" => {
-            let mut s = SurfaceImpedance::new(Some(10e9));
+            let mut s = SurfaceImpedance::new(Some(10e9)).in_serial_hooks(serial);
             for (axis, other) in [(Axis::X, Axis::Y), (Axis::Y, Axis::X)] {
                 for a in 0..n[axis.index()] {
                     for b in 1..n[other.index()] {
@@ -78,7 +84,7 @@ fn main() {
             edges = e.operator(&h).sheet_edges();
         }
         "solid" => {
-            let mut s = SurfaceImpedance::new(Some(10e9));
+            let mut s = SurfaceImpedance::new(Some(10e9)).in_serial_hooks(serial);
             s.add_box(plate.0, plate.1, Conductor::new(5.8e7));
             let h = s.add_to(&mut e).expect("plate");
             edges = e.operator(&h).solid_edges();
@@ -129,7 +135,7 @@ fn main() {
     }
     eat(e.energy().to_bits());
     println!(
-        "{model}: {cells:.0} cells, {edges} edges, threads={}, steps={steps}, pml={pml}: {:.1} Mcells/s, {:.3} ms/step, {:.1} ns per edge and step (all of the step), hash {hash:016x}",
+        "{model}: {cells:.0} cells, {edges} edges, threads={}, steps={steps}, pml={pml}, serial hooks {serial}, {fused:?}: {:.1} Mcells/s, {:.3} ms/step, {:.1} ns per edge and step (all of the step), hash {hash:016x}",
         e.threads(),
         cells * steps as f64 / s / 1e6,
         s / steps as f64 * 1e3,

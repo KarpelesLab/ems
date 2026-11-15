@@ -219,9 +219,13 @@
 //! since (the same expression on the same values).
 //!
 //! Slab hooks run before every serial hook. Where an operator registered
-//! earlier has serial hooks after a half-step (the merged faces of
-//! conformal PEC, a ladder sheet), the edges stay in the serial hooks, in
-//! registration order as before ([`SurfaceImpedance::runs_in_slabs`]).
+//! earlier has serial hooks after a half-step (a ladder sheet, conformal
+//! sheets), the edges stay in the serial hooks, in registration order as
+//! before ([`SurfaceImpedance::runs_in_slabs`]). The merged faces of
+//! conformal PEC are such an operator too, but the two do not depend on
+//! their order once the look-ahead of the merged faces is given the
+//! array values it read: beside them the edges run in the slabs, with
+//! the values of the serial hooks.
 //! Register the operator after the others that work in the slabs (the
 //! CPML, dispersive media, Mur faces), as the compile step does: one
 //! registered later now acts on these edges after their update, not
@@ -977,17 +981,6 @@ struct At {
     axis: Axis,
 }
 
-/// A field value with a factor, the entry `k` of a table of the part: a
-/// dual edge in a face's circulation (its weight) or in a sheet edge's
-/// energy term (`½·L·corr`, as [`super::sheet`]). The factors of a part
-/// are few (shares of the faces, cell sizes), and a part reads its edges
-/// from memory every step: 12 bytes for 24.
-#[derive(Debug, Clone, Copy)]
-struct Term {
-    at: At,
-    k: u32,
-}
-
 /// A [`RawCorrection`] where it is applied: with the dual edge `at`, in
 /// the H half-step; `k` is its `[db·t, db]` in the part's table.
 #[derive(Debug, Clone, Copy)]
@@ -1004,6 +997,8 @@ struct Fix {
 /// next slab.
 const REMOTE: u32 = 1 << 31;
 
+/// A solid edge as installed, until the operator is registered (then a
+/// [`SolidRun`] in the [`Part`] of its slab).
 #[derive(Debug, Clone)]
 struct SolidState {
     axis: Axis,
@@ -1022,6 +1017,8 @@ struct SolidState {
     watch: u32,
 }
 
+/// A sheet edge as installed, until the operator is registered (then a
+/// [`SheetRun`] with its [`SheetVar`] in the [`Part`] of its slab).
 #[derive(Debug, Clone)]
 struct SheetState {
     axis: Axis,
@@ -1037,8 +1034,7 @@ struct SheetState {
     c_edge: f64,
     /// Even and odd ports.
     port: [u32; 2],
-    /// Its corrections: raw ones until the operator is registered, then
-    /// their energy terms.
+    /// Its corrections, in `corrections`.
     k0: u32,
     nk: u32,
     u: [f64; 2],
@@ -1168,16 +1164,28 @@ struct SolidRun {
     st: u32,
     more: u32,
     nc: [u8; 2],
-}
-
-/// The constants of a solid edge ([`SolidState`]).
-#[derive(Debug, Clone, Copy)]
-struct SolidConst {
+    /// `2C/dt`, `1/(2C/dt + G + g/Z∞)`, `g` ([`SolidState`]).
     two_c: f64,
     inv: f64,
     g: f64,
-    port: u32,
 }
+
+/// What the solid edges of a part have a few distinct ones of: the port,
+/// and the weights of the couplings in their order. (What follows the
+/// cells' sizes lies in the [`SolidRun`]: on a graded mesh that is a
+/// value per edge, and a table of them would be read out of order.)
+#[derive(Debug, Clone, Copy)]
+struct SolidConst {
+    port: u32,
+    w: [f64; SOLID_COUPLINGS],
+}
+
+/// The most couplings of a solid edge (its four faces) and of a sheet
+/// edge (each face on both sides), and the most corrections of a sheet
+/// edge.
+const SOLID_COUPLINGS: usize = 4;
+const SHEET_COUPLINGS: usize = 8;
+const SHEET_TERMS: usize = 4;
 
 /// A sheet edge in a part, as [`SolidRun`]: the groups of the `+` face,
 /// then of the `−` face; `st` is the state of the even port, the odd
@@ -1192,18 +1200,23 @@ struct SheetRun {
     more: u32,
     nc: [u8; 4],
     nk: u8,
-}
-
-/// The constants of a sheet edge ([`SheetState`]).
-#[derive(Debug, Clone, Copy)]
-struct SheetConst {
+    mode: Mode,
+    /// `2C±/dt`, the inverse of the face matrix, `g` ([`SheetState`]).
     two_c: [f64; 2],
     m: [f64; 3],
     g: f64,
-    c_edge: f64,
+}
+
+/// What the sheet edges of a part have a few distinct ones of, as
+/// [`SolidConst`]: the ports, the share of `u−` in the array value, the
+/// weights of the couplings and the factors of the energy terms
+/// (`½·L·corr`, as [`super::sheet`]) in their order.
+#[derive(Debug, Clone, Copy)]
+struct SheetConst {
     mix: f64,
     port: [u32; 2],
-    mode: Mode,
+    w: [f64; SHEET_COUPLINGS],
+    ecorr: [f64; SHEET_TERMS],
 }
 
 /// What a sheet edge changes every step beside its ports: the face
@@ -1219,8 +1232,10 @@ struct SheetVar {
 /// The edges of one slab (or all of them, run in the serial hooks) with
 /// their state. A part is read from memory every step, and with the
 /// fields of a board in the caches' place that is what its edges cost:
-/// what an edge only reads is 32 bytes and an index into the distinct
-/// constants (a sheet has a handful), apart from what it writes.
+/// what an edge only reads is 88 bytes with the constants that follow
+/// the cells' sizes, 8 per coupling and energy term (where the current
+/// is) and an index into the few distinct sets of weights, apart from
+/// what it writes.
 #[derive(Debug, Default)]
 struct Part {
     /// First x-plane of the part.
@@ -1239,16 +1254,19 @@ struct Part {
     sheet_start: Vec<u32>,
     /// Nodes of the sheet edges (looked up only).
     sheet_nodes: Vec<[u32; 3]>,
+    /// Capacitance of each sheet edge (for the energy).
+    c_edge: Vec<f64>,
     more: Vec<More>,
-    couplings: Vec<Term>,
-    weights: Vec<f64>,
+    /// Where the currents of the circulations are, edge by edge and
+    /// group by group.
+    couplings: Vec<At>,
     /// Stretches of the circulations (E half-step).
     stretches: Vec<Stretch>,
     /// Currents and section voltages of the ports.
     state: Vec<f64>,
     gaps: Vec<Gap>,
-    terms: Vec<Term>,
-    ecorrs: Vec<f64>,
+    /// Where the currents of the sheet edges' energy terms are.
+    terms: Vec<At>,
     /// The H corrections on the dual edges of this part, by x-plane (in
     /// the order of their sheet edges within a plane).
     fixes: Vec<Fix>,
@@ -1355,15 +1373,15 @@ impl Access for SlabE<'_, '_, '_> {
 /// The stretched sum of a group of couplings.
 #[inline]
 fn circulation<A: Access>(
-    couplings: &[Term],
+    couplings: &[At],
     weights: &[f64],
     stretch: u32,
     stretches: &mut [Stretch],
     f: &A,
 ) -> f64 {
     let mut s = 0.0;
-    for c in couplings {
-        s += weights[c.k as usize] * f.i(c.at) as f64;
+    for (c, w) in couplings.iter().zip(weights) {
+        s += w * f.i(*c) as f64;
     }
     if stretch != u32::MAX {
         let q = &mut stretches[stretch as usize];
@@ -1411,7 +1429,7 @@ impl Part {
             .iter()
             .zip(&mut self.vars[sheets])
         {
-            let mode = self.sheet_consts[e.k as usize].mode;
+            let mode = e.mode;
             let up = f.u(e.at);
             let (u, written, open) = synced(mode, v.u, v.written, up);
             // (Written where something was added only: the edges are not
@@ -1432,12 +1450,7 @@ impl Part {
             // after this half-step (it may not have got there yet).
             let (mode, u, written, up) = if c.edge & REMOTE == 0 {
                 let (e, v) = (&self.sheets[c.edge as usize], &self.vars[c.edge as usize]);
-                (
-                    self.sheet_consts[e.k as usize].mode,
-                    v.u,
-                    v.written,
-                    f.u(e.at),
-                )
+                (e.mode, v.u, v.written, f.u(e.at))
             } else {
                 let k = (c.edge & !REMOTE) as usize;
                 let (r, slot) = (&self.remote[k], &next.expect("slots of the next slab")[k]);
@@ -1485,12 +1498,10 @@ impl Part {
             vars,
             more,
             couplings,
-            weights,
             stretches,
             state,
             gaps,
             terms,
-            ecorrs,
             ..
         } = self;
         for (e, u) in all_solids[solids.clone()].iter().zip(&mut solid_u[solids]) {
@@ -1498,13 +1509,14 @@ impl Part {
             let x = more.get(e.more as usize).unwrap_or(&More::NONE);
             let (c0, c1) = (e.c0 as usize, e.c0 as usize + e.nc[0] as usize);
             let c2 = c1 + e.nc[1] as usize;
-            let s = circulation(&couplings[c0..c1], weights, x.stretch[0], stretches, f)
-                + circulation(&couplings[c1..c2], weights, x.stretch[1], stretches, f);
+            let (w0, w1) = k.w.split_at(e.nc[0] as usize);
+            let s = circulation(&couplings[c0..c1], w0, x.stretch[0], stretches, f)
+                + circulation(&couplings[c1..c2], w1, x.stretch[1], stretches, f);
             let port = &ports[k.port as usize];
             let st = &mut state[e.st as usize..e.st as usize + port.stride()];
             let hist = port.history(st);
-            let um = (s + k.two_c * *u + hist / port.z_inf) * k.inv;
-            port.advance(st, (k.g * um - hist) / port.z_inf);
+            let um = (s + e.two_c * *u + hist / port.z_inf) * e.inv;
+            port.advance(st, (e.g * um - hist) / port.z_inf);
             *u = 2.0 * um - *u;
             if x.watch != u32::MAX {
                 held[x.watch as usize].store(f.u(e.at).to_bits(), Ordering::Relaxed);
@@ -1515,13 +1527,13 @@ impl Part {
             let k = &sheet_consts[e.k as usize];
             let x = more.get(e.more as usize).unwrap_or(&More::NONE);
             let mut s = [0.0; 2];
-            let mut c0 = e.c0 as usize;
+            let (mut c0, mut w) = (e.c0 as usize, &k.w[..]);
             for (q, &nc) in e.nc.iter().enumerate() {
                 if nc != 0 {
                     let c1 = c0 + nc as usize;
-                    s[q / 2] +=
-                        circulation(&couplings[c0..c1], weights, x.stretch[q], stretches, f);
-                    c0 = c1;
+                    let (wq, rest) = w.split_at(nc as usize);
+                    s[q / 2] += circulation(&couplings[c0..c1], wq, x.stretch[q], stretches, f);
+                    (c0, w) = (c1, rest);
                 }
             }
             let (pe, po) = (&ports[k.port[0] as usize], &ports[k.port[1] as usize]);
@@ -1530,12 +1542,12 @@ impl Part {
             let (he, ho) = (pe.history(se), po.history(so));
             let (je, jo) = (0.5 * he / pe.z_inf, 0.5 * ho / po.z_inf);
             let r = [
-                s[0] + k.two_c[0] * v.u[0] + je + jo,
-                s[1] + k.two_c[1] * v.u[1] + je - jo,
+                s[0] + e.two_c[0] * v.u[0] + je + jo,
+                s[1] + e.two_c[1] * v.u[1] + je - jo,
             ];
-            let um = [k.m[0] * r[0] + k.m[1] * r[1], k.m[1] * r[0] + k.m[2] * r[1]];
-            pe.advance(se, (k.g * (um[0] + um[1]) - he) / pe.z_inf);
-            po.advance(so, (k.g * (um[0] - um[1]) - ho) / po.z_inf);
+            let um = [e.m[0] * r[0] + e.m[1] * r[1], e.m[1] * r[0] + e.m[2] * r[1]];
+            pe.advance(se, (e.g * (um[0] + um[1]) - he) / pe.z_inf);
+            po.advance(so, (e.g * (um[0] - um[1]) - ho) / po.z_inf);
             v.u = [2.0 * um[0] - v.u[0], 2.0 * um[1] - v.u[1]];
             // The face voltage in the array value, and the open part: the
             // kernel's update of an ordinary edge, with the currents of
@@ -1555,8 +1567,9 @@ impl Part {
             }
             f.set_u(e.at, up);
             let mut s_e = 0.0;
-            for c in &terms[e.k0 as usize..e.k0 as usize + e.nk as usize] {
-                s_e += ecorrs[c.k as usize] * f.i(c.at) as f64;
+            let own = &terms[e.k0 as usize..e.k0 as usize + e.nk as usize];
+            for (c, ecorr) in own.iter().zip(&k.ecorr) {
+                s_e += ecorr * f.i(*c) as f64;
             }
             v.wc = if plain {
                 s_e * (v.u[1] - up as f64)
@@ -2783,11 +2796,9 @@ impl SurfaceImpedance {
         #[derive(Default)]
         struct Build {
             part: Part,
-            weights: HashMap<u64, u32>,
-            ecorrs: HashMap<u64, u32>,
             fix_consts: HashMap<[u64; 2], u32>,
-            solid_consts: HashMap<[u64; 4], u32>,
-            sheet_consts: HashMap<[u64; 10], u32>,
+            solid_consts: HashMap<[u64; 1 + SOLID_COUPLINGS], u32>,
+            sheet_consts: HashMap<[u64; 2 + SHEET_COUPLINGS + SHEET_TERMS], u32>,
             solid_planes: Vec<u32>,
             sheet_planes: Vec<u32>,
             fixes: Vec<(u32, Fix)>,
@@ -2848,29 +2859,32 @@ impl SurfaceImpedance {
         let stretches = std::mem::take(&mut self.stretches);
         let raw = std::mem::take(&mut self.corrections);
         let gaps = std::mem::take(&mut self.gaps);
-        // The couplings of `groups` with their stretches, in `b` (part
-        // `s`): the number in each group, the stretches in `more`.
-        let add_groups =
-            |b: &mut Build, s: usize, groups: &[Group], nc: &mut [u8], more: &mut More| {
-                let p = &mut b.part;
-                for (q, g) in groups.iter().enumerate() {
-                    nc[q] = u8::try_from(g.nc).expect("couplings of a group");
-                    if g.nc == 0 {
-                        continue;
-                    }
-                    for c in &couplings[g.c0 as usize..(g.c0 + g.nc) as usize] {
-                        let k = intern(&mut b.weights, &mut p.weights, c.w.to_bits(), c.w);
-                        p.couplings.push(Term {
-                            at: at(s, c.axis, c.loc),
-                            k,
-                        });
-                    }
-                    if g.stretch != u32::MAX {
-                        p.stretches.push(stretches[g.stretch as usize]);
-                        more.stretch[q] = p.stretches.len() as u32 - 1;
-                    }
+        // The couplings of `groups` with their stretches, in `p` (part
+        // `s`): the number in each group, their weights in `w`, the
+        // stretches in `more`.
+        let add_groups = |p: &mut Part,
+                          s: usize,
+                          groups: &[Group],
+                          nc: &mut [u8],
+                          w: &mut [f64],
+                          more: &mut More| {
+            let mut filled = 0;
+            for (q, g) in groups.iter().enumerate() {
+                nc[q] = u8::try_from(g.nc).expect("couplings of a group");
+                if g.nc == 0 {
+                    continue;
                 }
-            };
+                for c in &couplings[g.c0 as usize..(g.c0 + g.nc) as usize] {
+                    p.couplings.push(at(s, c.axis, c.loc));
+                    w[filled] = c.w;
+                    filled += 1;
+                }
+                if g.stretch != u32::MAX {
+                    p.stretches.push(stretches[g.stretch as usize]);
+                    more.stretch[q] = p.stretches.len() as u32 - 1;
+                }
+            }
+        };
         let alloc = |p: &mut Part, port: u32| -> u32 {
             let at = p.state.len();
             p.state.resize(at + ports[port as usize].stride(), 0.0);
@@ -2887,27 +2901,22 @@ impl SurfaceImpedance {
         for e in std::mem::take(&mut self.solids) {
             let s = part_of(e.plane as usize);
             let b = &mut build[s];
-            let c0 = b.part.couplings.len() as u32;
-            let (mut nc, mut more) = ([0; 2], More::NONE);
-            add_groups(b, s, &e.groups, &mut nc, &mut more);
-            more.watch = e.watch;
             let p = &mut b.part;
+            let c0 = p.couplings.len() as u32;
+            let (mut nc, mut more) = ([0; 2], More::NONE);
+            let mut w = [0.0; SOLID_COUPLINGS];
+            add_groups(p, s, &e.groups, &mut nc, &mut w, &mut more);
+            more.watch = e.watch;
             let st = alloc(p, e.port);
+            let mut key = [e.port as u64; 1 + SOLID_COUPLINGS];
+            for (k, w) in key[1..].iter_mut().zip(&w) {
+                *k = w.to_bits();
+            }
             let k = intern(
                 &mut b.solid_consts,
                 &mut p.solid_consts,
-                [
-                    e.two_c.to_bits(),
-                    e.inv.to_bits(),
-                    e.g.to_bits(),
-                    e.port as u64,
-                ],
-                SolidConst {
-                    two_c: e.two_c,
-                    inv: e.inv,
-                    g: e.g,
-                    port: e.port,
-                },
+                key,
+                SolidConst { port: e.port, w },
             );
             let more = add_more(p, more);
             p.solids.push(SolidRun {
@@ -2917,6 +2926,9 @@ impl SurfaceImpedance {
                 st,
                 more,
                 nc,
+                two_c: e.two_c,
+                inv: e.inv,
+                g: e.g,
             });
             p.solid_u.push(e.u);
             b.solid_planes.push(e.plane);
@@ -2967,19 +2979,18 @@ impl SurfaceImpedance {
                 b.fixes.push((c.loc.0, fix));
             }
             let b = &mut build[s];
-            let k0 = b.part.terms.len() as u32;
-            for c in own {
-                let p = &mut b.part;
-                let k = intern(&mut b.ecorrs, &mut p.ecorrs, c.ecorr.to_bits(), c.ecorr);
-                p.terms.push(Term {
-                    at: at(s, c.axis, c.loc),
-                    k,
-                });
-            }
-            let c0 = b.part.couplings.len() as u32;
-            let (mut nc, mut more) = ([0; 4], More::NONE);
-            add_groups(b, s, &e.groups, &mut nc, &mut more);
             let p = &mut b.part;
+            let k0 = p.terms.len() as u32;
+            let mut ecorr = [0.0; SHEET_TERMS];
+            for (c, x) in own.iter().zip(&mut ecorr) {
+                p.terms.push(at(s, c.axis, c.loc));
+                *x = c.ecorr;
+            }
+            assert!(own.len() <= SHEET_TERMS, "corrections of a sheet edge");
+            let c0 = p.couplings.len() as u32;
+            let (mut nc, mut more) = ([0; 4], More::NONE);
+            let mut w = [0.0; SHEET_COUPLINGS];
+            add_groups(p, s, &e.groups, &mut nc, &mut w, &mut more);
             let st = alloc(p, e.port[0]);
             let st1 = alloc(p, e.port[1]);
             debug_assert_eq!(
@@ -2992,29 +3003,21 @@ impl SurfaceImpedance {
             }
             more.slot = e.slot;
             more.watch = e.watch;
+            let mut key = [0; 2 + SHEET_COUPLINGS + SHEET_TERMS];
+            key[0] = e.mix.to_bits();
+            key[1] = e.port[0] as u64 | (e.port[1] as u64) << 32;
+            for (k, x) in key[2..].iter_mut().zip(w.iter().chain(&ecorr)) {
+                *k = x.to_bits();
+            }
             let k = intern(
                 &mut b.sheet_consts,
                 &mut p.sheet_consts,
-                [
-                    e.two_c[0].to_bits(),
-                    e.two_c[1].to_bits(),
-                    e.m[0].to_bits(),
-                    e.m[1].to_bits(),
-                    e.m[2].to_bits(),
-                    e.g.to_bits(),
-                    e.c_edge.to_bits(),
-                    e.mix.to_bits(),
-                    e.port[0] as u64 | (e.port[1] as u64) << 32,
-                    mode as u64,
-                ],
+                key,
                 SheetConst {
-                    two_c: e.two_c,
-                    m: e.m,
-                    g: e.g,
-                    c_edge: e.c_edge,
                     mix: e.mix,
                     port: e.port,
-                    mode,
+                    w,
+                    ecorr,
                 },
             );
             let more = add_more(p, more);
@@ -3027,7 +3030,12 @@ impl SurfaceImpedance {
                 more,
                 nc,
                 nk: u8::try_from(e.nk).expect("corrections of a sheet edge"),
+                mode,
+                two_c: e.two_c,
+                m: e.m,
+                g: e.g,
             });
+            p.c_edge.push(e.c_edge);
             p.vars.push(SheetVar {
                 u: e.u,
                 wc: e.wc,
@@ -3067,14 +3075,13 @@ impl SurfaceImpedance {
             p.sheet_consts.shrink_to_fit();
             p.vars.shrink_to_fit();
             p.sheet_nodes.shrink_to_fit();
+            p.c_edge.shrink_to_fit();
             p.more.shrink_to_fit();
             p.couplings.shrink_to_fit();
-            p.weights.shrink_to_fit();
             p.stretches.shrink_to_fit();
             p.state.shrink_to_fit();
             p.gaps.shrink_to_fit();
             p.terms.shrink_to_fit();
-            p.ecorrs.shrink_to_fit();
             p.fix_consts.shrink_to_fit();
             p.h_stretches.shrink_to_fit();
             p.remote.shrink_to_fit();
@@ -3161,18 +3168,18 @@ impl Operator for SurfaceImpedance {
                 let k = &p.solid_consts[e.k as usize];
                 let port = &ports[k.port as usize];
                 let st = &p.state[e.st as usize..e.st as usize + port.stride()];
-                w += 0.25 * k.two_c * dt * u * u + port.energy(st) / k.g;
+                w += 0.25 * e.two_c * dt * u * u + port.energy(st) / e.g;
             }
         }
         let mut w_corr = 0.0;
         for p in &held {
-            for (e, v) in p.sheets.iter().zip(&p.vars) {
+            for ((e, v), &c_edge) in p.sheets.iter().zip(&p.vars).zip(&p.c_edge) {
                 let k = &p.sheet_consts[e.k as usize];
                 let mut st = e.st as usize;
                 for q in 0..2 {
-                    w += 0.25 * k.two_c[q] * dt * v.u[q] * v.u[q];
+                    w += 0.25 * e.two_c[q] * dt * v.u[q] * v.u[q];
                     let port = &ports[k.port[q] as usize];
-                    w += 0.5 * port.energy(&p.state[st..st + port.stride()]) / k.g;
+                    w += 0.5 * port.energy(&p.state[st..st + port.stride()]) / e.g;
                     st += port.stride();
                 }
                 // The engine's field sum has ½·C·(array value)².
@@ -3182,10 +3189,10 @@ impl Operator for SurfaceImpedance {
                     face
                 } else {
                     let uo = p.gaps[gap as usize].u;
-                    w += 0.5 * k.c_edge * uo * uo;
+                    w += 0.5 * c_edge * uo * uo;
                     uo + face
                 };
-                w -= 0.5 * k.c_edge * stored * stored;
+                w -= 0.5 * c_edge * stored * stored;
                 w_corr += v.wc;
             }
         }
@@ -3209,7 +3216,7 @@ impl Operator for SurfaceImpedance {
                 let k = &p.solid_consts[e.k as usize];
                 let port = &ports[k.port as usize];
                 let st = &p.state[e.st as usize..e.st as usize + port.stride()];
-                w += port.energy(st) / k.g;
+                w += port.energy(st) / e.g;
             }
         }
         for p in &held {
@@ -3218,7 +3225,7 @@ impl Operator for SurfaceImpedance {
                 let mut st = e.st as usize;
                 for q in 0..2 {
                     let port = &ports[k.port[q] as usize];
-                    w += 0.5 * port.energy(&p.state[st..st + port.stride()]) / k.g;
+                    w += 0.5 * port.energy(&p.state[st..st + port.stride()]) / e.g;
                     st += port.stride();
                 }
             }
