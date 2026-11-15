@@ -365,10 +365,20 @@ What remains, by size:
   plane has 99 000 such edges: 8 and 19 MB).
 - The dispersive state in `f64` (the kernel is `f32`): halving it would
   change results.
-- The rational sheet: about 380 bytes per sheet edge (two ports of ten
-  sections, the couplings and corrections of both faces).
+- The rational sheet: about 450 bytes per sheet edge, 176 of them the
+  state of two ports of ten sections (`f64`). It was about 760 until
+  wave 26 (the 380 this list had counted the state and the edge's own
+  record only; §5.9.1, *Layout*).
 - The compiled model next to the engine: 15 bytes per node and 16 per
   pole.
+
+By resident set (wave 26; what the allocator has given back is not in
+it), cadlab's bent line with lossy sheets on 0.25 mm cells, 640 000
+nodes, one thread: 27 MB before the compile step, 103 at its peak (csx's
+material grid) and 84 after it; 138 and 142 at the peak of conformal PEC
+in the builds of the two ports' engines; 125 while running. On three
+threads 16 MB more from the compile step on and 164 at the peak (its own
+solver: 58).
 
 ## 5. Numerical formulation
 
@@ -1493,13 +1503,92 @@ slot after its E update; both slabs form what a source has added since
 by one expression that changes nothing when applied twice. The energy
 sums the edges of all slabs in edge order. Slab hooks run before every
 serial hook, so where an operator registered earlier has serial hooks
-after a half-step (the merged faces of conformal PEC, the ladder) the
-edges stay in the serial hooks, in registration order
-(`SurfaceImpedance::runs_in_slabs`). Conformal PEC registers its merged
-faces only where a small face fails the cell-wise bound of §5.13.3:
-cadlab's bent lines, whose thin layers leave every cut cell room, run in
-the slabs (lossy sheet 131 → 207 Mcells/s on 135 660 cells, solid copper
-258 → 321 on 184 110).
+after a half-step (the ladder, conformal sheets, §5.13.1) the edges stay
+in the serial hooks, in registration order
+(`SurfaceImpedance::runs_in_slabs`).
+
+*Beside the merged faces of conformal PEC* (wave 26). `MergedFaces`
+(§5.13: the reduced currents of merged and interpolated small faces) is
+such an operator, registered before the surface impedance wherever a
+small face is merged or interpolated. On cadlab's bent line with lossy
+sheets that is no face on the default mesh and 10 of 177 on 0.25 mm
+cells, which kept 26 364 sheet edges on one thread: 30 s of the 73 s the
+two runs took on three threads, where the built-in solver takes 35 s.
+The order of the two does not matter where
+
+- no H correction of a sheet lies on a face the merged faces drive. They
+  write those currents after the H kernel from the voltages; the
+  corrections are on faces the kernel updates (`db ≠ 0`; an edge beside
+  a driven face stores the mix of its two face voltages instead, above),
+  and neither reads what the other writes in that half-step;
+- their look-ahead after the E half-step gets what it read. It forms the
+  circulations of the reduced currents for the energy at the new time
+  (with the corrections of merged faces in an absorbing layer, two
+  voltages each), before the surface impedance's serial hook wrote its
+  edges: at those edges it read the kernel's value, not the edge's
+  voltage. The slabs put the array value of each such edge aside before
+  they overwrite it (`MergedFaces::held_back`, a handful of edges per
+  merged face), and the look-ahead takes it from there. (So the energy of the reduced
+  currents beside a surface impedance stays the estimate it was. It
+  enters the end criterion only; correcting it would move a run's last
+  step, and is left for a change that says so.)
+
+`SurfaceImpedance::slabs_allowed` checks the first at installation and
+keeps the serial hooks otherwise (and behind the cylindrical layer's
+merged faces, which do not meet a surface impedance). Every value is
+then what it is in the serial hooks after the merged faces
+(`slabs_equal_the_serial_hooks_beside_merged_faces`: sheets and solid
+metal at 17° and 30°, in a closed box and running through CPML layers
+on four faces, 21 to 221 merged or interpolated faces, 120 to 234 edges
+held back, one to five threads, fields, probe and both energy measures;
+without the values held back, the circulations' or the layer
+corrections', the test fails on the energy).
+`SurfaceImpedance::in_serial_hooks` (`Compiled::surface_serial`) keeps
+the reference path. The steps of such a model stay unfused, and the
+merged faces themselves stay serial (two gaps a step; they are tens of
+faces).
+
+**Layout** (wave 26). A slab reads its edges from memory in both
+half-steps, and on a board the fields have the caches. On 573 440 cells
+with 71 296 sheet edges the edges were about 100 MB a step, where the
+kernel moves 30 to 40, and three threads gained a factor of 1.75 on
+them. A slab (`surface::Part`) now holds per edge
+
+- a record of what it only reads, 88 bytes for a sheet edge and 56 for a
+  solid one: where it is, where its couplings, state and energy terms
+  start and how many there are, and the constants that follow the cells'
+  sizes (`2C±/dt`, the inverse face matrix, `g`), in edge order;
+- what it writes apart from that (the face voltages, the array value,
+  the energy term: 32 bytes; a solid edge its voltage), which the H
+  half-step writes only where a source added to the edge;
+- 8 bytes per coupling and energy term, the place of the current. The
+  weights are in the edge's set of them: the ports, the share of `u−` in
+  the array value, the weights and the energy factors in their order,
+  which follow the cell heights across the sheet and the kind of edge,
+  not the mesh along it;
+- 20 bytes per H correction (the place, the sheet edge, the stretch, an
+  index into the distinct `[db·t, db]`);
+- aside, for the few edges that have one: the CPML stretches, the open
+  part, the slot for the slab before, the value held back for the merged
+  faces; and the first edge of every x-plane instead of a search.
+
+About 450 bytes per sheet edge with the 176 of its ports' state, for
+760. The expressions and their order are those of before: the fields and
+energies of `examples/bench_surface` (sheets, solid metal, with and
+without CPML, one and three threads) and cadlab's Touchstone files are
+those of 0.0.10 bit for bit. That grid, ms per step on one / three
+threads (1.32 / 0.46 without the sheet): 5.90 / 2.33 → 5.09 / 2.03; with
+eight CPML cells on five faces on three threads 3.69 → 3.22; 142 592
+solid edges on three threads 1.46 → 1.05. (*Tried and not kept:* the
+whole of an edge's constants as an index into a table of the distinct
+ones, 36 bytes per edge. A uniform sheet has a handful and gained
+another tenth; cadlab's bent line, on its graded mesh, has 2531, half a
+megabyte read out of order, and its E half-step lost 12 % on one thread.
+The sections of a port as a loop per known length: no faster.) What is
+left of an edge is arithmetic: with the grid in the caches a sheet edge
+is 40 ns a step before and after (two ports of ten sections, about 1300
+instructions for both half-steps), 0.274 → 0.281 ms per step on 38 400
+cells.
 
 **Cost** (67 200 cells, a ground plane of 13 264 sheet edges or a plate of
 26 528 surface edges, 35 µm copper, 6 GHz, one thread; PEC: 286 Mcells/s):
@@ -7282,7 +7371,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-15, after wave 25)
+### Status (2026-11-15, after wave 26)
 
 | Step | State |
 |---|---|
@@ -7587,11 +7676,53 @@ only, as described; the pole weighting is an option.
   solver 34 s; three threads 37 → 24 s). Of the 97 s, 78 were the poles
   (9 s without them and with perfect copper, 13 s with lossy copper).
 
+Wave 26 (native; §5.9.1, §4.1), the one case of run time cadlab's
+decision on its default solver was left with (its D90). No result
+changes: the Touchstone data of cadlab's regions (the bent line with
+sheets and with solid copper on both meshes, as a staircase and with
+perfect copper, the straight lines with sheets and solid copper, the via
+transition to −40 and −60 dB and on the small region) and the fields and
+energies of `examples/bench_surface` are those of 0.0.10 bit for bit, on
+one, two and three threads.
+
+- *Surface impedance beside merged conformal faces* (§5.9.1, *Threads*):
+  the edges stayed in the serial hooks wherever conformal PEC had merged
+  or interpolated a small face. They run in the slabs there too; the
+  merged faces' energy look-ahead is handed the values it read. cadlab's
+  bent line on 0.25 mm cells to −70 dB, s on one / two / three threads
+  (a shared machine: the ranges are those of three to five runs): lossy
+  sheets 80…91 / 59 / 54…66 → 77…88 / 44…51 / 29…34 (its own solver 76 /
+  48…53 / 35…50); solid copper on three threads 69…105 → 47…49 (86). Its
+  session 6 (a matching network on a graded mesh, lossy sheets, merged
+  faces in the absorbing layers) on three threads: 92…102 → 64 s (48…53).
+- *What a slab reads per edge* (§5.9.1, *Layout*): 760 → 450 bytes per
+  sheet edge, the weights and ports as an index into their few distinct
+  sets, what follows the cells' sizes in the edge's record, in order.
+  `bench_surface`, 71 296 sheet edges on 573 440 cells: 5.90 → 5.09 ms
+  per step on one thread, 2.33 → 2.03 on three.
+- *Debye laminates* (§4.1): the trapezoidal loop reads an edge's
+  constants from lists and forms each pole's term once. Eight poles per
+  edge: 5.80 → 4.98 ms per step on 573 440 cells, 0.327 → 0.265 with the
+  grid in the caches. cadlab's small via region: 76…83 → 68…82 s on one
+  thread (its own solver 56 s), 35…39 → 31…37 s on three, a difference
+  the size of that machine's noise. On a graded mesh the lists are as
+  long as the poles (session 6: 139 856 distinct edges of 206 635, six
+  poles each), 24 bytes a pole read in order where the constants were
+  looked up; the poles are still the largest part of that run (60 of
+  the 95 thread-seconds of one port: the kernel 9.5, the CPML 8.4, the
+  surface impedance, then still serial, 17).
+
 Remaining:
 - Memory (§4.1): the compile step peaks at csx's material grid (111
-  bytes per node); the fields and coefficients are 72 bytes per node.
-- Surface impedance (§5.9.1): where conformal PEC merges faces the hooks
-  are serial;
+  bytes per node); the fields and coefficients are 72 bytes per node;
+  conformal PEC builds a round on two copies of the coefficients and
+  estimates its stability on ten `f64` per node (96 bytes per node on
+  top of the engine, the peak of a run with conformal cells).
+- Surface impedance (§5.9.1): the edges stay in the serial hooks behind
+  conformal sheets and ladders (not behind merged faces any more); the
+  merged faces themselves are serial and keep the steps of such a model
+  unfused; their energy beside a surface impedance is the kernel's
+  estimate (§5.9.1, *Threads*);
   the covered parts of the edges conformal PEC cuts along lossy solid
   metal stay PEC (their neighbours carry the surface); the loss at the
   rim of a flat surface is that of the scheme with rims on mesh lines by
@@ -7602,8 +7733,13 @@ Remaining:
   priority keeps perfect faces along the mesh; Cartesian grids only; the DC
   resistance of solid metal thinner than the skin depth is not modelled.
 - Dispersive media: the poles' state is `f64` behind an index per pole;
-  a Debye laminate still takes ems 1.5 times cadlab's solver's time on
-  one thread on a region of 25 000 cells.
+  a Debye laminate still takes ems 1.2 to 1.5 times cadlab's solver's
+  time on one thread on a region of 25 000 cells, and on a graded mesh,
+  where every edge has its own constants, the poles are most of a run
+  (cadlab's session 6: 1.3 times its solver's time on three threads).
+  On a thin board region the CPML costs more than the kernel (7.4 to
+  8.4 against 5.2 to 5.7 s per port on cadlab's bent line on one
+  thread: rows along z of 16 cells and less).
 - Conformal PEC on copper of about a cell (§5.13.3): a post or a barrel
   that contains no line of nodes is not a conductor along its axis for
   the scheme and reads as the wire the model gives it (a fat-wire model
