@@ -789,8 +789,8 @@ pub(crate) fn openems_debye_step(
     flush(u_star - flush(u_star - un))
 }
 
-/// Poles of an edge whose common term the trapezoidal loop keeps between
-/// its two passes ([`Side::correct`]).
+/// The most poles of an edge that the trapezoidal loop runs from the
+/// lists of [`Side::sets`] (more: from the poles' own constants).
 const HELD: usize = 16;
 
 /// How a pole is integrated.
@@ -829,6 +829,13 @@ struct Side {
     /// The distinct integration constants of the medium (shared by all
     /// slabs).
     consts: Arc<[PoleConst]>,
+    /// Trapezoidal sides: per edge of at most [`HELD`] poles, where the
+    /// constants of its poles start in `sets` (edges of a material with
+    /// the same cell geometry share them).
+    set: Vec<u32>,
+    /// `2L/dt`, `1/C_p` and `1/z_p` of the poles of each distinct edge,
+    /// in a list each.
+    sets: [Vec<f64>; 3],
     /// Branch current `j^n` (magnetic: voltage) per pole.
     j: Vec<f64>,
     /// Branch charge `q^n` per pole.
@@ -881,6 +888,8 @@ impl Default for Side {
             pole_end: Vec::new(),
             cidx: Vec::new(),
             consts: Arc::from(Vec::new()),
+            set: Vec::new(),
+            sets: Default::default(),
             j: Vec::new(),
             q: Vec::new(),
             oe_coef: Vec::new(),
@@ -937,6 +946,43 @@ impl Side {
         self.coef.shrink_to_fit();
     }
 
+    /// Fills `set` and `sets` (a trapezoidal side): the constants of
+    /// each distinct sequence of poles once, in lists.
+    fn collect_sets(&mut self) {
+        let Self {
+            pole_end,
+            cidx,
+            consts,
+            set,
+            sets,
+            ..
+        } = self;
+        // (Looked up only: the order of the map does not matter.)
+        let mut known: std::collections::HashMap<&[u32], u32> = std::collections::HashMap::new();
+        let mut p0 = 0;
+        for &p1 in pole_end.iter() {
+            let ids = &cidx[p0..p1 as usize];
+            p0 = p1 as usize;
+            if ids.len() > HELD {
+                set.push(u32::MAX);
+                continue;
+            }
+            let at = *known.entry(ids).or_insert_with(|| {
+                let at = sets[0].len() as u32;
+                for &id in ids {
+                    let c = &consts[id as usize];
+                    sets[0].push(c.a);
+                    sets[1].push(c.inv_c);
+                    sets[2].push(c.inv_z);
+                }
+                at
+            });
+            set.push(at);
+        }
+        set.shrink_to_fit();
+        sets.iter_mut().for_each(Vec::shrink_to_fit);
+    }
+
     /// The edges in the x-planes `planes` (edges are in plane order).
     fn edges_in(&self, planes: &Range<usize>) -> Range<usize> {
         let lo = self.plane.partition_point(|&p| (p as usize) < planes.start);
@@ -971,6 +1017,8 @@ impl Side {
                 pole_end,
                 cidx,
                 consts,
+                set,
+                sets,
                 j,
                 q,
                 late,
@@ -991,35 +1039,56 @@ impl Side {
                 let o = off[e] as usize;
                 let cb = coef[ax][gi * p + o] as f64;
                 let half_prev = 0.5 * prev[e];
-                let (cidx, j, q) = (&cidx[p0..p1], &mut j[p0..p1], &mut q[p0..p1]);
-                let (j, q) = (&mut j[..cidx.len()], &mut q[..cidx.len()]);
-                // `a·j − q/C + ½·u^n` of each pole is formed once for
-                // the sum and for the pole's update (the poles of an
-                // edge beyond the buffer form it twice, as all did).
-                let mut held = [0.0; HELD];
-                let mut s = 0.0;
-                for k in 0..cidx.len() {
-                    let c = &consts[cidx[k] as usize];
-                    let t = c.a * j[k] - q[k] * c.inv_c + half_prev;
-                    if let Some(h) = held.get_mut(k) {
-                        *h = t;
-                    }
-                    s += t * c.inv_z;
-                }
+                let n = p1 - p0;
+                let (j, q) = (&mut j[p0..p1], &mut q[p0..p1]);
                 let plane = f.plane_mut(Axis::ALL[ax], gi);
-                let u_new = ((plane[o] as f64 - cb * s) / (1.0 + 0.5 * cb * sum_inv_z[e])) as f32;
-                let half_new = 0.5 * u_new as f64;
-                for k in 0..cidx.len() {
-                    let c = &consts[cidx[k] as usize];
-                    let t = match held.get(k) {
-                        Some(&t) => t,
-                        None => c.a * j[k] - q[k] * c.inv_c + half_prev,
-                    };
-                    let jb = (t + half_new) * c.inv_z;
-                    q[k] += dt * jb;
-                    j[k] = 2.0 * jb - j[k];
+                if n <= HELD {
+                    // The constants of the edge's poles in lists of
+                    // their own, and `a·j − q/C + ½·u^n` of each pole
+                    // kept for its update: the loops over the poles
+                    // have nothing between their elements but the sum.
+                    let at = set[e] as usize;
+                    let (ka, kc, kz) = (
+                        &sets[0][at..at + n],
+                        &sets[1][at..at + n],
+                        &sets[2][at..at + n],
+                    );
+                    let mut t = [0.0; HELD];
+                    let t = &mut t[..n];
+                    for k in 0..n {
+                        t[k] = ka[k] * j[k] - q[k] * kc[k] + half_prev;
+                    }
+                    let mut s = 0.0;
+                    for k in 0..n {
+                        s += t[k] * kz[k];
+                    }
+                    let u_new =
+                        ((plane[o] as f64 - cb * s) / (1.0 + 0.5 * cb * sum_inv_z[e])) as f32;
+                    let half_new = 0.5 * u_new as f64;
+                    for k in 0..n {
+                        let jb = (t[k] + half_new) * kz[k];
+                        q[k] += dt * jb;
+                        j[k] = 2.0 * jb - j[k];
+                    }
+                    plane[o] = u_new;
+                } else {
+                    let cidx = &cidx[p0..p1];
+                    let mut s = 0.0;
+                    for k in 0..n {
+                        let c = &consts[cidx[k] as usize];
+                        s += (c.a * j[k] - q[k] * c.inv_c + half_prev) * c.inv_z;
+                    }
+                    let u_new =
+                        ((plane[o] as f64 - cb * s) / (1.0 + 0.5 * cb * sum_inv_z[e])) as f32;
+                    let half_new = 0.5 * u_new as f64;
+                    for k in 0..n {
+                        let c = &consts[cidx[k] as usize];
+                        let jb = (c.a * j[k] - q[k] * c.inv_c + half_prev + half_new) * c.inv_z;
+                        q[k] += dt * jb;
+                        j[k] = 2.0 * jb - j[k];
+                    }
+                    plane[o] = u_new;
                 }
-                plane[o] = u_new;
                 p0 = p1;
             }
             return;
@@ -2096,6 +2165,9 @@ impl Operator for Dispersive {
                         .cidx
                         .iter()
                         .all(|&id| side.consts[id as usize].kind == Kind::Trapezoidal);
+                if side.trapezoidal {
+                    side.collect_sets();
+                }
             }
         }
         let parts = Arc::new(Parts {
