@@ -2035,6 +2035,8 @@ struct Held {
     /// Per circulation term of each group: its index in `values`, or
     /// `u32::MAX` (filled with `flat_terms`).
     terms: Vec<Vec<u32>>,
+    /// The same for the two voltages of each absorbing-layer correction.
+    layers: Vec<[u32; 2]>,
 }
 
 impl PartialEq for Held {
@@ -2130,32 +2132,50 @@ impl MergedFaces {
             .flat_map(|g| g.terms.iter().map(|&(a, p, _)| (a, p)))
     }
 
-    /// The E edges the corrections of the absorbing layers read.
+    /// The E edges the corrections of the absorbing layers read (CPML).
     pub(crate) fn layer_edges(&self) -> impl Iterator<Item = (Axis, [usize; 3])> + '_ {
-        let pml = self
-            .pml
+        self.pml
             .iter()
-            .flat_map(|t| t.nodes.iter().map(move |&p| (t.other, p)));
-        let cyl = self.cyl.iter().flat_map(|t| t.edges.iter().copied());
-        pml.chain(cyl)
+            .flat_map(|t| t.nodes.iter().map(move |&p| (t.other, p)))
+    }
+
+    /// Whether faces are corrected for a cylindrical `ρ_max` layer.
+    pub(crate) fn in_cylindrical_layer(&self) -> bool {
+        !self.cyl.is_empty()
     }
 
     /// For an operator registered after this one that writes the voltages
     /// of `edges` in the slabs' E half-step, which is before `post_e`
     /// here, where its serial `post_e` hook wrote them after: `post_e`
-    /// (the circulations of the energy look-ahead) takes these edges from
-    /// the returned values, bits of `f32`, into which that operator puts
-    /// what the array held before it wrote. So the look-ahead reads what
+    /// (the circulations of the energy look-ahead, with the corrections
+    /// of the absorbing layers) takes these edges from the returned
+    /// values, bits of `f32`, into which that operator puts what the
+    /// array held before it wrote. So the look-ahead reads what
     /// it read with that operator in the serial hooks, bit for bit. (It
     /// is the kernel's value of such an edge, not its voltage: the energy
     /// of the reduced currents next to a surface impedance is the
     /// kernel's estimate there, as it was.)
     pub(crate) fn held_back(&mut self, edges: Vec<(Axis, [usize; 3])>) -> Arc<[AtomicU32]> {
         let values: Arc<[AtomicU32]> = edges.iter().map(|_| AtomicU32::new(0)).collect();
+        // (Looked up only: the order of the map does not matter.)
+        let at: HashMap<(Axis, [usize; 3]), u32> = edges
+            .iter()
+            .enumerate()
+            .map(|(k, &e)| (e, k as u32))
+            .collect();
+        let layers = self
+            .pml
+            .iter()
+            .map(|t| {
+                t.nodes
+                    .map(|p| at.get(&(t.other, p)).copied().unwrap_or(u32::MAX))
+            })
+            .collect();
         self.held = Some(Held {
             edges,
             values: Arc::clone(&values),
             terms: Vec::new(),
+            layers,
         });
         // (Located again, with the terms' places in `values`.)
         self.flat_terms = Vec::new();
@@ -2247,8 +2267,17 @@ impl MergedFaces {
     /// H update), otherwise it is left as it is (the energy look-ahead of
     /// `post_e`, which so evaluates exactly what the next update does).
     fn add_pml(&mut self, f: &Fields<'_>, commit: bool) {
-        let Self { pml, cyl, circ, .. } = self;
-        for t in pml.iter_mut() {
+        let Self {
+            pml,
+            cyl,
+            circ,
+            held,
+            ..
+        } = self;
+        // The look-ahead (not committed) takes the voltages held back for
+        // it ([`held_back`](Self::held_back)).
+        let held = held.as_ref().filter(|_| !commit);
+        for (q, t) in pml.iter_mut().enumerate() {
             let at = *t.at.get_or_insert_with(|| {
                 [
                     f.u.layout().locate(t.nodes[0]),
@@ -2256,7 +2285,11 @@ impl MergedFaces {
                 ]
             });
             let o = t.other;
-            let d = t.sign * (f.u.at(o, at[0]) as f64 - f.u.at(o, at[1]) as f64);
+            let u = |k: usize| match held.and_then(|h| h.values.get(h.layers[q][k] as usize)) {
+                Some(v) => f32::from_bits(v.load(Ordering::Relaxed)),
+                None => f.u.at(o, at[k]),
+            };
+            let d = t.sign * (u(0) as f64 - u(1) as f64);
             let psi = t.b * t.psi + t.a * d;
             if commit {
                 t.psi = psi;

@@ -2704,11 +2704,11 @@ impl SurfaceImpedance {
     /// * no H correction of a sheet lies on a face they drive (they write
     ///   those currents after the H kernel; the corrections are on faces
     ///   the kernel updates, and neither reads what the other writes);
-    /// * the edges of the layer corrections they read are none of these;
     /// * their look-ahead after the E half-step, which reads the voltages
-    ///   around their faces for the energy before this operator's serial
-    ///   hook writes its edges, gets the array values of those edges as
-    ///   they were before the slabs wrote them (`MergedFaces::held_back`).
+    ///   around their faces (and those of their absorbing-layer
+    ///   corrections) for the energy before this operator's serial hook
+    ///   writes its edges, gets the array values of those edges as they
+    ///   were before the slabs wrote them (`MergedFaces::held_back`).
     ///
     /// Then every value is what it is with the edges in the serial hooks.
     fn slabs_allowed(&mut self, engine: &mut Engine) -> bool {
@@ -2746,14 +2746,13 @@ impl SurfaceImpedance {
         let driven = m.driven_keys(n);
         let apart = self.corrections.iter().all(|c| {
             !driven.contains(&(c.axis.index(), c.loc.0 as usize * plane + c.loc.1 as usize))
-        }) && m
-            .layer_edges()
-            .all(|(a, p)| !edges.contains_key(&key(a, p)));
-        if !apart {
+        });
+        if !apart || m.in_cylindrical_layer() {
             return false;
         }
         let mut held = Vec::new();
-        for (a, p) in m.circulation_edges() {
+        let read: Vec<_> = m.circulation_edges().chain(m.layer_edges()).collect();
+        for (a, p) in read {
             let Some(&(solid, i)) = edges.get(&key(a, p)) else {
                 continue;
             };
@@ -3243,6 +3242,19 @@ mod tests {
     /// The width of a rim patch: the half cell of a rim on the mesh line,
     /// growing with the reach, below the patch's own width (its current
     /// crowds at the rim), and continuous where the next edge comes in.
+    /// What a slab reads and writes per edge and step (design §5.9.1,
+    /// *Layout*): a change that grows these is a change of the run time
+    /// on grids that do not fit the caches.
+    #[test]
+    fn edge_records() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<At>(), 8);
+        assert_eq!(size_of::<SheetRun>(), 88);
+        assert_eq!(size_of::<SheetVar>(), 32);
+        assert_eq!(size_of::<SolidRun>(), 56);
+        assert_eq!(size_of::<Fix>(), 20);
+    }
+
     #[test]
     fn rim_widths() {
         let l = 0.25e-3;
