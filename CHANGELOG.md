@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11](https://github.com/KarpelesLab/ems/compare/v0.0.10...v0.0.11) - 2026-11-15
+
+### Other
+
+- the surface impedance beside merged conformal faces, what a slab reads per edge, the Debye loop's lists; memory by stage; what is left (wave 26)
+- Surface impedance: in the slabs beside merged faces in an absorbing layer too
+- the trapezoidal loop reads an edge's constants from lists
+- Surface impedance: what follows the cells' sizes stays with the edge, the weights go with the few sets of them
+- the trapezoidal loop forms a pole's term once
+- Surface impedance: an edge is 32 bytes and what it writes, its constants once per distinct edge
+- the cost per edge of sheets, solid metal and a Debye laminate on a board-like grid
+- Surface impedance: beside the merged faces of conformal PEC the edges run in the slabs
+
 ## [0.0.10](https://github.com/KarpelesLab/ems/compare/v0.0.9...v0.0.10) - 2026-11-14
 
 ### Other
