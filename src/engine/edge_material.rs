@@ -322,6 +322,49 @@ impl EdgeMaterials {
         self.pec[a] = pec;
     }
 
+    /// [`set_axis`](Self::set_axis) in three parts, each array stored as
+    /// it comes: `eps_r` and `kappa` of the edges along `axis`.
+    ///
+    /// # Panics
+    /// If an array does not have one value per node.
+    pub(crate) fn set_edges(&mut self, axis: Axis, eps_r: Vec<f64>, kappa: Vec<f64>) {
+        let n: usize = self.nodes.iter().product();
+        assert!(
+            [eps_r.len(), kappa.len()] == [n; 2],
+            "edge material arrays must have one value per node"
+        );
+        // (One after the other: the second array is alive only while
+        // the first is already a table.)
+        self.eps_r[axis.index()] = Lane::pooled(eps_r);
+        self.kappa[axis.index()] = Lane::pooled(kappa);
+    }
+
+    /// `mu_r` and `sigma_m` of the dual edges along `axis` (see
+    /// [`set_edges`](Self::set_edges)).
+    ///
+    /// # Panics
+    /// If an array does not have one value per node.
+    pub(crate) fn set_faces(&mut self, axis: Axis, mu_r: Vec<f64>, sigma_m: Vec<f64>) {
+        let n: usize = self.nodes.iter().product();
+        assert!(
+            [mu_r.len(), sigma_m.len()] == [n; 2],
+            "edge material arrays must have one value per node"
+        );
+        self.mu_r[axis.index()] = Lane::pooled(mu_r);
+        self.sigma_m[axis.index()] = Lane::pooled(sigma_m);
+    }
+
+    /// The PEC mask of the edges along `axis` (see
+    /// [`set_edges`](Self::set_edges)).
+    ///
+    /// # Panics
+    /// If the mask does not have one value per node.
+    pub(crate) fn set_pec(&mut self, axis: Axis, pec: Vec<bool>) {
+        let n: usize = self.nodes.iter().product();
+        assert!(pec.len() == n, "the PEC mask must have one value per node");
+        self.pec[axis.index()] = pec;
+    }
+
     /// Converts a per-cell map into effective edge values, so that
     /// [`Coefficients::from_edges`](super::Coefficients::from_edges)
     /// reproduces [`primary_edge_cg`] / [`dual_edge_lr`] (up to rounding):

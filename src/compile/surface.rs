@@ -96,7 +96,10 @@ pub(super) fn bare_pec(
             p.primitives.clear();
         }
     }
-    Ok(Some(discretize(&bare, discretize_opts)?.pec))
+    // (The masks alone: no material arrays.)
+    Ok(Some(
+        discretize(&bare, &discretize_opts.clone().without_materials())?.pec,
+    ))
 }
 
 /// The edges of the lossy metals `metals` of `model`, whose discretisation

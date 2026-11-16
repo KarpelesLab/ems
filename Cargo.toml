@@ -22,7 +22,7 @@ hdf5 = ["dep:hdf5rs"]
 hdf5-deflate = ["hdf5", "hdf5rs/deflate"]
 
 [dependencies]
-csx = { version = "0.0.2", default-features = false }
+csx = { version = "0.0.3", default-features = false }
 hdf5rs = { version = "0.0.1", default-features = false, optional = true }
 
 [[bin]]

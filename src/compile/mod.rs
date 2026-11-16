@@ -556,15 +556,24 @@ impl NodeMap {
 
     /// Reorders a csx node array into engine layout.
     pub fn reorder<T: Copy + Default>(&self, csx: &[T]) -> Vec<T> {
+        self.reorder_with(csx, |v| *v)
+    }
+
+    /// [`reorder`](Self::reorder) of `part` of each entry.
+    pub(crate) fn reorder_with<T, U: Copy + Default>(
+        &self,
+        csx: &[T],
+        part: impl Fn(&T) -> U,
+    ) -> Vec<U> {
         let n = self.nodes;
-        let mut out = vec![T::default(); n[0] * n[1] * n[2]];
+        let mut out = vec![U::default(); n[0] * n[1] * n[2]];
         let mut e = 0;
         for i in 0..n[0] {
             for j in 0..n[1] {
                 let base = i + n[0] * j;
                 let stride = n[0] * n[1];
                 for (k, o) in out[e..e + n[2]].iter_mut().enumerate() {
-                    *o = csx[base + stride * k];
+                    *o = part(&csx[base + stride * k]);
                 }
                 e += n[2];
             }
@@ -2093,12 +2102,23 @@ pub fn compile(
             .with_threads(fdtd.resolved_threads())
             .with_snap_tolerance(opts.snap_tolerance),
     )?;
+    let discretize_opts = DiscretizeOptions::default()
+        .with_subsampling(opts.subsampling)
+        .with_threads(fdtd.resolved_threads())
+        .with_snap_tolerance(opts.snap_tolerance);
+    // A Cartesian model that is not an openEMS file: nothing below reads
+    // csx's material arrays before they go into the engine's layout, so
+    // they are taken one direction at a time there and the grid is made
+    // without them (96 of its 111 bytes per node, the peak of a compile
+    // step).
+    let by_direction = !fdtd.get_openems_run() && !grid.is_cylindrical();
     let mut mg: MaterialGrid = discretize(
         model,
-        &DiscretizeOptions::default()
-            .with_subsampling(opts.subsampling)
-            .with_threads(fdtd.resolved_threads())
-            .with_snap_tolerance(opts.snap_tolerance),
+        &if by_direction {
+            discretize_opts.clone().without_materials()
+        } else {
+            discretize_opts.clone()
+        },
     )?;
     oblique.renumber_warnings(&mut mg.warnings);
     cylavg::limit_metal(
@@ -2276,15 +2296,35 @@ pub fn compile(
             *csx = Vec::new();
             out
         };
-        let eps_r = moved(&mut mg.epsilon[a]);
-        let kappa = moved(&mut mg.kappa[a]);
-        let mu_r = moved(&mut mg.mue[a]);
-        let sigma_m = moved(&mut mg.sigma[a]);
         let pec: Vec<bool> = mg.pec[a]
             .iter()
             .zip(&sheet_pec[a])
             .map(|(&p, &s)| p || s)
             .collect();
+        if by_direction {
+            // (Each array is a table of its values before the next is
+            // made.)
+            let e = csx::discretize::edge_materials(model, &discretize_opts, a)?;
+            materials.set_edges(
+                axis,
+                node_map.reorder_with(&e, |v| v[0]),
+                node_map.reorder_with(&e, |v| v[1]),
+            );
+            drop(e);
+            let h = csx::discretize::face_materials(model, &discretize_opts, a)?;
+            materials.set_faces(
+                axis,
+                node_map.reorder_with(&h, |v| v[0]),
+                node_map.reorder_with(&h, |v| v[1]),
+            );
+            drop(h);
+            materials.set_pec(axis, node_map.reorder(&pec));
+            continue;
+        }
+        let eps_r = moved(&mut mg.epsilon[a]);
+        let kappa = moved(&mut mg.kappa[a]);
+        let mu_r = moved(&mut mg.mue[a]);
+        let sigma_m = moved(&mut mg.sigma[a]);
         materials.set_axis(axis, eps_r, kappa, mu_r, sigma_m, node_map.reorder(&pec));
     }
     let mut openems_seam_alpha0 = Vec::new();

@@ -227,6 +227,65 @@ fn dielectric_edges_match_cell_path() {
 /// Magnetic loss: csx averages sigma arithmetically over the two half
 /// cells, the per-cell path combines them as series R–L branches. Equal on
 /// homogeneous dual edges, different across an interface.
+/// The compile step takes csx's material arrays one direction at a time
+/// (a Cartesian model that is not an openEMS file): the engine's edge
+/// materials are csx's whole grid, value for value.
+#[test]
+fn materials_by_direction_are_the_whole_grid() {
+    let mut m = uniform_model([9, 7, 6], 1.0, 1e-3);
+    add_box(
+        &mut m,
+        Property::material("d", material(4.2, 0.02, 1.0, 0.0)),
+        [1.3, 0.0, 0.0],
+        [7.6, 7.0, 2.4],
+        1,
+    );
+    add_box(
+        &mut m,
+        Property::material("ferrite", material(2.0, 0.0, 3.5, 40.0)),
+        [3.0, 2.2, 1.0],
+        [6.0, 5.1, 4.5],
+        2,
+    );
+    add_box(
+        &mut m,
+        Property::metal("pec"),
+        [2.0, 1.0, 3.0],
+        [5.0, 4.0, 3.0],
+        3,
+    );
+    let opts = CompileOptions::default();
+    let c = compile(&m, &serial().threads(3), &opts).unwrap();
+    let whole = csx::discretize::discretize(
+        &m,
+        &csx::discretize::DiscretizeOptions::default()
+            .with_subsampling(opts.subsampling)
+            .with_snap_tolerance(opts.snap_tolerance),
+    )
+    .unwrap();
+    let n = c.grid.nodes();
+    let mut differ = 0;
+    for axis in Axis::ALL {
+        let a = axis.index();
+        let (eps, kappa) = (c.materials.eps_r(axis), c.materials.kappa(axis));
+        let (mu, sigma) = (c.materials.mu_r(axis), c.materials.sigma_m(axis));
+        for i in 0..n[0] {
+            for j in 0..n[1] {
+                for k in 0..n[2] {
+                    let (e, w) = (c.grid.index([i, j, k]), whole.index([i, j, k]));
+                    assert_eq!(eps[e].to_bits(), whole.epsilon[a][w].to_bits());
+                    assert_eq!(kappa[e].to_bits(), whole.kappa[a][w].to_bits());
+                    assert_eq!(mu[e].to_bits(), whole.mue[a][w].to_bits());
+                    assert_eq!(sigma[e].to_bits(), whole.sigma[a][w].to_bits());
+                    assert_eq!(c.materials.pec_mask(axis)[e], whole.pec[a][w]);
+                    differ += usize::from(eps[e] != 1.0) + usize::from(mu[e] != 1.0);
+                }
+            }
+        }
+    }
+    assert!(differ > 100 && whole.pec_count() > 0);
+}
+
 #[test]
 fn magnetic_loss_averaging_differs_at_interfaces() {
     let mut model = uniform_model([6, 4, 4], 1.0, 1e-3);
