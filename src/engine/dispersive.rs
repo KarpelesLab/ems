@@ -503,7 +503,9 @@ pub struct EdgePole {
 #[derive(Debug, Clone, Default)]
 pub struct EdgePoles {
     poles: Vec<Pole>,
-    refs: Vec<PoleRef>,
+    /// (Shared by the copies of a list until one of them changes: the
+    /// operator of every run of a compiled model starts from a copy.)
+    refs: Arc<Vec<PoleRef>>,
     /// Bit patterns of `poles` → index, while the list grows (rebuilt
     /// when needed).
     ids: std::collections::HashMap<[u64; 4], u32>,
@@ -601,7 +603,7 @@ impl EdgePoles {
             .node
             .map(|v| u32::try_from(v).expect("node index of a pole edge"));
         let field = u32::from(e.field == Field::Magnetic);
-        self.refs.push(PoleRef {
+        Arc::make_mut(&mut self.refs).push(PoleRef {
             node,
             tag: id | (e.axis.index() as u32) << POLE_ID_BITS | field << 31,
         });
@@ -634,7 +636,7 @@ impl EdgePoles {
     /// Keeps the entries for which `keep` is true (in order).
     pub fn retain(&mut self, mut keep: impl FnMut(&EdgePole) -> bool) {
         let poles = &self.poles;
-        self.refs.retain(|r| {
+        Arc::make_mut(&mut self.refs).retain(|r| {
             keep(&EdgePole {
                 field: r.field(),
                 axis: r.axis(),
@@ -648,7 +650,10 @@ impl EdgePoles {
     /// later [`push`](Self::push) rebuilds it).
     pub fn shrink_to_fit(&mut self) {
         self.poles.shrink_to_fit();
-        self.refs.shrink_to_fit();
+        // (A shared list is as it was made.)
+        if let Some(refs) = Arc::get_mut(&mut self.refs) {
+            refs.shrink_to_fit();
+        }
         self.ids = std::collections::HashMap::new();
     }
 }
@@ -834,8 +839,9 @@ struct Side {
     /// the same cell geometry share them).
     set: Vec<u32>,
     /// `2L/dt`, `1/C_p` and `1/z_p` of the poles of each distinct edge,
-    /// in a list each.
-    sets: [Vec<f64>; 3],
+    /// in a list each (a [Debye side](Self::debye): of the whole medium,
+    /// and no `2L/dt`, which is zero).
+    sets: Arc<[Vec<f64>; 3]>,
     /// Branch current `j^n` (magnetic: voltage) per pole.
     j: Vec<f64>,
     /// Branch charge `q^n` per pole.
@@ -860,6 +866,13 @@ struct Side {
     /// rule and none with openEMS's arithmetic ([`correct`](Self::correct)
     /// then runs without the general case's bookkeeping).
     trapezoidal: bool,
+    /// Whether every pole of the medium is a Debye pole integrated with
+    /// the trapezoidal rule ([`Dispersive::install_debye`]). Such a pole
+    /// has no inductance: its current is not part of its state (`2L/dt`
+    /// and `½·L` are zero), and the side holds the charge of each pole
+    /// and, per distinct edge, `1/C_p` and `1/z_p` alone: no `cidx`,
+    /// `consts`, `j` or `mixed`, and `coef` on magnetic sides only.
+    debye: bool,
 }
 
 /// The integration constants of one pole (see [`Branch`]).
@@ -889,7 +902,7 @@ impl Default for Side {
             cidx: Vec::new(),
             consts: Arc::from(Vec::new()),
             set: Vec::new(),
-            sets: Default::default(),
+            sets: Arc::default(),
             j: Vec::new(),
             q: Vec::new(),
             oe_coef: Vec::new(),
@@ -899,6 +912,7 @@ impl Default for Side {
             coef: Vec::new(),
             late: Vec::new(),
             trapezoidal: false,
+            debye: false,
         }
     }
 }
@@ -954,9 +968,10 @@ impl Side {
             cidx,
             consts,
             set,
-            sets,
+            sets: shared,
             ..
         } = self;
+        let mut sets: [Vec<f64>; 3] = Default::default();
         // (Looked up only: the order of the map does not matter.)
         let mut known: std::collections::HashMap<&[u32], u32> = std::collections::HashMap::new();
         let mut p0 = 0;
@@ -981,6 +996,7 @@ impl Side {
         }
         set.shrink_to_fit();
         sets.iter_mut().for_each(Vec::shrink_to_fit);
+        *shared = Arc::new(sets);
     }
 
     /// The edges in the x-planes `planes` (edges are in plane order).
@@ -1003,6 +1019,52 @@ impl Side {
     /// `edges`.
     fn correct(&mut self, f: &mut SlabMut<'_>, coef: [&[f32]; 3], dt: f64, edges: Range<usize>) {
         let p = f.nodes()[1] * f.nodes()[2];
+        if self.debye {
+            let Self {
+                axis,
+                plane: planes,
+                off,
+                prev,
+                sum_inv_z,
+                pole_end,
+                set,
+                sets,
+                q,
+                late,
+                ..
+            } = self;
+            let (kc, kz) = (&sets[1][..], &sets[2][..]);
+            let mut p0 = edges
+                .start
+                .checked_sub(1)
+                .map_or(0, |e| pole_end[e] as usize);
+            for e in edges {
+                let p1 = pole_end[e] as usize;
+                if late.get(e).copied().unwrap_or(false) {
+                    p0 = p1;
+                    continue;
+                }
+                let ax = axis[e] as usize;
+                let gi = planes[e] as usize;
+                let o = off[e] as usize;
+                let cb = coef[ax][gi * p + o] as f64;
+                let at = set[e] as usize;
+                let n = p1 - p0;
+                let plane = f.plane_mut(Axis::ALL[ax], gi);
+                plane[o] = debye_edge(
+                    &mut q[p0..p1],
+                    &kc[at..at + n],
+                    &kz[at..at + n],
+                    prev[e],
+                    plane[o],
+                    cb,
+                    sum_inv_z[e],
+                    dt,
+                );
+                p0 = p1;
+            }
+            return;
+        }
         if self.trapezoidal {
             // Every pole of the medium is a trapezoidal one (a Debye
             // laminate): the expressions of `step_edge` for such an edge,
@@ -1121,6 +1183,11 @@ impl Side {
             let off = self.off[e] as usize;
             let node = [self.plane[e] as usize, off / nz, off % nz];
             let cb = f64::from(ctx.coefficients.cb(axis)[ctx.grid.index(node)]);
+            if self.debye {
+                let u = self.step_debye(e, f.u.get(axis, node), cb, dt);
+                f.u.set(axis, node, u);
+                continue;
+            }
             let u = self.step_edge(e, f.u.get(axis, node), cb, dt, &mut next);
             f.u.set(axis, node, u);
             let p0 = self.pole_start(e);
@@ -1131,6 +1198,23 @@ impl Side {
     /// First pole of edge `e`.
     fn pole_start(&self, e: usize) -> usize {
         e.checked_sub(1).map_or(0, |e| self.pole_end[e] as usize)
+    }
+
+    /// The update of edge `e` of a [Debye side](Self::debye) from the
+    /// kernel result `u_in`, on the state.
+    fn step_debye(&mut self, e: usize, u_in: f32, cb: f64, dt: f64) -> f32 {
+        let (p0, p1) = (self.pole_start(e), self.pole_end[e] as usize);
+        let (at, n) = (self.set[e] as usize, p1 - p0);
+        debye_edge(
+            &mut self.q[p0..p1],
+            &self.sets[1][at..at + n],
+            &self.sets[2][at..at + n],
+            self.prev[e],
+            u_in,
+            cb,
+            self.sum_inv_z[e],
+            dt,
+        )
     }
 
     /// The update of edge `e` from the kernel result `u_in` (module docs,
@@ -1233,11 +1317,88 @@ impl Side {
     /// Adds `Σ ½·L·j² + ½·q²/C_p` to `w`, in pole order (one running
     /// sum over all slabs keeps the order independent of the partition).
     fn add_energy(&self, w: &mut f64) {
+        if self.debye {
+            // (`½·L·j²` is zero.)
+            let kc = &self.sets[1];
+            let mut p0 = 0;
+            for (&p1, &at) in self.pole_end.iter().zip(&self.set) {
+                for (q, c) in self.q[p0..p1 as usize].iter().zip(&kc[at as usize..]) {
+                    *w += 0.5 * c * q * q;
+                }
+                p0 = p1 as usize;
+            }
+            return;
+        }
         for q in 0..self.cidx.len() {
             let c = self.c(q);
             *w += c.half_l * self.j[q] * self.j[q] + 0.5 * c.inv_c * self.q[q] * self.q[q];
         }
     }
+}
+
+/// The implicit correction of one edge whose poles are all trapezoidal
+/// Debye poles: `q` their charges, `kc` and `kz` their `1/C_p` and
+/// `1/z_p`, `prev` the edge's `u^n`, `u_in` the kernel's `u^{n+1}`, `sum`
+/// the edge's `Σ 1/z_p`. Returns the corrected `u^{n+1}`.
+///
+/// These are the expressions of [`Side::step_edge`] for such poles with
+/// their `2L/dt = 0` taken out: `a·j − q/C + ½·u^n` is `½·u^n − q/C`
+/// (the same value; where it is zero its sign can differ, which the
+/// sum, starting from `+0`, and so the field do not see).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn debye_edge(
+    q: &mut [f64],
+    kc: &[f64],
+    kz: &[f64],
+    prev: f64,
+    u_in: f32,
+    cb: f64,
+    sum: f64,
+    dt: f64,
+) -> f32 {
+    let half_prev = 0.5 * prev;
+    let n = q.len();
+    let (kc, kz) = (&kc[..n], &kz[..n]);
+    if n <= HELD {
+        // `½·u^n − q/C` of each pole kept for its update: the loops over
+        // the poles have nothing between their elements but the sum.
+        let mut t = [0.0; HELD];
+        let t = &mut t[..n];
+        for k in 0..n {
+            t[k] = half_prev - q[k] * kc[k];
+        }
+        let mut s = 0.0;
+        for k in 0..n {
+            s += t[k] * kz[k];
+        }
+        let u_new = ((u_in as f64 - cb * s) / (1.0 + 0.5 * cb * sum)) as f32;
+        let half_new = 0.5 * u_new as f64;
+        for k in 0..n {
+            q[k] += dt * ((t[k] + half_new) * kz[k]);
+        }
+        u_new
+    } else {
+        let mut s = 0.0;
+        for k in 0..n {
+            s += (half_prev - q[k] * kc[k]) * kz[k];
+        }
+        let u_new = ((u_in as f64 - cb * s) / (1.0 + 0.5 * cb * sum)) as f32;
+        let half_new = 0.5 * u_new as f64;
+        for k in 0..n {
+            q[k] += dt * ((half_prev - q[k] * kc[k] + half_new) * kz[k]);
+        }
+        u_new
+    }
+}
+
+/// A medium of trapezoidal Debye poles alone, built by
+/// [`Dispersive::install_debye`]: its two sides over the whole grid,
+/// which [`Dispersive::slab_hooks`] cuts into the slabs.
+#[derive(Debug, Clone, Default)]
+struct DebyeBuilt {
+    e: Side,
+    h: Side,
 }
 
 /// State of one slab.
@@ -1421,6 +1582,13 @@ pub struct Dispersive {
     built: Vec<EdgeBranches>,
     branch_ids: Vec<u32>,
     branches: Vec<Branch>,
+    /// Built at installation in the place of `built` for a medium of
+    /// Debye poles alone.
+    debye: Option<Box<DebyeBuilt>>,
+    /// Such a medium in the general layout (tests: the reference of its
+    /// own).
+    #[cfg(test)]
+    general_layout: bool,
     nodes: [usize; 3],
     dt: f64,
     skipped: usize,
@@ -1659,7 +1827,10 @@ impl Dispersive {
                     st.e.edges() + st.h.edges()
                 })
                 .sum(),
-            None => self.built.len(),
+            None => match &self.debye {
+                Some(d) => d.e.edges() + d.h.edges(),
+                None => self.built.len(),
+            },
         }
     }
 
@@ -1698,7 +1869,7 @@ impl Dispersive {
         for p in &self.entries.poles {
             p.validate()?;
         }
-        for r in &self.entries.refs {
+        for r in self.entries.refs.iter() {
             in_grid(r.field(), r.axis(), r.node())?;
         }
         for e in &self.openems {
@@ -1709,6 +1880,21 @@ impl Dispersive {
                 )));
             }
             in_grid(e.field, e.axis, e.node)?;
+        }
+        #[cfg(test)]
+        let general = self.general_layout;
+        #[cfg(not(test))]
+        let general = false;
+        if !general
+            && self.openems.is_empty()
+            && !self.openems_debye
+            && self
+                .entries
+                .poles
+                .iter()
+                .all(|p| matches!(p, Pole::Debye { .. }))
+        {
+            return self.install_debye(engine);
         }
         // The entries in edge order, openEMS poles first on their edge
         // (a stable sort keeps the insertion order of each kind): as
@@ -1908,6 +2094,153 @@ impl Dispersive {
         Ok(())
     }
 
+    /// [`install`](Self::install) for a medium whose poles are all Debye
+    /// poles on the trapezoidal rule (a laminate; `entries` validated):
+    /// the two sides in their final layout ([`Side::debye`]), with the
+    /// constants of an edge's poles once per distinct edge (its poles
+    /// and its geometry). The values are those of the general path: the
+    /// same expressions on the same inputs, in the same order.
+    fn install_debye(&mut self, engine: &Engine) -> Result<()> {
+        let grid = engine.grid();
+        let dt = engine.dt();
+        self.requested = self.len();
+        let entries = std::mem::take(&mut self.entries);
+        u32::try_from(entries.len())
+            .map_err(|_| Error::Invalid("dispersive medium: more than 2³² poles".into()))?;
+        let key = |r: &PoleRef| {
+            let node = r.node();
+            (node[0], r.field(), r.axis().index(), node[1], node[2])
+        };
+        // In edge order (a stable sort keeps the insertion order of an
+        // edge's poles); nothing to sort for a list that is in it.
+        let sorted = entries.refs.windows(2).all(|w| key(&w[0]) <= key(&w[1]));
+        let order: Vec<u32> = if sorted {
+            Vec::new()
+        } else {
+            let mut order: Vec<u32> = (0..entries.len() as u32).collect();
+            order.sort_by_key(|&i| key(&entries.refs[i as usize]));
+            order
+        };
+        let at = |i: usize| -> &PoleRef {
+            if sorted {
+                &entries.refs[i]
+            } else {
+                &entries.refs[order[i] as usize]
+            }
+        };
+        let co = engine.coefficients();
+        let mut built = DebyeBuilt::default();
+        let mut sets: [Vec<f64>; 3] = Default::default();
+        // The distinct sequences of poles, and the distinct edges: a
+        // sequence on a geometry, with where its constants start and
+        // their `Σ 1/z`. (Looked up only: the order of the maps does not
+        // matter.)
+        let mut sequences: std::collections::HashMap<Vec<u32>, u32> =
+            std::collections::HashMap::new();
+        let mut known: std::collections::HashMap<(u32, u64, bool), (u32, f64)> =
+            std::collections::HashMap::new();
+        let mut ids: Vec<u32> = Vec::new();
+        let mut skipped = 0;
+        let (mut i, total) = (0, entries.len());
+        while i < total {
+            let r = at(i);
+            let k = key(r);
+            ids.clear();
+            while i < total && key(at(i)) == k {
+                ids.push(at(i).pole() as u32);
+                i += 1;
+            }
+            let (field, axis, node) = (k.1, Axis::ALL[k.2], [k.0, k.3, k.4]);
+            let idx = grid.index(node);
+            let (ab, ac) = axis.others();
+            // `m = X0·g`, as in `install`.
+            let (coef, x0, geo) = match field {
+                Field::Electric if grid.is_cylindrical() => (
+                    co.cb(axis)[idx],
+                    EPS0,
+                    grid.dual_face_area(axis, node) / grid.edge_length(axis, node),
+                ),
+                Field::Electric => (
+                    co.cb(axis)[idx],
+                    EPS0,
+                    grid.dual_delta(ab, node[ab.index()]) * grid.dual_delta(ac, node[ac.index()])
+                        / grid.delta(axis, node[axis.index()]),
+                ),
+                Field::Magnetic if grid.is_cylindrical() => (
+                    co.db(axis)[idx],
+                    MU0,
+                    grid.face_area(axis, node) / grid.dual_edge_length(axis, node),
+                ),
+                Field::Magnetic => (
+                    co.db(axis)[idx],
+                    MU0,
+                    grid.delta(ab, node[ab.index()]) * grid.delta(ac, node[ac.index()])
+                        / grid.dual_delta(axis, node[axis.index()]),
+                ),
+            };
+            if coef == 0.0 {
+                skipped += 1;
+                continue;
+            }
+            let m = x0 * geo;
+            let electric = field == Field::Electric;
+            let next = sequences.len() as u32;
+            let sequence = match sequences.get(ids.as_slice()) {
+                Some(&s) => s,
+                None => {
+                    sequences.insert(ids.clone(), next);
+                    next
+                }
+            };
+            let (start, sum) = *known
+                .entry((sequence, geo.to_bits(), electric))
+                .or_insert_with(|| {
+                    let start = sets[1].len() as u32;
+                    let mut sum = 0.0;
+                    for &id in &ids {
+                        let (_, inv_c, z) = entries.poles[id as usize].branch(m, dt);
+                        let inv_z = 1.0 / z;
+                        sets[1].push(inv_c);
+                        sets[2].push(inv_z);
+                        sum += inv_z;
+                    }
+                    (start, sum)
+                });
+            let side = if electric { &mut built.e } else { &mut built.h };
+            side.axis.push(axis.index() as u8);
+            side.plane.push(node[0] as u32);
+            side.off.push((node[1] * grid.nodes()[2] + node[2]) as u32);
+            side.sum_inv_z.push(sum);
+            side.set.push(start);
+            if !electric {
+                // (Look-ahead of the magnetic poles only.)
+                side.coef.push(f64::from(coef));
+            }
+            side.pole_end
+                .push(side.pole_end.last().copied().unwrap_or(0) + ids.len() as u32);
+        }
+        drop(co);
+        drop(order);
+        drop(known);
+        drop(sequences);
+        drop(entries);
+        sets.iter_mut().for_each(Vec::shrink_to_fit);
+        let sets = Arc::new(sets);
+        for side in [&mut built.e, &mut built.h] {
+            side.shrink_to_fit();
+            side.set.shrink_to_fit();
+            side.sets = Arc::clone(&sets);
+            side.trapezoidal = true;
+            side.debye = true;
+        }
+        self.debye = Some(Box::new(built));
+        self.skipped = skipped;
+        self.nodes = grid.nodes();
+        self.dt = dt;
+        self.installed = true;
+        Ok(())
+    }
+
     /// Validates the poles and edges, computes the branch parameters for
     /// `engine` and registers the operator (no coefficient changes).
     ///
@@ -2062,6 +2395,54 @@ impl Operator for Dispersive {
             "dispersive medium built for another grid"
         );
         assert_eq!(part.dt(), self.dt, "dispersive medium built for another dt");
+        if let Some(built) = self.debye.take() {
+            // The sides cut at the slabs' planes; the state starts here.
+            let DebyeBuilt { e, h } = *built;
+            let cut = |side: Side| -> Vec<Side> {
+                if part.slabs() == 1 {
+                    let (edges, poles) = (side.edges(), side.pole_end.last().map_or(0, |&p| p));
+                    return vec![Side {
+                        prev: vec![0.0; edges],
+                        q: vec![0.0; poles as usize],
+                        ..side
+                    }];
+                }
+                (0..part.slabs())
+                    .map(|s| {
+                        let r = side.edges_in(&part.planes(s));
+                        let p0 = side.pole_start(r.start) as u32;
+                        let p1 = r.end.checked_sub(1).map_or(0, |e| side.pole_end[e]).max(p0);
+                        Side {
+                            axis: side.axis[r.clone()].to_vec(),
+                            plane: side.plane[r.clone()].to_vec(),
+                            off: side.off[r.clone()].to_vec(),
+                            prev: vec![0.0; r.len()],
+                            sum_inv_z: side.sum_inv_z[r.clone()].to_vec(),
+                            pole_end: side.pole_end[r.clone()].iter().map(|&p| p - p0).collect(),
+                            set: side.set[r.clone()].to_vec(),
+                            sets: Arc::clone(&side.sets),
+                            q: vec![0.0; (p1 - p0) as usize],
+                            coef: if side.coef.is_empty() {
+                                Vec::new()
+                            } else {
+                                side.coef[r].to_vec()
+                            },
+                            trapezoidal: true,
+                            debye: true,
+                            ..Side::default()
+                        }
+                    })
+                    .collect()
+            };
+            let slabs = cut(e)
+                .into_iter()
+                .zip(cut(h))
+                .map(|(e, h)| Mutex::new(SlabState { e, h }))
+                .collect();
+            let parts = Arc::new(Parts { dt: self.dt, slabs });
+            self.parts = Some(parts.clone());
+            return Some(parts);
+        }
         let nz = self.nodes[2];
         let built = std::mem::take(&mut self.built);
         let branch_ids = std::mem::take(&mut self.branch_ids);
@@ -2200,6 +2581,23 @@ impl Operator for Dispersive {
         (0..p.slabs.len()).find_map(|s| {
             let st = p.slab(s);
             let e = st.h.find(axis, node[0], off)?;
+            if st.h.debye {
+                // (On a copy of the edge's charges: the state stays.)
+                let h = &st.h;
+                let (p0, p1) = (h.pole_start(e), h.pole_end[e] as usize);
+                let (at, n) = (h.set[e] as usize, p1 - p0);
+                let mut q = h.q[p0..p1].to_vec();
+                return Some(debye_edge(
+                    &mut q,
+                    &h.sets[1][at..at + n],
+                    &h.sets[2][at..at + n],
+                    h.prev[e],
+                    kernel,
+                    h.coef[e],
+                    h.sum_inv_z[e],
+                    p.dt,
+                ));
+            }
             let mut next = Vec::new();
             Some(st.h.step_edge(e, kernel, st.h.coef[e], p.dt, &mut next))
         })
@@ -2209,6 +2607,72 @@ impl Operator for Dispersive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A medium of Debye poles alone in its own layout ([`Side::debye`])
+    /// and in the general one: the same fields, energies and look-ahead
+    /// current, bit for bit, on one thread and on three; electric and
+    /// magnetic poles on a graded mesh, edges with more than [`HELD`]
+    /// poles among them.
+    #[test]
+    fn debye_layout_is_the_general_one() {
+        use crate::engine::{CellMaterials, Material, Probe};
+        let run = |threads: usize, general: bool| {
+            let lines = |n: usize, s: f64| -> Vec<f64> {
+                let mut x = 0.0;
+                (0..=n)
+                    .map(|i| {
+                        let v = x;
+                        x += 1e-3 * (1.0 + s * (i % 5) as f64);
+                        v
+                    })
+                    .collect()
+            };
+            let g = Grid::new([lines(14, 0.11), lines(10, 0.07), lines(9, 0.13)]).unwrap();
+            let mut m = CellMaterials::new(&g, Material::VACUUM);
+            m.fill_box([2..12, 2..8, 2..7], Material::dielectric(2.5));
+            let mut e = Engine::builder(g.clone())
+                .materials(m)
+                .threads(threads)
+                .build()
+                .unwrap();
+            let poles: Vec<Pole> = (0..HELD as i32 + 4)
+                .map(|k| Pole::debye(0.05 + 0.01 * f64::from(k), 3e-12 * 1.5f64.powi(k)))
+                .collect();
+            let mut d = Dispersive::new();
+            d.general_layout = general;
+            d.fill_cells(&g, [2..12, 2..8, 2..7], Field::Electric, &poles[..6])
+                .unwrap();
+            d.fill_cells(&g, [4..8, 3..6, 3..5], Field::Electric, &poles)
+                .unwrap();
+            d.fill_cells(&g, [3..10, 3..7, 2..6], Field::Magnetic, &poles[..3])
+                .unwrap();
+            let h = d.add_to(&mut e).unwrap();
+            let probe = e.add_operator(Probe::current(Axis::X, [6, 4, 4]));
+            {
+                let mut f = e.fields_mut();
+                f.u.set(Axis::Z, [6, 4, 3], 1.0);
+                f.u.set(Axis::Y, [5, 4, 4], -0.5);
+            }
+            e.run(120);
+            let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+            let op = e.operator(&h);
+            (
+                Axis::ALL.map(|a| (bits(e.u_component(a)), bits(e.i_component(a)))),
+                [op.electric_energy(), op.magnetic_energy(), e.energy()].map(f64::to_bits),
+                e.operator(&probe).lookahead(&e).map(|s| s.1.to_bits()),
+                (op.edges(), op.skipped(), op.len()),
+            )
+        };
+        let reference = run(1, true);
+        assert!(reference.1[0] != 0 && reference.1[1] != 0 && reference.2.is_some());
+        assert!(reference.0.iter().all(|c| c.0.iter().any(|&b| b << 1 != 0)));
+        for (threads, general) in [(1, false), (3, false), (3, true)] {
+            assert!(
+                run(threads, general) == reference,
+                "{threads} threads, general {general}"
+            );
+        }
+    }
 
     #[test]
     fn susceptibility_forms() {
