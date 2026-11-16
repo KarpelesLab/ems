@@ -186,6 +186,68 @@ fn every_excitation_is_with_options() {
     assert!(fresh == run(compiled.into_simulation().unwrap()));
 }
 
+/// A run that gives the simulation up for its results
+/// ([`Simulation::run_into_results`]) leaves the series and the outcome of
+/// a run that copies them, and so does [`Simulation::results`] afterwards.
+#[test]
+fn a_run_into_its_results() {
+    let opts = CompileOptions::default();
+    let compiled = CompiledModel::new(&board(true, &[1, 2]), &fdtd(), &opts).unwrap();
+    let series = |res: &Results| -> Vec<(String, Vec<u64>, Vec<u64>)> {
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        SERIES
+            .iter()
+            .map(|&name| {
+                let p = res
+                    .probe(name)
+                    .or_else(|| res.lumped_current(name))
+                    .unwrap();
+                (name.to_string(), bits(p.times()), bits(p.scalar().unwrap()))
+            })
+            .collect()
+    };
+    let mut sim = compiled.simulation().unwrap();
+    let copied = sim.run().unwrap();
+    assert!(series(&copied) == series(&sim.results()));
+    let moved = compiled
+        .simulation()
+        .unwrap()
+        .run_into_results(|_| core::ops::ControlFlow::Continue(()))
+        .unwrap();
+    assert!(series(&copied) == series(&moved));
+    let outcome = |r: &Results| {
+        let o = r.outcome().unwrap();
+        (
+            o.reason,
+            o.steps,
+            o.energy.to_bits(),
+            o.max_energy.to_bits(),
+        )
+    };
+    assert_eq!(outcome(&copied), outcome(&moved));
+    assert_eq!(copied.probes(), moved.probes());
+    // The times are those of the steps: `(n + 1)·dt` for a voltage,
+    // `(n + ½)·dt` for a current.
+    let dt = sim.engine().dt();
+    let (ut, it) = (
+        moved.probe("port_ut1").unwrap(),
+        moved.probe("port_it1").unwrap(),
+    );
+    assert_eq!(ut.times().len(), ut.scalar().unwrap().len());
+    assert!(
+        ut.times()
+            .iter()
+            .enumerate()
+            .all(|(n, &t)| t == (n as f64 + 1.0) * dt)
+    );
+    assert!(
+        it.times()
+            .iter()
+            .enumerate()
+            .all(|(n, &t)| t == (n as f64 + 0.5) * dt)
+    );
+}
+
 #[test]
 fn undriven_and_unknown_excitations() {
     let opts = CompileOptions::default();

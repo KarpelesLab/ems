@@ -1054,6 +1054,12 @@ impl LumpedElement {
         (n0 as f64 + 0.5) * s.dt
     }
 
+    /// [`current_times`](Self::current_times) as their rule.
+    pub(crate) fn current_sample_times(&self) -> super::probe::SampleTimes {
+        let dt = self.state.as_ref().map_or(0.0, |s| s.dt);
+        super::probe::SampleTimes::linear(self.current_t0(), dt, self.current().len())
+    }
+
     /// Sample times of [`current`](Self::current) \[s\].
     pub fn current_times(&self) -> Vec<f64> {
         let t0 = self.current_t0();

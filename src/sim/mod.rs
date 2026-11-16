@@ -1068,9 +1068,51 @@ impl Simulation {
         }
     }
 
+    /// Runs like [`run_with`](Self::run_with) and gives the simulation up
+    /// for its results: the series of the voltage and current probes are
+    /// moved out of the engine, where `run_with` copies them and leaves
+    /// the caller with both until it drops the simulation (a run of
+    /// 50 000 steps with 30 probes: 12 MB each). The results are those of
+    /// `run_with`.
+    ///
+    /// # Errors
+    /// See [`Engine::run_until_with`].
+    pub fn run_into_results<F>(mut self, progress: F) -> Result<Results>
+    where
+        F: FnMut(&Progress) -> core::ops::ControlFlow<()>,
+    {
+        let limits = self.run_limits();
+        self.clear_final_probe_samples();
+        let outcome = self.run_engines(&limits, progress)?;
+        self.finish_dumps();
+        self.finish_probes();
+        // (Not of a Bloch pair, whose second engine `results` reads.)
+        let taken: Vec<Option<Vec<f64>>> = self
+            .mapped
+            .probes
+            .iter()
+            .map(|p| match p.op {
+                ProbeOp::Scalar(h) if self.bloch.is_none() => {
+                    Some(self.engine.operator_mut(&h).take_values())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut r = self.results_with(taken);
+        r.outcome = Some(outcome);
+        Ok(r)
+    }
+
     /// A copy of everything recorded so far by the model's probes and
     /// dumps (no run outcome).
     pub fn results(&self) -> Results {
+        self.results_with(Vec::new())
+    }
+
+    /// [`results`](Self::results), with the values of the probes that
+    /// `taken` has (by index) from there and not from the engine, where
+    /// they are no more.
+    fn results_with(&self, mut taken: Vec<Option<Vec<f64>>>) -> Results {
         let dt = self.engine.dt();
         let imag = self.bloch.as_deref().map(|b| (&b.imag, &b.mapped));
         let probes = self
@@ -1079,7 +1121,13 @@ impl Simulation {
             .iter()
             .enumerate()
             .map(|(q, p)| {
-                let (times, values) = probe_series(&self.engine, p);
+                let (times, values) = match (taken.get_mut(q).and_then(Option::take), p.op) {
+                    (Some(v), ProbeOp::Scalar(h)) => (
+                        self.engine.operator(&h).sample_times().clone(),
+                        results::ProbeValues::Scalar(v),
+                    ),
+                    _ => probe_series(&self.engine, p),
+                };
                 // Recording window (stop ≤ 0: no limit), with a small
                 // tolerance against rounding of the sample times. openEMS
                 // keeps one more sample at each end on the E side
@@ -1089,16 +1137,23 @@ impl Simulation {
                 let eps = 1e-9 * dt;
                 let magnetic = matches!(p.kind, ProbeKind::Current | ProbeKind::HField);
                 let lo_margin = if magnetic { 0.0 } else { dt };
-                let lo = times.partition_point(|&t| t < p.start_time - lo_margin - eps);
+                let lo = times.partition_point(|t| t < p.start_time - lo_margin - eps);
                 let hi = if p.stop_time > 0.0 {
-                    times.partition_point(|&t| t <= p.stop_time + dt + eps)
+                    times.partition_point(|t| t <= p.stop_time + dt + eps)
                 } else {
                     times.len()
                 }
                 .max(lo);
+                // (The whole recording, as a rule: no second copy.)
                 let window = |v: results::ProbeValues| match v {
+                    results::ProbeValues::Scalar(v) if lo == 0 && hi == v.len() => {
+                        results::ProbeValues::Scalar(v)
+                    }
                     results::ProbeValues::Scalar(v) => {
                         results::ProbeValues::Scalar(v[lo..hi].to_vec())
+                    }
+                    results::ProbeValues::Vector(v) if lo == 0 && hi == v.len() => {
+                        results::ProbeValues::Vector(v)
                     }
                     results::ProbeValues::Vector(v) => {
                         results::ProbeValues::Vector(v[lo..hi].to_vec())
@@ -1126,7 +1181,7 @@ impl Simulation {
                     kind: p.kind,
                     frequencies: p.frequencies.clone(),
                     dt,
-                    times: times[lo..hi].to_vec(),
+                    times: times.window(lo..hi),
                     values: window(values),
                     imag,
                     location: p.location,
@@ -1154,7 +1209,7 @@ impl Simulation {
                     kind: ProbeKind::Current,
                     frequencies: Vec::new(),
                     dt,
-                    times: op.current_times(),
+                    times: op.current_sample_times(),
                     values: results::ProbeValues::Scalar(op.current().to_vec()),
                     imag,
                     location: None,
@@ -1278,12 +1333,15 @@ impl Simulation {
 }
 
 /// Sample times and values of a mapped probe on `engine`.
-fn probe_series(engine: &Engine, p: &map::ProbeEntry) -> (Vec<f64>, results::ProbeValues) {
+fn probe_series(
+    engine: &Engine,
+    p: &map::ProbeEntry,
+) -> (crate::engine::SampleTimes, results::ProbeValues) {
     match p.op {
         ProbeOp::Scalar(h) => {
             let op = engine.operator(&h);
             (
-                op.times().to_vec(),
+                op.sample_times().clone(),
                 results::ProbeValues::Scalar(op.values().to_vec()),
             )
         }
@@ -1293,7 +1351,10 @@ fn probe_series(engine: &Engine, p: &map::ProbeEntry) -> (Vec<f64>, results::Pro
             let v = (0..ops[0].values().len())
                 .map(|i| ops.map(|o| o.values()[i]))
                 .collect();
-            (ops[0].times().to_vec(), results::ProbeValues::Vector(v))
+            (
+                crate::engine::SampleTimes::listed(ops[0].times().to_vec()),
+                results::ProbeValues::Vector(v),
+            )
         }
     }
 }

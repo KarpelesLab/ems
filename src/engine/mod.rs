@@ -202,6 +202,7 @@ pub use oblique_wire::{ObliqueWire, ObliqueWires};
 pub use operator::{Hooks, Operator, OperatorHandle, StepContext};
 pub use planewave::{LayerEnd, PlaneWave, PlaneWaveSpec};
 pub use port::LumpedPort;
+pub(crate) use probe::SampleTimes;
 pub use probe::{FieldProbe, ModeSample, Probe, ProbeQuantity};
 pub use run::{EnergyMeasure, Progress, RunLimits, RunOutcome, StopReason};
 pub use sheet::{ConductingSheet, SheetEdge};

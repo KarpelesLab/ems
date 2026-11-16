@@ -79,7 +79,7 @@ pub struct ProbeResult {
     pub(crate) kind: ProbeKind,
     pub(crate) frequencies: Vec<f64>,
     pub(crate) dt: f64,
-    pub(crate) times: Vec<f64>,
+    pub(crate) times: crate::engine::SampleTimes,
     pub(crate) values: ProbeValues,
     pub(crate) imag: Option<ProbeValues>,
     pub(crate) location: Option<ProbeLocation>,
@@ -157,7 +157,7 @@ impl ProbeResult {
 
     /// Sample times \[s\] (uniform, `dt` apart).
     pub fn times(&self) -> &[f64] {
-        &self.times
+        self.times.as_slice()
     }
 
     /// The recorded values.
@@ -188,7 +188,7 @@ impl ProbeResult {
     }
 
     fn t0(&self) -> f64 {
-        self.times.first().copied().unwrap_or(0.0)
+        self.times.first().unwrap_or(0.0)
     }
 
     /// `re + j·im` of two spectra.
