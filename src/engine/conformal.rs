@@ -754,12 +754,20 @@ impl ConformalPec {
                 report.sheet_hosts = b.report.hosts;
             }
             let last = round + 1 == rounds || tau >= 1.0;
+            // The scaled edges are part of the round's coefficients.
+            let scale: Vec<(u8, u32, f32)> = self
+                .edges
+                .iter()
+                .map(|e| {
+                    let k = index(n, e.node);
+                    (CB + e.axis.index() as u8, k as u32, co.cb(e.axis)[k])
+                })
+                .collect();
             drop(co);
             // The round's coefficients go into the engine's arrays (they
             // differ at the cut cells only); a rejected round takes them
             // out again.
-            let changes = changed(&coeffs, &engine.coefficients());
-            drop(coeffs);
+            let changes = changed(coeffs, &scale, &engine.coefficients());
             let undo = exchange(&mut engine.coefficients_mut(), &changes);
             drop(changes);
             if self.options.iterations > 0 {
@@ -870,10 +878,11 @@ impl ConformalPec {
         tau: f64,
         owned: &HashSet<Key>,
         kept: &HashSet<Key>,
-    ) -> (Coefficients, MergedFaces, ConformalReport) {
+    ) -> (Patch, MergedFaces, ConformalReport) {
         let n = grid.nodes();
         let idx = |p: [usize; 3]| index(n, p);
-        let mut out = co.clone();
+        // (What the round changes in `co`: a few values at the cut cells.)
+        let mut out = Patch::new();
         let mut report = ConformalReport {
             edges: self.edges.len(),
             faces: 0,
@@ -1124,11 +1133,9 @@ impl ConformalPec {
         let mut grouped: HashSet<Key> = HashSet::new();
         let mut groups = Vec::new();
         let mut driven: Vec<Driven> = Vec::new();
-        let mut freeze = |out: &mut Coefficients, k: Key| {
-            let a = Axis::from_index(k.0).expect("axis in 0..3");
-            let (da_m, db_m) = out.h_mut(a);
-            da_m[k.1] = 1.0;
-            db_m[k.1] = 0.0;
+        let mut freeze = |out: &mut Patch, k: Key| {
+            out.insert((DA + k.0 as u8, k.1 as u32), 1.0);
+            out.insert((DB + k.0 as u8, k.1 as u32), 0.0);
             grouped.insert(k);
         };
         // With deviation currents a merge group's small members keep a
@@ -1381,8 +1388,10 @@ impl ConformalPec {
                 }
             }
             if fa < 1.0 {
-                let (_, db) = out.h_mut(f.axis);
-                db[k] = (db[k] as f64 / fa) as f32;
+                let db = out
+                    .entry((DB + f.axis.index() as u8, k as u32))
+                    .or_insert(co.db(f.axis)[k]);
+                *db = (*db as f64 / fa) as f32;
             }
             report.faces += 1;
         }
@@ -2385,19 +2394,31 @@ impl Operator for MergedFaces {
     }
 }
 
-/// The values of `new` that differ from `old` (bit patterns): array,
-/// index, value.
-fn changed(new: &Coefficients, old: &Coefficients) -> Vec<(u8, u32, f32)> {
-    let mut out = Vec::new();
-    for (lane, (a, b)) in new.data.iter().zip(&old.data).enumerate() {
-        for (k, (x, y)) in a.iter().zip(b).enumerate() {
-            if x.to_bits() != y.to_bits() {
-                out.push((lane as u8, k as u32, *x));
-            }
-        }
+/// The values of a round's coefficients that differ from `old` (bit
+/// patterns), as array, index and value in that order: the round's are
+/// `old` with the edge scaling `scale` and then `patch`.
+fn changed(mut patch: Patch, scale: &[(u8, u32, f32)], old: &Coefficients) -> Vec<(u8, u32, f32)> {
+    for &(lane, k, v) in scale {
+        patch.entry((lane, k)).or_insert(v);
     }
+    let mut out: Vec<(u8, u32, f32)> = patch
+        .into_iter()
+        .filter(|&((lane, k), v)| old.data[lane as usize][k as usize].to_bits() != v.to_bits())
+        .map(|((lane, k), v)| (lane, k, v))
+        .collect();
+    out.sort_unstable_by_key(|&(lane, k, _)| (lane, k));
     out
 }
+
+/// The values a round of [`ConformalPec::apply`] gives the coefficients
+/// it starts from, by array (`ca` 0–2, `cb` 3–5, `da` 6–8, `db` 9–11)
+/// and index: the cut cells', a list where the whole set is twelve
+/// arrays over the grid.
+pub(super) type Patch = HashMap<(u8, u32), f32>;
+/// The first of the `cb`, `da` and `db` arrays of a [`Patch`].
+const CB: u8 = 3;
+const DA: u8 = 6;
+const DB: u8 = 9;
 
 /// Writes `changes` into `co` and returns the values they replaced.
 fn exchange(co: &mut Coefficients, changes: &[(u8, u32, f32)]) -> Vec<(u8, u32, f32)> {
@@ -2538,12 +2559,11 @@ fn stability(
     seeds: &[(usize, usize)],
     iterations: usize,
 ) -> f64 {
-    let len = n[0] * n[1] * n[2];
-    let sq: [Vec<f64>; 4] = core::array::from_fn(|a| {
+    let sq: [Roots; 4] = core::array::from_fn(|a| {
         if a < 3 {
-            co.data[3 + a].iter().map(|&c| (c as f64).sqrt()).collect()
+            Roots::of(&co.data[3 + a])
         } else {
-            extra.to_vec()
+            Roots::Each(extra.to_vec())
         }
     });
     let db: [&[f32]; 3] = core::array::from_fn(|a| &co.data[9 + a][..]);
@@ -2556,7 +2576,7 @@ fn stability(
                 state ^= state >> 7;
                 state ^= state << 17;
                 let r = (state >> 11) as f64 / (1u64 << 53) as f64;
-                if sq[a][k] > 0.0 {
+                if sq[a].get(k) > 0.0 {
                     1e-3 * (r - 0.5)
                 } else {
                     0.0
@@ -2565,11 +2585,10 @@ fn stability(
             .collect()
     });
     for &(a, k) in seeds {
-        if sq[a][k] > 0.0 {
+        if sq[a].get(k) > 0.0 {
             v[a][k] += 1.0;
         }
     }
-    let mut h: Vec<f64> = vec![0.0; len];
     let mut w: [Vec<f64>; 4] = core::array::from_fn(|a| vec![0.0; sq[a].len()]);
     let mut lambda = 0.0;
     for _ in 0..iterations.max(1) {
@@ -2580,7 +2599,7 @@ fn stability(
         for x in v.iter_mut().flatten() {
             *x /= norm;
         }
-        apply_s(n, &sq, &db, (gterms, bterms), &v, &mut h, &mut w);
+        apply_s(n, &sq, &db, (gterms, bterms), &v, &mut w);
         lambda = v
             .iter()
             .flatten()
@@ -2595,20 +2614,21 @@ fn stability(
 /// `w = S·v` with `S = √cb·(PK)ᵀ·(dt/L)·(PK)·√cb`, using the kernel's curl
 /// convention (face `a` at `p`: `u_c(p+e_b) − u_c(p) − u_b(p+e_c) + u_b(p)`
 /// with `(b, c) = a.others()`); merged faces have `db = 0` and are covered
-/// by `groups` (`(dt/L_g, terms)`); `h` is scratch (one array: the faces
-/// of one normal at a time). `√cb·v` is formed where it is read, not held
-/// as arrays of its own (this runs on the whole grid next to the engine).
+/// by `groups` (`(dt/L_g, terms)`). `√cb·v` is formed where it is read
+/// and a face's value goes to its four edges as it is formed, neither
+/// held as arrays of their own (this runs on the whole grid next to the
+/// engine; the faces of a normal are taken in the order of their index,
+/// so every sum has its terms in the order it had with such arrays).
 fn apply_s(
     n: [usize; 3],
-    sq: &[Vec<f64>; 4],
+    sq: &[Roots; 4],
     db: &[&[f32]; 3],
     (groups, blocks): (&[GroupTerms], &[BlockTerms<'_>]),
     v: &[Vec<f64>; 4],
-    h: &mut [f64],
     w: &mut [Vec<f64>; 4],
 ) {
     let stride = [n[1] * n[2], n[2], 1];
-    let x = |a: usize, k: usize| v[a][k] * sq[a][k];
+    let x = |a: usize, k: usize| v[a][k] * sq[a].get(k);
     for wa in w.iter_mut() {
         wa.fill(0.0);
     }
@@ -2616,7 +2636,6 @@ fn apply_s(
         let a = axis.index();
         let (bb, cc) = axis.others();
         let (b, c) = (bb.index(), cc.index());
-        let ha = &mut *h;
         for i in 0..n[0] {
             for j in 0..n[1] {
                 for k in 0..n[2] {
@@ -2624,24 +2643,20 @@ fn apply_s(
                     let q = (i * n[1] + j) * n[2] + k;
                     let d = db[a][q] as f64;
                     if d == 0.0 || p[b] + 1 >= n[b] || p[c] + 1 >= n[c] {
-                        ha[q] = 0.0;
                         continue;
                     }
                     let curl = x(c, q + stride[b]) - x(c, q) - x(b, q + stride[c]) + x(b, q);
-                    ha[q] = d * curl;
+                    let f = d * curl;
+                    if f == 0.0 {
+                        continue;
+                    }
+                    // Kᵀ: the face value to its four edges.
+                    w[c][q + stride[b]] += f;
+                    w[c][q] -= f;
+                    w[b][q + stride[c]] -= f;
+                    w[b][q] += f;
                 }
             }
-        }
-        // Kᵀ: scatter each face value to its four edges.
-        for q in 0..ha.len() {
-            let f = ha[q];
-            if f == 0.0 {
-                continue;
-            }
-            w[c][q + stride[b]] += f;
-            w[c][q] -= f;
-            w[b][q + stride[c]] -= f;
-            w[b][q] += f;
         }
     }
     for (d, terms) in groups {
@@ -2664,8 +2679,58 @@ fn apply_s(
         }
     }
     for a in 0..4 {
-        for (wv, s) in w[a].iter_mut().zip(&sq[a]) {
-            *wv *= s;
+        for (k, wv) in w[a].iter_mut().enumerate() {
+            *wv *= sq[a].get(k);
+        }
+    }
+}
+
+/// `√cb` of an array of coefficients in `f64`, for [`stability`]: the
+/// roots of its distinct values and two bytes per entry (a grid has the
+/// values of its materials and cell sizes; the estimate runs on the
+/// whole grid next to the engine), or a root per entry where there are
+/// more than 65 536 of them.
+#[derive(Debug)]
+enum Roots {
+    Each(Vec<f64>),
+    Table(Vec<f64>, Vec<u16>),
+}
+
+impl Roots {
+    fn of(cb: &[f32]) -> Self {
+        let mut table = Vec::new();
+        let mut ids: HashMap<u32, u16> = HashMap::new();
+        let mut index = Vec::with_capacity(cb.len());
+        for &c in cb {
+            let next = table.len();
+            let id = match ids.get(&c.to_bits()) {
+                Some(&id) => id,
+                None => {
+                    let Ok(id) = u16::try_from(next) else {
+                        return Self::Each(cb.iter().map(|&c| (c as f64).sqrt()).collect());
+                    };
+                    ids.insert(c.to_bits(), id);
+                    table.push((c as f64).sqrt());
+                    id
+                }
+            };
+            index.push(id);
+        }
+        Self::Table(table, index)
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Each(v) => v.len(),
+            Self::Table(_, index) => index.len(),
+        }
+    }
+
+    #[inline(always)]
+    fn get(&self, k: usize) -> f64 {
+        match self {
+            Self::Each(v) => v[k],
+            Self::Table(table, index) => table[index[k] as usize],
         }
     }
 }

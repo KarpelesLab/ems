@@ -1453,19 +1453,18 @@ pub(super) struct Build {
 
 impl Build {
     /// Kernel coefficients: cut edges zero, owned faces frozen.
-    pub(super) fn apply_coefficients(&self, co: &mut Coefficients, n: [usize; 3]) {
+    pub(super) fn apply_coefficients(&self, co: &mut super::Patch, n: [usize; 3]) {
         for (a, ps, _) in &self.op.cut {
-            let (ca, cb) = co.e_mut(*a);
+            let a = a.index() as u8;
             for p in ps {
-                let k = index(n, *p);
-                ca[k] = 0.0;
-                cb[k] = 0.0;
+                let k = index(n, *p) as u32;
+                co.insert((a, k), 0.0);
+                co.insert((3 + a, k), 0.0);
             }
         }
         for &(a, k) in &self.owned {
-            let (da, db) = co.h_mut(Axis::from_index(a).expect("axis"));
-            da[k] = 1.0;
-            db[k] = 0.0;
+            co.insert((6 + a as u8, k as u32), 1.0);
+            co.insert((9 + a as u8, k as u32), 0.0);
         }
     }
 
