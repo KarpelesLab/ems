@@ -21,6 +21,9 @@ use super::coeffs::Coefficients;
 /// (bounds the extra memory to a quarter of the array plus the index).
 const POOL_RATIO: usize = 4;
 
+/// Grids of fewer nodes are analysed on the calling thread.
+const PARALLEL_NODES: usize = 1 << 22;
+
 /// Storage of one coefficient array.
 #[derive(Debug, Clone)]
 enum Rows {
@@ -44,7 +47,10 @@ impl KernelCoeffs {
     pub(crate) fn new(co: &Coefficients, threads: usize) -> Self {
         let n = co.nodes();
         let build = |a: usize| pool_rows(&co.data[a], n[2]);
-        let rows: [Rows; 12] = if threads > 1 {
+        // (On threads only where the grid is large: what a thread
+        // allocates stays with it, and a pass over a small grid is a
+        // few milliseconds.)
+        let rows: [Rows; 12] = if threads > 1 && n[0] * n[1] * n[2] >= PARALLEL_NODES {
             std::thread::scope(|s| {
                 let hs: Vec<_> = (0..12).map(|a| s.spawn(move || build(a))).collect();
                 let mut it = hs.into_iter().map(|h| h.join().expect("row analysis"));
