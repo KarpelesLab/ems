@@ -256,14 +256,17 @@ two analyses are up to 0.02 apart in `|S11|` and 0.009 in `|S21|` from 1 to
 8 GHz. Not measured: which is closer to the structure's S-parameters (the
 analytic port cases have equal columns).
 
-**What such a program sets** (cadlab's adapter, as of wave 25):
+**What such a program sets** (cadlab's adapter, as of wave 27):
 `CompileOptions::with_pole_weighting(PoleWeighting::Averaged)`, so that a
 laminate's loss does not depend on the cell above its surface (§5.16.2;
 the default is openEMS's rule); `with_lossy_metal` and
 `SheetModel::SurfaceImpedance` for lossy copper (§5.9.1), with
 `with_conformal_solids` for copper oblique to the mesh. The energy end
 criterion needs nothing: it leaves out what lossy conductors hold inside
-(§5.8), and `RunOutcome::energy` is that measure.
+(§5.8), and `RunOutcome::energy` is that measure. A run whose simulation
+is not needed afterwards is `Simulation::run_into_results`, which moves
+the probes' series into the results (`run_with` copies them, and the
+caller holds both until the simulation is dropped).
 
 **Memory.** Counted with a counting allocator (bytes allocated, not
 RSS). A first pass, on the board region above (67 200 cells, 73 437
@@ -379,6 +382,116 @@ material grid) and 84 after it; 138 and 142 at the peak of conformal PEC
 in the builds of the two ports' engines; 125 while running. On three
 threads 16 MB more from the compile step on and 164 at the peak (its own
 solver: 58).
+
+The third pass (wave 27) went by that figure, the process's peak
+resident set of one `sim.sparams` run on cadlab's regions, where ems
+took 1.6 to 4.4 times what cadlab's own solver takes; 22 MB of each
+figure are there before the run (three threads, one run per process):
+
+| Region | cadlab's solver | ems 0.0.11 | now |
+|---|---|---|---|
+| bent line, lossy sheets, 0.25 mm cells, 578 680 cells | 57 MB | 159 | 89 |
+| the same, lossy solid copper, 679 320 cells | 72 | 185 | 112 |
+| bent line, default mesh, lossy sheets, 135 660 cells | 34 | 54 | 48 |
+| the same, lossy solid copper, 184 110 cells | 39 | 66 | 51 |
+| line, lossy sheets, microstrip ports, 67 200 cells | 30 | 60 | 41 |
+| line, lossy solid copper, lumped ports, 85 320 cells | 31 | 74 | 51 |
+| via transition, lossy solid copper, Debye laminate, 130 626 cells, 33 000 steps | 34 | 134 | 60 |
+| the same to −60 dB, 49 000 steps | 34 | 148 | 58 |
+| via on a small region, 25 194 cells | 30 | 87 | 48 |
+
+The resident set follows the largest amount ever allocated at once, not
+what is allocated: glibc keeps what a program frees for its next
+allocation, and keeps what a thread allocated with that thread's arena.
+So the figure is the peak of the live bytes plus about 18 MB (the
+process without a run), plus what was allocated on other threads. On
+the first region the peak of the live bytes was 113 MB (in conformal
+PEC, with 78 while running) and is 65 (while the surface impedance is
+installed; 49 while running). By step, MB live after it with the peak
+within it in brackets (4.5 are cadlab's):
+
+| Step | 0.0.11 | now |
+|---|---|---|
+| csx discretisation | 69.1 (94.3) | 13.3 (13.9) |
+| materials in engine layout | 27.6 (78.8) | 27.1 (45.4) |
+| compiled model kept | 15.8 | 15.7 |
+| engine: fields and coefficients | +42.3 | +14.8 (+27.7) |
+| conformal PEC applied | +0 (+55.3) | +0.2 (+31.3) |
+| CPML | +4.3 | +4.3 |
+| surface impedance (the sheets of the ground plane and the track) | +15.5 (+41.1) | +12.0 (+30.2) |
+| lumped ports mapped | +0 | +8.9 until the run starts |
+| while running, with the probes' series at the end | 81.1 | 48.6 |
+
+What was removed, again without touching a result (cadlab's Touchstone
+files of the nine regions are those of 0.0.11 byte for byte; the fields
+and energies of `examples/bench_surface` and of the Debye boxes of
+`debye_layout_is_the_general_one` bit for bit, on one and three threads):
+
+- *The coefficients* (`Coefficients`): twelve `f32` arrays over the
+  grid, 48 bytes per node, of which the kernels already read a pool of
+  distinct rows where an array had few (§6), next to the arrays. An
+  array with few distinct z-rows (at most a quarter of them) is now held
+  as those rows and four bytes per row, from the moment the engine is
+  built: `ca` and `da` on every grid, `cb` and `db` where the cells
+  repeat in the plane. The accessors return a view (`CoeffValues`)
+  indexed like the slice they returned, with the row of an index found
+  by a multiplication; `e_mut` / `h_mut` expand the two arrays they are
+  called on, until the next run pools them again; a single value is set
+  in a row of its own (`Coefficients::set`, what conformal PEC and the
+  surface impedance use). The CPML and the stability estimate read rows.
+  This is also faster where an operator read the arrays themselves: a
+  128³ box with eight CPML cells 742…821 → 922…964 Mcells/s on three
+  threads and 272…283 → 343…345 on one; without the CPML it is as it
+  was.
+- *csx's material grid*: 111 bytes per node, the peak of a compile step,
+  and a second one for the PEC mask of a model without its lossy metals.
+  csx 0.0.3 leaves the material arrays out on request and gives them
+  one direction at a time; the compile step asks for them so for a
+  Cartesian model that is not an openEMS file, and stores each array as
+  a table of its values before it takes the next. 31 bytes per node at
+  the most, and 15 for the mask.
+- *Conformal PEC* (`ConformalPec::apply`): a round was built on two
+  copies of the coefficients; it is the list of the values it sets. The
+  stability estimate reads `√cb` from a table and gives a face's value
+  to its edges as it forms it: six `f64` per node and six bytes (the two
+  vectors of the power iteration), where it had ten.
+- *Debye media* (§6): a pole's charge, and the two constants of each
+  pole of each distinct edge; no current, no index, no table of the
+  distinct poles. 24 bytes a pole on a graded mesh, where every edge is
+  distinct, for 84. The installation writes that layout directly (the
+  via transition: 68 → 19 MB at its peak, 28 → 9 after it).
+- *The surface impedance*: it copied the PEC mask and `db` to read
+  them, grew its lists as it filled them, and kept the requested edges
+  (88 to 96 bytes each) for the run.
+- *Probes*: the time of every sample was stored beside its value, in the
+  engine and again in the results (32 bytes a sample and probe at the
+  end of a run). The times are the rule they follow
+  (`(first + k·interval + offset)·dt`), a list only when asked for as
+  one; with `run_into_results` the values are held once.
+- *Threads*: csx's workers each collected their part of an array and the
+  kernel's rows were analysed on twelve threads. What a thread allocates
+  stays with its arena when it ends, and the next engine of the process
+  took new memory. csx's workers fill one allocation of the caller; the
+  rows are analysed on the calling thread below four million nodes.
+
+What remains after wave 27, by size (the first region; the others as
+far as they differ):
+- The stability estimate of conformal PEC, 54 bytes per node while an
+  engine is built (two `f64` vectors over the E edges), and the
+  installed form of the surface impedance beside its final one (about
+  590 bytes per sheet edge beside 450): the two peaks, 31 and 18 MB
+  above what is kept.
+- The fields, 24 bytes per node, and the coefficients where the rows do
+  not repeat: `cb` and `db` on a graded mesh (24 bytes per node).
+- The compiled model next to the engine: 15 bytes per node and 16 per
+  pole; the masks of csx's grid (15 bytes per node) while it compiles.
+- A probe's series: 8 bytes a step. A region with 30 probes and 49 000
+  steps holds 12 MB of them at the end of a run, more than its fields.
+  (A spectrum accumulated while running would take none; it would not
+  be the DFT of the series bit for bit.)
+- Lumped elements expand `ca` and `cb` of their axis when they are
+  mapped (8 bytes per node until the run starts).
+- The rational sheet: about 450 bytes per sheet edge, 176 of them state.
 
 ## 5. Numerical formulation
 
@@ -6808,13 +6921,15 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
   §4.1.)
   - Index is `(i·ny + j)·nz + k`; z is contiguous for autovectorisation.
   - Padding entries (e.g. `u_x` at `i = nx−1`) have zero coefficients and stay 0.
-  - Memory: about 72 bytes/cell. Large grids are memory-bandwidth bound
-    (~120 B moved per cell and step, at the ~70 GB/s DRAM limit of the
-    development machine), so the kernels read the coefficients through a
-    row-deduplicated view (`engine::rows`): an array whose z-rows are mostly
-    bitwise repeats (`ca`, `da` = 1 in lossless media; `cb`, `db` on uniformly
-    meshed regions) is read from a small cached pool of distinct rows. The
-    values are the same, so results are bit-identical.
+  - Memory: 24 bytes/cell of fields and up to 48 of coefficients. Large
+    grids are memory-bandwidth bound (~120 B moved per cell and step, at
+    the ~70 GB/s DRAM limit of the development machine), so a coefficient
+    array whose z-rows are mostly bitwise repeats (`ca`, `da` = 1 in
+    lossless media; `cb`, `db` on uniformly meshed regions) is a small
+    pool of its distinct rows and an index per row, which the kernels
+    read (`engine::rows`) and which stays in the caches. Since wave 27
+    the pool is the array's storage (`Coefficients`, §4.1), not a copy
+    beside it. The values are the same, so results are bit-identical.
 - **Staggering**: after n steps, u is at `n·dt` and i at `(n−½)·dt`. A step runs
   `pre_h → H kernel → post_h → pre_e → E kernel → post_e`.
 - **Precision**: `f32` fields and coefficients. `f64` for geometry, time, DFT
@@ -6864,7 +6979,13 @@ ems::Fdtd (settings) ─────┼─► compile ─► Engine { fields, co
     (derivation in the `engine::dispersive` docs). Runs as
     slab hooks (bit-identical for any thread count); registered after the
     CPML. The compile step samples the csx dispersive materials per edge
-    over the same quarter / half cells as the static average.
+    over the same quarter / half cells as the static average. A medium
+    of Debye poles alone (a laminate) has a layout of its own: such a
+    pole has no inductance, so its current is not state (`2L/dt` and
+    `½·L` are zero), and the side holds a charge per pole and `1/C`,
+    `1/z` per pole of each distinct edge; the update is the general one
+    with the zero terms taken out, bit for bit in the fields and the
+    energies (`debye_layout_is_the_general_one`).
   - Each has `pre/post_e` and `pre/post_h` serial hooks (calling thread,
     exclusive field access, registration order) for sparse work.
   - Bulk work (CPML) uses the optional `Operator::slab_hooks`: at
@@ -7371,7 +7492,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-15, after wave 26)
+### Status (2026-11-17, after wave 27)
 
 | Step | State |
 |---|---|
@@ -7712,12 +7833,36 @@ one, two and three threads.
   the 95 thread-seconds of one port: the kernel 9.5, the CPML 8.4, the
   surface impedance, then still serial, 17).
 
+Wave 27 (native; §4.1, §6), what cadlab's decision on removing its own
+solver named as open on this side (its D94): memory 1.6 to 4.4 times
+its solver's, a Debye laminate on one thread 1.3 times its time, its
+session 6 at equal threads 1.1 to 1.3 times. No result changes: cadlab's
+Touchstone files of nine regions are those of 0.0.11 byte for byte, the
+fields and energies of `examples/bench_surface` bit for bit.
+
+- *Memory* (§4.1): the coefficients as their distinct rows, csx's
+  material arrays one direction at a time (csx 0.0.3), conformal PEC's
+  round as the values it sets and its estimate on six `f64` per node, a
+  Debye medium as a charge per pole, the probes' times as their rule
+  and `Simulation::run_into_results`, nothing allocated on threads that
+  end. The process's peak on cadlab's regions: 1.3 to 1.8 times its own
+  solver's (159 → 89 MB on the bent line on 0.25 mm cells, 148 → 58 MB
+  on the via transition to −60 dB; its solver 57 and 34).
+- *Debye laminates* (§6): the layout above reads 24 bytes a pole and
+  writes 8, where the loop of wave 26 read 40 and wrote 16.
+  `bench_surface debye` (212 742 edges of eight poles on 573 440 cells):
+  4.57 → 3.9 ms per step on one thread, 1.56…1.85 → 1.27…1.41 on three.
+  cadlab's small via region on one thread, to −30 dB: 43.3, 44.2 →
+  36.2 s (its own solver 34.4 s). Its session 6 on three threads: 58 to
+  63 → 45.0, 45.7 s (its own solver 57.1, 61.2 s on three).
+
 Remaining:
-- Memory (§4.1): the compile step peaks at csx's material grid (111
-  bytes per node); the fields and coefficients are 72 bytes per node;
-  conformal PEC builds a round on two copies of the coefficients and
-  estimates its stability on ten `f64` per node (96 bytes per node on
-  top of the engine, the peak of a run with conformal cells).
+- Memory (§4.1): while an engine is built, the stability estimate of
+  conformal PEC (54 bytes per node) and the surface impedance's
+  installed edges beside their final form; while running, the fields
+  (24 bytes per node), `cb` and `db` on a graded mesh (24), and a
+  probe's series (8 bytes a step: on a small region with many probes
+  the largest part).
 - Surface impedance (§5.9.1): the edges stay in the serial hooks behind
   conformal sheets and ladders (not behind merged faces any more); the
   merged faces themselves are serial and keep the steps of such a model
@@ -7732,14 +7877,14 @@ Remaining:
   width); a cavity carved out of lossy metal by a material of higher
   priority keeps perfect faces along the mesh; Cartesian grids only; the DC
   resistance of solid metal thinner than the skin depth is not modelled.
-- Dispersive media: the poles' state is `f64` behind an index per pole;
-  a Debye laminate still takes ems 1.2 to 1.5 times cadlab's solver's
-  time on one thread on a region of 25 000 cells, and on a graded mesh,
-  where every edge has its own constants, the poles are most of a run
-  (cadlab's session 6: 1.3 times its solver's time on three threads).
-  On a thin board region the CPML costs more than the kernel (7.4 to
-  8.4 against 5.2 to 5.7 s per port on cadlab's bent line on one
-  thread: rows along z of 16 cells and less).
+- Dispersive media: a Debye pole's charge is `f64` and its two
+  constants are per distinct edge, which on a graded mesh is every edge
+  (24 bytes a pole read per step; the constants are the pole's over the
+  edge's `ε0·A/l`, and forming them in the loop would not give the same
+  bits). A Debye laminate on one thread on a region of 25 000 cells is
+  at 1.05 times cadlab's solver's time (1.3). Media with Lorentz or
+  Drude poles keep the general layout. On a thin board region the CPML
+  costs about what the kernel does (rows along z of 16 cells and less).
 - Conformal PEC on copper of about a cell (§5.13.3): a post or a barrel
   that contains no line of nodes is not a conductor along its axis for
   the scheme and reads as the wire the model gives it (a fat-wire model
