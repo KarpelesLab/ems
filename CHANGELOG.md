@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12](https://github.com/KarpelesLab/ems/compare/v0.0.11...v0.0.12) - 2026-11-16
+
+### Other
+
+- memory by the process's peak on cadlab's regions and by step, the coefficients as rows, a Debye medium's layout, what is left (wave 27)
+- csx's material arrays one direction at a time (csx 0.0.3)
+- the coefficients as their distinct rows
+- Kernel rows: analysed on the calling thread below four million nodes
+- the sample times as their rule; a run that gives the simulation up for its results
+- the surface impedance reads the coefficients where they are, sizes its lists first, lets its requests go
+- conformal PEC builds a round as the values it changes, its estimate without two of its arrays
+- a medium of Debye poles alone holds a charge per pole and its constants per distinct edge
+
 ## [0.0.11](https://github.com/KarpelesLab/ems/compare/v0.0.10...v0.0.11) - 2026-11-15
 
 ### Other
