@@ -212,6 +212,7 @@
 //! Per step the pass touches four field components per face layer and
 //! stores four `f32` `ψ` values per layer node.
 
+use crate::engine::CoeffValues;
 use core::ops::Range;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -363,14 +364,13 @@ impl Slab {
         &mut self,
         tgt: &mut SlabMut<'_>,
         src: &SlabRef<'_>,
-        coef: &[f32],
+        coef: CoeffValues<'_>,
         zero: &[f32],
         e_side: bool,
         planes: Range<usize>,
     ) {
         let n = src.nodes();
         let nz = n[2];
-        let pl = n[1] * nz;
         // E: u += cb·(…); H: i −= db·(…).
         let scale = if e_side { 1.0 } else { -1.0 };
         let (c, sign, normal) = (self.other, self.sign, self.normal);
@@ -388,13 +388,13 @@ impl Slab {
                 (Axis::X, false) => src.plane(c, i + 1),
                 _ => cur,
             };
-            let cf = &coef[i * pl..(i + 1) * pl];
             let t = tgt.plane_mut(self.comp, i);
             for j in lo[1]..hi[1] {
                 let o = j * nz + lo[2];
                 let psi = &mut self.psi[q..q + len];
                 q += len;
-                let (t, cf) = (&mut t[o..o + len], &cf[o..o + len]);
+                let cf = &coef.row(i * n[1] + j)[lo[2]..lo[2] + len];
+                let t = &mut t[o..o + len];
                 // Derivative term S_p / T_p = sign·(h − l) over the row.
                 match normal {
                     Axis::X | Axis::Y => {

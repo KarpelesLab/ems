@@ -193,6 +193,7 @@
 //! poles, `db = 0` at installation are skipped (counted by
 //! [`skipped`](Dispersive::skipped)).
 
+use crate::engine::CoeffValues;
 use core::ops::Range;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1017,7 +1018,13 @@ impl Side {
     /// The implicit correction of every edge (module docs); `coef` is
     /// `cb` (electric) or `db` (magnetic) per axis; only the edges
     /// `edges`.
-    fn correct(&mut self, f: &mut SlabMut<'_>, coef: [&[f32]; 3], dt: f64, edges: Range<usize>) {
+    fn correct(
+        &mut self,
+        f: &mut SlabMut<'_>,
+        coef: [CoeffValues<'_>; 3],
+        dt: f64,
+        edges: Range<usize>,
+    ) {
         let p = f.nodes()[1] * f.nodes()[2];
         if self.debye {
             let Self {

@@ -42,6 +42,7 @@ use super::coeffs::Coefficients;
 use super::fields::FieldArrays;
 use super::grid::Grid;
 use crate::axis::Axis;
+use crate::engine::CoeffValues;
 
 /// Field values the projections work on (`f32` engine fields, `f64` in
 /// the stability estimate).
@@ -195,7 +196,7 @@ impl Multigrid {
         let pl = na * nz;
         let cb_y = co.cb(Axis::Y);
         for (i, j0, w) in &self.alpha {
-            let cb = &cb_y[i * pl..(i + 1) * pl];
+            let cb = cb_y.starting_at(i * pl);
             let v = u.plane(Axis::Y, *i);
             for k in 0..nz {
                 let (mut num, mut den, mut pec) = (0.0f64, 0.0f64, 0usize);
@@ -222,7 +223,7 @@ impl Multigrid {
         let cb_z = co.cb(Axis::Z);
         let mut sys = System::default();
         for itf in &self.interfaces {
-            let cb = &cb_z[itf.ring * pl..(itf.ring + 1) * pl];
+            let cb = cb_z.starting_at(itf.ring * pl);
             let v = u.plane(Axis::Z, itf.ring);
             for k in 0..nz - 1 {
                 if itf.solve(&mut sys, cb, v, nz, k) {
@@ -239,7 +240,7 @@ impl Multigrid {
         let [_, na, nz] = self.n;
         let pl = na * nz;
         for &(axis, i, j0, f) in &self.faces {
-            let db = &co.db(axis)[i * pl..(i + 1) * pl];
+            let db = co.db(axis).starting_at(i * pl);
             let v = h.plane(axis, i);
             for k in 0..nz {
                 let (mut num, mut den) = (0.0f64, 0.0f64);
@@ -283,7 +284,14 @@ impl Interface {
     /// Assembles and solves the normal equations `(SᵀWS)·U = SᵀW·u*` of
     /// plane `k`; `false` if no edge of the line is updated by the kernel
     /// (all `cb = 0`: keep the operator's values).
-    fn solve<T: Num>(&self, s: &mut System, cb: &[f32], v: &[T], nz: usize, k: usize) -> bool {
+    fn solve<T: Num>(
+        &self,
+        s: &mut System,
+        cb: CoeffValues<'_>,
+        v: &[T],
+        nz: usize,
+        k: usize,
+    ) -> bool {
         let m = self.masters.len();
         for buf in [&mut s.d, &mut s.e, &mut s.r] {
             buf.clear();
@@ -341,7 +349,7 @@ impl Interface {
 
     /// Writes the solution `x` (masters) and the interpolated slaves of
     /// plane `k`; PEC slaves stay 0.
-    fn store<T: Num>(&self, x: &[f64], v: &mut [T], cb: &[f32], nz: usize, k: usize) {
+    fn store<T: Num>(&self, x: &[f64], v: &mut [T], cb: CoeffValues<'_>, nz: usize, k: usize) {
         for (q, js) in self.masters.iter().enumerate() {
             for &j in js {
                 v[j * nz + k] = T::from_f64(x[q]);

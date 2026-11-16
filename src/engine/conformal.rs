@@ -216,6 +216,7 @@
 //! where a sheet touches a curved wall merged among themselves below the
 //! threshold and the scheme was unstable (`s` = 1.046).
 
+use crate::engine::CoeffValues;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -664,9 +665,8 @@ impl ConformalPec {
         let scaled = |base: &Coefficients| {
             let mut co = base.clone();
             for e in &self.edges {
-                let (_, cb) = co.e_mut(e.axis);
-                let k = index(n, e.node);
-                cb[k] = (cb[k] as f64 * e.fraction) as f32;
+                let (lane, k) = (CB as usize + e.axis.index(), index(n, e.node));
+                co.set(lane, k, (co.values(lane)[k] as f64 * e.fraction) as f32);
             }
             co
         };
@@ -2403,7 +2403,7 @@ fn changed(mut patch: Patch, scale: &[(u8, u32, f32)], old: &Coefficients) -> Ve
     }
     let mut out: Vec<(u8, u32, f32)> = patch
         .into_iter()
-        .filter(|&((lane, k), v)| old.data[lane as usize][k as usize].to_bits() != v.to_bits())
+        .filter(|&((lane, k), v)| old.values(lane as usize)[k as usize].to_bits() != v.to_bits())
         .map(|((lane, k), v)| (lane, k, v))
         .collect();
     out.sort_unstable_by_key(|&(lane, k, _)| (lane, k));
@@ -2425,8 +2425,9 @@ fn exchange(co: &mut Coefficients, changes: &[(u8, u32, f32)]) -> Vec<(u8, u32, 
     changes
         .iter()
         .map(|&(lane, k, v)| {
-            let slot = &mut co.data[lane as usize][k as usize];
-            (lane, k, core::mem::replace(slot, v))
+            let old = co.values(lane as usize)[k as usize];
+            co.set(lane as usize, k as usize, v);
+            (lane, k, old)
         })
         .collect()
 }
@@ -2561,12 +2562,12 @@ fn stability(
 ) -> f64 {
     let sq: [Roots; 4] = core::array::from_fn(|a| {
         if a < 3 {
-            Roots::of(&co.data[3 + a])
+            Roots::of(co.values(3 + a))
         } else {
             Roots::Each(extra.to_vec())
         }
     });
-    let db: [&[f32]; 3] = core::array::from_fn(|a| &co.data[9 + a][..]);
+    let db: [CoeffValues<'_>; 3] = core::array::from_fn(|a| co.values(9 + a));
     let mut v: [Vec<f64>; 4] = core::array::from_fn(|a| {
         let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ (a as u64 + 1);
         (0..sq[a].len())
@@ -2622,7 +2623,7 @@ fn stability(
 fn apply_s(
     n: [usize; 3],
     sq: &[Roots; 4],
-    db: &[&[f32]; 3],
+    db: &[CoeffValues<'_>; 3],
     (groups, blocks): (&[GroupTerms], &[BlockTerms<'_>]),
     v: &[Vec<f64>; 4],
     w: &mut [Vec<f64>; 4],
@@ -2638,10 +2639,11 @@ fn apply_s(
         let (b, c) = (bb.index(), cc.index());
         for i in 0..n[0] {
             for j in 0..n[1] {
-                for k in 0..n[2] {
+                let row = db[a].row(i * n[1] + j);
+                for (k, &d) in row.iter().enumerate() {
                     let p = [i, j, k];
                     let q = (i * n[1] + j) * n[2] + k;
-                    let d = db[a][q] as f64;
+                    let d = d as f64;
                     if d == 0.0 || p[b] + 1 >= n[b] || p[c] + 1 >= n[c] {
                         continue;
                     }
@@ -2697,17 +2699,17 @@ enum Roots {
 }
 
 impl Roots {
-    fn of(cb: &[f32]) -> Self {
+    fn of(cb: CoeffValues<'_>) -> Self {
         let mut table = Vec::new();
         let mut ids: HashMap<u32, u16> = HashMap::new();
         let mut index = Vec::with_capacity(cb.len());
-        for &c in cb {
+        for c in cb.iter() {
             let next = table.len();
             let id = match ids.get(&c.to_bits()) {
                 Some(&id) => id,
                 None => {
                     let Ok(id) = u16::try_from(next) else {
-                        return Self::Each(cb.iter().map(|&c| (c as f64).sqrt()).collect());
+                        return Self::Each(cb.iter().map(|c| (c as f64).sqrt()).collect());
                     };
                     ids.insert(c.to_bits(), id);
                     table.push((c as f64).sqrt());

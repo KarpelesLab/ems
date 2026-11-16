@@ -217,7 +217,7 @@ fn dielectric_edges_match_cell_path() {
             (a.da(axis), b.da(axis)),
             (a.db(axis), b.db(axis)),
         ] {
-            for (p, q) in x.iter().zip(y) {
+            for (p, q) in x.iter().zip(y.iter()) {
                 assert!((p - q).abs() <= 4.0 * f32::EPSILON * p.abs().max(q.abs()));
             }
         }

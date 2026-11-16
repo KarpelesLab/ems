@@ -357,12 +357,340 @@ pub fn dual_edge_lr(grid: &Grid, mats: &CellMaterials, axis: Axis, node: [usize;
 /// ca = (C − G·dt/2)/(C + G·dt/2),  cb = dt/(C + G·dt/2)
 /// da = (L − R·dt/2)/(L + R·dt/2),  db = dt/(L + R·dt/2)
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+///
+/// # Storage
+///
+/// An array has one value per node, `nz` of them a z-row. On a grid whose
+/// cells repeat (a board on a uniform mesh: a handful of materials, the
+/// same cell sizes over most of the plane) most rows of an array are
+/// repeats of a few: `ca` and `da` are 1 in every lossless medium, `cb`
+/// and `db` follow the material and the cell sizes. An array with few
+/// distinct rows is held as those rows and an index per row
+/// ([`compact`](Self::compact), which the engine calls when it is built
+/// and before a run that follows a change), 4 bytes per row for 4 bytes
+/// per node; the kernels read the rows where they are. The accessors
+/// return a [`CoeffValues`], indexed like the slice they used to return;
+/// [`e_mut`](Self::e_mut) and [`h_mut`](Self::h_mut) expand the arrays
+/// they are called on.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Coefficients {
     /// ca (0–2), cb (3–5), da (6–8), db (9–11).
-    pub(crate) data: [Vec<f32>; 12],
+    lanes: [Lane; 12],
     nodes: [usize; 3],
+}
+
+/// One coefficient array ([storage](Coefficients#storage)).
+#[derive(Debug, Clone)]
+enum Lane {
+    /// A value per node.
+    Dense(Vec<f32>),
+    /// The distinct rows (`nz` values each), the row of each `(i, j)`
+    /// (index `i·ny + j`) among them, how many rows use each, and
+    /// whether a write has given a row a copy of its own since the rows
+    /// were pooled (two of them may be the same again).
+    Pooled {
+        rows: Vec<f32>,
+        index: Vec<u32>,
+        uses: Vec<u32>,
+        written: bool,
+    },
+}
+
+/// `⌈2⁶⁴/nz⌉`, with which `i / nz` is the high half of a product for
+/// every `i` of 32 bits ([`Lane::at`]); 0 where there is none (`nz < 2`).
+fn inverse(nz: usize) -> u64 {
+    if nz < 2 { 0 } else { u64::MAX / nz as u64 + 1 }
+}
+
+/// An array is pooled when at most `1/POOL_RATIO` of its rows are distinct
+/// (the kernels then read it from a pool that stays in the caches).
+const POOL_RATIO: usize = 4;
+
+/// Grids of fewer nodes are pooled on the calling thread
+/// ([`Coefficients::compact_on`]).
+const PARALLEL_NODES: usize = 1 << 22;
+
+/// FNV-1a over the bit patterns.
+fn hash(row: &[f32]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for x in row {
+        h = (h ^ u64::from(x.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+impl Lane {
+    fn len(&self, nz: usize) -> usize {
+        match self {
+            Self::Dense(v) => v.len(),
+            Self::Pooled { index, .. } => index.len() * nz,
+        }
+    }
+
+    /// The `nz` values of row `r`.
+    #[inline(always)]
+    fn row(&self, r: usize, nz: usize) -> &[f32] {
+        match self {
+            Self::Dense(v) => &v[r * nz..(r + 1) * nz],
+            Self::Pooled { rows, index, .. } => {
+                let o = index[r] as usize * nz;
+                &rows[o..o + nz]
+            }
+        }
+    }
+
+    /// The value at `i`; `inverse` is [`inverse`] of `nz`.
+    #[inline(always)]
+    fn at(&self, i: usize, nz: usize, inverse: u64) -> &f32 {
+        match self {
+            Self::Dense(v) => &v[i],
+            Self::Pooled { rows, index, .. } => {
+                // `i / nz` without a division (operators read single
+                // values every step): exact for an index of 32 bits
+                // (Lemire, Kaser and Kurz 2019, "Faster remainder by
+                // direct computation").
+                let r = if inverse != 0 && i <= u32::MAX as usize {
+                    ((i as u128 * u128::from(inverse)) >> 64) as usize
+                } else {
+                    i / nz
+                };
+                &rows[index[r] as usize * nz + (i - r * nz)]
+            }
+        }
+    }
+
+    /// The array as a value per node.
+    fn dense_mut(&mut self, nz: usize) -> &mut Vec<f32> {
+        if let Self::Pooled { rows, index, .. } = self {
+            let mut v = Vec::with_capacity(index.len() * nz);
+            for &id in index.iter() {
+                let o = id as usize * nz;
+                v.extend_from_slice(&rows[o..o + nz]);
+            }
+            *self = Self::Dense(v);
+        }
+        match self {
+            Self::Dense(v) => v,
+            Self::Pooled { .. } => unreachable!("expanded above"),
+        }
+    }
+
+    /// Sets the value at `i`. In a pool the row becomes one of its own
+    /// (the other rows that shared it keep theirs).
+    fn set(&mut self, i: usize, value: f32, nz: usize) {
+        let (rows, index, uses) = match self {
+            Self::Dense(v) => {
+                v[i] = value;
+                return;
+            }
+            Self::Pooled {
+                rows,
+                index,
+                uses,
+                written,
+            } => {
+                *written = true;
+                (rows, index, uses)
+            }
+        };
+        let (r, k) = (i / nz, i % nz);
+        let id = index[r] as usize;
+        if rows[id * nz + k].to_bits() == value.to_bits() {
+            return;
+        }
+        if uses[id] == 1 {
+            rows[id * nz + k] = value;
+            return;
+        }
+        // (No longer worth a pool once half the rows are their own.)
+        if rows.len() / nz >= index.len() / 2 {
+            self.dense_mut(nz)[i] = value;
+            return;
+        }
+        uses[id] -= 1;
+        index[r] = (rows.len() / nz) as u32;
+        rows.extend_from_within(id * nz..(id + 1) * nz);
+        let last = rows.len() - nz;
+        rows[last + k] = value;
+        uses.push(1);
+    }
+
+    /// Pools the rows if few are distinct ([`POOL_RATIO`]); a pool that
+    /// writes have left with rows of its own is pooled again.
+    fn compact(&mut self, nz: usize) {
+        let pooled = match self {
+            Self::Dense(v) => Self::pool(v.chunks_exact(nz), v.len() / nz, nz),
+            Self::Pooled {
+                rows,
+                index,
+                written,
+                ..
+            } => {
+                if !*written {
+                    return;
+                }
+                let it = index.iter().map(|&id| {
+                    let o = id as usize * nz;
+                    &rows[o..o + nz]
+                });
+                Self::pool(it, index.len(), nz)
+            }
+        };
+        match pooled {
+            Some(p) => *self = p,
+            None => {
+                self.dense_mut(nz);
+            }
+        }
+    }
+
+    /// The rows `rows` (`count` of them) as a pool, if at most
+    /// `count / POOL_RATIO` are distinct.
+    fn pool<'a>(rows: impl Iterator<Item = &'a [f32]>, count: usize, nz: usize) -> Option<Self> {
+        let limit = (count / POOL_RATIO).max(1);
+        let mut pool: Vec<f32> = Vec::new();
+        let mut uses: Vec<u32> = Vec::new();
+        let mut index = Vec::with_capacity(count);
+        // Hash of the row bits → pool rows with that hash. (Looked up
+        // only: the order of the map does not matter.)
+        let mut seen: std::collections::HashMap<u64, Vec<u32>> = std::collections::HashMap::new();
+        for row in rows {
+            let cands = seen.entry(hash(row)).or_default();
+            let hit = cands.iter().copied().find(|&c| {
+                let p = &pool[c as usize * nz..(c as usize + 1) * nz];
+                p.iter().zip(row).all(|(a, b)| a.to_bits() == b.to_bits())
+            });
+            let id = match hit {
+                Some(c) => c,
+                None => {
+                    let c = uses.len() as u32;
+                    if c as usize >= limit {
+                        return None;
+                    }
+                    pool.extend_from_slice(row);
+                    uses.push(0);
+                    cands.push(c);
+                    c
+                }
+            };
+            uses[id as usize] += 1;
+            index.push(id);
+        }
+        pool.shrink_to_fit();
+        uses.shrink_to_fit();
+        Some(Self::Pooled {
+            rows: pool,
+            index,
+            uses,
+            written: false,
+        })
+    }
+}
+
+/// A read-only coefficient array of [`Coefficients`]: one value per node,
+/// indexed like a slice ([storage](Coefficients#storage)).
+///
+/// ```
+/// use ems::engine::{Coefficients, EdgeMaterials, FaceConditions, Grid};
+/// use ems::Axis;
+/// let g = Grid::uniform([4, 4, 4], [1e-3; 3]).unwrap();
+/// let co = Coefficients::from_edges(&g, &EdgeMaterials::vacuum(&g), &FaceConditions::default(), 1e-12).unwrap();
+/// let cb = co.cb(Axis::Z);
+/// assert_eq!(cb.len(), 125);
+/// assert!(cb[g.index([2, 2, 1])] > 0.0);
+/// assert_eq!(cb.row(2 * 5 + 2).len(), 5);
+/// assert_eq!(cb.iter().count(), 125);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct CoeffValues<'a> {
+    lane: &'a Lane,
+    nz: usize,
+    inverse: u64,
+    /// Index of the first value of the view.
+    start: usize,
+}
+
+impl<'a> CoeffValues<'a> {
+    /// Number of values (one per node).
+    pub fn len(&self) -> usize {
+        self.lane.len(self.nz) - self.start
+    }
+
+    /// The values from `start` on (an x-plane: `start = i·ny·nz`),
+    /// indexed from 0.
+    ///
+    /// # Panics
+    /// If `start` is past the end.
+    pub fn starting_at(self, start: usize) -> Self {
+        assert!(start <= self.len(), "start {start} past the end");
+        Self {
+            start: self.start + start,
+            ..self
+        }
+    }
+
+    /// Whether there are no values.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The value at `index`, if in range.
+    pub fn get(&self, index: usize) -> Option<f32> {
+        (index < self.len()).then(|| *self.lane.at(self.start + index, self.nz, self.inverse))
+    }
+
+    /// The z-row `row` of the array (`nz` values; row `i·ny + j` of node
+    /// `(i, j, ·)`), whatever the view starts at.
+    ///
+    /// # Panics
+    /// If the row is out of range.
+    #[inline(always)]
+    pub fn row(&self, row: usize) -> &'a [f32] {
+        self.lane.row(row, self.nz)
+    }
+
+    /// The values in order.
+    pub fn iter(&self) -> impl Iterator<Item = f32> + 'a {
+        let (lane, nz, start) = (self.lane, self.nz.max(1), self.start);
+        let rows = lane.len(nz) / nz;
+        (start / nz..rows)
+            .flat_map(move |r| lane.row(r, nz).iter().copied())
+            .skip(start % nz)
+    }
+
+    /// The values as a vector.
+    pub fn to_vec(&self) -> Vec<f32> {
+        self.iter().collect()
+    }
+}
+
+impl core::ops::Index<usize> for CoeffValues<'_> {
+    type Output = f32;
+    #[inline(always)]
+    fn index(&self, index: usize) -> &f32 {
+        self.lane.at(self.start + index, self.nz, self.inverse)
+    }
+}
+
+impl PartialEq for CoeffValues<'_> {
+    /// The same values.
+    fn eq(&self, o: &Self) -> bool {
+        self.len() == o.len() && self.iter().zip(o.iter()).all(|(a, b)| a == b)
+    }
+}
+
+impl PartialEq<[f32]> for CoeffValues<'_> {
+    fn eq(&self, o: &[f32]) -> bool {
+        self.len() == o.len() && self.iter().zip(o).all(|(a, b)| a == *b)
+    }
+}
+
+impl PartialEq for Coefficients {
+    /// The same values on the same grid, however they are stored.
+    fn eq(&self, o: &Self) -> bool {
+        self.nodes == o.nodes && (0..12).all(|l| self.values(l) == o.values(l))
+    }
 }
 
 /// How [`Coefficients::from_edges_rounded`] rounds the circuit
@@ -619,7 +947,71 @@ impl Coefficients {
                 }
             }
         }
-        Ok(Self { data, nodes: n })
+        let mut out = Self {
+            lanes: data.map(Lane::Dense),
+            nodes: n,
+        };
+        out.compact();
+        Ok(out)
+    }
+
+    /// Stores every array with few distinct rows as those rows
+    /// ([storage](Self#storage)). The values do not change.
+    pub fn compact(&mut self) {
+        self.compact_on(1);
+    }
+
+    /// [`compact`](Self::compact), an array per thread where `threads > 1`
+    /// and the grid is large. (What a thread allocates stays with its
+    /// allocator arena after it ends, and a pass over a board region is
+    /// a few milliseconds: small grids are pooled on the calling thread.)
+    pub(crate) fn compact_on(&mut self, threads: usize) {
+        let nz = self.nodes[2];
+        if nz == 0 {
+            return;
+        }
+        if threads > 1 && self.nodes.iter().product::<usize>() >= PARALLEL_NODES {
+            std::thread::scope(|s| {
+                for lane in &mut self.lanes {
+                    s.spawn(move || lane.compact(nz));
+                }
+            });
+        } else {
+            for lane in &mut self.lanes {
+                lane.compact(nz);
+            }
+        }
+    }
+
+    /// Number of arrays held as their distinct rows.
+    pub fn pooled(&self) -> usize {
+        self.lanes
+            .iter()
+            .filter(|l| matches!(l, Lane::Pooled { .. }))
+            .count()
+    }
+
+    /// Array `lane` (ca 0–2, cb 3–5, da 6–8, db 9–11).
+    #[inline(always)]
+    pub(crate) fn values(&self, lane: usize) -> CoeffValues<'_> {
+        CoeffValues {
+            lane: &self.lanes[lane],
+            nz: self.nodes[2],
+            inverse: inverse(self.nodes[2]),
+            start: 0,
+        }
+    }
+
+    /// Row `r` (`i·ny + j`; `nz` values) of array `lane`.
+    #[inline(always)]
+    pub(crate) fn row(&self, lane: usize, r: usize) -> &[f32] {
+        self.lanes[lane].row(r, self.nodes[2])
+    }
+
+    /// Sets the value at `index` of array `lane` without expanding an
+    /// array held as its distinct rows (the row gets one of its own).
+    pub(crate) fn set(&mut self, lane: usize, index: usize, value: f32) {
+        self.lanes[lane].set(index, value, self.nodes[2]);
     }
 
     /// Node counts of the grid these coefficients belong to.
@@ -628,24 +1020,25 @@ impl Coefficients {
     }
 
     /// `ca` of the E edges along `axis`.
-    pub fn ca(&self, axis: Axis) -> &[f32] {
-        &self.data[axis.index()]
+    pub fn ca(&self, axis: Axis) -> CoeffValues<'_> {
+        self.values(axis.index())
     }
     /// `cb` of the E edges along `axis`.
-    pub fn cb(&self, axis: Axis) -> &[f32] {
-        &self.data[3 + axis.index()]
+    pub fn cb(&self, axis: Axis) -> CoeffValues<'_> {
+        self.values(3 + axis.index())
     }
     /// `da` of the H dual edges along `axis`.
-    pub fn da(&self, axis: Axis) -> &[f32] {
-        &self.data[6 + axis.index()]
+    pub fn da(&self, axis: Axis) -> CoeffValues<'_> {
+        self.values(6 + axis.index())
     }
     /// `db` of the H dual edges along `axis`.
-    pub fn db(&self, axis: Axis) -> &[f32] {
-        &self.data[9 + axis.index()]
+    pub fn db(&self, axis: Axis) -> CoeffValues<'_> {
+        self.values(9 + axis.index())
     }
 
     /// Mutable `ca`, `cb` of the E edges along `axis` (for boundary and
-    /// lumped-element operators at setup time).
+    /// lumped-element operators at setup time), each as a value per node
+    /// ([storage](Self#storage)).
     pub fn e_mut(&mut self, axis: Axis) -> (&mut [f32], &mut [f32]) {
         self.pair_mut(axis.index())
     }
@@ -656,8 +1049,9 @@ impl Coefficients {
     }
 
     fn pair_mut(&mut self, first: usize) -> (&mut [f32], &mut [f32]) {
-        let (lo, hi) = self.data.split_at_mut(first + 3);
-        (&mut lo[first], &mut hi[0])
+        let nz = self.nodes[2];
+        let (lo, hi) = self.lanes.split_at_mut(first + 3);
+        (lo[first].dense_mut(nz), hi[0].dense_mut(nz))
     }
 
     /// Edge capacitance recovered from `ca`, `cb`:

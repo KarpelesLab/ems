@@ -26,7 +26,7 @@ use super::kernel::{
     block_planes, block_planes_mut, energy_h_slab, planes_around, update_e_plane, update_e_slab,
     update_h_plane, update_h_slab,
 };
-use super::rows::KernelCoeffs;
+use super::rows::CoeffRows;
 use super::run::EnergyMeasure;
 use super::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabRef};
 
@@ -84,9 +84,8 @@ impl core::fmt::Debug for SlabOps {
 pub(crate) struct Shared {
     pub(crate) store: FieldStore,
     pub(crate) coeffs: RwLock<Coefficients>,
-    /// Kernel view of `coeffs`; stale while `kernel_stale` is set.
-    kernel: RwLock<KernelCoeffs>,
-    /// Set when `coeffs` may have been modified since `kernel` was built.
+    /// Set when `coeffs` may have been modified since its arrays were
+    /// last pooled ([`Coefficients::compact`]).
     kernel_stale: AtomicBool,
     /// Incremented whenever `coeffs` may have been modified (caches keyed
     /// on the coefficients, e.g. the periodic merge table).
@@ -214,7 +213,6 @@ impl Shared {
     ) -> Self {
         let zero = vec![0.0; store.layout.plane];
         let plane_energy = (0..store.layout.n[0]).map(|_| AtomicU64::new(0)).collect();
-        let kernel = KernelCoeffs::new(&coeffs, threads);
         let (store_n, slabs) = (store.layout.n, store.layout.slabs());
         let halo = (0..store.layout.slabs())
             .map(|_| RwLock::new(core::array::from_fn(|_| vec![0.0; store.layout.plane])))
@@ -224,7 +222,6 @@ impl Shared {
             halo_ready: (0..store.layout.slabs()).map(|_| Flag::default()).collect(),
             store,
             coeffs: RwLock::new(coeffs),
-            kernel: RwLock::new(kernel),
             kernel_stale: AtomicBool::new(false),
             coeff_gen: AtomicU64::new(0),
             threads,
@@ -262,7 +259,7 @@ impl Shared {
         self.oe_curl.load(Ordering::Relaxed)
     }
 
-    /// Marks the kernel view stale (call when handing out mutable access
+    /// Marks the coefficients as changed (call when handing out mutable access
     /// to `coeffs`).
     pub(crate) fn coeffs_changed(&self) {
         self.kernel_stale.store(true, Ordering::Relaxed);
@@ -274,11 +271,21 @@ impl Shared {
         self.coeff_gen.load(Ordering::Relaxed)
     }
 
-    /// Rebuilds the kernel view if stale (workers idle).
+    /// Pools the rows of the coefficients again if they may have changed
+    /// (workers idle): what the kernels read.
     pub(crate) fn refresh_kernel(&self) {
         if self.kernel_stale.swap(false, Ordering::Relaxed) {
-            let k = KernelCoeffs::new(&read(&self.coeffs), self.threads);
-            *write(&self.kernel) = k;
+            // (A caller that holds the coefficients keeps them as they
+            // are: the kernels read either storage.)
+            match self.coeffs.try_write() {
+                Ok(mut co) => co.compact_on(self.threads),
+                Err(std::sync::TryLockError::Poisoned(e)) => {
+                    e.into_inner().compact_on(self.threads);
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    self.kernel_stale.store(true, Ordering::Relaxed);
+                }
+            }
         }
     }
 
@@ -308,8 +315,7 @@ impl Shared {
     /// the slab hooks).
     fn h(&self, s: usize, energy: bool, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
-        let kc = read(&self.kernel);
-        let rows = kc.view(&co, self.oe_curl());
+        let rows = CoeffRows::new(&co, self.oe_curl());
         if energy {
             energy_h_slab::<true>(
                 &self.store,
@@ -359,7 +365,7 @@ impl Shared {
         let co = read(&self.coeffs);
         update_e_slab(
             &self.store,
-            &read(&self.kernel).view(&co, self.oe_curl()),
+            &CoeffRows::new(&co, self.oe_curl()),
             &self.zero,
             s,
         );
@@ -404,8 +410,7 @@ impl Shared {
     /// ([`Fusion::Voltages`]) run their H part first.
     fn fused_a(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
-        let kc = read(&self.kernel);
-        let rows = kc.view(&co, self.oe_curl());
+        let rows = CoeffRows::new(&co, self.oe_curl());
         let st = &self.store;
         let n = st.layout.n;
         let p = st.layout.plane;
@@ -481,8 +486,7 @@ impl Shared {
     /// ([`Fusion::Voltages`]) run after the whole slab.
     fn fused_b(&self, s: usize, ops: &SlabOps, step: u64, dt: f64) {
         let co = read(&self.coeffs);
-        let kc = read(&self.kernel);
-        let rows = kc.view(&co, self.oe_curl());
+        let rows = CoeffRows::new(&co, self.oe_curl());
         let st = &self.store;
         let n = st.layout.n;
         let p = st.layout.plane;
@@ -601,8 +605,7 @@ impl Shared {
     pub(crate) fn current_energy(&self, dt: f64, measure: EnergyMeasure) -> f64 {
         self.refresh_kernel();
         let co = read(&self.coeffs);
-        let kc = read(&self.kernel);
-        let rows = kc.view(&co, self.oe_curl());
+        let rows = CoeffRows::new(&co, self.oe_curl());
         let mut planes = vec![0.0f64; self.store.layout.n[0]];
         for s in 0..self.store.layout.slabs() {
             energy_h_slab::<false>(
@@ -646,8 +649,7 @@ impl Shared {
     /// `plane_energy` (read-only pass).
     fn energy_slab(&self, s: usize, measure: EnergyMeasure) {
         let co = read(&self.coeffs);
-        let kc = read(&self.kernel);
-        let rows = kc.view(&co, self.oe_curl());
+        let rows = CoeffRows::new(&co, self.oe_curl());
         let (p0, p1) = self.store.layout.planes(s);
         let mut planes = vec![0.0f64; p1 - p0];
         energy_h_slab::<false>(

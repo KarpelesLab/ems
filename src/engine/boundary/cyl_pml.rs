@@ -138,6 +138,7 @@
 
 use crate::axis::Axis;
 use crate::constants::{EPS0, Z0};
+use crate::engine::CoeffValues;
 use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
 use crate::engine::slab::{SlabMut, SlabRef};
@@ -492,7 +493,7 @@ impl CylLayer {
         &mut self,
         u: &mut SlabMut<'_>,
         i: &SlabRef<'_>,
-        coef: impl Fn(Axis) -> &'c [f32],
+        coef: impl Fn(Axis) -> CoeffValues<'c>,
         zero: &[f32],
     ) {
         for c in &mut self.e {
@@ -505,7 +506,7 @@ impl CylLayer {
         &mut self,
         i: &mut SlabMut<'_>,
         u: &SlabRef<'_>,
-        coef: impl Fn(Axis) -> &'c [f32],
+        coef: impl Fn(Axis) -> CoeffValues<'c>,
         zero: &[f32],
     ) {
         for c in &mut self.h {
@@ -612,9 +613,15 @@ fn deriv(
 }
 
 impl Comp {
-    fn apply(&mut self, tgt: &mut SlabMut<'_>, src: &SlabRef<'_>, coef: &[f32], zero: &[f32]) {
+    fn apply(
+        &mut self,
+        tgt: &mut SlabMut<'_>,
+        src: &SlabRef<'_>,
+        coef: CoeffValues<'_>,
+        zero: &[f32],
+    ) {
         let n = src.nodes();
-        let (nz, pl) = (n[2], n[1] * n[2]);
+        let nz = n[2];
         let (a, e_side) = (self.comp, self.e_side);
         let (dn, dp) = (a.next(), a.prev());
         // E: u += cb·(Y − S); H: i −= db·(Y − T).
@@ -624,14 +631,13 @@ impl Comp {
         let mut q = 0;
         for i in self.x.0..self.x.1 {
             let [s0, s1] = self.st[i - self.x.0];
-            let cf = &coef[i * pl..(i + 1) * pl];
             for j in self.j.0..self.j.1 {
                 // Term 1: D_next of comp prev; term 2: D_prev of comp next.
                 deriv(&mut d1, src, zero, dp, dn, i, j, self.k.0, e_side);
                 deriv(&mut d2, src, zero, dn, dp, i, j, self.k.0, e_side);
                 let o = j * nz + self.k.0;
                 let t = &mut tgt.plane_mut(a, i)[o..o + len];
-                let cf = &cf[o..o + len];
+                let cf = &coef.row(i * n[1] + j)[self.k.0..self.k.0 + len];
                 let psi = &mut self.psi[q..q + len];
                 q += len;
                 // Transverse coefficients: per j (Y) or per k (Z).

@@ -73,6 +73,7 @@
 //! period, both ends included).
 
 use crate::axis::Axis;
+use crate::engine::CoeffValues;
 use crate::engine::coeffs::{Coefficients, FaceCondition, FaceConditions};
 use crate::engine::fields::Fields;
 use crate::engine::run::{Stepper, drive};
@@ -172,7 +173,7 @@ impl Periodic {
     /// `1/cb` of component `c` at node `p` summed over the copies already
     /// merged by the passes of the periodic axes before `a` (infinite if
     /// any copy is PEC).
-    fn weight(&self, cb: &[f32], c: usize, a: usize, p: [usize; 3]) -> f64 {
+    fn weight(&self, cb: CoeffValues<'_>, c: usize, a: usize, p: [usize; 3]) -> f64 {
         let w = |p: [usize; 3]| {
             let b = cb[self.index(p)];
             if b == 0.0 {

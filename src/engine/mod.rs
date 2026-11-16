@@ -176,8 +176,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub use bloch_wave::{PeriodicPlaneWave, PeriodicPlaneWaveSpec, WavePart};
 pub use boundary::periodic::BlochPair;
 pub use coeffs::{
-    CoeffRounding, Coefficients, FaceCondition, FaceConditions, OPENEMS_EPS0, OPENEMS_MU0,
-    OpenEmsTimestep, TimeStep, courant_limit, dual_edge_lr, primary_edge_cg,
+    CoeffRounding, CoeffValues, Coefficients, FaceCondition, FaceConditions, OPENEMS_EPS0,
+    OPENEMS_MU0, OpenEmsTimestep, TimeStep, courant_limit, dual_edge_lr, primary_edge_cg,
 };
 pub use conformal::{
     ConformalEdge, ConformalFace, ConformalOptions, ConformalPec, ConformalReport, ConformalSheets,
@@ -782,14 +782,13 @@ impl Engine {
         let mut w = 0.0f64;
         for (blocks, lane) in [(&st.u, 0), (&st.i, 6)] {
             for axis in 0..3 {
-                let (a, b) = (&co.data[lane + axis], &co.data[lane + 3 + axis]);
+                let (a, b) = (co.values(lane + axis), co.values(lane + 3 + axis));
                 for (s, blk) in blocks.iter().enumerate() {
                     let off = st.layout.planes(s).0 * p;
                     let blk = read(blk);
                     let v = &blk[axis];
-                    let a = &a[off..off + v.len()];
-                    let b = &b[off..off + v.len()];
-                    for ((&x, &ca), &cb) in v.iter().zip(a).zip(b) {
+                    let (a, b) = (a.starting_at(off), b.starting_at(off));
+                    for ((&x, ca), cb) in v.iter().zip(a.iter()).zip(b.iter()) {
                         let c = Coefficients::capacitance(ca, cb, self.dt);
                         w += 0.5 * c * (x as f64) * (x as f64);
                     }

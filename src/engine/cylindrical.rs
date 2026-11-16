@@ -133,7 +133,7 @@ impl AxisMerge {
     /// of the copies (0 if any copy is PEC). Fixed order, deterministic.
     pub(crate) fn merge(&self, f: &mut Fields<'_>, co: &Coefficients) {
         let [_, na, nz] = self.n;
-        let cb = &co.cb(Axis::Z)[..na * nz];
+        let cb = co.cb(Axis::Z);
         let plane = f.u.plane_mut(Axis::Z, 0);
         for k in 0..nz - 1 {
             let (mut num, mut den, mut pec) = (0.0f64, 0.0f64, 0usize);
@@ -187,7 +187,7 @@ impl super::operator::Operator for OpenemsAxisSeam {
     fn post_e(&mut self, f: &mut Fields<'_>, ctx: &super::operator::StepContext<'_>) {
         let n = ctx.grid.nodes();
         let (na, nz) = (n[1], n[2]);
-        let cb = &ctx.coefficients.cb(Axis::Z)[..na * nz];
+        let cb = ctx.coefficients.cb(Axis::Z);
         let extra: Vec<f64> = (0..nz)
             .map(|k| {
                 let ring = f.i.plane(Axis::Y, 0);
@@ -282,7 +282,7 @@ impl Op {
         // Zero non-existing edges.
         for (a, comp) in u.iter_mut().enumerate() {
             let cb = self.co.cb(Axis::ALL[a]);
-            for (v, &b) in comp.iter_mut().zip(cb) {
+            for (v, b) in comp.iter_mut().zip(cb.iter()) {
                 if b == 0.0 {
                     *v = 0.0;
                 }
@@ -353,7 +353,7 @@ impl Op {
         });
         for (a, comp) in out.iter_mut().enumerate() {
             let cb = self.co.cb(Axis::ALL[a]);
-            for (v, &b) in comp.iter_mut().zip(cb) {
+            for (v, b) in comp.iter_mut().zip(cb.iter()) {
                 *v *= b as f64;
             }
         }

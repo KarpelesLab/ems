@@ -673,7 +673,7 @@ mod tests {
         assert!(e.is_pec_edge(Axis::Y, [2, 1, 2]));
         let b = Coefficients::from_edges(&g, &e, &faces, dt).unwrap();
         for lane in 0..12 {
-            for (x, y) in a.data[lane].iter().zip(&b.data[lane]) {
+            for (x, y) in a.values(lane).iter().zip(b.values(lane).iter()) {
                 let tol = 4.0 * f32::EPSILON * x.abs().max(y.abs());
                 assert!((x - y).abs() <= tol, "lane {lane}: {x} vs {y}");
             }

@@ -1,140 +1,40 @@
-//! Row-deduplicated view of the update coefficients for the kernels.
+//! Row access to the update coefficients for the kernels.
 //!
 //! On large grids the kernels are limited by memory bandwidth, and the
 //! twelve coefficient arrays are 48 of the ~120 bytes moved per cell and
 //! step. Many z-rows of a coefficient array are bitwise identical: `ca` and
 //! `da` are exactly `1.0` everywhere in lossless media, and `cb`, `db` only
 //! depend on the material and the local cell sizes, which repeat across a
-//! uniformly meshed region. [`KernelCoeffs`] stores each array either as is
-//! or, when few of its rows are distinct, as a small pool of distinct rows
-//! plus one index per row. The pool stays in cache, so the kernels then
-//! stream only the fields.
+//! uniformly meshed region. [`Coefficients`] holds an array with few
+//! distinct rows as those rows and an index per row
+//! ([storage](Coefficients#storage)); the pool stays in cache, so the
+//! kernels then stream only the fields.
 //!
 //! The values the kernels read are exactly those of [`Coefficients`], so
 //! results are unchanged bit for bit.
 
-use std::collections::HashMap;
-
 use super::coeffs::Coefficients;
-
-/// An array is pooled when at most `1/POOL_RATIO` of its rows are distinct
-/// (bounds the extra memory to a quarter of the array plus the index).
-const POOL_RATIO: usize = 4;
-
-/// Grids of fewer nodes are analysed on the calling thread.
-const PARALLEL_NODES: usize = 1 << 22;
-
-/// Storage of one coefficient array.
-#[derive(Debug, Clone)]
-enum Rows {
-    /// Read the rows from [`Coefficients`] directly.
-    Direct,
-    /// Distinct rows, `nz` values each, and the pool row of every
-    /// `(i, j)` row (index `i·ny + j`).
-    Pooled { pool: Vec<f32>, index: Vec<u32> },
-}
-
-/// The kernel representation of a [`Coefficients`] set (see the module
-/// docs). Rebuilt whenever the coefficients may have changed.
-#[derive(Debug, Clone)]
-pub(crate) struct KernelCoeffs {
-    n: [usize; 3],
-    rows: [Rows; 12],
-}
-
-impl KernelCoeffs {
-    /// Analyses `co` (the twelve arrays in parallel when `threads > 1`).
-    pub(crate) fn new(co: &Coefficients, threads: usize) -> Self {
-        let n = co.nodes();
-        let build = |a: usize| pool_rows(&co.data[a], n[2]);
-        // (On threads only where the grid is large: what a thread
-        // allocates stays with it, and a pass over a small grid is a
-        // few milliseconds.)
-        let rows: [Rows; 12] = if threads > 1 && n[0] * n[1] * n[2] >= PARALLEL_NODES {
-            std::thread::scope(|s| {
-                let hs: Vec<_> = (0..12).map(|a| s.spawn(move || build(a))).collect();
-                let mut it = hs.into_iter().map(|h| h.join().expect("row analysis"));
-                core::array::from_fn(|_| it.next().expect("12 arrays"))
-            })
-        } else {
-            core::array::from_fn(build)
-        };
-        Self { n, rows }
-    }
-
-    /// Binds the view to the coefficients it was built from; `oe_curl`
-    /// selects openEMS's summation order of the circulations
-    /// ([`CurlOrder::OpenEms`](super::CurlOrder::OpenEms)).
-    pub(crate) fn view<'a>(&'a self, co: &'a Coefficients, oe_curl: bool) -> CoeffRows<'a> {
-        debug_assert_eq!(co.nodes(), self.n);
-        CoeffRows {
-            co,
-            kc: self,
-            oe_curl,
-        }
-    }
-
-    /// Number of arrays stored as pools (diagnostics, tests).
-    #[cfg(test)]
-    fn pooled(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|r| matches!(r, Rows::Pooled { .. }))
-            .count()
-    }
-}
-
-/// Pools the `nz`-value rows of `v` if few are distinct.
-fn pool_rows(v: &[f32], nz: usize) -> Rows {
-    let nrows = v.len() / nz;
-    let limit = nrows / POOL_RATIO;
-    let mut pool: Vec<f32> = Vec::new();
-    let mut index = Vec::with_capacity(nrows);
-    // Hash of the row bits → pool rows with that hash.
-    let mut seen: HashMap<u64, Vec<u32>> = HashMap::new();
-    for row in v.chunks_exact(nz) {
-        let h = hash(row);
-        let cands = seen.entry(h).or_default();
-        let hit = cands.iter().copied().find(|&c| {
-            let p = &pool[c as usize * nz..(c as usize + 1) * nz];
-            p.iter().zip(row).all(|(a, b)| a.to_bits() == b.to_bits())
-        });
-        let id = match hit {
-            Some(c) => c,
-            None => {
-                let c = (pool.len() / nz) as u32;
-                if c as usize >= limit.max(1) {
-                    return Rows::Direct;
-                }
-                pool.extend_from_slice(row);
-                cands.push(c);
-                c
-            }
-        };
-        index.push(id);
-    }
-    pool.shrink_to_fit();
-    Rows::Pooled { pool, index }
-}
-
-/// FNV-1a over the bit patterns.
-fn hash(row: &[f32]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for x in row {
-        h = (h ^ u64::from(x.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
 
 /// Row access to the coefficients for the kernels.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CoeffRows<'a> {
     co: &'a Coefficients,
-    kc: &'a KernelCoeffs,
+    ny: usize,
     oe_curl: bool,
 }
 
 impl<'a> CoeffRows<'a> {
+    /// The rows of `co`; `oe_curl` selects openEMS's summation order of
+    /// the circulations
+    /// ([`CurlOrder::OpenEms`](super::CurlOrder::OpenEms)).
+    pub(crate) fn new(co: &'a Coefficients, oe_curl: bool) -> Self {
+        CoeffRows {
+            co,
+            ny: co.nodes()[1],
+            oe_curl,
+        }
+    }
+
     /// Whether the kernels sum the circulations in openEMS's order
     /// ([`CurlOrder::OpenEms`](super::CurlOrder::OpenEms)).
     #[inline(always)]
@@ -146,15 +46,7 @@ impl<'a> CoeffRows<'a> {
     /// cb 3–5, da 6–8, db 9–11).
     #[inline(always)]
     pub(crate) fn row(&self, a: usize, gi: usize, j: usize) -> &'a [f32] {
-        let [_, ny, nz] = self.kc.n;
-        let r = gi * ny + j;
-        match &self.kc.rows[a] {
-            Rows::Direct => &self.co.data[a][r * nz..(r + 1) * nz],
-            Rows::Pooled { pool, index } => {
-                let o = index[r] as usize * nz;
-                &pool[o..o + nz]
-            }
-        }
+        self.co.row(a, gi * self.ny + j)
     }
 }
 
@@ -178,23 +70,58 @@ mod tests {
             1e-12,
         )
         .unwrap();
-        for threads in [1, 4] {
-            let kc = KernelCoeffs::new(&co, threads);
-            // ca, da are 0/1 patterns: pooled.
-            assert!(kc.pooled() >= 6, "{}", kc.pooled());
-            let v = kc.view(&co, false);
-            let [nx, ny, nz] = co.nodes();
-            for (a, data) in co.data.iter().enumerate().take(12) {
+        // ca, da are 0/1 patterns: pooled.
+        assert!(co.pooled() >= 6, "{}", co.pooled());
+        let v = CoeffRows::new(&co, false);
+        let [nx, ny, nz] = co.nodes();
+        // The same values as an array per node, and after writes to it.
+        let mut dense = co.clone();
+        for axis in crate::Axis::ALL {
+            dense.e_mut(axis);
+            dense.h_mut(axis);
+        }
+        assert_eq!(dense.pooled(), 0);
+        assert!(dense == co);
+        let mut written = co.clone();
+        for a in 0..12 {
+            for (q, idx) in [3, 17, 18, 40, 41, 77].into_iter().enumerate() {
+                let value = 0.25 + a as f32 + q as f32;
+                written.set(a, idx, value);
+                let (ca, da) = (a / 3 % 2 == 0, a >= 6);
+                let axis = crate::Axis::ALL[a % 3];
+                let pair = if da {
+                    dense.h_mut(axis)
+                } else {
+                    dense.e_mut(axis)
+                };
+                (if ca { pair.0 } else { pair.1 })[idx] = value;
+            }
+        }
+        assert!(written == dense && written != co);
+        written.compact();
+        assert!(written == dense);
+        for (co, dense) in [(&co, None), (&written, Some(&dense))] {
+            let v = if dense.is_some() {
+                CoeffRows::new(co, false)
+            } else {
+                v
+            };
+            for a in 0..12 {
+                let all = dense.unwrap_or(co).values(a).to_vec();
+                assert_eq!(all.len(), nx * ny * nz);
                 for gi in 0..nx {
                     for j in 0..ny {
                         let o = (gi * ny + j) * nz;
-                        let want = &data[o..o + nz];
+                        let want = &all[o..o + nz];
                         let got = v.row(a, gi, j);
                         assert!(
                             want.iter()
                                 .zip(got)
                                 .all(|(x, y)| x.to_bits() == y.to_bits())
                         );
+                        for (k, w) in want.iter().enumerate() {
+                            assert_eq!(co.values(a)[o + k].to_bits(), w.to_bits());
+                        }
                     }
                 }
             }
@@ -202,16 +129,21 @@ mod tests {
     }
 
     #[test]
-    fn distinct_rows_stay_direct() {
-        let v: Vec<f32> = (0..64).map(|x| x as f32).collect();
-        assert!(matches!(pool_rows(&v, 4), Rows::Direct));
-        let v = vec![1.0f32; 64];
-        match pool_rows(&v, 4) {
-            Rows::Pooled { pool, index } => {
-                assert_eq!(pool.len(), 4);
-                assert!(index.iter().all(|&i| i == 0));
-            }
-            Rows::Direct => panic!("uniform rows not pooled"),
-        }
+    fn distinct_rows_stay_whole() {
+        let g = Grid::new([
+            (0..9).map(|i| f64::from(i * i)).collect(),
+            (0..9).map(|i| f64::from(i * i * i)).collect(),
+            vec![0.0, 0.5, 1.0, 2.0, 3.0],
+        ])
+        .unwrap();
+        let co = Coefficients::from_edges(
+            &g,
+            &EdgeMaterials::vacuum(&g),
+            &FaceConditions::default(),
+            1e-13,
+        )
+        .unwrap();
+        // Every row of cb and db has its own cell sizes.
+        assert!(co.pooled() >= 6 && co.pooled() < 12, "{}", co.pooled());
     }
 }

@@ -514,7 +514,7 @@ impl SlabHooks for Parts {
         for r in &self.pieces(slab).h {
             let i = r.plane;
             let pl = n[1] * nz;
-            let db = &coefficients.db(r.comp)[i * pl..(i + 1) * pl];
+            let db = coefficients.db(r.comp).starting_at(i * pl);
             let (ux, uy, uz) = (
                 u.plane(Axis::X, i),
                 u.plane(Axis::Y, i),

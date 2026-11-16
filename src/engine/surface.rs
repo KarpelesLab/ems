@@ -2692,7 +2692,7 @@ impl SurfaceImpedance {
         if !dead.is_empty() {
             let mut co = engine.coefficients_mut();
             for (ax, idx) in dead {
-                co.h_mut(ax).1[idx] = 0.0;
+                co.set(9 + ax.index(), idx, 0.0);
             }
         }
         self.installed = true;
