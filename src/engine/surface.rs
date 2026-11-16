@@ -2106,16 +2106,14 @@ impl SurfaceImpedance {
         let cpml: Option<CpmlBoundary> = engine.find_operator::<CpmlBoundary>().cloned();
         let cpml = cpml.as_ref().filter(|c| !c.is_cylindrical_rho_max());
         // PEC edges and the faces without field, from the coefficients as
-        // they are now.
-        let (pec, db): ([Vec<bool>; 3], [Vec<f32>; 3]) = {
-            let co = engine.coefficients();
-            (
-                Axis::ALL.map(|a| co.cb(a).iter().map(|&c| c == 0.0).collect()),
-                Axis::ALL.map(|a| co.db(a).to_vec()),
-            )
+        // they are now: read where they are (nothing below writes them
+        // before the end; copies of them would be six arrays over the
+        // grid).
+        let engine_ref = &*engine;
+        let is_pec = |axis: Axis, p: [usize; 3]| {
+            exists(axis, p) && engine_ref.coefficients().cb(axis)[grid.index(p)] == 0.0
         };
-        let is_pec =
-            |axis: Axis, p: [usize; 3]| exists(axis, p) && pec[axis.index()][grid.index(p)];
+        let db = |axis: Axis, m: [usize; 3]| engine_ref.coefficients().db(axis)[grid.index(m)];
         // The face normal to `ax` at `m` (if it exists): whether all four
         // of its edges are PEC.
         let face = |ax: Axis, m: [usize; 3]| -> Option<bool> {
@@ -2413,8 +2411,7 @@ impl SurfaceImpedance {
                     // (A face's circulation squared is at most the
                     // squares of its edges times their number: each of
                     // the face's surface edges answers for all of them.)
-                    sum +=
-                        surface_edges(ax, m).max(1) as f64 * db[ax.index()][grid.index(m)] as f64;
+                    sum += surface_edges(ax, m).max(1) as f64 * db(ax, m) as f64;
                 }
                 floor = floor.max(FLOOR_MARGIN * dt * sum);
             }
@@ -2460,12 +2457,6 @@ impl SurfaceImpedance {
                 u: 0.0,
                 watch: u32::MAX,
             });
-        }
-        if !dead.is_empty() {
-            let mut co = engine.coefficients_mut();
-            for (ax, idx) in dead {
-                co.h_mut(ax).1[idx] = 0.0;
-            }
         }
 
         // ---- Sheets ----
@@ -2584,7 +2575,7 @@ impl SurfaceImpedance {
                 } else {
                     (1.0, 0.0)
                 };
-                if ax == nrm && outlines && db[ax.index()][grid.index(m)] == 0.0 {
+                if ax == nrm && outlines && db(ax, m) == 0.0 {
                     mix = w_dn;
                 }
                 dual.push((ax, m, (w_up, w_dn), s));
@@ -2611,7 +2602,7 @@ impl SurfaceImpedance {
                 // The dual edge read the stored voltage, with the share
                 // `mix` of `u−`; its own share is `w_dn`.
                 let wc = w_dn - mix;
-                let dbv = db[ax.index()][grid.index(m)] as f64;
+                let dbv = db(ax, m) as f64;
                 if wc != 0.0 && dbv != 0.0 {
                     let da = engine.coefficients().da(ax)[grid.index(m)] as f64;
                     let stretch = match stretch_at(cpml, n, p, m[p.index()], false) {
@@ -2690,6 +2681,20 @@ impl SurfaceImpedance {
             state: self.state,
             held: self.held.as_ref().map_or(0, |h| h.len()),
         };
+        // The requests are in the installed edges now.
+        self.solid_entries = Vec::new();
+        self.sheet_entries = Vec::new();
+        self.sheet_cuts = Vec::new();
+        self.cut_faces = Vec::new();
+        self.cut_edges = Vec::new();
+        self.oblique = Vec::new();
+        // (Last: the sheets above read the faces as they were.)
+        if !dead.is_empty() {
+            let mut co = engine.coefficients_mut();
+            for (ax, idx) in dead {
+                co.h_mut(ax).1[idx] = 0.0;
+            }
+        }
         self.installed = true;
         Ok(())
     }
@@ -2897,6 +2902,54 @@ impl SurfaceImpedance {
                 p.more.len() as u32 - 1
             }
         };
+        // The size of every part's lists first: a list that grows as it
+        // is filled is held twice while it moves, beside the installed
+        // edges it is filled from.
+        {
+            #[derive(Default, Clone, Copy)]
+            struct Sizes {
+                solids: usize,
+                sheets: usize,
+                couplings: usize,
+                state: usize,
+                terms: usize,
+                fixes: usize,
+            }
+            let mut sizes = vec![Sizes::default(); count];
+            let coupled = |groups: &[Group]| groups.iter().map(|g| g.nc as usize).sum::<usize>();
+            for e in &self.solids {
+                let z = &mut sizes[part_of(e.plane as usize)];
+                z.solids += 1;
+                z.couplings += coupled(&e.groups);
+                z.state += ports[e.port as usize].stride();
+            }
+            for e in &self.sheets {
+                let s = part_of(e.node[0]);
+                let z = &mut sizes[s];
+                z.sheets += 1;
+                z.couplings += coupled(&e.groups);
+                z.state += ports[e.port[0] as usize].stride() + ports[e.port[1] as usize].stride();
+                z.terms += e.nk as usize;
+                for c in &raw[e.k0 as usize..(e.k0 + e.nk) as usize] {
+                    sizes[part_of(c.loc.0 as usize)].fixes += 1;
+                }
+            }
+            for (b, z) in build.iter_mut().zip(&sizes) {
+                let p = &mut b.part;
+                p.solids.reserve_exact(z.solids);
+                p.solid_u.reserve_exact(z.solids);
+                b.solid_planes.reserve_exact(z.solids);
+                p.sheets.reserve_exact(z.sheets);
+                p.c_edge.reserve_exact(z.sheets);
+                p.vars.reserve_exact(z.sheets);
+                p.sheet_nodes.reserve_exact(z.sheets);
+                b.sheet_planes.reserve_exact(z.sheets);
+                p.couplings.reserve_exact(z.couplings);
+                p.state.reserve_exact(z.state);
+                p.terms.reserve_exact(z.terms);
+                b.fixes.reserve_exact(z.fixes);
+            }
+        }
         for e in std::mem::take(&mut self.solids) {
             let s = part_of(e.plane as usize);
             let b = &mut build[s];
