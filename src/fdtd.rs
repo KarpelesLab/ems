@@ -481,6 +481,7 @@ pub struct Fdtd {
     timestep_factor: f64,
     timestep: Option<f64>,
     timestep_method: Option<TimestepMethod>,
+    step_limit: StepLimit,
     openems_run: bool,
     cell_constant_material: bool,
     threads: Option<usize>,
@@ -502,6 +503,7 @@ impl Default for Fdtd {
             timestep_factor: Self::DEFAULT_TIMESTEP_FACTOR,
             timestep: None,
             timestep_method: None,
+            step_limit: StepLimit::Courant,
             openems_run: false,
             cell_constant_material: false,
             threads: None,
@@ -513,6 +515,32 @@ impl Default for Fdtd {
             multigrid: Vec::new(),
         }
     }
+}
+
+/// The bound the automatic time step is taken from
+/// ([`Fdtd::step_limit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum StepLimit {
+    /// The Courant–Friedrichs–Lewy limit of the smallest cell size of
+    /// each axis at the vacuum speed
+    /// ([`courant_limit`](crate::engine::courant_limit)): a bound for any
+    /// mesh and any medium of `ε_r, μ_r ≥ 1`, and all a uniform mesh in
+    /// vacuum allows.
+    #[default]
+    Courant,
+    /// The limit of the cells themselves
+    /// ([`engine::step_bound`](crate::engine::step_bound)): each cell
+    /// with its own sizes, the permittivity of its edges and the walls
+    /// and conductors it lies against, so that a mesh whose smallest
+    /// sizes lie in a dielectric or against a wall, or are not all in one
+    /// cell, takes a longer step (board regions: 1.0 to 1.3 times). Never
+    /// shorter than the Courant step; equal to it where the model has a
+    /// part the bound does not cover
+    /// ([`StepReport`](crate::compile::StepReport) says which). Cells
+    /// that conformal PEC cuts keep the faces they keep at the Courant
+    /// step.
+    Cells,
 }
 
 impl Fdtd {
@@ -571,6 +599,16 @@ impl Fdtd {
     /// is `S` times the Courant–Friedrichs–Lewy limit of the mesh.
     pub fn timestep_factor(mut self, s: f64) -> Self {
         self.timestep_factor = s;
+        self
+    }
+
+    /// Chooses the bound the automatic time step is the
+    /// [factor](Self::timestep_factor) of (default
+    /// [`StepLimit::Courant`]). An explicit [`timestep`](Self::timestep)
+    /// and an openEMS criterion ([`timestep_method`](Self::timestep_method))
+    /// are not affected.
+    pub fn step_limit(mut self, limit: StepLimit) -> Self {
+        self.step_limit = limit;
         self
     }
 
@@ -832,6 +870,11 @@ impl Fdtd {
     /// The Courant safety factor `S`.
     pub fn get_timestep_factor(&self) -> f64 {
         self.timestep_factor
+    }
+
+    /// The bound of the automatic time step ([`step_limit`](Self::step_limit)).
+    pub fn get_step_limit(&self) -> StepLimit {
+        self.step_limit
     }
 
     /// The time step override \[s\], if any.

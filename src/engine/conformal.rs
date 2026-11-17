@@ -613,8 +613,63 @@ impl ConformalPec {
     /// Whether the face normal to `a` at `p` touches an absorbing layer
     /// (including its interface plane).
     fn in_absorbing(&self, a: Axis, p: [usize; 3], n: [usize; 3]) -> bool {
+        touches_layer(&self.absorbing, a, p, n)
+    }
+
+    /// The cells on both sides of every cut face that has a current of
+    /// its own to keep (open fraction above 0), for the time step of the
+    /// cells ([`step_bound`](super::step_bound)): sorted, each once.
+    /// `layers` are the absorbing layers the geometry will be applied
+    /// with. `None` where the cells do not decide what the scheme does
+    /// with its cut faces: thin sheets off the mesh planes, a cut face in
+    /// an absorbing layer that is below the merge threshold (it is merged
+    /// there whatever its cells allow; one above it keeps its current as
+    /// outside the layers), [`ConformalOptions::keep_stable`] off, a
+    /// cylindrical grid.
+    pub(crate) fn cut_cells(
+        &self,
+        grid: &Grid,
+        layers: &[(Face, usize)],
+    ) -> Option<Vec<[usize; 3]>> {
+        if !self.sheet_faces.is_empty() || !self.options.keep_stable || grid.is_cylindrical() {
+            return None;
+        }
+        let n = grid.nodes();
+        let mut absorbing = self.absorbing;
+        for &(f, cells) in layers {
+            absorbing[f.index()] = absorbing[f.index()].max(cells);
+        }
+        let mut cells = Vec::new();
+        for f in &self.faces {
+            if f.fraction <= 0.0 {
+                continue;
+            }
+            if f.fraction < self.options.merge_below && touches_layer(&absorbing, f.axis, f.node, n)
+            {
+                return None;
+            }
+            let a = f.axis.index();
+            if f.node[a] + 1 < n[a] {
+                cells.push(f.node);
+            }
+            if f.node[a] > 0 {
+                let mut q = f.node;
+                q[a] -= 1;
+                cells.push(q);
+            }
+        }
+        cells.sort_unstable();
+        cells.dedup();
+        Some(cells)
+    }
+}
+
+/// Whether the face normal to `a` at `p` touches an absorbing layer of
+/// `absorbing` cells per face (including its interface plane).
+fn touches_layer(absorbing: &[usize; 6], a: Axis, p: [usize; 3], n: [usize; 3]) -> bool {
+    {
         Face::ALL.into_iter().any(|f| {
-            let cells = self.absorbing[f.index()];
+            let cells = absorbing[f.index()];
             if cells == 0 {
                 return false;
             }
@@ -630,7 +685,9 @@ impl ConformalPec {
             }
         })
     }
+}
 
+impl ConformalPec {
     /// Records how many edges the geometry step left whole to keep narrow
     /// slanted conductors in one piece; reported as
     /// [`ConformalReport::bridges`].
@@ -1750,7 +1807,7 @@ fn cell_row_bound(
 }
 
 /// Largest eigenvalue of a small symmetric matrix (cyclic Jacobi).
-fn largest_eigenvalue(mut a: Vec<Vec<f64>>) -> f64 {
+pub(super) fn largest_eigenvalue(mut a: Vec<Vec<f64>>) -> f64 {
     let m = a.len();
     for _ in 0..60 {
         let off: f64 = (0..m)

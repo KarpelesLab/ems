@@ -840,7 +840,7 @@ impl<'a> Ctx<'a> {
         let limit = crate::engine::courant_limit(g);
         let factor = match timestep {
             TimeStep::Courant(f) => f,
-            TimeStep::Fixed(dt) => dt / limit,
+            TimeStep::Fixed(dt) | TimeStep::Bound(dt) => dt / limit,
             TimeStep::OpenEms(o) => o
                 .resolve(g, &crate::engine::EdgeMaterials::vacuum(g))
                 .map_or(1.0, |dt| dt / limit),

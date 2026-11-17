@@ -137,6 +137,12 @@ pub enum TimeStep {
     /// [`OpenEmsTimestep`]). Not checked against [`courant_limit`], which
     /// is conservative on non-uniform meshes and in dielectrics.
     OpenEms(OpenEmsTimestep),
+    /// A `dt` \[s\] within a bound the caller has established for the
+    /// scheme it builds, e.g. [`cell_limit`](super::cell_limit) on the
+    /// materials (the compile step with
+    /// [`StepLimit::Cells`](crate::fdtd::StepLimit::Cells)). Not checked
+    /// against [`courant_limit`], which it may exceed.
+    Bound(f64),
 }
 
 /// openEMS time-step settings ([`TimeStep::OpenEms`]).
@@ -224,6 +230,10 @@ impl TimeStep {
             ))),
             // Without materials: vacuum.
             TimeStep::OpenEms(o) => o.resolve(grid, &EdgeMaterials::vacuum(grid)),
+            TimeStep::Bound(dt) if dt.is_finite() && dt > 0.0 => Ok(dt),
+            TimeStep::Bound(dt) => Err(Error::Invalid(format!(
+                "time step {dt:e} s must be positive and finite"
+            ))),
         }
     }
 }

@@ -173,11 +173,13 @@ mod openems_sheet;
 pub mod planewave;
 pub mod sar;
 pub mod sheet;
+mod step;
 mod surface;
 mod wire;
 
 pub(crate) use mode::SAMPLING_ATTR as MODE_SAMPLING_ATTR;
 pub use planewave::PlaneWaveSource;
+pub use step::{StepChoice, StepObstacle, StepReport};
 
 use crate::axis::Axis;
 use crate::engine::boundary::abc::{AbcSheet, AbsorbingSheet, SheetVelocity};
@@ -726,6 +728,10 @@ pub struct Compiled {
     pub coefficient_rounding: CoeffRounding,
     /// Time step choice.
     pub timestep: TimeStep,
+    /// What the time step was taken from ([`Fdtd::step_limit`]); `None`
+    /// where the step is not a factor of a bound of the mesh (a fixed
+    /// step, an openEMS criterion, a cylindrical grid).
+    pub step: Option<StepReport>,
     /// Engine threads (`0`: available parallelism).
     pub threads: usize,
     /// csx ↔ engine index conversion.
@@ -2601,7 +2607,8 @@ pub fn compile(
     // The materials stay with the compiled model: as tables of their
     // distinct values (whatever a step above expanded).
     materials.compact();
-    Ok(Compiled {
+    let any_plane_waves = !plane_waves.is_empty();
+    let mut compiled = Compiled {
         openems_multigrid,
         openems_seam_alpha0,
         grid,
@@ -2624,6 +2631,7 @@ pub fn compile(
         },
         pml,
         timestep,
+        step: None,
         threads: fdtd.get_threads().unwrap_or(0),
         node_map,
         abc,
@@ -2664,7 +2672,9 @@ pub fn compile(
             delta_unit: model.grid.delta_unit,
         },
         warnings,
-    })
+    };
+    step::choose(&mut compiled, fdtd, any_plane_waves);
+    Ok(compiled)
 }
 
 /// The zone boundary line of a multigrid that openEMS's own scheme
