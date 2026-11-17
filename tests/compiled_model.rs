@@ -263,3 +263,51 @@ fn undriven_and_unknown_excitations() {
     let err = compiled.simulation_driving(&["port_excite_3"]).unwrap_err();
     assert!(err.to_string().contains("port_excite_3"), "{err}");
 }
+
+/// The board with a barrel through the laminate (a metal cylinder between
+/// the mesh lines: cut cells) and conformal PEC.
+fn board_with_barrel(excited: &[u32]) -> ContinuousStructure {
+    let mut m = board(false, excited);
+    let id = m.add_property(Property::metal("barrel"));
+    let barrel = csx::primitives::Cylinder::new([6.2, 7.3, 2.0], [6.2, 7.3, 3.6], 0.6);
+    m.add_primitive(id, Primitive::new(barrel).with_priority(10))
+        .unwrap();
+    m
+}
+
+/// Conformal PEC is checked once per compiled model: the first engine
+/// built runs the rounds of the merge threshold and their stability
+/// estimates, the engines after it take the round it ended on. Each is the
+/// engine of a fresh compile, bit for bit, and reports what that one
+/// reports, when the first round is accepted and when rounds are rejected
+/// first (a limit no round meets: the last one is taken).
+#[test]
+fn conformal_checked_once() {
+    for limit in [None, Some(0.5)] {
+        let mut opts = CompileOptions::default().with_conformal(true);
+        if let Some(limit) = limit {
+            opts.conformal_options.max_stability = limit;
+        }
+        let compiled = CompiledModel::new(&board_with_barrel(&[1, 2]), &fdtd(), &opts).unwrap();
+        for n in [1, 2, 1] {
+            let name = format!("port_excite_{n}");
+            let sim = compiled.simulation_driving(&[name.as_str()]).unwrap();
+            let fresh = Simulation::with_options(&board_with_barrel(&[n]), &fdtd(), &opts).unwrap();
+            let (a, b) = (
+                sim.boundaries().conformal.expect("conformal PEC"),
+                fresh.boundaries().conformal.expect("conformal PEC"),
+            );
+            assert!(
+                a.edges > 0 && a.faces + a.interpolated + a.merged > 0,
+                "{a:?}"
+            );
+            assert_eq!(a, b, "port {n}, limit {limit:?}");
+            assert_eq!(a.verified, limit.is_none(), "{a:?}");
+            if limit.is_some() {
+                assert!(a.merge_below > 0.5, "rounds were rejected: {a:?}");
+            }
+            assert_eq!(sim.warnings(), fresh.warnings());
+            assert!(run(sim) == run(fresh), "port {n}, limit {limit:?} differs");
+        }
+    }
+}

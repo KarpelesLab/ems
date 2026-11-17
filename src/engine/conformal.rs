@@ -159,6 +159,23 @@
 //! so `s` is an estimate, not a bound; the long-run tests check
 //! boundedness directly.
 //!
+//! The estimate is 300 products with `S` over the whole grid, as much as
+//! several hundred time steps of a small model, so it is made only where
+//! it can tell something. `λ_max(S)` is at most the largest of the cells'
+//! own values (the element bound of the next section), and that needs one
+//! pass over the cells: where the round's currents are all those of grid
+//! faces (no merged or interpolated face, no thin sheet off the mesh
+//! planes; Cartesian grids) and every cell, cut or not, is within the
+//! limit, the estimate could not come out above it. `s` is then that
+//! bound ([`ConformalReport::proven`]) and the round is accepted, as the
+//! estimate would have had it. A cell is first tried by the absolute row
+//! sums of its six-by-six matrix, which bound its eigenvalue from above
+//! (by 4/3 for a cube) without solving for it. Measured on a board region
+//! of 73 000 nodes with twelve cut edges: 12.4·10⁹ instructions for the
+//! estimate of one engine, 0.2·10⁹ for the bound. Of the engines built from one
+//! [`CompiledModel`](crate::CompiledModel) only the first checks at all:
+//! the others take the round it ended on and what it found.
+//!
 //! # Small faces the time step allows
 //!
 //! The threshold is a rule for any mesh: at the Courant limit of cubic
@@ -305,6 +322,17 @@ impl Default for ConformalOptions {
     }
 }
 
+/// What an application of a [`ConformalPec`] found, for the next one on
+/// an engine like it ([`ConformalPec::apply_known`]): the round it ended
+/// on and that round's stability check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Checked {
+    round: usize,
+    stability: f64,
+    verified: bool,
+    proven: bool,
+}
+
 /// What [`ConformalPec::apply`] did. `merged` and `groups` count the
 /// merge fallback, `interpolated` and `hosts` the interpolation (see the
 /// [module docs](self#small-cut-faces-interpolation)).
@@ -346,8 +374,21 @@ pub struct ConformalReport {
     pub bridges: usize,
     /// Final merge threshold.
     pub merge_below: f64,
-    /// Estimated stability factor `s` (NaN if not checked).
+    /// Estimated stability factor `s` (NaN if not checked), or a bound
+    /// on it ([`proven`](Self::proven)).
     pub stability: f64,
+    /// Whether [`stability`](Self::stability) is a bound and not an
+    /// estimate: the largest of the cell-wise bounds of the
+    /// [module docs](self#small-faces-the-time-step-allows) over every
+    /// cell of the grid, cut or not, on the coefficients the run uses.
+    /// The grid's largest eigenvalue is at most that, so where it is
+    /// within [`ConformalOptions::max_stability`] the power iteration,
+    /// which approaches the same eigenvalue from below, would pass too and
+    /// is not run. `false` where a cell does not pass by itself, with
+    /// merged or interpolated faces or thin sheets off the mesh planes
+    /// (their currents are not a cell's), and on cylindrical grids: the
+    /// estimate is made there, as it always was.
+    pub proven: bool,
     /// Whether `s ≤ max_stability` (true if not checked).
     pub verified: bool,
     /// Edges cut by thin PEC sheets (split into pieces).
@@ -646,6 +687,22 @@ impl ConformalPec {
     /// [`Error::Invalid`] for fractions outside `[0, 1]` or edges / faces
     /// that do not exist on the grid.
     pub fn apply(&self, engine: &mut Engine) -> Result<ConformalReport> {
+        self.apply_known(engine, None).map(|(report, _)| report)
+    }
+
+    /// [`apply`](Self::apply) for an engine like one this geometry was
+    /// applied to before (the same grid, coefficients, time step and
+    /// absorbing layers: another run of a compiled model), with what that
+    /// application found, `known`: the round it ended on is constructed
+    /// at once and its stability estimate is taken as found, so the
+    /// engine and the report are the ones `apply` gives, without the
+    /// rounds before it and without the power iteration. Returns what
+    /// this application found, for the next.
+    pub(crate) fn apply_known(
+        &self,
+        engine: &mut Engine,
+        known: Option<Checked>,
+    ) -> Result<(ConformalReport, Checked)> {
         let grid = engine.grid().clone();
         let n = grid.nodes();
         let cyl = grid.is_cylindrical();
@@ -705,6 +762,11 @@ impl ConformalPec {
         let mut tau = self.options.merge_below.clamp(0.0, 1.0);
         let rounds = self.options.max_rounds.max(1);
         for round in 0..rounds {
+            if known.is_some_and(|k| round < k.round) {
+                // A round the first application rejected.
+                tau = (tau * 1.25).min(1.0);
+                continue;
+            }
             let co = match scaled_now.take() {
                 Some(co) => co,
                 None => scaled(&engine.coefficients()),
@@ -770,7 +832,30 @@ impl ConformalPec {
             let changes = changed(coeffs, &scale, &engine.coefficients());
             let undo = exchange(&mut engine.coefficients_mut(), &changes);
             drop(changes);
-            if self.options.iterations > 0 {
+            // The cell-wise bound over the whole grid, where the round's
+            // currents are those of its faces: within the limit, the
+            // estimate could only agree.
+            let limit = self.options.max_stability * self.options.max_stability;
+            let proven = if known.is_none()
+                && self.options.iterations > 0
+                && !cyl
+                && gterms.is_empty()
+                && bterms.is_empty()
+                && extra.is_empty()
+            {
+                grid_bound(&engine.coefficients(), &grid, dt, limit)
+            } else {
+                None
+            };
+            if let Some(k) = known {
+                report.stability = k.stability;
+                report.verified = k.verified;
+                report.proven = k.proven;
+            } else if let Some(bound) = proven {
+                report.stability = bound.sqrt();
+                report.verified = true;
+                report.proven = true;
+            } else if self.options.iterations > 0 {
                 let s = stability(
                     &engine.coefficients(),
                     n,
@@ -793,7 +878,13 @@ impl ConformalPec {
                 if !merged.is_empty() {
                     engine.add_operator(merged);
                 }
-                return Ok(report);
+                let checked = Checked {
+                    round,
+                    stability: report.stability,
+                    verified: report.verified,
+                    proven: report.proven,
+                };
+                return Ok((report, checked));
             }
             exchange(&mut engine.coefficients_mut(), &undo);
             tau = (tau * 1.25).min(1.0);
@@ -893,6 +984,7 @@ impl ConformalPec {
             floored: 0,
             kept: 0,
             bounded: false,
+            proven: false,
             bridges: self.bridges,
             merge_below: tau,
             stability: f64::NAN,
@@ -1521,6 +1613,140 @@ fn cell_stability(
         }
     }
     0.25 * dt * dt * largest_eigenvalue(a)
+}
+
+/// The largest of the cell-wise bounds ([`cell_stability`]) over every
+/// cell of a Cartesian grid with the coefficients `co` (the open lengths
+/// and areas of cut cells applied), if it is within `limit` (a stability
+/// factor squared): an upper bound on `λ_max·dt²/4` of the whole grid, by
+/// the element bound, where [`stability`] estimates the same from below.
+/// `None` as soon as a cell is above the limit.
+///
+/// A cell is first given a bound of its own bound, from the row sums of
+/// its six-by-six matrix (Gershgorin), which needs no eigenvalues; only a
+/// cell that does not pass by that is solved. The limit is taken a part in
+/// 10⁹ lower, so that rounding in either computation cannot let a grid
+/// pass here that the estimate would refuse.
+fn grid_bound(co: &Coefficients, grid: &Grid, dt: f64, limit: f64) -> Option<f64> {
+    let n = grid.nodes();
+    let limit = limit * (1.0 - 1e-9);
+    let lanes: [CoeffValues<'_>; 12] = core::array::from_fn(|l| co.values(l));
+    let deltas: [Vec<f64>; 3] = Axis::ALL.map(|a| grid.deltas(a));
+    let none = HashMap::new();
+    let mut worst = 0.0f64;
+    for i in 0..n[0].saturating_sub(1) {
+        for j in 0..n[1].saturating_sub(1) {
+            for k in 0..n[2].saturating_sub(1) {
+                let q = [i, j, k];
+                let mut v = cell_row_bound(&lanes, &deltas, n, dt, q);
+                if v.partial_cmp(&limit) != Some(core::cmp::Ordering::Less) {
+                    v = cell_stability(co, grid, dt, q, &none);
+                    if v.partial_cmp(&limit) != Some(core::cmp::Ordering::Less) {
+                        return None;
+                    }
+                }
+                worst = worst.max(v);
+            }
+        }
+    }
+    Some(worst)
+}
+
+/// An upper bound on [`cell_stability`] of the cell with lowest node `q`
+/// (every face whole: `fractions` empty), without its eigenvalues: the
+/// largest absolute row sum of the cell's matrix `M = Y^½·K·C⁻¹·Kᵀ·Y^½`,
+/// or of `Y·K·C⁻¹·Kᵀ` or `K·C⁻¹·Kᵀ·Y`, which have its eigenvalues,
+/// whichever is smallest. A face of the cell shares one edge with each of
+/// the four faces beside it, so a row has its diagonal and four entries.
+/// `lanes` are the twelve coefficient arrays (`ca`, `cb`, `da`, `db` per
+/// axis), `deltas` the cell sizes per axis. For a cubic cell of a uniform
+/// grid this is 4/3 of the cell's own value.
+fn cell_row_bound(
+    lanes: &[CoeffValues<'_>; 12],
+    deltas: &[Vec<f64>; 3],
+    n: [usize; 3],
+    dt: f64,
+    q: [usize; 3],
+) -> f64 {
+    // The faces' share / L, by normal and side.
+    let mut y = [[0.0f64; 2]; 3];
+    for d in 0..3 {
+        let i = q[d];
+        for (o, yo) in y[d].iter_mut().enumerate() {
+            let mut p = q;
+            p[d] += o;
+            let k = index(n, p);
+            let (da, db) = (lanes[6 + d][k] as f64, lanes[9 + d][k] as f64);
+            if db <= 0.0 {
+                continue;
+            }
+            let l = dt * (1.0 + da) / (2.0 * db);
+            if l.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) {
+                continue;
+            }
+            let other = if o == 0 {
+                (i > 0).then(|| deltas[d][i - 1])
+            } else {
+                (i + 2 < n[d]).then(|| deltas[d][i + 1])
+            };
+            let share = other.map_or(1.0, |h| deltas[d][i] / (deltas[d][i] + h));
+            *yo = share / l;
+        }
+    }
+    // The edges' inverse share of the capacitance, by axis and by the
+    // offsets along the next and the previous axis.
+    let mut ic = [[[0.0f64; 2]; 2]; 3];
+    // The cells' sizes around a node line (a sum of cross sections is the
+    // product of these).
+    let side = |a: usize, i: usize| {
+        let lo = if i > 0 { deltas[a][i - 1] } else { 0.0 };
+        let hi = if i + 1 < n[a] { deltas[a][i] } else { 0.0 };
+        lo + hi
+    };
+    for d in 0..3 {
+        let (b, c) = ((d + 1) % 3, (d + 2) % 3);
+        let own = deltas[b][q[b]] * deltas[c][q[c]];
+        for (ob, at_b) in ic[d].iter_mut().enumerate() {
+            for (oc, inv) in at_b.iter_mut().enumerate() {
+                let mut p = q;
+                p[b] += ob;
+                p[c] += oc;
+                let k = index(n, p);
+                let (ca, cb) = (lanes[d][k] as f64, lanes[3 + d][k] as f64);
+                if cb <= 0.0 {
+                    continue;
+                }
+                let cap = dt * (1.0 + ca) / (2.0 * cb);
+                let total = side(b, p[b]) * side(c, p[c]);
+                if cap > 0.0 && total > 0.0 {
+                    *inv = total / (own * cap);
+                }
+            }
+        }
+    }
+    let mut rows = [0.0f64; 3];
+    for d in 0..3 {
+        let (b, c) = ((d + 1) % 3, (d + 2) % 3);
+        for o in 0..2 {
+            let yi = y[d][o];
+            // The face's edges, each with the other face of the cell it
+            // belongs to: the `b` edges at both offsets along `c` (faces
+            // normal to `c`), the `c` edges at both offsets along `b`.
+            let edges = [
+                (ic[b][0][o], y[c][0]),
+                (ic[b][1][o], y[c][1]),
+                (ic[c][o][0], y[b][0]),
+                (ic[c][o][1], y[b][1]),
+            ];
+            let sum: f64 = edges.iter().map(|e| e.0).sum();
+            let mixed: f64 = edges.iter().map(|e| e.0 * (yi * e.1).sqrt()).sum();
+            let other: f64 = edges.iter().map(|e| e.0 * e.1).sum();
+            rows[0] = rows[0].max(yi * sum + mixed);
+            rows[1] = rows[1].max(2.0 * yi * sum);
+            rows[2] = rows[2].max(yi * sum + other);
+        }
+    }
+    0.25 * dt * dt * rows[0].min(rows[1]).min(rows[2])
 }
 
 /// Largest eigenvalue of a small symmetric matrix (cyclic Jacobi).
@@ -2628,7 +2854,6 @@ fn apply_s(
     v: &[Vec<f64>; 4],
     w: &mut [Vec<f64>; 4],
 ) {
-    let stride = [n[1] * n[2], n[2], 1];
     let x = |a: usize, k: usize| v[a][k] * sq[a].get(k);
     for wa in w.iter_mut() {
         wa.fill(0.0);
@@ -2637,28 +2862,22 @@ fn apply_s(
         let a = axis.index();
         let (bb, cc) = axis.others();
         let (b, c) = (bb.index(), cc.index());
-        for i in 0..n[0] {
-            for j in 0..n[1] {
-                let row = db[a].row(i * n[1] + j);
-                for (k, &d) in row.iter().enumerate() {
-                    let p = [i, j, k];
-                    let q = (i * n[1] + j) * n[2] + k;
-                    let d = d as f64;
-                    if d == 0.0 || p[b] + 1 >= n[b] || p[c] + 1 >= n[c] {
-                        continue;
-                    }
-                    let curl = x(c, q + stride[b]) - x(c, q) - x(b, q + stride[c]) + x(b, q);
-                    let f = d * curl;
-                    if f == 0.0 {
-                        continue;
-                    }
-                    // Kᵀ: the face value to its four edges.
-                    w[c][q + stride[b]] += f;
-                    w[c][q] -= f;
-                    w[b][q + stride[c]] -= f;
-                    w[b][q] += f;
-                }
+        let (wb, wc) = two_mut(&mut w[..3], b, c);
+        // (One loop per kind of root, so that none of them asks which it
+        // has at every edge.)
+        match (&sq[b], &sq[c]) {
+            (Roots::Table(tb, ib), Roots::Table(tc, ic)) => {
+                let (rb, rc) = (|k: usize| tb[ib[k] as usize], |k: usize| tc[ic[k] as usize]);
+                faces(n, (b, c), &db[a], (&v[b], &v[c]), (rb, rc), (wb, wc));
             }
+            (rb, rc) => faces(
+                n,
+                (b, c),
+                &db[a],
+                (&v[b], &v[c]),
+                (|k: usize| rb.get(k), |k: usize| rc.get(k)),
+                (wb, wc),
+            ),
         }
     }
     for (d, terms) in groups {
@@ -2680,9 +2899,83 @@ fn apply_s(
             }
         }
     }
-    for a in 0..4 {
-        for (k, wv) in w[a].iter_mut().enumerate() {
-            *wv *= sq[a].get(k);
+    for (wa, root) in w.iter_mut().zip(sq) {
+        match root {
+            Roots::Each(r) => {
+                for (wv, r) in wa.iter_mut().zip(r) {
+                    *wv *= r;
+                }
+            }
+            Roots::Table(table, index) => {
+                for (wv, &id) in wa.iter_mut().zip(index) {
+                    *wv *= table[id as usize];
+                }
+            }
+        }
+    }
+}
+
+/// Two elements of a slice, both mutable (`i != j`).
+fn two_mut<T>(s: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
+    if i < j {
+        let (lo, hi) = s.split_at_mut(j);
+        (&mut lo[i], &mut hi[0])
+    } else {
+        let (lo, hi) = s.split_at_mut(i);
+        (&mut hi[0], &mut lo[j])
+    }
+}
+
+/// The faces of one normal in [`apply_s`], in the order of their index:
+/// `d·curl` of each with `d = db ≠ 0`, the curl over the edges along `b`
+/// and `c` (`vb`, `vc` scaled by their roots `rb`, `rc`), given to those
+/// four edges in `wb`, `wc`.
+#[inline(always)]
+fn faces(
+    n: [usize; 3],
+    (b, c): (usize, usize),
+    db: &CoeffValues<'_>,
+    (vb, vc): (&[f64], &[f64]),
+    (rb, rc): (impl Fn(usize) -> f64, impl Fn(usize) -> f64),
+    (wb, wc): (&mut [f64], &mut [f64]),
+) {
+    let stride = [n[1] * n[2], n[2], 1];
+    let (sb, sc) = (stride[b], stride[c]);
+    // A face needs the next node along `b` and along `c`.
+    let last = |d: usize, p: usize| (b == d || c == d) && p + 1 >= n[d];
+    let nk = if b == 2 || c == 2 {
+        n[2].saturating_sub(1)
+    } else {
+        n[2]
+    };
+    for i in 0..n[0] {
+        if last(0, i) {
+            continue;
+        }
+        for j in 0..n[1] {
+            if last(1, j) {
+                continue;
+            }
+            let row = db.row(i * n[1] + j);
+            let base = (i * n[1] + j) * n[2];
+            for (k, &d) in row.iter().enumerate().take(nk) {
+                let d = d as f64;
+                if d == 0.0 {
+                    continue;
+                }
+                let q = base + k;
+                let curl = vc[q + sb] * rc(q + sb) - vc[q] * rc(q) - vb[q + sc] * rb(q + sc)
+                    + vb[q] * rb(q);
+                let f = d * curl;
+                if f == 0.0 {
+                    continue;
+                }
+                // Kᵀ: the face value to its four edges.
+                wc[q + sb] += f;
+                wc[q] -= f;
+                wb[q + sc] -= f;
+                wb[q] += f;
+            }
         }
     }
 }
@@ -3022,6 +3315,65 @@ mod tests {
             fraction: 0.0,
         });
         (e, c)
+    }
+
+    /// The bound that stands in for the power iteration: a cell's row
+    /// bound is above the cell's own value and 4/3 of it for a cube, the
+    /// largest over a grid is above the estimate of the grid, and a grid
+    /// passes by it exactly when every cell is within the limit.
+    #[test]
+    fn the_cell_bound_over_the_grid_is_above_the_estimate() {
+        let none = HashMap::new();
+        for s in [0.5, 0.8, 0.95] {
+            let e = engine(s);
+            let (co, n, dt) = (e.coefficients(), e.grid().nodes(), e.dt());
+            let lanes: [CoeffValues<'_>; 12] = core::array::from_fn(|l| co.values(l));
+            let deltas: [Vec<f64>; 3] = Axis::ALL.map(|a| e.grid().deltas(a));
+            let exact = cell_stability(&co, e.grid(), dt, [5, 5, 5], &none);
+            let rows = cell_row_bound(&lanes, &deltas, n, dt, [5, 5, 5]);
+            assert!((exact - s * s).abs() < 1e-6, "{exact} for {s}");
+            assert!((rows / exact - 4.0 / 3.0).abs() < 1e-6, "{rows} {exact}");
+            // Within 0.999²: by the row sums at 0.5 and 0.8, by the cell's
+            // eigenvalue at 0.95.
+            let bound = grid_bound(&co, e.grid(), dt, 0.999 * 0.999).expect("within the limit");
+            let estimate = stability_factor(&co, n, &[], 300);
+            assert!(
+                estimate <= bound.sqrt() && bound.sqrt() < 0.999,
+                "{estimate} {bound}"
+            );
+            assert!(grid_bound(&co, e.grid(), dt, 0.9 * s * s).is_none());
+        }
+        // At the Courant limit the cells are at 1, above the limit: no
+        // bound, and the estimate is made.
+        let e = engine(1.0);
+        assert!(grid_bound(&e.coefficients(), e.grid(), e.dt(), 0.999 * 0.999).is_none());
+        // Cut cells on flat cells: every cell by the row sums or by
+        // itself, and both above what the power iteration finds.
+        let (mut e, c) = fifth(0.1, 0.99);
+        let r = c.apply(&mut e).unwrap();
+        assert!(r.proven && r.verified && r.stability < 0.999, "{r:?}");
+        let (co, n, dt) = (e.coefficients(), e.grid().nodes(), e.dt());
+        let estimate = stability_factor(&co, n, &[(2, index(n, [5, 5, 5]))], 300);
+        assert!(estimate <= r.stability, "{estimate} {r:?}");
+        let lanes: [CoeffValues<'_>; 12] = core::array::from_fn(|l| co.values(l));
+        let deltas: [Vec<f64>; 3] = Axis::ALL.map(|a| e.grid().deltas(a));
+        for q in [
+            [5, 5, 5],
+            [5, 5, 4],
+            [4, 5, 5],
+            [6, 6, 5],
+            [0, 0, 0],
+            [2, 9, 7],
+        ] {
+            let exact = cell_stability(&co, e.grid(), dt, q, &none);
+            let rows = cell_row_bound(&lanes, &deltas, n, dt, q);
+            assert!(rows >= exact * (1.0 - 1e-12), "{q:?}: {rows} below {exact}");
+        }
+        // Cubes at the Courant limit: the face is interpolated or merged,
+        // which no cell bound covers.
+        let (mut e, c) = fifth(1.0, 0.99);
+        let r = c.apply(&mut e).unwrap();
+        assert!(!r.proven && r.verified, "{r:?}");
     }
 
     #[test]

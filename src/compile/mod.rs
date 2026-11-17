@@ -880,6 +880,16 @@ pub struct BoundaryHandles {
     pub debye_poles_ignored: usize,
 }
 
+/// What the first engine built from a [`Compiled`] found when it applied
+/// the conformal geometry (the round of the merge threshold it ended on
+/// and its stability estimate, 300 power iterations over the grid), for
+/// the engines built from the same data after it: they construct that
+/// round directly and take the estimate as found. Held by what owns the
+/// compiled data and does not change it between builds
+/// ([`CompiledModel`](crate::CompiledModel)).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConformalCheck(std::sync::OnceLock<crate::engine::conformal::Checked>);
+
 impl Compiled {
     /// Builds the engine (coefficients, threads), applies the conformal PEC
     /// geometry if any ([`ConformalPec::apply`]), and registers the boundary
@@ -893,7 +903,7 @@ impl Compiled {
     /// Invalid time step or materials, or boundary operator setup errors
     /// (e.g. a PML thicker than the mesh).
     pub fn build(&self) -> Result<(Engine, BoundaryHandles)> {
-        self.build_driving(&self.sources)
+        self.build_driving(&self.sources, None)
     }
 
     /// [`build`](Self::build) with `sources` in the place of
@@ -903,14 +913,19 @@ impl Compiled {
     /// The boundary operators read the lumped-element edges and, in
     /// openEMS files, the driven edges (a Mur face holds while an
     /// excitation on it runs).
+    ///
+    /// `conformal` is what an earlier build of this compiled data found
+    /// when it applied the conformal geometry, kept by the caller for
+    /// every build after the first ([`ConformalCheck`]).
     pub(crate) fn build_driving(
         &self,
         sources: &ModelSources,
+        conformal: Option<&ConformalCheck>,
     ) -> Result<(Engine, BoundaryHandles)> {
         // (The materials are read in place: no copy of the map.)
         let mut engine = self.bare_builder().build_with_edges(&self.materials)?;
         engine.set_curl_order(self.curl_order);
-        let h = self.add_boundary_operators(&mut engine, sources)?;
+        let h = self.add_boundary_operators(&mut engine, sources, conformal)?;
         Ok((engine, h))
     }
 
@@ -935,6 +950,7 @@ impl Compiled {
         &self,
         engine: &mut Engine,
         sources: &ModelSources,
+        conformal: Option<&ConformalCheck>,
     ) -> Result<BoundaryHandles> {
         let mut h = BoundaryHandles::default();
         // Seam E edges whose openEMS poles the seam operator runs itself
@@ -1213,14 +1229,22 @@ impl Compiled {
             Some(CpmlBoundary::new(engine, self.pml.iter().copied())?)
         };
         if let Some(c) = &self.conformal {
-            h.conformal = Some(match &cpml {
+            // The engine is the same for every build of this data up to
+            // here (the sources come after), so the check of the first
+            // build holds for the others.
+            let known = conformal.and_then(|k| k.0.get().copied());
+            let (report, checked) = match &cpml {
                 Some(op) => {
                     let mut c = c.clone();
                     c.set_cpml(op);
-                    c.apply(engine)?
+                    c.apply_known(engine, known)?
                 }
-                None => c.apply(engine)?,
-            });
+                None => c.apply_known(engine, known)?,
+            };
+            if let Some(k) = conformal {
+                let _ = k.0.set(checked);
+            }
+            h.conformal = Some(report);
         }
         if let Some(op) = cpml {
             h.cpml = Some(engine.add_operator(op));

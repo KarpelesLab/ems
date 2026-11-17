@@ -328,6 +328,8 @@ pub struct Simulation {
 #[non_exhaustive]
 pub struct CompiledModel {
     compiled: Compiled,
+    /// The conformal check of the first engine built, for the others.
+    conformal: crate::compile::ConformalCheck,
     fdtd: Fdtd,
     /// The mesh-check lines of the warnings ([`CompileOptions::mesh_check`]).
     mesh_warnings: Vec<String>,
@@ -359,6 +361,7 @@ impl CompiledModel {
             .collect();
         Ok(Self {
             compiled,
+            conformal: Default::default(),
             fdtd: fdtd.clone(),
             mesh_warnings,
             property_ids,
@@ -448,7 +451,7 @@ impl CompiledModel {
         let k = bloch::wavevector(fdtd, &sources.plane_waves, compiled.grid.nodes())?;
         let (mut engine, boundaries, imag) = match k {
             None => {
-                let (e, h) = compiled.build_driving(&sources)?;
+                let (e, h) = compiled.build_driving(&sources, Some(&self.conformal))?;
                 (e, h, None)
             }
             Some(k) => {
@@ -456,8 +459,9 @@ impl CompiledModel {
                 let (coupling, b) = BlochCoupling::new(compiled.builder(), psi)?;
                 let mut re = b.clone().build()?;
                 let mut im = b.build()?;
-                let h = compiled.add_boundary_operators(&mut re, &sources)?;
-                compiled.add_boundary_operators(&mut im, &sources)?;
+                let h =
+                    compiled.add_boundary_operators(&mut re, &sources, Some(&self.conformal))?;
+                compiled.add_boundary_operators(&mut im, &sources, Some(&self.conformal))?;
                 (re, h, Some((im, coupling, k)))
             }
         };
