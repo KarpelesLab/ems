@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/KarpelesLab/ems/compare/v0.0.16...v0.0.17) - 2026-11-17
+
+### Other
+
+- Conformal PEC: no stability check of its own where the bound of the cells has decided the step, the cut cells in it (it was the geometric bound over the grid, which a longer step does not pass, and then a power iteration: 0.4 s of a run of cadlab's regions)
+- the poles of a compiled model as runs of edges along z with the sequence of poles they share (EdgePoles: 32 bytes a run for 16 an entry), a Debye edge's previous field value as the field's f32; the heap of a run of cadlab's via transition by block, what is not taken and why (wave 32)
+
 ## [0.0.16](https://github.com/KarpelesLab/ems/compare/v0.0.15...v0.0.16) - 2026-11-17
 
 ### Other
