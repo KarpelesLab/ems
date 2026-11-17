@@ -1533,7 +1533,7 @@ impl ConformalPec {
                     sign,
                     b: c.b,
                     a: c.a,
-                    k: 1.0 / c.kappa - 1.0,
+                    k: c.direct,
                     psi: 0.0,
                 });
             }
@@ -2405,7 +2405,8 @@ struct PmlTerm {
     sign: f64,
     b: f64,
     a: f64,
-    /// `1/κ − 1`.
+    /// The layer's `direct` (`1/κ − 1`, or less with its linear
+    /// convolution).
     k: f64,
     psi: f64,
 }

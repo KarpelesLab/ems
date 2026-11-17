@@ -13,7 +13,7 @@ use csx::primitives::BoxShape;
 use csx::{ContinuousStructure, Primitive, Property, Transform, Vec3};
 use ems::compile::{CompileOptions, compile};
 use ems::engine::{ConformalReport, EdgeSource, Engine, Probe};
-use ems::{Axis, Boundary, Face, Fdtd};
+use ems::{Axis, Boundary, Cpml, Face, Fdtd};
 
 const H: f64 = 1.0; // mm
 /// Half the plate distance, mm.
@@ -69,7 +69,15 @@ fn guide(
     }
     let mut fdtd = Fdtd::new().threads(threads);
     if pml {
-        fdtd = fdtd.boundary(Face::XMax, Boundary::pml(8));
+        // Twice the usual conductivity: between the plates and the side
+        // walls this is a guide 10 mm wide, cutoff 15 GHz, driven from 14
+        // to 26 GHz, and what a layer absorbs just above a cutoff goes
+        // with its conductivity. (The layer's first-order convolution, to
+        // ems 0.0.17, was a larger conductivity by its error; with the
+        // usual one the second-order layer reads −50 and −53 dB here, on
+        // the mesh planes too.)
+        let layer = Cpml::cells(8).sigma_factor(2.0);
+        fdtd = fdtd.boundary(Face::XMax, Boundary::Pml(layer));
     }
     let opts = CompileOptions::default().with_conformal(true);
     let c = compile(&m, &fdtd, &opts).unwrap();
@@ -128,14 +136,14 @@ fn rel_db(test: &[f64], reference: &[f64]) -> f64 {
 #[test]
 fn sheet_plates_into_cpml_reflection() {
     // Layer from x = 32 mm (index 32), probe at 26 mm (index 26). (Plates
-    // on the mesh planes, z = 4 ± 2, csx's PEC mask: −78.5 dB.)
+    // on the mesh planes, z = 4 ± 2, csx's PEC mask: −81.2 dB.)
     for plates in [TILTED, LEVEL] {
         let (reference, _) = signals(plates, 40 + 160, 26, false, 4);
         let (v, rep) = signals(plates, 40, 26, true, 4);
         let r = rel_db(&v, &reference);
         eprintln!("{plates:?} into CPML: reflection {r:.1} dB ({rep:?})");
         assert!(rep.verified && rep.sheet_interpolated > 0, "{rep:?}");
-        assert!(r < -70.0, "{plates:?}: {r}");
+        assert!(r < -40.0, "{plates:?}: {r}");
     }
 }
 

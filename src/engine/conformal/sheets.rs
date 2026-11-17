@@ -1569,7 +1569,8 @@ struct Correction {
 #[derive(Debug, Clone, PartialEq)]
 enum Stretch {
     None,
-    /// CPML: `Ψ ← b·Ψ + a·S`, term `+ (1/κ − 1)·S + Ψ` (`k = 1/κ − 1`).
+    /// CPML: `Ψ ← b·Ψ + a·S`, term `+ k·S + Ψ` (`k` the layer's
+    /// [`direct`](CpmlCoefficients::direct), `1/κ − 1` or less).
     Cartesian {
         b: f64,
         a: f64,
@@ -1590,7 +1591,7 @@ impl Stretch {
         Self::Cartesian {
             b: c.b,
             a: c.a,
-            k: 1.0 / c.kappa - 1.0,
+            k: c.direct,
             psi: 0.0,
         }
     }

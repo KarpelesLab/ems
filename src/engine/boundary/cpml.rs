@@ -34,6 +34,80 @@
 //! ε·∂E_x/∂t + κ_e·E_x = (1/κ_y)·∂H_z/∂y + ψ_{E_x,y} − ∂H_y/∂z
 //! ```
 //!
+//! # Order in time
+//!
+//! That recursion is first order in the time step. As a filter of the
+//! derivative's samples it is `a/(1 − b·z⁻¹)`, `z = e^{jω·dt}`, and for
+//! `p·dt → 0` (`p = (σ/κ + α)/ε0`) this is the continuous
+//! `−c/(jω + p)` times `1 + jω·dt/2`: the convolution term comes half a
+//! step early, whatever the layer. A wave that the layer absorbs does not
+//! notice (the reflection of a graded layer is its grading's), but a field
+//! that lies in the layer without travelling into it does: the near field
+//! of a line running beside a layer is stretched by `s`, the truncated
+//! layer leaves the line a loss that is a small difference of large
+//! terms, and that difference moved in proportion to the step (a lossless
+//! 60 mm microstrip, six cells of layer 5 mm from the strip, at 9 GHz:
+//! 0.0310, 0.0351 and 0.0380 dB of loss at steps of 0.050, 0.099 and
+//! 0.135 ps, a straight line of 0.082 dB/ps from 0.027 dB; with twelve
+//! cells 0.0244 dB at either of the longer two).
+//!
+//! [`CpmlConvolution::Linear`], the default, takes the derivative linear
+//! over each step instead (the piecewise-linear recursive convolution of
+//! D. F. Kelley and R. J. Luebbers, "Piecewise linear recursive
+//! convolution for dispersive media using FDTD", IEEE Trans. Antennas
+//! Propag. 44(6), 792–797, 1996, applied to the layer's `ζ`):
+//!
+//! ```text
+//! ψ^n = b·ψ^{n−1} + a0·D^n + a1·D^{n−1}
+//! a1 = −c·dt·(1 − b − x·b)/x²,   a0 + a1 = −(c·dt/x)·(1 − b),
+//! c = σ/(ε0·κ²),   x = (σ/κ + α)·dt/ε0
+//! ```
+//!
+//! exact for a derivative that is linear between its samples, second
+//! order for any other, and the trapezoidal rule for `x → 0`. It needs no
+//! second state: with `Ψ = ψ + (a1/b)·D`,
+//!
+//! ```text
+//! Ψ^n = b·Ψ^{n−1} + (a0 + a1/b)·D^n,      ψ^n = Ψ^n − (a1/b)·D^n
+//! ```
+//!
+//! which is the recursion above with another `a`
+//! ([`CpmlCoefficients::a`]) and with `1/κ − 1 − a1/b` where the update
+//! has `1/κ − 1` ([`CpmlCoefficients::direct`]): the same loops, the same
+//! memory. Taking `(a1/b)·D` out again costs `e^x/x²` in digits, so a
+//! position with `x > 8` keeps the constant rule (the optimal `σ_max`
+//! gives at most 3.2). The lossless line above reads 0.0278 dB at all
+//! three steps. The stretch `1/κ + (a0 + a1/z)/(1 − b/z)` still maps
+//! `|z| ≥ 1` into a disc on a diameter in `[0, 1/κ]` (from
+//! `α/(σ + κα)` at `z = 1` to `1/κ + (a0 − a1)/(1 + b)` at `z = −1`,
+//! and `0 ≥ a0 − a1 > −1/κ`), and the frozen layer's characteristic
+//! polynomial has no root outside the unit circle up to the Courant
+//! limit, as with the constant rule
+//! ([`step_bound`](crate::engine::step_bound), which has the test).
+//! [`CpmlConvolution::Constant`] is the recursion as it was.
+//!
+//! *What the constant rule did to the layer.* For `σ ≫ ω·ε0` (and
+//! `κ = 1`, `α = 0`) its `1/s` is `jω·(ε0/σ − dt/2)`: the layer of a
+//! conductivity `σ/(1 − x/2)`, `x = σ·dt/ε0`, which near the outer face
+//! of a layer whose cells set the time step (`x` up to 1.8) is several
+//! times the `σ` asked for, and more with a longer step. A wave that
+//! meets the layer near grazing, or a guide's mode just above its
+//! cutoff, is absorbed by `σ` times a small normal wavenumber and gained
+//! from that; a wave at normal incidence lost by the steeper profile.
+//! Measured, eight cells, `m = 3` (the tests named): normal incidence
+//! −83.6 dB constant and −85.8 dB linear; a point source in 3D −89.6,
+//! −75.0, −72.6 dB and −95.4, −85.4, −84.7 dB (`tests/cpml.rs`); a slab
+//! at 30° in a Bloch cell, `| |R|² + |T|² − 1 |` at most 2.8e-4 and
+//! 5.7e-4 (`tests/bloch.rs`, 2.2e-4 with the linear rule and
+//! `sigma_factor` 1.5); a parallel-plate guide 10 mm wide driven at 14
+//! to 26 GHz, cutoff 15 GHz, −78 and −82 dB against −50 and −53 dB, and
+//! −81 and −82 dB with the linear rule and `sigma_factor` 2
+//! (`tests/conformal_sheet_pml.rs`). With the linear rule the
+//! conductivity is the one asked for at any step, and
+//! [`Cpml::sigma_factor`] is where to ask for more. The
+//! cylindrical `ρ_max` layer ([`cyl_pml`](super::cyl_pml)) has its own
+//! recursion and keeps it.
+//!
 //! Only the term differentiating along the layer normal changes; the other
 //! curl term is untouched. Because the stretching is a change of
 //! coordinates, it is independent of the medium: `ε`, `μ`, `κ_e` and `σ_m`
@@ -226,7 +300,7 @@ use crate::engine::grid::Grid;
 use crate::engine::kernel::flush;
 use crate::engine::operator::{Hooks, Operator};
 use crate::engine::slab::{Fusion, SlabContext, SlabHooks, SlabMut, SlabPartition, SlabRef};
-use crate::fdtd::{Cpml, Face};
+use crate::fdtd::{Cpml, CpmlConvolution, Face};
 use crate::{Error, Result};
 
 /// Recursive-convolution coefficients at one depth position.
@@ -243,9 +317,24 @@ pub struct CpmlCoefficients {
     pub alpha: f64,
     /// `b = exp(−(σ/κ + α)·dt/ε0)`.
     pub b: f64,
-    /// `a = σ·(b − 1)/(σ·κ + κ²·α)` (0 where `σ = 0`).
+    /// The recursion's `a` in `ψ ← b·ψ + a·D` (0 where `σ = 0`):
+    /// `σ·(b − 1)/(σ·κ + κ²·α)` for [`CpmlConvolution::Constant`],
+    /// `a0 + a1/b` for [`CpmlConvolution::Linear`] (module docs, *Order
+    /// in time*).
     pub a: f64,
+    /// What multiplies the derivative `D` itself beside `ψ` in the
+    /// correction `direct·D + ψ`: `1/κ − 1`, less `a1/b` for
+    /// [`CpmlConvolution::Linear`].
+    pub direct: f64,
 }
+
+/// Largest `(σ/κ + α)·dt/ε0` at which [`CpmlConvolution::Linear`] is
+/// applied; beyond it the position keeps the constant rule. The linear
+/// rule runs in the state of the constant one by taking `a1/b` of the
+/// derivative out again, which costs `e^x/x²` in digits: 47 at 8, of the
+/// seven digits of an `f32`. (The optimal `σ_max` gives at most 3.2 at
+/// the Courant limit of a cell that sets the step alone.)
+const LINEAR_UP_TO: f64 = 8.0;
 
 impl CpmlCoefficients {
     /// Grading of `p` at depth `rho` for local cell size `delta` \[m\] and
@@ -265,10 +354,26 @@ impl CpmlCoefficients {
         let alpha = p.alpha_max * (1.0 - rho);
         let b = (-(sigma / kappa + alpha) * dt / EPS0).exp();
         let den = sigma * kappa + kappa * kappa * alpha;
-        let a = if sigma > 0.0 && den > 0.0 {
-            sigma * (b - 1.0) / den
+        let x = (sigma / kappa + alpha) * dt / EPS0;
+        let (a, shift) = if !(sigma > 0.0 && den > 0.0) {
+            (0.0, 0.0)
+        } else if p.convolution == CpmlConvolution::Linear && x <= LINEAR_UP_TO {
+            // `ζ(τ) = −c·e^{−pτ}`, `c = σ/(ε0κ²)`, `p·dt = x`, and the
+            // derivative linear between its samples:
+            // `ψ^n = b·ψ^{n−1} + a0·D^n + a1·D^{n−1}`,
+            // `a1 = −c·dt·(1 − b − x·b)/x²`, `a0 + a1 = −(c·dt/x)·(1 − b)`.
+            let cdt = sigma * dt / (EPS0 * kappa * kappa);
+            // (1 − b − x·b)/x² = ½ − x/3 + x²/8 − x³/30 + …
+            let g = if x < 1e-3 {
+                0.5 - x / 3.0 + x * x / 8.0
+            } else {
+                (-(-x).exp_m1() - x * b) / (x * x)
+            };
+            let a1 = -cdt * g;
+            let a0 = cdt * (-x).exp_m1() / x - a1;
+            (a0 + a1 / b, a1 / b)
         } else {
-            0.0
+            (sigma * (b - 1.0) / den, 0.0)
         };
         Self {
             rho,
@@ -277,6 +382,7 @@ impl CpmlCoefficients {
             alpha,
             b,
             a,
+            direct: 1.0 / kappa - 1.0 - shift,
         }
     }
 }
@@ -298,7 +404,7 @@ struct Slab {
     /// Per depth index `node[normal] − lo[normal]`.
     b: Vec<f32>,
     a: Vec<f32>,
-    /// `1/κ − 1`.
+    /// [`CpmlCoefficients::direct`].
     k: Vec<f32>,
     /// One value per node of the box, in `(i, j, k)` order (empty in the
     /// unpartitioned templates of a [`Layer`]).
@@ -327,7 +433,7 @@ impl Slab {
             hi,
             b: co.iter().map(|c| c.b as f32).collect(),
             a: co.iter().map(|c| c.a as f32).collect(),
-            k: co.iter().map(|c| (1.0 / c.kappa - 1.0) as f32).collect(),
+            k: co.iter().map(|c| c.direct as f32).collect(),
             psi: Vec::new(),
         }
     }
@@ -1177,7 +1283,15 @@ mod tests {
         let smax = p.sigma_max(Z0, 1e-3);
         assert!((c.sigma / smax - 1.0).abs() < 1e-12);
         assert!((c.b - (-smax * dt / EPS0).exp()).abs() < 1e-15);
-        assert!((c.a - (c.b - 1.0)).abs() < 1e-15); // κ = 1, α = 0
+        // κ = 1, α = 0: the linear rule's two coefficients add up to the
+        // constant rule's one.
+        let x = smax * dt / EPS0;
+        let a1 = -(1.0 - c.b - x * c.b) / x;
+        assert!((c.a - (c.b - 1.0 - a1 + a1 / c.b)).abs() < 1e-12);
+        assert!((c.direct + a1 / c.b).abs() < 1e-12);
+        let old = CpmlCoefficients::new(&p.convolution(CpmlConvolution::Constant), 1.0, 1e-3, dt);
+        assert!((old.a - (old.b - 1.0)).abs() < 1e-15);
+        assert_eq!(old.direct, 0.0);
         // CFS terms.
         let q = Cpml::cells(4).kappa_max(5.0).alpha_max(0.05);
         let c = CpmlCoefficients::new(&q, 0.0, 1e-3, dt);
@@ -1185,6 +1299,57 @@ mod tests {
         assert!((c.alpha - 0.05).abs() < 1e-15);
         let c = CpmlCoefficients::new(&q, 1.0, 1e-3, dt);
         assert_eq!((c.kappa, c.alpha), (5.0, 0.0));
+    }
+
+    /// The discrete stretch against `1/κ − c/(jω + p)`: the constant rule
+    /// is off by `jω·dt/2` of the convolution term, the linear rule by a
+    /// term of second order, and a position beyond [`LINEAR_UP_TO`] keeps
+    /// the constant rule.
+    #[test]
+    fn linear_convolution_is_second_order() {
+        let w = 2.0 * core::f64::consts::PI * 9e9;
+        let err = |conv: CpmlConvolution, dt: f64| {
+            let q = Cpml::cells(6)
+                .kappa_max(2.0)
+                .alpha_max(0.3)
+                .convolution(conv);
+            let c = CpmlCoefficients::new(&q, 0.5, 2e-4, dt);
+            let p = (c.sigma / c.kappa + c.alpha) / EPS0;
+            let cc = c.sigma / (EPS0 * c.kappa * c.kappa);
+            // −c/(jω + p)
+            let d = p * p + w * w;
+            let want = (-cc * p / d, cc * w / d);
+            // direct + 1 − 1/κ + a/(1 − b·e^{−jω·dt})
+            let (re, im) = (1.0 - c.b * (w * dt).cos(), c.b * (w * dt).sin());
+            let n = re * re + im * im;
+            let got = (c.direct + 1.0 - 1.0 / c.kappa + c.a * re / n, -c.a * im / n);
+            (got.0 - want.0).hypot(got.1 - want.1) / want.0.hypot(want.1)
+        };
+        let (c1, c2) = (
+            err(CpmlConvolution::Constant, 2e-13),
+            err(CpmlConvolution::Constant, 1e-13),
+        );
+        let (l1, l2) = (
+            err(CpmlConvolution::Linear, 2e-13),
+            err(CpmlConvolution::Linear, 1e-13),
+        );
+        assert!((c1 / c2 - 2.0).abs() < 0.05, "{c1} {c2}");
+        assert!((c2 / (w * 1e-13 / 2.0) - 1.0).abs() < 0.05, "{c2}");
+        assert!((l1 / l2 - 4.0).abs() < 0.1, "{l1} {l2}");
+        assert!(l1 < c1 / 100.0, "{l1} {c1}");
+        // The step to zero: the two rules meet the same limit.
+        let (a, b) = (
+            err(CpmlConvolution::Linear, 1e-17),
+            err(CpmlConvolution::Constant, 1e-17),
+        );
+        assert!(a < 1e-6 && b < 1e-5, "{a} {b}");
+        // Beyond the limit of the linear rule: the constant one.
+        let big = Cpml::cells(4).sigma_factor(20.0);
+        let dt = 1e-12;
+        let lin = CpmlCoefficients::new(&big, 1.0, 1e-3, dt);
+        let con = CpmlCoefficients::new(&big.convolution(CpmlConvolution::Constant), 1.0, 1e-3, dt);
+        assert!(lin.sigma * dt / EPS0 > LINEAR_UP_TO);
+        assert_eq!((lin.a, lin.direct), (con.a, con.direct));
     }
 
     #[test]

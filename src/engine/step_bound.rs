@@ -186,11 +186,16 @@
 //!   `s(z) = 1/κ + a/(1 − b/z)` maps `|z| ≥ 1` into the disc on
 //!   `[α/(σ + κα), (1 − σ/(σ + κα)·tanh(x/2))/κ] ⊂ [0, 1]`, and the
 //!   characteristic polynomial of a plane wave,
-//!   `(z − 1)²(z − b)² + 4z·(A·(c₁z − b/κ)² + B·(z − b)²)`, has no root
+//!   `(z − 1)²(z − b)² + 4z·(A·(c₁z − c₀)² + B·(z − b)²)`
+//!   (`c₁ = 1/κ + a`, `c₀ = b/κ`), has no root
 //!   outside the unit circle for `A + B ≤ 1` (the Courant number squared
 //!   of the unstretched cell) over `κ` 1 to 15, `σ·dt/ε0` 0 to 100 and
-//!   `α·dt/ε0` 0 to 5 (a unit test scans it). The graded layer is tested
-//!   by long runs.
+//!   `α·dt/ε0` 0 to 5 (a unit test scans it). The layer's second-order
+//!   convolution (`CpmlConvolution::Linear`, the default) has
+//!   `s(z) = 1/κ + (a0 + a1/z)/(1 − b/z)`, a disc on
+//!   `[α/(σ + κα), 1/κ + (a0 − a1)/(1 + b)] ⊂ [0, 1/κ]`, and the same
+//!   polynomial with `c₁ = 1/κ + a0`, `c₀ = b/κ − a1`; the test scans
+//!   both. The graded layer is tested by long runs.
 //!
 //! The f32 fields round every step; a rounding error is a source, not a
 //! growth rate, so it does not move the limit. The coefficients are
@@ -1567,17 +1572,29 @@ mod tests {
             z
         }
         let mut worst = 0.0f64;
-        for kappa in [1.0, 1.5, 3.0, 8.0, 15.0] {
-            for xs in [0.0, 1e-3, 1e-2, 0.1, 0.5, 1.0, 2.0, 5.0, 20.0, 100.0] {
+        for (linear, kappa) in [false, true]
+            .into_iter()
+            .flat_map(|l| [1.0, 1.5, 3.0, 8.0, 15.0].map(|k| (l, k)))
+        {
+            for xs in [
+                0.0, 1e-3, 1e-2, 0.1, 0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 20.0, 100.0,
+            ] {
                 for xa in [0.0, 1e-4, 1e-2, 0.1, 1.0, 5.0] {
                     let x: f64 = xs / kappa + xa;
                     let b = (-x).exp();
-                    let a = if xs == 0.0 {
-                        0.0
+                    // The stretch is `(c1·z − c0)/(z − b)`: the constant
+                    // rule's `a/(1 − b/z)`, or the linear rule's
+                    // `(a0 + a1/z)/(1 − b/z)`, beside `1/κ`.
+                    let (a0, a1) = if xs == 0.0 {
+                        (0.0, 0.0)
+                    } else if linear {
+                        let cdt = xs / (kappa * kappa);
+                        let a1 = -cdt * (1.0 - b - x * b) / (x * x);
+                        (cdt * (b - 1.0) / x - a1, a1)
                     } else {
-                        xs / (kappa * (xs + kappa * xa)) * (b - 1.0)
+                        (xs / (kappa * (xs + kappa * xa)) * (b - 1.0), 0.0)
                     };
-                    let c1 = 1.0 / kappa + a;
+                    let (c1, bk) = (1.0 / kappa + a0, b / kappa - a1);
                     for total in [0.25, 0.5, 0.9, 0.99, 1.0] {
                         for part in 0..=20 {
                             let fa = total * part as f64 / 20.0;
@@ -1589,7 +1606,6 @@ mod tests {
                                 -2.0 * b - 2.0 * b * b,
                                 b * b,
                             ];
-                            let bk = b / kappa;
                             let p2 = [
                                 4.0 * (fa * c1 * c1 + fb),
                                 4.0 * (-2.0 * fa * c1 * bk - 2.0 * fb * b),

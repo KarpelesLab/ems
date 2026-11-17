@@ -46,8 +46,15 @@ struct Board {
     /// Mesh lines 20 µm on each side of the strip's edges (y).
     fine_edges: bool,
     pml: bool,
+    /// The absorbing layers, where `pml`.
+    layer: Cpml,
     factor: f64,
     limit: StepLimit,
+}
+
+/// The layer of cadlab's regions: four cells, the frequency shift at 5 GHz.
+fn layer() -> Cpml {
+    Cpml::cells(4).alpha_max(2.0 * std::f64::consts::PI * 8.854e-12 * 5e9)
 }
 
 impl Board {
@@ -60,6 +67,7 @@ impl Board {
             cell: 0.5,
             fine_edges: false,
             pml: true,
+            layer: layer(),
             factor: 0.95,
             limit: StepLimit::Cells,
         }
@@ -141,7 +149,7 @@ impl Board {
     }
 
     fn fdtd(&self) -> Fdtd {
-        let pml = Cpml::cells(4).alpha_max(2.0 * std::f64::consts::PI * 8.854e-12 * 5e9);
+        let pml = self.layer;
         Fdtd::new()
             .waveform(Waveform::gaussian(5e9, 5e9))
             .boundaries(if self.pml {
@@ -406,6 +414,47 @@ fn boards_at_the_limit_stay_bounded() {
                 &mut b.simulation(),
                 30_000,
             );
+        }
+    }
+}
+
+/// The absorbing layers' convolution (design §5.6): the second-order rule
+/// that is the default (every other test of this file runs on it), with
+/// a stretch `κ`, without the frequency shift, at two and a half times
+/// the usual conductivity (`σ·dt/ε0` up to 8, where the rule ends) and at
+/// eight times (the outer cells past that end, on the first-order rule
+/// beside inner cells on the second-order one), and the first-order rule
+/// that it replaces: at factor 1, 30 000 steps from noise, nothing grows.
+/// (Every layer but one has the shift: eight cells without it hold a
+/// static field of the noise from the first 200 steps on, 6.2e-11 J for
+/// 3.3e-11 at the start and the same at the end, with either rule.)
+#[test]
+fn the_layers_convolution_stays_bounded() {
+    use ems::CpmlConvolution::{Constant, Linear};
+    let layers = [
+        ("linear, κ 5", layer().kappa_max(5.0)),
+        ("linear, no shift", Cpml::cells(4)),
+        ("linear, 2.5 σ", layer().sigma_factor(2.5)),
+        ("linear and constant, 8 σ", layer().sigma_factor(8.0)),
+        (
+            "linear, 8 cells, κ 3",
+            Cpml::cells(8).kappa_max(3.0).alpha_max(layer().alpha_max),
+        ),
+        ("constant", layer().convolution(Constant)),
+        (
+            "constant, κ 5",
+            layer().kappa_max(5.0).convolution(Constant),
+        ),
+    ];
+    assert_eq!(layer().convolution, Linear);
+    for (name, layer) in layers {
+        for copper in [Copper::Pec, Copper::Solid] {
+            let b = Board {
+                factor: 1.0,
+                layer,
+                ..Board::new(copper)
+            };
+            assert_bounded(&format!("{copper:?}, {name}"), &mut b.simulation(), 30_000);
         }
     }
 }

@@ -187,6 +187,28 @@ pub struct Cpml {
     pub kappa_max: f64,
     /// Maximum complex-frequency shift `α_max ≥ 0` \[S/m\] (default 0).
     pub alpha_max: f64,
+    /// How the layer's convolution is integrated in time (default
+    /// [`CpmlConvolution::Linear`]).
+    pub convolution: CpmlConvolution,
+}
+
+/// How a CPML integrates its convolution over a time step
+/// ([`engine::boundary::cpml`](crate::engine::boundary::cpml), *Order in
+/// time*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum CpmlConvolution {
+    /// The field derivative taken constant over each step, at its value
+    /// at the step's end (Roden and Gedney's recursion): first order in
+    /// the time step, the convolution term half a step early. What ems
+    /// did up to 0.0.17.
+    Constant,
+    /// The field derivative taken linear over each step (piecewise-linear
+    /// recursive convolution): second order, as the rest of the scheme.
+    /// The same state and the same work per step; the coefficients
+    /// differ.
+    #[default]
+    Linear,
 }
 
 impl Default for Cpml {
@@ -197,6 +219,7 @@ impl Default for Cpml {
             sigma_factor: 1.0,
             kappa_max: 1.0,
             alpha_max: 0.0,
+            convolution: CpmlConvolution::Linear,
         }
     }
 }
@@ -231,6 +254,12 @@ impl Cpml {
     /// Sets `α_max` \[S/m\].
     pub fn alpha_max(mut self, a: f64) -> Self {
         self.alpha_max = a;
+        self
+    }
+
+    /// Sets how the convolution is integrated in time.
+    pub fn convolution(mut self, c: CpmlConvolution) -> Self {
+        self.convolution = c;
         self
     }
 

@@ -932,7 +932,9 @@ struct Group {
     stretch: u32,
 }
 
-/// CPML stretch of one derivative term: `1/κ`, `a`, `b` and `ψ`.
+/// CPML stretch of one derivative term: `1/κ` (with the layer's
+/// [`direct`](super::boundary::cpml::CpmlCoefficients::direct): one more
+/// than it), `a`, `b` and `ψ`.
 #[derive(Debug, Clone, Copy)]
 struct Stretch {
     ik: f64,
@@ -1792,7 +1794,7 @@ fn stretch_at(
             (k < c).then_some(k)
         };
         if let Some(q) = idx.and_then(|i| prof.get(i)) {
-            return (q.a != 0.0 || q.kappa != 1.0).then_some((1.0 / q.kappa, q.a, q.b));
+            return (q.a != 0.0 || q.direct != 0.0).then_some((1.0 + q.direct, q.a, q.b));
         }
     }
     None

@@ -109,11 +109,14 @@ fn oblique(k_t: [f64; 3], pol: Axis, slab: bool, forward: bool, threads: usize) 
     let mut probes: Vec<[OperatorHandle<Probe>; 2]> = Vec::new();
     let (re, im) = pair.engines_mut();
     for (part, e) in [(WavePart::Real, re), (WavePart::Imag, im)] {
-        let c = CpmlBoundary::new(
-            e,
-            [(Face::ZMin, Cpml::cells(10)), (Face::ZMax, Cpml::cells(10))],
-        )
-        .unwrap();
+        // (One and a half times the usual conductivity: waves up to 46°
+        // from the normal, which a layer absorbs by its conductivity
+        // times the normal wavenumber. With the usual one the TM slab's
+        // power balance reads 5.7e-4 for the 2.2e-4 here; the layer's
+        // first-order convolution, to ems 0.0.17, read 2.8e-4, being a
+        // larger conductivity by its error.)
+        let layer = Cpml::cells(10).sigma_factor(1.5);
+        let c = CpmlBoundary::new(e, [(Face::ZMin, layer), (Face::ZMax, layer)]).unwrap();
         e.add_operator(c);
         let pw = PeriodicPlaneWave::new(e, &spec, part, gauss()).unwrap();
         let h = e.add_operator(pw);
