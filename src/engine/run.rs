@@ -312,9 +312,12 @@ struct Settling {
     rule: Settle,
     /// Per probe: samples taken in, `X`, `A`.
     sums: Vec<(usize, f64, f64, f64)>,
-    /// Per check: the steps run, the energy and every probe's `X`.
-    history: Vec<(u64, f64, Vec<(f64, f64)>)>,
+    history: Vec<Checked>,
 }
+
+/// A check of [`Settling`]: the steps run, the energy and every probe's
+/// `X`.
+type Checked = (u64, f64, Vec<(f64, f64)>);
 
 impl Settling {
     fn new(rule: Settle) -> Self {
