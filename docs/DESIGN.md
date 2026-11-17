@@ -480,7 +480,9 @@ far as they differ):
   engine is built (two `f64` vectors over the E edges), and the
   installed form of the surface impedance beside its final one (about
   590 bytes per sheet edge beside 450): the two peaks, 31 and 18 MB
-  above what is kept.
+  above what is kept. (Since wave 28 the estimate is not made where the
+  cell bound over the grid settles the check, §5.13: none of cadlab's
+  oracle regions allocates it.)
 - The fields, 24 bytes per node, and the coefficients where the rows do
   not repeat: `cb` and `db` on a graded mesh (24 bytes per node).
 - The compiled model next to the engine: 15 bytes per node and 16 per
@@ -2577,6 +2579,50 @@ current with `f_A` raised to `τ`. A power iteration on
 `s < 0.999` before the first step; if not, `τ` is raised ×1.25 (up to 4
 rounds) and a warning is issued if it still fails. The power estimate is
 from below (not a proof); the long-run energy tests are the direct check.
+
+The estimate is 300 products with `S` over the whole grid in `f64` on
+one thread, whatever the number of cut cells: on a board region of
+73 000 nodes with twelve cut edges 12.4·10⁹ instructions per engine,
+what 950 of its time steps take, and a model with two ports builds two
+engines (a quarter to two fifths of such a run on four threads, where
+the steps are shared out and the estimate is not). Since wave 28 it is
+made only where it can tell something:
+
+- *The cell bound over the grid.* `λ_max(S)` is at most the largest of
+  the cells' own values (the element bound of Irons and Treharne, which
+  `keep_stable` already uses on the cut cells), and that is one pass over
+  the cells. Where the round's currents are all those of grid faces (no
+  merged or interpolated face, no thin sheet off the mesh planes; a
+  Cartesian grid) and every cell, cut or not, is within the limit, the
+  estimate, which approaches the same eigenvalue from below, could not
+  come out above it: the round is accepted as it would have been, the
+  report's `s` is the bound and says so (`ConformalReport::proven`). A
+  cell is first tried by the absolute row sums of its six-by-six matrix
+  (and of its two scalings by the faces' admittances, which have its
+  eigenvalues), 4/3 of its value for a cube, without solving for it;
+  only a cell that does not pass by that is solved (Jacobi). The limit
+  is taken a part in 10⁹ lower, so that rounding in either computation
+  cannot let a grid pass that the estimate would refuse. Where a cell is
+  above the limit (a grid run at the Courant limit of its cells, a cut
+  cell that is not stable by itself) or the round has other currents,
+  the estimate is made as before.
+- *Once per compiled model.* The engines a `CompiledModel` builds are
+  the same up to the conformal step (the sources come after), so the
+  first one's check holds for the others: they construct the round it
+  ended on and take what it found.
+- *The products themselves*: one loop per kind of root table and the
+  two target arrays borrowed once per normal, the same sums in the same
+  order (the estimates of seven models with merged, interpolated and
+  sheet currents are the bits they were): 30 → 25·10⁹ instructions on
+  those.
+
+cadlab's five oracle regions (two lossy lines, a via transition, two
+lumped parts) all pass by the bound: their Touchstone files are the
+bytes they were, and the setup of a run with two ports goes from 1.3 to
+1.7 s to 0.1 to 0.25 s (a loaded machine, three threads; the whole run
+of the 50 Ω part 7.1 → 4.1 s). The two `f64` vectors of the estimate
+(54 bytes per node, the peak of an engine's build in §4.1) are not
+allocated either.
 
 **Absorbing layers.** A circular guide with conformal walls running into
 CPML ends never decayed (87 % of the peak energy after 30 000 steps,
@@ -7492,7 +7538,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-17, after wave 27)
+### Status (2026-11-17, after wave 28)
 
 | Step | State |
 |---|---|
@@ -7856,9 +7902,44 @@ fields and energies of `examples/bench_surface` bit for bit.
   36.2 s (its own solver 34.4 s). Its session 6 on three threads: 58 to
   63 → 45.0, 45.7 s (its own solver 57.1, 61.2 s on three).
 
+Wave 28 (native; §5.13, §5.6), from the first measurement of ems beside
+openEMS on cadlab's oracle regions (its D103: both solvers on the same
+runner, one process per run; ems 0.0.12 took 0.3 to 0.6 of openEMS's
+time and 0.45 to 0.6 of its memory, and was nearer the line's own model
+in loss). Profiles of those runs (callgrind) put a quarter to two
+fifths of a short run with two ports in the stability estimate of
+conformal PEC, and a quarter to a half of the time steps in the CPML.
+No result changes: cadlab's Touchstone files of the five regions are
+those of 0.0.12 byte for byte.
+
+- *Conformal PEC's check* (§5.13): the cell bound over the whole grid
+  in the place of the power iteration where it settles the check (every
+  one of cadlab's regions), one check per compiled model, and the
+  iteration's products in a tighter loop where it still runs.
+- *CPML* (§5.6): a z-face layer is rows as long as the layer is thick,
+  six or eight values, where a loop of unknown length runs an element
+  at a time. Rows of 3 to 12, 15 and 16 values have a loop of their
+  length, with the row update inlined: the same arithmetic per element.
+  9.1 → 6.9·10⁶ instructions per step for the CPML of a 76 × 48 × 19
+  box with six cells per face (the kernel: 5.5); 97 → 110 Mcells/s on
+  one thread of a loaded machine, best of seven, and 139 → 143 on a
+  60 × 50 × 40 box with eight. (An earlier wave measured a fixed-length variant
+  slower and did not keep it; that one was called per row, this one is
+  inlined into the layer's loop.)
+
 Remaining:
+- Time step (§5.4): a native run takes the Courant limit of the smallest
+  cell sizes at the vacuum speed. openEMS's default criterion on the
+  operator with its materials (`Fdtd::timestep_method`, which a native
+  run may ask for) gives 11 % more on cadlab's part regions (0.1966 ps
+  for 0.1778 at factor 1), and the estimates above read 0.66 to 0.74 at
+  cadlab's factor 0.95: the scheme itself would carry a step 1.35 to
+  1.5 times as long. A rule from the cell bound (rigorous, with the
+  materials) is the candidate; what it does to the faces conformal PEC
+  keeps, and to the operators that have limits of their own, is not
+  measured.
 - Memory (§4.1): while an engine is built, the stability estimate of
-  conformal PEC (54 bytes per node) and the surface impedance's
+  conformal PEC where it is still made (54 bytes per node) and the surface impedance's
   installed edges beside their final form; while running, the fields
   (24 bytes per node), `cb` and `db` on a graded mesh (24), and a
   probe's series (8 bytes a step: on a small region with many probes
@@ -7999,7 +8080,8 @@ and the probe sampling locating every node per sample, the time-step
 criteria (a third of a short guide run), and the CPML corrections (46 %
 of the patch, whose grid is 74 % PML: per layer cell about 1.6 times a
 kernel component update; a fixed-length variant of the short z-layer
-rows was slower and was not kept).
+rows was slower and was not kept then; wave 28 has one inlined into the
+layer's loop, which is faster).
 
 ## 11. Open questions for review
 
