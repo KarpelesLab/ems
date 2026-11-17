@@ -1250,6 +1250,31 @@ openEMS `<BoundaryCond>` choices (including `PML_n`); `Periodic` is ems-only.
     per face keeps the stretch a function of the normal coordinate only).
     8 cells at normal incidence: −83.6 dB in vacuum, −85.7 dB in ε_r = 4 or
     12 (−80.5 / −73.4 dB with the vacuum `σ_max`).
+    With the second-order convolution below: −85.8 dB in all three.
+  - **Second order in time** (wave 33, `CpmlConvolution::Linear`, the
+    default). Roden and Gedney's recursion takes the field derivative
+    constant over a step: as a filter `a/(1 − b/z)`, which for a small step
+    is the layer's `−c/(jω + p)` times `1 + jω·dt/2`. For `σ ≫ ω·ε0` that is
+    the layer of a conductivity `σ/(1 − σ·dt/(2ε0))`: several times the one
+    asked for in the outer cells of a layer whose cells set the step, and
+    more with a longer step. The derivative taken linear over the step
+    (piecewise-linear recursive convolution, Kelley and Luebbers 1996) gives
+    `ψ^n = b·ψ^{n−1} + a0·D^n + a1·D^{n−1}`, which runs in the state and the
+    loops of the old recursion with `a = a0 + a1/b` and `1/κ − 1 − a1/b` for
+    `1/κ − 1` (`CpmlCoefficients::a`, `direct`; positions with
+    `(σ/κ + α)·dt/ε0 > 8` keep the constant rule, for the digits). Found on
+    cadlab's 64 mm lossy microstrip, whose loss at 9 GHz moved with the step
+    of wave 31: the same line lossless, six cells of layer 5 mm from the
+    strip, read 0.0310, 0.0351 and 0.0380 dB of loss at steps of 0.050, 0.099
+    and 0.135 ps, a straight line from 0.027 dB at 0.082 dB/ps, and reads
+    0.0278 dB at all three now. What a layer absorbs of waves near grazing
+    or just above a guide's cutoff goes with its conductivity, so those the
+    old rule absorbed better by its error; `Cpml::sigma_factor` is where to
+    ask for that (figures in the module docs of `engine::boundary::cpml`).
+    The frozen layer's characteristic polynomial has no root outside the
+    unit circle for either rule (§5.4.1's test scans both), and
+    `tests/step_limit.rs` steps boards from noise with the layer in six
+    variants.
   - The depth `ρ` is counted in cells (mesh index, half-integer for H), so on a
     graded PML mesh the per-cell attenuation `σ·Δ` keeps the uniform profile.
   - One operator (`engine::boundary::cpml::CpmlBoundary`) handles all CPML
@@ -1497,9 +1522,38 @@ and open (CPML) along the normal `n`.
   to the largest total energy seen (normally the incident pulse in the
   box). Measured: an empty box in ε_r = 4 stops at the first check after
   the transit with `W/W_max` = −133 dB.
+- **What is still to come at one frequency** (wave 33,
+  `EndCriteria::settle`, off by default). The energy of the whole field
+  says little about the lowest frequency of a result: what a spectrum
+  lacks there is `∫_T^∞ x·e^{−jωt} dt`, and a slow tail of little energy
+  is large in it. cadlab's 20 mm lossy microstrip run to −50 dB read
+  0.0080 dB from its reference at 0.06 GHz, to −60 dB (1.73 times the
+  steps) 0.0018, to −80 dB (5.9 times) 0.0007: the energy has a knee just
+  below −50 dB, after which the low end of the pulse leaves the absorbing
+  layers slowly (their frequency shift lies above it). With
+  `Settle::at(f)` the run, having met its energy threshold after `N0`
+  steps, goes on until, for every voltage and current probe,
+  `2·|X(N) − X₀|/ln(W₀/W) ≤ tolerance·A(N)`: `X` the running spectrum at
+  `f`, `A` the sum of the signal's absolute values, `X₀` and `W₀` those of
+  the check a window (an eighth of the run so far) before. The left side
+  is what the spectrum still lacks if the signal goes on as it is in the
+  window and falls as the fields do, at half the rate of their energy. A
+  region whose energy falls fast is done as soon as the window is quiet
+  (a series resistor: 1.01 times the steps; a series capacitor 1.35
+  times, to −81 dB); one past its knee goes on (the two lossy lines 2.33
+  times, where the 0.06 GHz point is 0.0001 and 0.0002 dB from the
+  reference, nearer than at −80 dB), and `max_extension` (0.5) caps it:
+  1.50 times the steps for 0.0031 and 0.0040 dB. The same end is reached
+  from a threshold of −60 dB. *Tried:* the window's change alone against
+  the tolerance (a slow tail moves the spectrum little per window and has
+  much to come: the lines ended at 1.2 times with nothing gained, and a
+  part ran 1.2 to 1.7 times for nothing, the window having to clear the
+  pulse); the ratio of two windows' changes as the tail's decay (a
+  spectrum's increments are not monotone: runs ended anywhere).
 - `Results` records the reason it stopped (`Engine::run_until` returns a
   `RunOutcome` with a `StopReason`: energy decay, max timesteps, aborted
-  by the progress callback, or diverged).
+  by the progress callback, or diverged), and the steps at which the
+  energy criterion was first met (`criterion_steps`).
 
 ### 5.9 Conducting sheets
 A csx `ConductingSheet` (conductivity `σ`, thickness `t`) is a slab much
@@ -7676,7 +7730,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-17, after wave 32)
+### Status (2026-11-18, after wave 33)
 
 | Step | State |
 |---|---|
@@ -8167,6 +8221,17 @@ first, so every model with cut cells paid the second, 0.4 s of a run of
 cadlab's regions (0.0.16). The compile step has made that check, the
 cut cells in it, and says so (`iterations` 0 with `keep_step`): the
 results are the same bytes.
+
+Wave 33 (native), two things cadlab's validations had left open after
+wave 31. A loss that moved with the time step (cadlab's 64 mm lossy
+microstrip at 9 GHz: 0.0896, 0.0898, 0.0925 dB from its reference on
+three steps) was the CPML's convolution, first order in the step, and
+is second order now (§5.6): the same line, run to −80 dB, 0.0820 dB on
+the longest of the three steps. And the lowest frequency of a result,
+which an energy criterion ends too early for: `EndCriteria::settle`
+(§5.8). Both change results: the first for every model with a CPML
+(`CpmlConvolution::Constant` is the layer as it was), the second only
+where it is asked for.
 
 Remaining:
 - Time step (§5.4.1): the planes of sheets keep the geometric shares.

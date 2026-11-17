@@ -29,7 +29,7 @@ pub use csx;
 pub use engine::{CellMaterials, EdgeMaterials, Engine, Grid};
 pub use error::{Error, Result};
 pub use fdtd::{
-    Boundaries, Boundary, Cpml, CpmlConvolution, EndCriteria, Face, Fdtd, Mur, StepLimit,
+    Boundaries, Boundary, Cpml, CpmlConvolution, EndCriteria, Face, Fdtd, Mur, Settle, StepLimit,
 };
 pub use post::Complex64;
 pub use sim::{

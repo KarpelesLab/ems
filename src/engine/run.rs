@@ -4,7 +4,7 @@ use core::ops::ControlFlow;
 use std::time::{Duration, Instant};
 
 use super::Engine;
-use crate::fdtd::EndCriteria;
+use crate::fdtd::{EndCriteria, Settle};
 use crate::{Error, Result};
 
 /// When [`Engine::run_until`] stops.
@@ -207,6 +207,10 @@ pub struct RunOutcome {
     pub max_energy: f64,
     /// Wall time of the call.
     pub elapsed: Duration,
+    /// Steps of the call at the first check that met the energy
+    /// criterion; the run went on from there if the criterion has a
+    /// [`settle`](EndCriteria::settle) test. `None` if none did.
+    pub criterion_steps: Option<u64>,
 }
 
 impl Engine {
@@ -236,7 +240,10 @@ impl Engine {
     ///    (`W < −1e-12·W_max`) → [`StopReason::Diverged`];
     /// 3. if end criteria are set, `t > excitation_end` (or no excitation
     ///    end is given), `W_max > 0` and `W/W_max < energy_ratio` →
-    ///    [`StopReason::EnergyDecay`];
+    ///    [`StopReason::EnergyDecay`]; with a
+    ///    [`settle`](EndCriteria::settle) test only once the probes'
+    ///    spectra are still or its cap is reached ([`Settle`]), the
+    ///    energy being below the threshold at that check too;
     /// 4. otherwise the next `K − 1` steps run without energy evaluation
     ///    (batched, one barrier per half-step when no operator has serial
     ///    hooks).
@@ -291,6 +298,84 @@ pub(crate) trait Stepper {
         let _ = measure;
         None
     }
+    /// Calls `f` with the sample times and values of every voltage and
+    /// current probe, always in the same order
+    /// ([`Settle`](crate::fdtd::Settle)); none by default.
+    fn signals(&self, f: &mut dyn FnMut(&[f64], &[f64])) {
+        let _ = f;
+    }
+}
+
+/// The running spectra of a stepper's probes at one frequency, for
+/// [`Settle`].
+struct Settling {
+    rule: Settle,
+    /// Per probe: samples taken in, `X`, `A`.
+    sums: Vec<(usize, f64, f64, f64)>,
+    /// Per check: the steps run, the energy and every probe's `X`.
+    history: Vec<(u64, f64, Vec<(f64, f64)>)>,
+}
+
+impl Settling {
+    fn new(rule: Settle) -> Self {
+        Self {
+            rule,
+            sums: Vec::new(),
+            history: Vec::new(),
+        }
+    }
+
+    /// Takes in the samples since the last check, after `steps` steps
+    /// with the energy `w`.
+    fn update<S: Stepper + ?Sized>(&mut self, s: &S, steps: u64, w: f64) {
+        let om = 2.0 * core::f64::consts::PI * self.rule.frequency;
+        let (sums, mut q) = (&mut self.sums, 0);
+        s.signals(&mut |times, values| {
+            if sums.len() == q {
+                sums.push((0, 0.0, 0.0, 0.0));
+            }
+            let (done, re, im, abs) = &mut sums[q];
+            for (t, x) in times.iter().zip(values).skip(*done) {
+                let (sin, cos) = (om * t).sin_cos();
+                *re += x * cos;
+                *im -= x * sin;
+                *abs += x.abs();
+            }
+            *done = times.len().min(values.len());
+            q += 1;
+        });
+        self.history
+            .push((steps, w, sums.iter().map(|p| (p.1, p.2)).collect()));
+    }
+
+    /// Whether what every probe's spectrum still lacks, by the window
+    /// that ends at the last check, is within the tolerance.
+    fn settled(&self) -> bool {
+        let Some((steps, w, now)) = self.history.last() else {
+            return true;
+        };
+        let span = (self.rule.window * *steps as f64).ceil() as u64;
+        let from = steps.saturating_sub(span);
+        let (w0, then) = match self.history.partition_point(|h| h.0 <= from) {
+            0 => return false,
+            n => (self.history[n - 1].1, &self.history[n - 1].2),
+        };
+        // The energy's fall over the window, `ln(W₀/W)`: twice the
+        // signals'. No field left: nothing to come.
+        if *w <= 0.0 {
+            return true;
+        }
+        let fall = (w0 / w).ln();
+        if fall.is_nan() || fall <= 0.0 {
+            return false;
+        }
+        self.sums.iter().enumerate().all(|(q, p)| {
+            // (A probe added during the run has no value then: zero.)
+            let (re, im) = then.get(q).copied().unwrap_or((0.0, 0.0));
+            let moved = (now[q].0 - re).hypot(now[q].1 - im);
+            2.0 * moved <= fall * self.rule.tolerance * p.3
+        })
+    }
 }
 
 impl Stepper for Engine {
@@ -317,6 +402,14 @@ impl Stepper for Engine {
     }
     fn energy_now(&mut self, measure: EnergyMeasure) -> Option<f64> {
         Some(self.energy_in(measure))
+    }
+    fn signals(&self, f: &mut dyn FnMut(&[f64], &[f64])) {
+        for r in &self.ops {
+            let op: &dyn core::any::Any = &*r.op;
+            if let Some(p) = op.downcast_ref::<super::Probe>() {
+                f(p.times(), p.values());
+            }
+        }
     }
 }
 
@@ -347,6 +440,11 @@ where
         EnergyMeasure::Invariant => s.held_energy(),
         EnergyMeasure::OpenEms => 0.0,
     };
+    let mut settling = limits
+        .end_criteria
+        .and_then(|c| c.settle)
+        .map(Settling::new);
+    let mut met: Option<u64> = None;
     let reason = loop {
         if steps >= max {
             break StopReason::MaxTimesteps;
@@ -402,12 +500,23 @@ where
         if !w.is_finite() || w < -NEGATIVE_ENERGY * w_max {
             break StopReason::Diverged;
         }
+        if let Some(z) = &mut settling {
+            z.update(s, steps, w);
+        }
         if let Some(c) = &limits.end_criteria
             && limits.excitation_end.is_none_or(|end| t > end)
             && w_max > 0.0
             && ratio < c.energy_ratio
         {
-            break StopReason::EnergyDecay { ratio_db };
+            let first = *met.get_or_insert(steps);
+            // With a settle test: on from the first such check until the
+            // probes' spectra are still, or the cap.
+            let done = settling.as_ref().is_none_or(|z| {
+                steps as f64 >= first as f64 * (1.0 + z.rule.max_extension) || z.settled()
+            });
+            if done {
+                break StopReason::EnergyDecay { ratio_db };
+            }
         }
         if !after {
             let chunk = (interval - 1).min(max - steps);
@@ -423,6 +532,7 @@ where
         energy: w,
         max_energy: w_max,
         elapsed: start.elapsed(),
+        criterion_steps: met,
     })
 }
 
@@ -430,10 +540,12 @@ where
 mod tests {
     use super::*;
 
-    /// A stepper with a scripted energy per check.
+    /// A stepper with a scripted energy per check, and one probe whose
+    /// sample `k` is `signal(k)` (none without).
     struct Script {
         n: u64,
         w: Vec<f64>,
+        signal: Option<fn(u64) -> f64>,
     }
 
     impl Stepper for Script {
@@ -457,6 +569,73 @@ mod tests {
         fn run(&mut self, n: u64) {
             self.n += n;
         }
+        fn signals(&self, f: &mut dyn FnMut(&[f64], &[f64])) {
+            if let Some(x) = self.signal {
+                let t: Vec<f64> = (0..self.n).map(|k| k as f64).collect();
+                let v: Vec<f64> = (0..self.n).map(x).collect();
+                f(&t, &v);
+            }
+        }
+    }
+
+    /// The settle test: a run whose energy is below its threshold from
+    /// step 40 goes on while its probe's slow tail has more to give the
+    /// spectrum than the tolerance, ends where it has not, and no later
+    /// than the cap.
+    #[test]
+    fn a_slow_tail_keeps_the_run_going() {
+        // A pulse of 20 steps and a tail of a hundredth of it that halves
+        // every `HALF` steps, the energy with it.
+        const HALF: f64 = 60.0;
+        fn tail(k: u64) -> f64 {
+            0.01 * (-(k as f64) * core::f64::consts::LN_2 / HALF).exp()
+        }
+        fn x(k: u64) -> f64 {
+            tail(k) + if k < 20 { 1.0 } else { 0.0 }
+        }
+        let run = |settle: Option<Settle>, signal: Option<fn(u64) -> f64>, steady: bool| {
+            let c = EndCriteria::energy_decay_db(-30.0)
+                .check_interval(1)
+                .settle(settle);
+            let limits = RunLimits::new(100_000).end_criteria(c);
+            let w = (0..5000)
+                .map(|k| match k {
+                    0..40 => 1.0,
+                    _ if steady => 1e-4,
+                    _ => tail(k) * tail(k),
+                })
+                .collect();
+            let mut s = Script { n: 0, w, signal };
+            drive(&mut s, &limits, |_| ControlFlow::Continue(())).unwrap()
+        };
+        let plain = run(None, Some(x), false);
+        assert_eq!((plain.steps, plain.criterion_steps), (41, Some(41)));
+        // Without a probe there is nothing to wait for.
+        let none = run(Some(Settle::at(0.0)), None, false);
+        assert_eq!(none.steps, 41);
+        // Over the window of N/8 steps the spectrum moves by the tail's
+        // sum there and the energy falls by 2^(−2·N/480): the estimate
+        // is the tail's own remainder, below 1e-4 of A ≈ 20.9 at step
+        // 560, below 1e-5 at 775.
+        let far = |s: Settle| s.max_extension(50.0);
+        let o = run(Some(far(Settle::at(0.0))), Some(x), false);
+        assert!(matches!(o.reason, StopReason::EnergyDecay { .. }), "{o:?}");
+        assert_eq!((o.steps, o.criterion_steps), (560, Some(41)), "{o:?}");
+        let tight = run(Some(far(Settle::at(0.0).tolerance(1e-5))), Some(x), false);
+        assert_eq!(tight.steps, 775, "{tight:?}");
+        // The cap ends it; so it does where the energy stands still,
+        // which says nothing of what is to come.
+        let capped = run(Some(Settle::at(0.0).max_extension(1.0)), Some(x), false);
+        assert_eq!(capped.steps, 82, "{capped:?}");
+        let still = run(Some(Settle::at(0.0).max_extension(3.0)), Some(x), true);
+        assert_eq!(still.steps, 164, "{still:?}");
+        // At a frequency the tail turns many times in a window it gives
+        // less, and the run is shorter.
+        let f = run(Some(far(Settle::at(0.05))), Some(x), false);
+        assert!(f.steps < o.steps, "{f:?}");
+        assert!(Settle::at(1.0).window(1.0).validate().is_err());
+        assert!(Settle::at(-1.0).validate().is_err());
+        assert!(Settle::at(0.0).tolerance(0.0).validate().is_err());
     }
 
     fn outcome(w: &[f64]) -> RunOutcome {
@@ -465,6 +644,7 @@ mod tests {
         let mut s = Script {
             n: 0,
             w: w.to_vec(),
+            signal: None,
         };
         drive(&mut s, &limits, |_| ControlFlow::Continue(())).unwrap()
     }

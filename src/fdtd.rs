@@ -427,7 +427,8 @@ impl IndexMut<Face> for Boundaries {
 
 /// When to stop a simulation before the maximum timestep count: once the
 /// excitation is over and the total field energy has decayed below
-/// `energy_ratio` times its maximum.
+/// `energy_ratio` times its maximum, and, with [`settle`](Self::settle),
+/// once the probes' signals have stopped contributing at a frequency.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct EndCriteria {
@@ -435,6 +436,115 @@ pub struct EndCriteria {
     pub energy_ratio: f64,
     /// Number of timesteps between energy evaluations (default 50).
     pub check_interval: u64,
+    /// After the energy criterion: go on while the probes' spectra at a
+    /// frequency still move (default `None`: the energy alone decides).
+    pub settle: Option<Settle>,
+}
+
+/// The second half of an end criterion ([`EndCriteria::settle`]): the
+/// run, having met its energy threshold after `N0` steps, goes on while
+/// what is still to come would move a voltage or current probe's
+/// spectrum at `frequency`, and for `max_extension·N0` steps more at
+/// most.
+///
+/// The energy of the whole field says little about one frequency. What a
+/// spectrum at the lowest frequency of a result lacks is the part of the
+/// signals after the run's end, `∫_T^∞ x(t)·e^{−jωt} dt`, and a slow
+/// tail of small energy (a part's charge, the low end of a pulse in an
+/// absorbing layer whose frequency shift lies above it) is large there:
+/// with the energy at −50 dB a 20 mm microstrip's loss at 0.06 GHz read
+/// 0.008 dB from its reference, at −60 dB 0.002 dB.
+///
+/// The test, at every energy check from `N0` on, with `N` steps run, the
+/// energy `W`, and `X`, `W₀` those of the check `⌈window·N⌉` steps
+/// before (or the last before that): for every probe that records a
+/// voltage or a current,
+///
+/// ```text
+/// 2·| X(N) − X₀ | / ln(W₀/W)  ≤  tolerance · A(N)
+/// X(n) = Σ_{k<n} x_k·e^{−jω·t_k},     A(n) = Σ_{k<n} |x_k|
+/// ```
+///
+/// The left side is what the spectrum still lacks if the signal goes on
+/// as the window has it: a signal that falls as the fields do, at half
+/// the rate `γ = ln(W₀/W)/window` of their energy, has `2/γ` times its
+/// present value to come, and its present value at this frequency is
+/// the window's `|X − X₀|` over the window. So a field that falls fast
+/// (a part's region: 30 dB in a third of the run) ends the run as soon
+/// as the window is quiet, and one that falls slowly (a line after the
+/// knee of its decay) keeps it going for the same window. `A` bounds
+/// `|X|` at any frequency, so the test asks nothing of a probe whose
+/// spectrum is small at this one but for its own size, and a probe that
+/// records nothing passes. An energy that does not fall over the window
+/// says nothing of what is to come: the run goes on. It ends at the
+/// first check where the energy is below its threshold and either every
+/// probe passes or the cap is reached;
+/// [`RunOutcome`](crate::engine::RunOutcome) has `N0`. Costs one complex
+/// product per probe sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Settle {
+    /// The frequency \[Hz\], usually the lowest a result is asked at
+    /// (0: the signals' areas).
+    pub frequency: f64,
+    /// Largest part of a spectrum still to come, relative to the sum of
+    /// the signal's absolute values (default 1e-4).
+    pub tolerance: f64,
+    /// The window as a part of the steps run so far, in `(0, 1)`
+    /// (default 0.125).
+    pub window: f64,
+    /// Most steps past the energy criterion, as a part of the steps it
+    /// took (default 0.5).
+    pub max_extension: f64,
+}
+
+impl Settle {
+    /// The default test at `frequency` \[Hz\].
+    pub fn at(frequency: f64) -> Self {
+        Settle {
+            frequency,
+            tolerance: 1e-4,
+            window: 0.125,
+            max_extension: 0.5,
+        }
+    }
+
+    /// Builder: sets [`tolerance`](Self::tolerance).
+    pub fn tolerance(mut self, t: f64) -> Self {
+        self.tolerance = t;
+        self
+    }
+
+    /// Builder: sets [`window`](Self::window).
+    pub fn window(mut self, w: f64) -> Self {
+        self.window = w;
+        self
+    }
+
+    /// Builder: sets [`max_extension`](Self::max_extension).
+    pub fn max_extension(mut self, m: f64) -> Self {
+        self.max_extension = m;
+        self
+    }
+
+    /// Checks that the frequency is finite and not negative, the
+    /// tolerance positive, the window in `(0, 1)` and the cap finite and
+    /// not negative.
+    pub fn validate(&self) -> Result<()> {
+        let ok = self.frequency.is_finite()
+            && self.frequency >= 0.0
+            && self.tolerance > 0.0
+            && self.tolerance.is_finite()
+            && self.window > 0.0
+            && self.window < 1.0
+            && self.max_extension.is_finite()
+            && self.max_extension >= 0.0;
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!("end criteria: {self:?}")))
+        }
+    }
 }
 
 impl EndCriteria {
@@ -453,7 +563,14 @@ impl EndCriteria {
         EndCriteria {
             energy_ratio: ratio,
             check_interval: Self::DEFAULT_CHECK_INTERVAL,
+            settle: None,
         }
+    }
+
+    /// Builder: sets [`settle`](Self::settle).
+    pub fn settle(mut self, s: impl Into<Option<Settle>>) -> Self {
+        self.settle = s.into();
+        self
     }
 
     /// Builder: sets the number of timesteps between energy evaluations.
@@ -479,6 +596,9 @@ impl EndCriteria {
             return Err(Error::Invalid(
                 "end criteria: check interval must be at least 1 step".into(),
             ));
+        }
+        if let Some(s) = &self.settle {
+            s.validate()?;
         }
         Ok(())
     }
