@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16](https://github.com/KarpelesLab/ems/compare/v0.0.15...v0.0.16) - 2026-11-17
+
+### Other
+
+- Time step: the cells' shares balanced (StepLimit::Cells): the dual length at every node divided between its two cells so that the largest of the cells' eigenvalues is small, which on a graded mesh in one medium is the limit; the cut cells of conformal PEC in the bound with the whole ones, and the scheme's test of which small faces to keep made at the Courant step (ConformalOptions::keep_step), so that it does not hold the step; lossy metal's edges beside cut cells as their floor of capacitance means them, and its cut edges as the ordinary edges they are
+
 ## [0.0.15](https://github.com/KarpelesLab/ems/compare/v0.0.14...v0.0.15) - 2026-11-17
 
 ### Other
