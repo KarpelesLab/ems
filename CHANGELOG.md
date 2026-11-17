@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.14](https://github.com/KarpelesLab/ems/compare/v0.0.13...v0.0.14) - 2026-11-17
+
+### Other
+
+- wording
+- a Debye edge's loops, the CPML's z layers a plane at a time, what a step of cadlab's regions costs (wave 29)
+- a z-face layer a plane of rows at a time, each row on copies of its values
+- a Debye edge of two to eight poles in loops of its length
+
 ## [0.0.13](https://github.com/KarpelesLab/ems/compare/v0.0.12...v0.0.13) - 2026-11-17
 
 ### Other
