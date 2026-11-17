@@ -1367,6 +1367,25 @@ fn debye_edge(
     let half_prev = 0.5 * prev;
     let n = q.len();
     let (kc, kz) = (&kc[..n], &kz[..n]);
+    // The usual numbers of poles of a fitted laminate have loops of their
+    // length (the expressions below, element by element in their order).
+    macro_rules! fixed {
+        ($($n:literal),*) => {
+            match n {
+                $($n => {
+                    if let (Ok(q), Ok(kc), Ok(kz)) = (
+                        <&mut [f64; $n]>::try_from(&mut *q),
+                        <&[f64; $n]>::try_from(kc),
+                        <&[f64; $n]>::try_from(kz),
+                    ) {
+                        return debye_edge_fixed::<$n>(q, kc, kz, half_prev, u_in, cb, sum, dt);
+                    }
+                })*
+                _ => {}
+            }
+        };
+    }
+    fixed!(2, 3, 4, 5, 6, 7, 8);
     if n <= HELD {
         // `½·u^n − q/C` of each pole kept for its update: the loops over
         // the poles have nothing between their elements but the sum.
@@ -1397,6 +1416,35 @@ fn debye_edge(
         }
         u_new
     }
+}
+
+/// [`debye_edge`] for an edge of `N` poles (`half_prev`: `½·u^n`).
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn debye_edge_fixed<const N: usize>(
+    q: &mut [f64; N],
+    kc: &[f64; N],
+    kz: &[f64; N],
+    half_prev: f64,
+    u_in: f32,
+    cb: f64,
+    sum: f64,
+    dt: f64,
+) -> f32 {
+    let mut t = [0.0; N];
+    for k in 0..N {
+        t[k] = half_prev - q[k] * kc[k];
+    }
+    let mut s = 0.0;
+    for k in 0..N {
+        s += t[k] * kz[k];
+    }
+    let u_new = ((u_in as f64 - cb * s) / (1.0 + 0.5 * cb * sum)) as f32;
+    let half_new = 0.5 * u_new as f64;
+    for k in 0..N {
+        q[k] += dt * ((t[k] + half_new) * kz[k]);
+    }
+    u_new
 }
 
 /// A medium of trapezoidal Debye poles alone, built by
