@@ -8159,6 +8159,15 @@ under 2 MB of 35 to 55 (eight to sixteen series of 4400 to 27 000
 steps), and a running spectrum in its place would need the frequencies
 before the run.
 
+And one thing of time that wave 31 had brought with it: conformal PEC
+checks the step it is applied at, by the bound of the geometric shares
+over the whole grid and, where that does not settle it, by a power
+iteration (§5.13). A step from the balanced shares does not pass the
+first, so every model with cut cells paid the second, 0.4 s of a run of
+cadlab's regions (0.0.16). The compile step has made that check, the
+cut cells in it, and says so (`iterations` 0 with `keep_step`): the
+results are the same bytes.
+
 Remaining:
 - Time step (§5.4.1): the planes of sheets keep the geometric shares.
   Shares that differ across a slab (a thin layer above a strip and

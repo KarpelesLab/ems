@@ -423,12 +423,15 @@ pub(super) fn choose(c: &mut Compiled, fdtd: &Fdtd, plane_waves: bool) {
     };
     if limit != StepChoice::CourantLonger {
         c.timestep = TimeStep::Bound(dt);
-        // The faces conformal PEC keeps are those of the Courant step.
-        if keep_step.is_some()
-            && let Some(conformal) = c.conformal.take()
-        {
+        // The faces conformal PEC keeps are those of the Courant step,
+        // and the check it makes of the step it is applied at (the bound
+        // of the geometric shares over the grid, which a longer step
+        // does not pass, and then a power iteration) is what the bound
+        // here has settled, the cut cells in it.
+        if let Some(conformal) = c.conformal.take() {
             let mut options = *conformal.options();
             options.keep_step = keep_step;
+            options.iterations = 0;
             c.conformal = Some(conformal.with_options(options));
         }
     }
