@@ -7538,7 +7538,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-17, after wave 28)
+### Status (2026-11-17, after wave 29)
 
 | Step | State |
 |---|---|
@@ -7926,6 +7926,41 @@ those of 0.0.12 byte for byte.
   60 × 50 × 40 box with eight. (An earlier wave measured a fixed-length variant
   slower and did not keep it; that one was called per row, this one is
   inlined into the layer's loop.)
+
+Wave 29 (native; §6, §5.6), the time steps of the same regions, by what
+a step costs after wave 28 (callgrind, one thread; the bent of a board:
+a Debye laminate of six poles under a line, CPML on six faces of a flat
+region). No result changes: cadlab's Touchstone files of its two lines
+and its via transition are those of 0.0.12 byte for byte, the field
+hashes of `bench_surface debye` and of CPML boxes with layers of 2 to 17
+cells on one to three threads are the ones they were.
+
+- *Debye edges* (§6): an edge of two to eight poles runs loops of its
+  length (the three loops of the layout of wave 27, element by element
+  in their order; the sum over the poles stays a sum in order). 9.50 →
+  6.27·10⁹ instructions for the laminate's correction in 600 steps of
+  cadlab's via transition (130 626 cells, six poles), a seventh of the
+  step; `bench_surface debye` (eight poles) 205 → 151·10⁶ for twenty
+  steps of a small box.
+- *CPML* (§5.6): a z-face layer is taken a plane of rows at a time. The
+  row's slices are taken once, the coefficients by depth are copied out
+  of the loop over the rows, and a row is computed on copies of its
+  values and stored, so that nothing the loop writes can be something
+  it reads (with the slices themselves the compiler kept one value at a
+  time). 27 → 17 instructions per value of a z layer (a row of a
+  uniform layer: 9 to 10), 2.53 → 2.27·10⁹ for 200 steps of a
+  48 × 37 × 55 box with eight cells per face, 158 → 190 Mcells/s on one
+  thread. Not kept: the first value of the face `z = 0`, which has no
+  neighbour below, taken into the row with a zero in its place (a row
+  of eight for one and seven): the copy it needs cost more than the
+  odd length (2.34·10⁹, 170 Mcells/s).
+
+What a step of cadlab's regions costs now, in instructions per step on
+one thread: the lossy line (67 200 cells) 30.5 → 24.2·10⁶, of which the
+Debye correction 6.2, the rational sheets of ground and track 5.4 (520
+per sheet edge), the CPML 4.4, the kernel 3.8; the 50 Ω part on perfect
+copper (69 312 cells) 14.6 → 10.5·10⁶, of which the CPML 4.8 (its z
+layers 3.0: a flat region is mostly z faces) and the kernel 4.2.
 
 Remaining:
 - Time step (§5.4): a native run takes the Courant limit of the smallest
