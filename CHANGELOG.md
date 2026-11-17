@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13](https://github.com/KarpelesLab/ems/compare/v0.0.12...v0.0.13) - 2026-11-17
+
+### Other
+
+- the stability check by the cell bound, the CPML's short rows, ems beside openEMS on cadlab's oracle regions, the time step as what is left (wave 28)
+- the rows of a z-face layer in loops of their length
+- Conformal PEC: the cell bound over the grid in the place of the power iteration where it settles the check, one check per compiled model, the iteration's products in one loop per kind of root
+
 ## [0.0.12](https://github.com/KarpelesLab/ems/compare/v0.0.11...v0.0.12) - 2026-11-16
 
 ### Other
