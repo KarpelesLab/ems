@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18](https://github.com/KarpelesLab/ems/compare/v0.0.17...v0.0.18) - 2026-11-17
+
+### Other
+
+- the type of a check named
+- End criteria: what the probes' spectra at one frequency still lack (EndCriteria::settle, Settle): after the energy threshold the run goes on while twice a spectrum's change over a window, over the energy's fall there, is above a tolerance of the signal's size, with a cap on the steps; RunOutcome::criterion_steps; design notes (wave 33)
+- the convolution second order in time (CpmlConvolution::Linear, the default): the field derivative linear over each step, in the state and the loops of the first-order recursion by other coefficients; the first-order rule was the layer of a conductivity sigma/(1 - sigma dt/(2 eps0)), which moved with the step (a lossless 60 mm microstrip beside six cells of layer: 0.027 dB + 0.082 dB/ps at 9 GHz, 0.0278 dB at three steps now)
+
 ## [0.0.17](https://github.com/KarpelesLab/ems/compare/v0.0.16...v0.0.17) - 2026-11-17
 
 ### Other
