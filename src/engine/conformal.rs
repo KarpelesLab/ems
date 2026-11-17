@@ -307,6 +307,14 @@ pub struct ConformalOptions {
     /// wide, most small faces are. `false`: every face below the threshold
     /// loses its current, whatever the mesh.
     pub keep_stable: bool,
+    /// The time step \[s\] [`keep_stable`](Self::keep_stable) tests the
+    /// cells at, where it is not the engine's (`None`, the default: the
+    /// engine's). The compile step sets it to the Courant step where it
+    /// takes a longer one from the bound of the cells
+    /// ([`StepLimit::Cells`](crate::fdtd::StepLimit::Cells)), which has
+    /// the cut cells in it as they are: the faces a model keeps are then
+    /// those it keeps at the Courant step, whatever its step.
+    pub keep_step: Option<f64>,
 }
 
 impl Default for ConformalOptions {
@@ -318,6 +326,7 @@ impl Default for ConformalOptions {
             max_rounds: 4,
             deviation_area: 0.5,
             keep_stable: true,
+            keep_step: None,
         }
     }
 }
@@ -811,7 +820,8 @@ impl ConformalPec {
             .map(|f| (f.axis.index(), index(n, f.node)))
             .collect();
         let (kept, bounded) = if self.options.keep_stable && !cyl {
-            self.stable_faces(scaled_now.as_ref().expect("set above"), &grid, dt)
+            let at = self.options.keep_step.filter(|k| *k > 0.0 && *k < dt);
+            self.stable_faces(scaled_now.as_ref().expect("set above"), &grid, dt, at)
         } else {
             (HashSet::new(), false)
         };
@@ -949,18 +959,28 @@ impl ConformalPec {
         unreachable!("the last round returns")
     }
 
-    /// The cut faces both of whose cells are stable at `dt` by the
+    /// The cut faces both of whose cells are stable at `dt` (at
+    /// `keep_step`, where one is given) by the
     /// cell-wise bound ([`cell_stability`]), with every face at its true
     /// open area and every edge at its open length (`co`: the edge scaling
     /// applied, the faces not yet); outside the absorbing layers.
-    fn stable_faces(&self, co: &Coefficients, grid: &Grid, dt: f64) -> (HashSet<Key>, bool) {
+    fn stable_faces(
+        &self,
+        co: &Coefficients,
+        grid: &Grid,
+        dt: f64,
+        keep_step: Option<f64>,
+    ) -> (HashSet<Key>, bool) {
         let n = grid.nodes();
         let fractions: HashMap<Key, f64> = self
             .faces
             .iter()
             .map(|f| ((f.axis.index(), index(n, f.node)), f.fraction))
             .collect();
-        let limit = self.options.max_stability * self.options.max_stability;
+        // (`λ·dt²/4` at the step the test is made at.)
+        let limit = self.options.max_stability
+            * self.options.max_stability
+            * keep_step.map_or(1.0, |k| (dt / k) * (dt / k));
         let mut cells: HashMap<[usize; 3], bool> = HashMap::new();
         let mut ok = |q: [usize; 3]| {
             *cells

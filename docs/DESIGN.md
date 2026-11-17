@@ -596,7 +596,7 @@ be `Sync` (§8).
   an integer number of steps; evaluated with openEMS's own arithmetic and
   constants, so that the step is openEMS's bit for bit (§5.16.10).
 
-#### 5.4.1 The step from the cells (`StepLimit::Cells`, wave 30)
+#### 5.4.1 The step from the cells (`StepLimit::Cells`, waves 30 and 31)
 
 `Fdtd::step_limit(StepLimit::Cells)` takes the automatic step as the
 factor of a bound that looks at the cells one by one
@@ -610,9 +610,31 @@ default stays the Courant limit above).
   of a problem of six faces and twelve edges; for one `ε` and `μ` it is
   `4(1/Δx² + 1/Δy² + 1/Δz²)/(εμ)`, the Courant limit of that cell in
   that medium, which bounds it for the cell's least `ε` and `μ`
-  otherwise. The cells whose closed form is above the largest eigenvalue
-  found are solved, each distinct one once, with the edges on PEC walls
-  and the PEC edges closed.
+  otherwise.
+- **The shares of the cells (wave 31).** The theorem holds for any way
+  of dividing an edge's capacitance among the cells around it and a
+  face's dual edge between its two cells. Wave 30 took the geometric
+  one (a quarter of the dual face, half of the dual edge), with which a
+  thin cell between thick ones has the Courant limit of its own sizes.
+  Wave 31 divides the dual length at each node of each axis between the
+  cell below and the cell above in parts of its choosing (`Shares`: one
+  number per node and axis): a cell then is the cell of a grid whose
+  dual lengths at its ends are its shares `lo`, `hi`, with
+  `λ_c/4 ≤ Σ_a (1/lo_a + 1/hi_a)/(4·Δ_a·εμ)`, an end that a wall or a
+  conductor closes left out. On a graded mesh in one medium between
+  walls this family has the limit itself in it (the operator is a sum
+  of three chains, and a chain's largest eigenvalue is its elements'
+  for the right shares): `balanced_shares_reach_the_limit_of_a_graded_mesh`
+  holds the bound to the power iteration within a part in 10⁴ where the
+  geometric shares give 1/1.65 of it. `Cells::balance` finds shares one
+  axis at a time: the least level at which a walk along the axis can
+  give every cell what its closed form asks, by bisection (what a cell
+  asks is convex in its two shares), the cells whose eigenvalue is
+  below their closed form counted by that eigenvalue at the shares of
+  the round before; two to four rounds. What it returns is the largest
+  of the cells' eigenvalues with the shares it found, every cell solved
+  or bounded by a closed form that is its eigenvalue: a bound whatever
+  the search did, and never above that of the geometric shares.
 - **Every other part of the scheme**, by its own theory: conductivity,
   Debye poles and trapezoidal Lorentz/Drude poles, lumped R, L, C are
   passive at any step (an energy that does not grow, positive under the
@@ -621,22 +643,47 @@ default stays the Courant limit above).
   voltages with the capacitances of their sides, and since a face in
   the sheet's plane reads a convex combination of them the split system
   is bounded by the cells above with one and the cells below with the
-  other; lossy metal's surface edges are ordinary edges of at least
-  vacuum's capacitance outside the metal; conformal PEC's cut cells are
-  in the same bound with their open lengths and areas. The CPML has no
-  energy proof: with frozen coefficients its characteristic polynomial
-  has no root outside the unit circle up to the Courant number 1 of the
-  unstretched cell (a unit test scans `κ`, `σ`, `α`), and the graded
-  layer is tested by long runs.
-- **Cut cells.** The faces conformal PEC keeps with their true area are
-  the ones whose cells pass this bound at the step (§5.13). The step is
-  taken so that every cell with a cut face passes it twice: as the
-  scheme's own test sees it (inside its limit, so the faces kept at the
-  Courant step are kept), and as the scheme is, within the factor (an
-  edge the outline of a lossy sheet cuts is its open part in series with
-  the covered part's two faces: `C/(f + (1 − f)/8)` beside a cut face,
-  not the `C/f` of a perfect conductor; beside lossy metal at most
-  `√(15/16)`, which the floor of its edges' capacitance there asks for).
+  other (the planes of sheets keep the geometric shares: that
+  combination is by the halves, and any other division of the face
+  costs more on both sides); lossy metal's surface edges are ordinary
+  edges of at least vacuum's capacitance outside the metal, divided
+  among the cells with field by their shares; conformal PEC's cut cells
+  are in the same bound with their open lengths and areas. The CPML has
+  no energy proof: with frozen coefficients its characteristic
+  polynomial has no root outside the unit circle up to the Courant
+  number 1 of the unstretched cell (a unit test scans `κ`, `σ`, `α`),
+  and the graded layer is tested by long runs.
+- **Cut cells.** A cell that conformal PEC cuts is in the bound as the
+  scheme has it, with its open lengths and areas and the shares of its
+  slabs, among the whole cells: the search counts it by its own
+  eigenvalue, and the step is the factor of the largest of them all (an
+  edge the outline of a lossy sheet cuts is its open part in series
+  with the covered part's two faces: `C/(f + (1 − f)/8)` beside a cut
+  face, not the `C/f` of a perfect conductor, and a whole sheet edge
+  around a cut face has the eight times it is loaded with). The faces
+  conformal PEC keeps with their true area are those whose cells pass
+  the bound of the geometric shares (§5.13); that test was made at the
+  engine's step, which held a model with cut cells to the step at
+  which it kept the faces it keeps at the Courant step (wave 30). It
+  is made at the Courant step now wherever the cells give a longer one
+  (`ConformalOptions::keep_step`, set by the compile step), so the
+  conformal treatment of a model is that of its Courant step whatever
+  its step, and what holds the step is the bound. A model one of whose
+  cut cells fails that test at the Courant step (its face is
+  interpolated at any step, and its cells bound nothing) stays on the
+  Courant step.
+- **Lossy metal beside cut cells (wave 31).** An edge in the surface of
+  lossy metal with a cut face around it has a floor of capacitance,
+  `C ≥ dt²·Σ n/L/(4θ)` over its faces (`θ` = 1/16, `engine::surface`),
+  which is there so that the edge answers for itself:
+  `(s + Σ_n u)² ≤ s²/(1 − θ) + n·Σ_n u²/θ` for a face's circulation. So
+  in the bound such an edge is closed and its faces have `1/(1 − θ)` of
+  their inverse inductance, in every cell they are in
+  (`LiveEdge::Floored`). Wave 30 had these edges open with vacuum's
+  capacitance and the cut cells held to `√(15/16)` besides, which read
+  0.79 of the Courant limit on cadlab's via where this reads 1.04
+  (1.18 with the balanced shares), and counted the edges the metal's
+  outline cuts, which are ordinary edges, as vacuum's.
 - **Never shorter than the Courant step.** Where the cells give less
   (a small cut face that is interpolated at either step, a thin wire's
   scaled materials) the Courant step is taken, and with it everything
@@ -650,32 +697,37 @@ default stays the Courant limit above).
   Courant limit there, exactly). A uniform grid of `ε_r` = 4: twice the
   step, bounded from noise at 0.999 of the bound and growing at 1.03
   (`the_bound_is_sharp_in_a_dielectric`). cadlab's board regions (factor
-  0.95): the lossy line with sheet copper 0.1949 → 0.2544 ps (1.31×;
-  6145 → 4737 steps per port), with 35 µm of solid copper 0.0994 →
-  0.1049 ps (1.06×), the 50 Ω part 0.1689 → 0.1792 ps (1.06×), the via
-  transition 0.0545 ps as before (its smallest cells, 17.5 µm of copper
-  thickness, are in air, all three smallest sizes in one cell). The
-  smallest cells of those meshes are at the region's walls, where the
-  mesher refines towards copper that the region cuts; the walls' closed
-  edges are what the eigenvalue sees and the closed form does not (1.00
-  to 1.06× by the closed form alone).
-- **What it leaves.** The bound is over single cells, and a mode cannot
-  live in one: the power iteration on the same operators (an estimate
-  from below, converged) reads 1.45, 1.38, 1.40 and 1.29 times the
-  Courant limit on those four regions. That is not a bound and is not
-  taken. The theorem holds for any partition of the cells into patches;
-  patches of several cells around the worst ones would give a longer
-  proven step and are not made.
+  0.95), Courant step → wave 30 → wave 31: the lossy line with sheet
+  copper 0.1949 → 0.2544 → 0.2742 ps (1.41×; 6145 → 4737 → 4385 steps
+  per port), with 35 µm of solid copper 0.0994 → 0.1049 → 0.1338 ps
+  (1.35×; 12 065 → 11 425 → 8961), the 50 Ω part 0.1689 → 0.1792 →
+  0.2356 ps (1.39×; 7105 → 6689 → 5089), the via transition 0.0545 →
+  0.0545 → 0.0664 ps (1.22×; 32 961 → 32 961 → 27 041; its cut cells
+  decide, the whole cells alone would give 1.28). The
+  search takes 35 to 70 ms of a compile on these regions.
+- **What it leaves.** On boards of perfect copper the bound is the
+  limit (the power iteration reads 0.9996 to 1.0000 of it,
+  `the_bound_is_not_above_the_estimate`), so the factor is the whole
+  margin there: at factor 1 in a closed box the highest mode grows
+  with the step count, as at the Courant limit of a uniform mesh
+  (26 times the energy in 30 000 steps). On cadlab's regions the
+  whole cells give 1.41, 1.35, 1.40 and 1.28 times the Courant limit,
+  where the power iteration on the kernel's coefficients (an estimate
+  from below of the scheme without its sheets' two sides and its lossy
+  metal's edges) reads 1.45, 1.38, 1.40 and 1.29. The planes of sheets keep the
+  geometric shares, and shares that differ across a slab are outside
+  the family.
 - **Tests** (`tests/step_limit.rs`): every model is compiled with all
   its operators, its edges are filled with noise (every mode of the
   grid, the highest included, which a band-limited pulse reaches only
   through rounding) and stepped without a source; the energy must stay
   below its start. Boards with a Debye laminate, CPML and lumped ports
   and copper as PEC sheets, ladder sheets, rational sheets and 35 µm of
-  lossy metal, 30 000 steps each; the same at factor 1 and in a closed
-  box; strips at 17° and 45° (38 to 80 cut edges); meshes with 20 µm
-  cells beside 0.5 mm ones and laminates of eight 25 µm layers under a
-  strip at 30°, 40 000 steps; `#[ignore]`: 400 000 steps each.
+  lossy metal, 30 000 steps each; the same at factor 1 with the CPML
+  and at 0.999 in a closed box; strips at 17° and 45° (38 to 80 cut
+  edges); meshes with 20 µm cells beside 0.5 mm ones and laminates of
+  eight 25 µm layers under a strip at 30°, 40 000 steps, and those cut
+  cells at the limit; `#[ignore]`: 400 000 steps each.
 
 ### 5.5 Lumped elements and ports
 **LumpedElement (R)** over a box with `M` series edges along its direction and
@@ -7622,7 +7674,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-17, after wave 30)
+### Status (2026-11-17, after wave 31)
 
 | Step | State |
 |---|---|
@@ -8060,13 +8112,35 @@ proof part by part and the tests). What the estimates of wave 28 read
 power iterations, not bounds: the single-cell bound proves 1.00 to 1.31
 of that, and the rest is left with its reason.
 
+Wave 31 (native; §5.4.1), the part of the limit the single cells left:
+the theorem of wave 30 holds for any division of an edge's capacitance
+among its cells and of a face's dual edge between its two, and the
+geometric one is the worst for a thin cell between thick ones.
+`Cells::balance` divides the dual length at every node of every axis
+between the two cells it lies in (one number per node and axis), which
+on a graded mesh in one medium has the limit itself among its choices,
+and the step is the factor of the largest of the cells' eigenvalues
+with the shares it finds. Lossy metal's edges beside cut cells are
+taken as their floor of capacitance means them (closed, their faces a
+sixteenth heavier), not as vacuum's with a margin on top; a metal's
+edges that its outline cuts are the ordinary edges they are. The cut
+cells are in the bound with the whole ones, and the scheme's test of
+which small faces keep their current is made at the Courant step
+(`ConformalOptions::keep_step`), so that it does not hold the step. On
+cadlab's regions 1.22 to 1.41 times the Courant step where wave 30 had
+1.00 to 1.31, the via among them; on boards of perfect copper the
+bound is the limit to four digits, so the factor is the margin
+(`the_bound_is_not_above_the_estimate`, and the closed box at 0.999).
+`StepLimit::Cells` is this bound; the default is still the Courant
+limit.
+
 Remaining:
-- Time step (§5.4.1): a bound over patches of cells, for the part of the
-  estimated limit (1.29 to 1.45 times the Courant limit on cadlab's
-  regions) that single cells do not prove. openEMS's default criterion
-  gives 0.1966 ps on cadlab's part regions where the cells prove 0.1886
-  at factor 1 (ems runs 0.1792 at cadlab's 0.95): above what is proven
-  here, below the estimate.
+- Time step (§5.4.1): the planes of sheets keep the geometric shares.
+  Shares that differ across a slab (a thin layer above a strip and
+  beside it) are outside the family: the bound is 2 % above the limit
+  on such a mesh (`balanced_shares_reach_the_limit_of_a_graded_mesh`).
+  A model with a cut face that fails the scheme's test at the Courant
+  step stays on the Courant step.
 - Memory (§4.1): while an engine is built, the stability estimate of
   conformal PEC where it is still made (54 bytes per node) and the surface impedance's
   installed edges beside their final form; while running, the fields

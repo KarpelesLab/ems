@@ -532,11 +532,17 @@ pub enum StepLimit {
     /// The limit of the cells themselves
     /// ([`engine::step_bound`](crate::engine::step_bound)): each cell
     /// with its own sizes, the permittivity of its edges and the walls
-    /// and conductors it lies against, so that a mesh whose smallest
-    /// sizes lie in a dielectric or against a wall, or are not all in one
-    /// cell, takes a longer step (board regions: 1.0 to 1.3 times). Never
-    /// shorter than the Courant step; equal to it where the model has a
-    /// part the bound does not cover
+    /// and conductors it lies against, and with the part of the edges
+    /// and faces it shares with its neighbours that leaves the largest
+    /// of the cells' eigenvalues smallest, so that a mesh whose smallest
+    /// sizes lie in a dielectric or against a wall, or are not all in
+    /// one cell, or are thin cells between thicker ones, takes a longer
+    /// step (board regions: 1.1 to 1.4 times; a graded mesh in one
+    /// medium between walls: its limit). A bound, by proof, for the
+    /// lossless scheme, and the factor
+    /// ([`Fdtd::timestep_factor`]) is all the margin there is where it
+    /// is the limit. Never shorter than the Courant step; equal to it
+    /// where the model has a part the bound does not cover
     /// ([`StepReport`](crate::compile::StepReport) says which). Cells
     /// that conformal PEC cuts keep the faces they keep at the Courant
     /// step.

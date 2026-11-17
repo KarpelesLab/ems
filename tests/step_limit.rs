@@ -301,11 +301,13 @@ fn a_board_takes_a_longer_step() {
         assert!(ratio > 1.3 && ratio < 2.03, "{copper:?}: {ratio}");
     }
     // Lossy metal 35 µm thick: its cells are in air, the smallest of
-    // every axis in one cell. What is left is what the walls and the
-    // metal close.
+    // every axis in one cell, which by itself has the Courant limit.
+    // With the shares balanced the thin cells have most of the dual
+    // lengths they share with the laminate's cells below and the air's
+    // above, and their edges on the laminate have the laminate's part.
     let (ratio, limit) = gain(&Board::new(Copper::Solid));
     eprintln!("Solid: {ratio:.3} times the Courant step ({limit:?})");
-    assert!((1.0..1.3).contains(&ratio), "{ratio} ({limit:?})");
+    assert!((2.0..3.0).contains(&ratio), "{ratio} ({limit:?})");
     // The Courant step where it is asked for, and where a part of the
     // model is outside the bound.
     let b = Board {
@@ -321,6 +323,41 @@ fn a_board_takes_a_longer_step() {
     let r = sim_step(&b.model(), &mur, &b.options());
     assert_eq!(r.limit, StepChoice::CourantKept(StepObstacle::Mur));
     assert_eq!(r.dt, r.courant);
+}
+
+/// The bound against the estimate: the power iteration on the kernel's
+/// own coefficients approaches the largest eigenvalue from below, so the
+/// stability figure it reads at the step of the cells is at most the
+/// factor wherever the kernel holds the whole lossless scheme (perfect
+/// copper), and says how much of the limit the bound takes.
+#[test]
+fn the_bound_is_not_above_the_estimate() {
+    use ems::engine::conformal::stability_factor;
+    for (copper, layers, fine_edges, debye) in [
+        (Copper::Pec, 2, false, true),
+        (Copper::Pec, 2, false, false),
+        (Copper::Pec, 8, true, false),
+        (Copper::Pec, 4, true, true),
+    ] {
+        let b = Board {
+            layers,
+            fine_edges,
+            debye,
+            factor: 1.0,
+            ..Board::new(copper)
+        };
+        let (ratio, limit) = gain(&b);
+        let sim = b.simulation();
+        let n = sim.engine().grid().nodes();
+        let s = stability_factor(&sim.engine().coefficients(), n, &[], 3000);
+        eprintln!(
+            "{copper:?}, {layers} layers, fine edges {fine_edges}, Debye {debye}: {ratio:.4} times \
+             the Courant step ({limit:?}), the estimate reads {s:.5} of the limit"
+        );
+        assert!(s <= 1.0 + 1e-6, "{s}");
+        // The bound takes all but a few parts in a hundred of it.
+        assert!(s > 0.95, "{s}");
+    }
 }
 
 /// The step of the cells is a step of the model, whatever the threads.
@@ -346,19 +383,26 @@ fn boards_on_the_mesh_stay_bounded() {
 }
 
 /// The same at the largest factor the settings take (1), and in a closed
-/// box, where nothing absorbs what the lossless part keeps.
+/// box, where nothing absorbs what the lossless part keeps, a part in a
+/// thousand below it. With the shares balanced the bound is the limit
+/// itself on such a board (the estimate reads 1.00000 of it,
+/// `the_bound_is_not_above_the_estimate`), and at the limit the highest
+/// mode of a lossless box grows with the step count, as it does at the
+/// Courant limit of a uniform mesh: the closed box of perfect copper
+/// read 26 times its energy after 30 000 steps at factor 1.
 #[test]
 fn boards_at_the_limit_stay_bounded() {
-    for copper in [Copper::Pec, Copper::Surface] {
+    for copper in [Copper::Pec, Copper::Ladder, Copper::Surface, Copper::Solid] {
         for pml in [true, false] {
+            let factor = if pml { 1.0 } else { 0.999 };
             let b = Board {
-                factor: 1.0,
+                factor,
                 pml,
                 debye: pml,
                 ..Board::new(copper)
             };
             assert_bounded(
-                &format!("{copper:?}, factor 1, pml {pml}"),
+                &format!("{copper:?}, factor {factor}, pml {pml}"),
                 &mut b.simulation(),
                 30_000,
             );
@@ -414,6 +458,54 @@ fn strongly_graded_meshes_stay_bounded() {
                 &format!(
                     "{copper:?} at {angle}°, {layers} layers, fine edges {fine_edges}, \
                      {ratio:.3} times the Courant step ({limit:?})"
+                ),
+                &mut b.simulation(),
+                40_000,
+            );
+        }
+    }
+}
+
+/// Cut cells at the limit: a strip at 30° over a laminate of eight
+/// layers, whose cut cells are in the bound as the scheme has them and
+/// keep the faces they keep at the Courant step, as perfect copper and
+/// as lossy metal (whose edges beside the cut cells answer for
+/// themselves by the floor of their capacitance), a part in a thousand
+/// below the bound in a closed box and at it with the CPML.
+#[test]
+fn cut_cells_at_the_limit_stay_bounded() {
+    for copper in [Copper::Pec, Copper::Solid] {
+        for pml in [true, false] {
+            let factor = if pml { 1.0 } else { 0.999 };
+            let b = Board {
+                angle: 30.0,
+                layers: 8,
+                factor,
+                pml,
+                debye: pml,
+                ..Board::new(copper)
+            };
+            let (ratio, limit) = gain(&b);
+            assert!(
+                matches!(limit, StepChoice::Cells | StepChoice::CutCells) && ratio > 1.3,
+                "{copper:?}: {ratio} ({limit:?})"
+            );
+            // What conformal PEC does with its faces is what it does at
+            // the Courant step.
+            let faces = |limit: StepLimit| {
+                let r = Board { limit, ..b }
+                    .simulation()
+                    .boundaries()
+                    .conformal
+                    .expect("a slanted strip");
+                (r.faces, r.kept, r.interpolated, r.hosts, r.merged, r.groups)
+            };
+            assert_eq!(faces(StepLimit::Cells), faces(StepLimit::Courant));
+            assert!(faces(StepLimit::Cells).1 > 0, "{copper:?}: no face kept");
+            assert_bounded(
+                &format!(
+                    "{copper:?} at 30°, factor {factor}, pml {pml}, {ratio:.3} times the Courant \
+                     step"
                 ),
                 &mut b.simulation(),
                 40_000,
