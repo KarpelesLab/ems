@@ -7928,7 +7928,7 @@ those of 0.0.12 byte for byte.
   inlined into the layer's loop.)
 
 Wave 29 (native; §6, §5.6), the time steps of the same regions, by what
-a step costs after wave 28 (callgrind, one thread; the bent of a board:
+a step costs after wave 28 (callgrind, one thread; what a board has:
 a Debye laminate of six poles under a line, CPML on six faces of a flat
 region). No result changes: cadlab's Touchstone files of its two lines
 and its via transition are those of 0.0.12 byte for byte, the field
