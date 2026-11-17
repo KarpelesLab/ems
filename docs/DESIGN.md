@@ -585,6 +585,9 @@ be `Sync` (§8).
   Here `c` is the vacuum speed of light. Materials with ε_r, μ_r ≥ 1 only make
   the bound more conservative.
 - Users may override `dt`, but the override is validated.
+- `Fdtd::step_limit(StepLimit::Cells)` takes the factor of the bound of
+  the cells instead (§5.4.1): never shorter, longer on graded meshes
+  and in dielectrics.
 - The openEMS `<FDTD>` time-step factor maps onto `S`.
 - openEMS files (`Fdtd::from_csx`) use openEMS's own criteria instead
   (`TimeStepMethod`, `engine::timestep`, §5.16): Rennings (default) or a
@@ -592,6 +595,87 @@ be `Sync` (§8).
   factor 1 by default, and shortened for a sinusoid so that its period is
   an integer number of steps; evaluated with openEMS's own arithmetic and
   constants, so that the step is openEMS's bit for bit (§5.16.10).
+
+#### 5.4.1 The step from the cells (`StepLimit::Cells`, wave 30)
+
+`Fdtd::step_limit(StepLimit::Cells)` takes the automatic step as the
+factor of a bound that looks at the cells one by one
+(`engine::step_bound`, whose module docs have the derivation; the
+default stays the Courant limit above).
+
+- **The bound.** The lossless scheme is stable iff
+  `dt²·λ_max(C⁻¹KᵀL⁻¹K) ≤ 4`. Curl-curl operator and capacitance are sums
+  over the cells, so `λ_max ≤ max_c λ_c` (Irons and Treharne, 1971; the
+  bound §5.13 keeps small cut faces by). `λ_c` is the largest eigenvalue
+  of a problem of six faces and twelve edges; for one `ε` and `μ` it is
+  `4(1/Δx² + 1/Δy² + 1/Δz²)/(εμ)`, the Courant limit of that cell in
+  that medium, which bounds it for the cell's least `ε` and `μ`
+  otherwise. The cells whose closed form is above the largest eigenvalue
+  found are solved, each distinct one once, with the edges on PEC walls
+  and the PEC edges closed.
+- **Every other part of the scheme**, by its own theory: conductivity,
+  Debye poles and trapezoidal Lorentz/Drude poles, lumped R, L, C are
+  passive at any step (an energy that does not grow, positive under the
+  same condition: `engine::dispersive`, `engine::lumped`); a conducting
+  sheet (ladder or rational impedance) splits its edge into two face
+  voltages with the capacitances of their sides, and since a face in
+  the sheet's plane reads a convex combination of them the split system
+  is bounded by the cells above with one and the cells below with the
+  other; lossy metal's surface edges are ordinary edges of at least
+  vacuum's capacitance outside the metal; conformal PEC's cut cells are
+  in the same bound with their open lengths and areas. The CPML has no
+  energy proof: with frozen coefficients its characteristic polynomial
+  has no root outside the unit circle up to the Courant number 1 of the
+  unstretched cell (a unit test scans `κ`, `σ`, `α`), and the graded
+  layer is tested by long runs.
+- **Cut cells.** The faces conformal PEC keeps with their true area are
+  the ones whose cells pass this bound at the step (§5.13). The step is
+  taken so that every cell with a cut face passes it twice: as the
+  scheme's own test sees it (inside its limit, so the faces kept at the
+  Courant step are kept), and as the scheme is, within the factor (an
+  edge the outline of a lossy sheet cuts is its open part in series with
+  the covered part's two faces: `C/(f + (1 − f)/8)` beside a cut face,
+  not the `C/f` of a perfect conductor; beside lossy metal at most
+  `√(15/16)`, which the floor of its edges' capacitance there asks for).
+- **Never shorter than the Courant step.** Where the cells give less
+  (a small cut face that is interpolated at either step, a thin wire's
+  scaled materials) the Courant step is taken, and with it everything
+  is as before. Where a part of the model is outside the bound, the
+  Courant step is kept and `Compiled::step` says which: cylindrical
+  grids, periodic and Bloch faces, Mur faces and absorbing sheets,
+  plane waves, oblique wires, leapfrog Lorentz/Drude poles, thin PEC
+  sheets off the mesh planes, a cut face below the merge threshold
+  inside an absorbing layer. openEMS files keep openEMS's step.
+- **What it gives.** Uniform mesh in vacuum: nothing (the bound is the
+  Courant limit there, exactly). A uniform grid of `ε_r` = 4: twice the
+  step, bounded from noise at 0.999 of the bound and growing at 1.03
+  (`the_bound_is_sharp_in_a_dielectric`). cadlab's board regions (factor
+  0.95): the lossy line with sheet copper 0.1949 → 0.2544 ps (1.31×;
+  6145 → 4737 steps per port), with 35 µm of solid copper 0.0994 →
+  0.1049 ps (1.06×), the 50 Ω part 0.1689 → 0.1792 ps (1.06×), the via
+  transition 0.0545 ps as before (its smallest cells, 17.5 µm of copper
+  thickness, are in air, all three smallest sizes in one cell). The
+  smallest cells of those meshes are at the region's walls, where the
+  mesher refines towards copper that the region cuts; the walls' closed
+  edges are what the eigenvalue sees and the closed form does not (1.00
+  to 1.06× by the closed form alone).
+- **What it leaves.** The bound is over single cells, and a mode cannot
+  live in one: the power iteration on the same operators (an estimate
+  from below, converged) reads 1.45, 1.38, 1.40 and 1.29 times the
+  Courant limit on those four regions. That is not a bound and is not
+  taken. The theorem holds for any partition of the cells into patches;
+  patches of several cells around the worst ones would give a longer
+  proven step and are not made.
+- **Tests** (`tests/step_limit.rs`): every model is compiled with all
+  its operators, its edges are filled with noise (every mode of the
+  grid, the highest included, which a band-limited pulse reaches only
+  through rounding) and stepped without a source; the energy must stay
+  below its start. Boards with a Debye laminate, CPML and lumped ports
+  and copper as PEC sheets, ladder sheets, rational sheets and 35 µm of
+  lossy metal, 30 000 steps each; the same at factor 1 and in a closed
+  box; strips at 17° and 45° (38 to 80 cut edges); meshes with 20 µm
+  cells beside 0.5 mm ones and laminates of eight 25 µm layers under a
+  strip at 30°, 40 000 steps; `#[ignore]`: 400 000 steps each.
 
 ### 5.5 Lumped elements and ports
 **LumpedElement (R)** over a box with `M` series edges along its direction and
@@ -7538,7 +7622,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-17, after wave 29)
+### Status (2026-11-17, after wave 30)
 
 | Step | State |
 |---|---|
@@ -7962,17 +8046,27 @@ per sheet edge), the CPML 4.4, the kernel 3.8; the 50 Ω part on perfect
 copper (69 312 cells) 14.6 → 10.5·10⁶, of which the CPML 4.8 (its z
 layers 3.0: a flat region is mostly z faces) and the kernel 4.2.
 
+Wave 30 (native; §5.4.1), the time step, which wave 29 left as the
+largest thing in time: `Fdtd::step_limit(StepLimit::Cells)` takes the
+step from a bound over the cells of the grid, each with its own sizes,
+materials, walls and conductors, in the place of the Courant limit of
+the smallest sizes at the vacuum speed; `engine::cell_limit` is the
+bound on a grid and its materials, `TimeStep::Bound` a step the caller
+answers for, `Compiled::step` what decided. Opt-in: the default and
+every result of a model that does not ask are unchanged. On cadlab's
+regions 1.00 to 1.31 times the Courant step (§5.4.1 has the cases, the
+proof part by part and the tests). What the estimates of wave 28 read
+(0.66 to 0.74 at cadlab's 0.95, a step 1.35 to 1.5 times as long) were
+power iterations, not bounds: the single-cell bound proves 1.00 to 1.31
+of that, and the rest is left with its reason.
+
 Remaining:
-- Time step (§5.4): a native run takes the Courant limit of the smallest
-  cell sizes at the vacuum speed. openEMS's default criterion on the
-  operator with its materials (`Fdtd::timestep_method`, which a native
-  run may ask for) gives 11 % more on cadlab's part regions (0.1966 ps
-  for 0.1778 at factor 1), and the estimates above read 0.66 to 0.74 at
-  cadlab's factor 0.95: the scheme itself would carry a step 1.35 to
-  1.5 times as long. A rule from the cell bound (rigorous, with the
-  materials) is the candidate; what it does to the faces conformal PEC
-  keeps, and to the operators that have limits of their own, is not
-  measured.
+- Time step (§5.4.1): a bound over patches of cells, for the part of the
+  estimated limit (1.29 to 1.45 times the Courant limit on cadlab's
+  regions) that single cells do not prove. openEMS's default criterion
+  gives 0.1966 ps on cadlab's part regions where the cells prove 0.1886
+  at factor 1 (ems runs 0.1792 at cadlab's 0.95): above what is proven
+  here, below the estimate.
 - Memory (§4.1): while an engine is built, the stability estimate of
   conformal PEC where it is still made (54 bytes per node) and the surface impedance's
   installed edges beside their final form; while running, the fields
