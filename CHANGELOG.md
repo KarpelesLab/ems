@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.15](https://github.com/KarpelesLab/ems/compare/v0.0.14...v0.0.15) - 2026-11-17
+
+### Other
+
+- the time step from the cells, part by part, what it gives on cadlab's regions and what the single cell leaves of the estimated limit (wave 30)
+- Time step: the bound of the cells (StepLimit::Cells): each cell with its own sizes, permittivities, walls and conductors by its own eigenvalue, the sheets' two faces by their sides, lossy metal's surface edges, the cut cells of conformal PEC as the scheme tests them and as they are; never shorter than the Courant step, and the Courant step where a part of the model is outside the bound
+
 ## [0.0.14](https://github.com/KarpelesLab/ems/compare/v0.0.13...v0.0.14) - 2026-11-17
 
 ### Other
