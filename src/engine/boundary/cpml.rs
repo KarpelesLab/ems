@@ -389,6 +389,26 @@ impl Slab {
                 _ => cur,
             };
             let t = tgt.plane_mut(self.comp, i);
+            if normal == Axis::Z {
+                // The plane's rows at once: each is as long as the layer
+                // is thick.
+                let rows = hi[1] - lo[1];
+                let psi = &mut self.psi[q..q + rows * len];
+                q += rows * len;
+                z_plane(
+                    t,
+                    psi,
+                    &coef,
+                    cur,
+                    [&self.b, &self.a, &self.k],
+                    (i * n[1], lo[1]..hi[1]),
+                    (nz, lo[2], len),
+                    e_side,
+                    sign,
+                    scale,
+                );
+                continue;
+            }
             for j in lo[1]..hi[1] {
                 let o = j * nz + lo[2];
                 let psi = &mut self.psi[q..q + len];
@@ -409,36 +429,152 @@ impl Slab {
                         let co = [self.b[z], self.a[z], self.k[z]];
                         row_uniform(t, psi, cf, h, l, co, sign, scale);
                     }
-                    Axis::Z => {
-                        let (b, a, k) = (&self.b[..], &self.a[..], &self.k[..]);
-                        if !e_side {
-                            let (h, l) = (&cur[o + 1..o + 1 + len], &cur[o..o + len]);
-                            row_graded(t, psi, cf, h, l, [b, a, k], sign, scale);
-                        } else if lo[2] > 0 {
-                            let (h, l) = (&cur[o..o + len], &cur[o - 1..o - 1 + len]);
-                            row_graded(t, psi, cf, h, l, [b, a, k], sign, scale);
-                        } else if len > 0 {
-                            // k = 0: the k − 1 neighbour is outside the domain.
-                            let (t0, t1) = t.split_at_mut(1);
-                            let (p0, p1) = psi.split_at_mut(1);
-                            let co0 = [&b[..1], &a[..1], &k[..1]];
-                            row_graded(
-                                t0,
-                                p0,
-                                &cf[..1],
-                                &cur[o..o + 1],
-                                &zero[..1],
-                                co0,
-                                sign,
-                                scale,
-                            );
-                            let co1 = [&b[1..], &a[1..], &k[1..]];
-                            let (h, l) = (&cur[o + 1..o + len], &cur[o..o + len - 1]);
-                            row_graded(t1, p1, &cf[1..], h, l, co1, sign, scale);
-                        }
-                    }
+                    Axis::Z => unreachable!("z-normal slabs are taken a plane at a time"),
                 }
             }
+        }
+    }
+}
+
+/// The rows of one x-plane of a z-normal slab: `t` and `cur` the plane of
+/// the updated and of the differentiated component, `psi` the plane's
+/// rows of `ψ`, `co = [b, a, 1/κ − 1]` by depth, `rows = (first row of
+/// the plane in `coef`, the y range)`, `z = (nz, first node of the layer,
+/// its thickness)`. A row is as long as the layer is thick, a few
+/// values, so what a row costs beside its values counts: the lengths in
+/// use have a loop of their length with the row's slices taken once.
+/// On the E side of the face `z = 0` the first value has no neighbour
+/// below (zero).
+#[allow(clippy::too_many_arguments)]
+fn z_plane(
+    t: &mut [f32],
+    psi: &mut [f32],
+    coef: &CoeffValues<'_>,
+    cur: &[f32],
+    co: [&[f32]; 3],
+    rows: (usize, Range<usize>),
+    z: (usize, usize, usize),
+    e_side: bool,
+    sign: f32,
+    scale: f32,
+) {
+    let (_, lo2, len) = z;
+    let skip = usize::from(e_side && lo2 == 0 && len > 0);
+    macro_rules! fixed {
+        ($($n:literal),*) => {
+            match len - skip {
+                $($n => z_rows::<$n>(t, psi, coef, cur, co, rows, z, e_side, sign, scale),)*
+                _ => z_rows_any(t, psi, coef, cur, co, rows, z, e_side, sign, scale),
+            }
+        };
+    }
+    fixed!(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16)
+}
+
+/// [`z_plane`] for rows of `N` values after the one without a neighbour.
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn z_rows<const N: usize>(
+    t: &mut [f32],
+    psi: &mut [f32],
+    coef: &CoeffValues<'_>,
+    cur: &[f32],
+    co: [&[f32]; 3],
+    (row0, js): (usize, Range<usize>),
+    (nz, lo2, len): (usize, usize, usize),
+    e_side: bool,
+    sign: f32,
+    scale: f32,
+) {
+    let skip = len - N;
+    let [b, a, k] = co;
+    let (b0, a0, k0) = (b[0], a[0], k[0]);
+    let (Ok(b), Ok(a), Ok(k)) = (
+        <&[f32; N]>::try_from(&b[skip..skip + N]),
+        <&[f32; N]>::try_from(&a[skip..skip + N]),
+        <&[f32; N]>::try_from(&k[skip..skip + N]),
+    ) else {
+        unreachable!("N values");
+    };
+    let (b, a, k) = (*b, *a, *k);
+    let mut q = 0;
+    for j in js {
+        let o = j * nz + lo2;
+        let cf = coef.row(row0 + j);
+        if skip == 1 {
+            // k = 0: the k − 1 neighbour is outside the domain.
+            let s = sign * (cur[o] - 0.0);
+            psi[q] = flush(b0 * psi[q] + a0 * s);
+            t[o] = flush(t[o] + scale * cf[lo2] * (k0 * s + psi[q]));
+        }
+        // E: the difference to the node below; H: to the node above.
+        let base = o + skip - usize::from(e_side);
+        let (Ok(t), Ok(psi)) = (
+            <&mut [f32; N]>::try_from(&mut t[o + skip..o + skip + N]),
+            <&mut [f32; N]>::try_from(&mut psi[q + skip..q + skip + N]),
+        ) else {
+            unreachable!("N values");
+        };
+        let (Ok(cf), Ok(l), Ok(h)) = (
+            <&[f32; N]>::try_from(&cf[lo2 + skip..lo2 + skip + N]),
+            <&[f32; N]>::try_from(&cur[base..base + N]),
+            <&[f32; N]>::try_from(&cur[base + 1..base + 1 + N]),
+        ) else {
+            unreachable!("N values");
+        };
+        // On copies of the row's values: nothing the loop writes can be
+        // something it reads, which is what lets it take several values
+        // at a time.
+        let (hv, lv, cv, pv, tv) = (*h, *l, *cf, *psi, *t);
+        let (mut pn, mut tn) = ([0.0f32; N], [0.0f32; N]);
+        for x in 0..N {
+            let s = sign * (hv[x] - lv[x]);
+            pn[x] = flush(b[x] * pv[x] + a[x] * s);
+            tn[x] = flush(tv[x] + scale * cv[x] * (k[x] * s + pn[x]));
+        }
+        (*psi, *t) = (pn, tn);
+        q += len;
+    }
+}
+
+/// [`z_plane`] for rows of any length.
+#[allow(clippy::too_many_arguments)]
+fn z_rows_any(
+    t: &mut [f32],
+    psi: &mut [f32],
+    coef: &CoeffValues<'_>,
+    cur: &[f32],
+    co: [&[f32]; 3],
+    (row0, js): (usize, Range<usize>),
+    (nz, lo2, len): (usize, usize, usize),
+    e_side: bool,
+    sign: f32,
+    scale: f32,
+) {
+    let [b, a, k] = co;
+    let zero = [0.0f32];
+    let mut q = 0;
+    for j in js {
+        let o = j * nz + lo2;
+        let psi = &mut psi[q..q + len];
+        q += len;
+        let cf = &coef.row(row0 + j)[lo2..lo2 + len];
+        let t = &mut t[o..o + len];
+        if !e_side {
+            let (h, l) = (&cur[o + 1..o + 1 + len], &cur[o..o + len]);
+            row_graded(t, psi, cf, h, l, [b, a, k], sign, scale);
+        } else if lo2 > 0 {
+            let (h, l) = (&cur[o..o + len], &cur[o - 1..o - 1 + len]);
+            row_graded(t, psi, cf, h, l, [b, a, k], sign, scale);
+        } else if len > 0 {
+            // k = 0: the k − 1 neighbour is outside the domain.
+            let (t0, t1) = t.split_at_mut(1);
+            let (p0, p1) = psi.split_at_mut(1);
+            let co0 = [&b[..1], &a[..1], &k[..1]];
+            row_graded(t0, p0, &cf[..1], &cur[o..o + 1], &zero, co0, sign, scale);
+            let co1 = [&b[1..], &a[1..], &k[1..]];
+            let (h, l) = (&cur[o + 1..o + len], &cur[o..o + len - 1]);
+            row_graded(t1, p1, &cf[1..], h, l, co1, sign, scale);
         }
     }
 }
@@ -486,53 +622,7 @@ fn row_graded(
     let n = t.len();
     let (psi, cf, h, l) = (&mut psi[..n], &cf[..n], &h[..n], &l[..n]);
     let (b, a, k) = (&b[..n], &a[..n], &k[..n]);
-    // A row is as long as the layer is thick: a few elements, where a loop
-    // of unknown length runs one element at a time. The usual lengths
-    // have a loop of their own (the same arithmetic per element).
-    macro_rules! fixed {
-        ($($n:literal),*) => {
-            match n {
-                $($n => return row_graded_fixed::<$n>(t, psi, cf, h, l, [b, a, k], sign, scale),)*
-                _ => {}
-            }
-        };
-    }
-    fixed!(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16);
     for q in 0..n {
-        let s = sign * (h[q] - l[q]);
-        psi[q] = flush(b[q] * psi[q] + a[q] * s);
-        t[q] = flush(t[q] + scale * cf[q] * (k[q] * s + psi[q]));
-    }
-}
-
-/// [`row_graded`] for rows of `N` elements.
-#[inline(always)]
-#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
-fn row_graded_fixed<const N: usize>(
-    t: &mut [f32],
-    psi: &mut [f32],
-    cf: &[f32],
-    h: &[f32],
-    l: &[f32],
-    co: [&[f32]; 3],
-    sign: f32,
-    scale: f32,
-) {
-    let [b, a, k] = co;
-    let (Ok(t), Ok(psi)) = (<&mut [f32; N]>::try_from(t), <&mut [f32; N]>::try_from(psi)) else {
-        unreachable!("rows of N elements");
-    };
-    let (Ok(cf), Ok(h), Ok(l), Ok(b), Ok(a), Ok(k)) = (
-        <&[f32; N]>::try_from(cf),
-        <&[f32; N]>::try_from(h),
-        <&[f32; N]>::try_from(l),
-        <&[f32; N]>::try_from(b),
-        <&[f32; N]>::try_from(a),
-        <&[f32; N]>::try_from(k),
-    ) else {
-        unreachable!("rows of N elements");
-    };
-    for q in 0..N {
         let s = sign * (h[q] - l[q]);
         psi[q] = flush(b[q] * psi[q] + a[q] * s);
         t[q] = flush(t[q] + scale * cf[q] * (k[q] * s + psi[q]));
