@@ -446,7 +446,7 @@ impl Slab {
 /// One row of a slab whose depth is constant along the row:
 /// `s = sign·(h − l)`, `ψ ← b·ψ + a·s`, `t ← t + scale·cf·((1/κ − 1)·s + ψ)`
 /// with `co = [b, a, 1/κ − 1]`.
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn row_uniform(
     t: &mut [f32],
@@ -470,7 +470,7 @@ fn row_uniform(
 
 /// Like [`row_uniform`], with the depth (and so `co = [b, a, 1/κ − 1]`)
 /// varying along the row.
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn row_graded(
     t: &mut [f32],
@@ -486,7 +486,53 @@ fn row_graded(
     let n = t.len();
     let (psi, cf, h, l) = (&mut psi[..n], &cf[..n], &h[..n], &l[..n]);
     let (b, a, k) = (&b[..n], &a[..n], &k[..n]);
+    // A row is as long as the layer is thick: a few elements, where a loop
+    // of unknown length runs one element at a time. The usual lengths
+    // have a loop of their own (the same arithmetic per element).
+    macro_rules! fixed {
+        ($($n:literal),*) => {
+            match n {
+                $($n => return row_graded_fixed::<$n>(t, psi, cf, h, l, [b, a, k], sign, scale),)*
+                _ => {}
+            }
+        };
+    }
+    fixed!(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16);
     for q in 0..n {
+        let s = sign * (h[q] - l[q]);
+        psi[q] = flush(b[q] * psi[q] + a[q] * s);
+        t[q] = flush(t[q] + scale * cf[q] * (k[q] * s + psi[q]));
+    }
+}
+
+/// [`row_graded`] for rows of `N` elements.
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn row_graded_fixed<const N: usize>(
+    t: &mut [f32],
+    psi: &mut [f32],
+    cf: &[f32],
+    h: &[f32],
+    l: &[f32],
+    co: [&[f32]; 3],
+    sign: f32,
+    scale: f32,
+) {
+    let [b, a, k] = co;
+    let (Ok(t), Ok(psi)) = (<&mut [f32; N]>::try_from(t), <&mut [f32; N]>::try_from(psi)) else {
+        unreachable!("rows of N elements");
+    };
+    let (Ok(cf), Ok(h), Ok(l), Ok(b), Ok(a), Ok(k)) = (
+        <&[f32; N]>::try_from(cf),
+        <&[f32; N]>::try_from(h),
+        <&[f32; N]>::try_from(l),
+        <&[f32; N]>::try_from(b),
+        <&[f32; N]>::try_from(a),
+        <&[f32; N]>::try_from(k),
+    ) else {
+        unreachable!("rows of N elements");
+    };
+    for q in 0..N {
         let s = sign * (h[q] - l[q]);
         psi[q] = flush(b[q] * psi[q] + a[q] * s);
         t[q] = flush(t[q] + scale * cf[q] * (k[q] * s + psi[q]));
