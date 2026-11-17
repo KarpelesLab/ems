@@ -482,11 +482,13 @@ pub struct EdgePole {
     pub pole: Pole,
 }
 
-/// A list of [`EdgePole`]s held compactly: the distinct poles once, and
-/// per entry the edge and the index of its pole (16 bytes an entry where
-/// an [`EdgePole`] takes 64). The compile step gives every edge of a
-/// dispersive material its poles; on all but the edges at its surface
-/// those are the material's own, the same on every edge.
+/// A list of [`EdgePole`]s held compactly: the distinct poles once, the
+/// distinct sequences of poles an edge has once, and the edges as runs:
+/// the edges that follow one another along `z` with the same poles are
+/// one entry of 32 bytes (an [`EdgePole`] takes 64 a pole). The compile
+/// step gives every edge of a dispersive material its poles, edge after
+/// edge along `z`; on all but the edges at its surface those are the
+/// material's own, the same on every edge.
 ///
 /// The entries keep their order, and [`iter`](Self::iter) gives back
 /// exactly the poles that were pushed (bit for bit).
@@ -506,7 +508,7 @@ pub struct EdgePoles {
     poles: Vec<Pole>,
     /// (Shared by the copies of a list until one of them changes: the
     /// operator of every run of a compiled model starts from a copy.)
-    refs: Arc<Vec<PoleRef>>,
+    refs: Arc<Refs>,
     /// Bit patterns of `poles` → index, while the list grows (rebuilt
     /// when needed).
     ids: std::collections::HashMap<[u64; 4], u32>,
@@ -518,6 +520,166 @@ pub struct EdgePoles {
 struct PoleRef {
     node: [u32; 3],
     tag: u32,
+}
+
+/// The entries of [`EdgePoles`] in their order, as runs of edges.
+#[derive(Debug, Clone, Default)]
+struct Refs {
+    /// The closed runs.
+    runs: Vec<Run>,
+    /// The number of entries before each run.
+    before: Vec<usize>,
+    /// The distinct sequences of pole indices of an edge, one after the
+    /// other; sequence `s` is `sequences[starts[s]..starts[s + 1]]`.
+    sequences: Vec<u32>,
+    /// Where each sequence starts, and the end of the last.
+    starts: Vec<u32>,
+    /// Sequence → its index, while the list grows (rebuilt when needed).
+    known: std::collections::HashMap<Vec<u32>, u32>,
+    /// The edge of the last entries, still taking poles: the node, the
+    /// axis and field bits of the tag, and its pole indices so far.
+    open: Option<([u32; 3], u32, Vec<u32>)>,
+    /// The number of entries in the closed runs.
+    closed: usize,
+}
+
+/// Edges one after the other along `z` (the node index 2) from `node`,
+/// each with the poles of the sequence `sequence`, in the sequence's
+/// order.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    node: [u32; 3],
+    /// The axis and field bits of [`PoleRef::tag`].
+    head: u32,
+    sequence: u32,
+    edges: u32,
+}
+
+impl Refs {
+    fn len(&self) -> usize {
+        self.closed + self.open.as_ref().map_or(0, |o| o.2.len())
+    }
+
+    fn sequence(&self, s: u32) -> &[u32] {
+        let s = s as usize;
+        &self.sequences[self.starts[s] as usize..self.starts[s + 1] as usize]
+    }
+
+    /// Appends the entry of pole `id` on the edge `node` with the tag
+    /// bits `head`.
+    fn push(&mut self, node: [u32; 3], head: u32, id: u32) {
+        match &mut self.open {
+            Some((n, h, ids)) if *n == node && *h == head => ids.push(id),
+            _ => {
+                self.close();
+                self.open = Some((node, head, vec![id]));
+            }
+        }
+    }
+
+    /// Closes the open edge: into the last run where it follows it along
+    /// `z` with the same poles, else as a run of its own.
+    fn close(&mut self) {
+        let Some((node, head, ids)) = self.open.take() else {
+            return;
+        };
+        if self.starts.is_empty() {
+            self.starts.push(0);
+        }
+        if self.known.len() + 1 != self.starts.len() {
+            self.known = (0..self.starts.len() as u32 - 1)
+                .map(|s| (self.sequence(s).to_vec(), s))
+                .collect();
+        }
+        let count = ids.len();
+        let sequence = match self.known.get(&ids) {
+            Some(&s) => s,
+            None => {
+                let s = self.starts.len() as u32 - 1;
+                self.sequences.extend_from_slice(&ids);
+                self.starts
+                    .push(u32::try_from(self.sequences.len()).expect("pole sequences of a medium"));
+                self.known.insert(ids, s);
+                s
+            }
+        };
+        match self.runs.last_mut() {
+            Some(r)
+                if r.head == head
+                    && r.sequence == sequence
+                    && r.node[0] == node[0]
+                    && r.node[1] == node[1]
+                    && r.node[2].checked_add(r.edges) == Some(node[2])
+                    && r.edges < u32::MAX =>
+            {
+                r.edges += 1;
+            }
+            _ => {
+                self.before.push(self.closed);
+                self.runs.push(Run {
+                    node,
+                    head,
+                    sequence,
+                    edges: 1,
+                });
+            }
+        }
+        self.closed += count;
+    }
+
+    /// The entry at `index` (which is below [`len`](Self::len)).
+    fn get(&self, index: usize) -> PoleRef {
+        if index >= self.closed {
+            let (node, head, ids) = self.open.as_ref().expect("an index in range");
+            return PoleRef {
+                node: *node,
+                tag: ids[index - self.closed] | head,
+            };
+        }
+        let r = self.before.partition_point(|&b| b <= index) - 1;
+        let run = &self.runs[r];
+        let ids = self.sequence(run.sequence);
+        let at = index - self.before[r];
+        let mut node = run.node;
+        node[2] += (at / ids.len()) as u32;
+        PoleRef {
+            node,
+            tag: ids[at % ids.len()] | run.head,
+        }
+    }
+
+    /// The entries in order.
+    fn iter(&self) -> impl Iterator<Item = PoleRef> + '_ {
+        let closed = self.runs.iter().flat_map(move |run| {
+            let ids = self.sequence(run.sequence);
+            (0..run.edges).flat_map(move |e| {
+                let mut node = run.node;
+                node[2] += e;
+                ids.iter().map(move |&id| PoleRef {
+                    node,
+                    tag: id | run.head,
+                })
+            })
+        });
+        let open = self.open.iter().flat_map(|(node, head, ids)| {
+            ids.iter().map(move |&id| PoleRef {
+                node: *node,
+                tag: id | head,
+            })
+        });
+        closed.chain(open)
+    }
+
+    fn shrink_to_fit(&mut self) {
+        self.runs.shrink_to_fit();
+        self.before.shrink_to_fit();
+        self.sequences.shrink_to_fit();
+        self.starts.shrink_to_fit();
+        self.known = std::collections::HashMap::new();
+        if let Some(o) = &mut self.open {
+            o.2.shrink_to_fit();
+        }
+    }
 }
 
 const POLE_ID_BITS: u32 = 29;
@@ -572,7 +734,7 @@ impl EdgePoles {
 
     /// Whether the list has no entry.
     pub fn is_empty(&self) -> bool {
-        self.refs.is_empty()
+        self.refs.len() == 0
     }
 
     /// Number of distinct poles (bit patterns) among the entries pushed.
@@ -604,10 +766,11 @@ impl EdgePoles {
             .node
             .map(|v| u32::try_from(v).expect("node index of a pole edge"));
         let field = u32::from(e.field == Field::Magnetic);
-        Arc::make_mut(&mut self.refs).push(PoleRef {
+        Arc::make_mut(&mut self.refs).push(
             node,
-            tag: id | (e.axis.index() as u32) << POLE_ID_BITS | field << 31,
-        });
+            (e.axis.index() as u32) << POLE_ID_BITS | field << 31,
+            id,
+        );
     }
 
     fn entry(&self, r: &PoleRef) -> EdgePole {
@@ -621,12 +784,12 @@ impl EdgePoles {
 
     /// The entry at `index`, if in range.
     pub fn get(&self, index: usize) -> Option<EdgePole> {
-        self.refs.get(index).map(|r| self.entry(r))
+        (index < self.refs.len()).then(|| self.entry(&self.refs.get(index)))
     }
 
     /// The entries in order.
     pub fn iter(&self) -> impl Iterator<Item = EdgePole> + '_ {
-        self.refs.iter().map(|r| self.entry(r))
+        self.refs.iter().map(|r| self.entry(&r))
     }
 
     /// The entries as a vector.
@@ -636,19 +799,17 @@ impl EdgePoles {
 
     /// Keeps the entries for which `keep` is true (in order).
     pub fn retain(&mut self, mut keep: impl FnMut(&EdgePole) -> bool) {
-        let poles = &self.poles;
-        Arc::make_mut(&mut self.refs).retain(|r| {
-            keep(&EdgePole {
-                field: r.field(),
-                axis: r.axis(),
-                node: r.node(),
-                pole: poles[r.pole()],
-            })
-        });
+        let mut kept = Refs::default();
+        for r in self.refs.iter() {
+            if keep(&self.entry(&r)) {
+                kept.push(r.node, r.tag & !((1 << POLE_ID_BITS) - 1), r.pole() as u32);
+            }
+        }
+        self.refs = Arc::new(kept);
     }
 
-    /// Releases the spare capacity and the lookup table of the poles (a
-    /// later [`push`](Self::push) rebuilds it).
+    /// Releases the spare capacity and the lookup tables (a later
+    /// [`push`](Self::push) rebuilds them).
     pub fn shrink_to_fit(&mut self) {
         self.poles.shrink_to_fit();
         // (A shared list is as it was made.)
@@ -822,8 +983,9 @@ struct Side {
     plane: Vec<u32>,
     /// Offset `j·nz + k` in the plane.
     off: Vec<u32>,
-    /// Saved field value at the start of the update (`u^n` / `i^{n−½}`).
-    prev: Vec<f64>,
+    /// Saved field value at the start of the update (`u^n` / `i^{n−½}`):
+    /// the field's own `f32`.
+    prev: Vec<f32>,
     /// `Σ_p 1/z_p` per edge (trapezoidal poles only).
     sum_inv_z: Vec<f64>,
     /// End of each edge's poles in the pole arrays.
@@ -1011,7 +1173,7 @@ impl Side {
     fn capture(&mut self, f: &SlabRef<'_>, edges: Range<usize>) {
         for e in edges {
             let axis = Axis::ALL[self.axis[e] as usize];
-            self.prev[e] = f.plane(axis, self.plane[e] as usize)[self.off[e] as usize] as f64;
+            self.prev[e] = f.plane(axis, self.plane[e] as usize)[self.off[e] as usize];
         }
     }
 
@@ -1062,7 +1224,7 @@ impl Side {
                     &mut q[p0..p1],
                     &kc[at..at + n],
                     &kz[at..at + n],
-                    prev[e],
+                    f64::from(prev[e]),
                     plane[o],
                     cb,
                     sum_inv_z[e],
@@ -1107,7 +1269,7 @@ impl Side {
                 let gi = planes[e] as usize;
                 let o = off[e] as usize;
                 let cb = coef[ax][gi * p + o] as f64;
-                let half_prev = 0.5 * prev[e];
+                let half_prev = 0.5 * f64::from(prev[e]);
                 let n = p1 - p0;
                 let (j, q) = (&mut j[p0..p1], &mut q[p0..p1]);
                 let plane = f.plane_mut(Axis::ALL[ax], gi);
@@ -1216,7 +1378,7 @@ impl Side {
             &mut self.q[p0..p1],
             &self.sets[1][at..at + n],
             &self.sets[2][at..at + n],
-            self.prev[e],
+            f64::from(self.prev[e]),
             u_in,
             cb,
             self.sum_inv_z[e],
@@ -1239,7 +1401,7 @@ impl Side {
         next.clear();
         // openEMS's poles first, in f32 (`OpenEmsPole`).
         let mut u32_star = u_in;
-        let prev32 = self.prev[e] as f32;
+        let prev32 = self.prev[e];
         if p1 > p0 && self.c(p0).kind == Kind::OpenEmsDebye {
             // openEMS's Debye poles, all of the edge's (`with_openems_debye`,
             // design §5.16.12).
@@ -1270,7 +1432,7 @@ impl Side {
         if !self.mixed[e] {
             return u32_star;
         }
-        let half_prev = 0.5 * self.prev[e];
+        let half_prev = 0.5 * f64::from(self.prev[e]);
         let u_star = u32_star as f64;
         let mut s = 0.0;
         for q in p0..p1 {
@@ -1279,7 +1441,8 @@ impl Side {
                 Kind::OpenEms | Kind::OpenEmsDebye => {}
                 Kind::Leapfrog => {
                     // Leapfrog: j^{n+½} from u^n, then q^{n+1}.
-                    let j = c.a * self.j[q] + c.inv_z * (self.prev[e] - self.q[q] * c.inv_c);
+                    let j =
+                        c.a * self.j[q] + c.inv_z * (f64::from(self.prev[e]) - self.q[q] * c.inv_c);
                     next[q - p0].0 = j;
                     next[q - p0].1 = self.q[q] + dt * j;
                     s += j;
@@ -1967,7 +2130,7 @@ impl Dispersive {
                 let e = &openems[i];
                 (e.field, e.axis, e.node)
             } else {
-                let r = &entries.refs[i - no];
+                let r = entries.refs.get(i - no);
                 (r.field(), r.axis(), r.node())
             };
             (node[0], field, axis.index(), node[1], node[2])
@@ -2049,7 +2212,7 @@ impl Dispersive {
                 });
                 branches.len() as u32 - 1
             } else {
-                let pole_id = entries.refs[i - no].pole();
+                let pole_id = entries.refs.get(i - no).pole();
                 let pole = entries.poles[pole_id];
                 let next = branches.len() as u32;
                 let id = *known
@@ -2168,19 +2331,27 @@ impl Dispersive {
         };
         // In edge order (a stable sort keeps the insertion order of an
         // edge's poles); nothing to sort for a list that is in it.
-        let sorted = entries.refs.windows(2).all(|w| key(&w[0]) <= key(&w[1]));
+        let sorted = {
+            let mut keys = entries.refs.iter().map(|r| key(&r));
+            let mut last = keys.next();
+            keys.all(|k| {
+                let ordered = last.is_none_or(|l| l <= k);
+                last = Some(k);
+                ordered
+            })
+        };
         let order: Vec<u32> = if sorted {
             Vec::new()
         } else {
             let mut order: Vec<u32> = (0..entries.len() as u32).collect();
-            order.sort_by_key(|&i| key(&entries.refs[i as usize]));
+            order.sort_by_key(|&i| key(&entries.refs.get(i as usize)));
             order
         };
-        let at = |i: usize| -> &PoleRef {
+        let at = |i: usize| -> PoleRef {
             if sorted {
-                &entries.refs[i]
+                entries.refs.get(i)
             } else {
-                &entries.refs[order[i] as usize]
+                entries.refs.get(order[i] as usize)
             }
         };
         let co = engine.coefficients();
@@ -2199,9 +2370,9 @@ impl Dispersive {
         let (mut i, total) = (0, entries.len());
         while i < total {
             let r = at(i);
-            let k = key(r);
+            let k = key(&r);
             ids.clear();
-            while i < total && key(at(i)) == k {
+            while i < total && key(&at(i)) == k {
                 ids.push(at(i).pole() as u32);
                 i += 1;
             }
@@ -2646,7 +2817,7 @@ impl Operator for Dispersive {
                     &mut q,
                     &h.sets[1][at..at + n],
                     &h.sets[2][at..at + n],
-                    h.prev[e],
+                    f64::from(h.prev[e]),
                     kernel,
                     h.coef[e],
                     h.sum_inv_z[e],
@@ -2746,6 +2917,79 @@ mod tests {
         let s = Pole::lorentz(3e10, 1e10, 1e9).scaled(0.25);
         let r = s.susceptibility(w) / Pole::lorentz(3e10, 1e10, 1e9).susceptibility(w);
         assert!((r - 0.25).norm() < 1e-12);
+    }
+
+    /// The edges of a laminate, pushed as the compile step pushes them
+    /// (edge after edge along `z`, each with its poles): held as runs,
+    /// given back entry for entry, by index and in order, with the edge
+    /// still being pushed among them.
+    #[test]
+    fn edge_poles_are_runs_along_z() {
+        let own = [
+            Pole::debye(0.12, 1.6e-11),
+            Pole::debye(0.1, 1.6e-10),
+            Pole::debye(0.05, 1e-9),
+        ];
+        let mut want = Vec::new();
+        for axis in Axis::ALL {
+            for i in 0..5usize {
+                for j in 0..4usize {
+                    for k in 2..9usize {
+                        // (The edges of the laminate's two faces have
+                        // half its poles.)
+                        let scale = if k == 2 || k == 8 { 0.5 } else { 1.0 };
+                        // (A column without the last pole, and one edge
+                        // pushed twice.)
+                        let count = if (i, j) == (3, 1) { 2 } else { 3 };
+                        for p in &own[..count] {
+                            want.push(EdgePole {
+                                field: Field::Electric,
+                                axis,
+                                node: [i, j, k],
+                                pole: p.scaled(scale),
+                            });
+                        }
+                        if (i, j, k) == (1, 2, 5) {
+                            want.push(want[want.len() - 1]);
+                        }
+                    }
+                }
+            }
+        }
+        let mut list = EdgePoles::new();
+        for (n, e) in want.iter().enumerate() {
+            list.push(*e);
+            // (With the last edge open.)
+            if n % 97 == 0 {
+                assert_eq!(list.len(), n + 1);
+                assert_eq!(list.get(n), Some(*e));
+                assert_eq!(list.get(n / 2), Some(want[n / 2]));
+            }
+        }
+        assert_eq!(list.len(), want.len());
+        assert_eq!(list.to_vec(), want);
+        for n in (0..want.len()).step_by(13) {
+            assert_eq!(list.get(n), Some(want[n]));
+        }
+        // Three runs a column (the two faces and what is between them),
+        // and two more per axis where an edge has a pole twice: a run
+        // for six poles on a laminate of six cells.
+        assert!(
+            list.refs.runs.len() <= 3 * 3 * 5 * 4 + 6,
+            "{}",
+            list.refs.runs.len()
+        );
+        assert!(list.refs.runs.len() * 6 < want.len());
+        // A copy shares the entries; one that grows has its own.
+        let mut other = list.clone();
+        other.shrink_to_fit();
+        other.push(want[0]);
+        assert_eq!(list.to_vec(), want);
+        assert_eq!(other.len(), want.len() + 1);
+        assert_eq!(other.get(want.len()), Some(want[0]));
+        list.retain(|e| e.node[2] != 5);
+        want.retain(|e| e.node[2] != 5);
+        assert_eq!(list.to_vec(), want);
     }
 
     #[test]

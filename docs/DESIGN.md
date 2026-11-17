@@ -487,6 +487,8 @@ far as they differ):
   not repeat: `cb` and `db` on a graded mesh (24 bytes per node).
 - The compiled model next to the engine: 15 bytes per node and 16 per
   pole; the masks of csx's grid (15 bytes per node) while it compiles.
+  (Since wave 32 the poles are runs of edges along z, 32 bytes a run:
+  a pole of a laminate costs a fraction of a byte.)
 - A probe's series: 8 bytes a step. A region with 30 probes and 49 000
   steps holds 12 MB of them at the end of a run, more than its fields.
   (A spectrum accumulated while running would take none; it would not
@@ -7674,7 +7676,7 @@ csx milestones are noted where ems is blocked on them.
 Steps 2–4 are independent of csx progress, so the two crates can advance in
 parallel.
 
-### Status (2026-11-17, after wave 31)
+### Status (2026-11-17, after wave 32)
 
 | Step | State |
 |---|---|
@@ -8134,6 +8136,29 @@ bound is the limit to four digits, so the factor is the margin
 `StepLimit::Cells` is this bound; the default is still the Courant
 limit.
 
+Wave 32 (native; §4.1), memory, measured on the heap of a run of
+cadlab's via transition (130 626 cells, a laminate of four Debye poles;
+valgrind's massif, 34.6 MB of blocks while it steps): the largest
+single block was not the engine's but the compiled model's list of
+poles, kept beside the engine for the next port's (16 bytes an entry,
+387 000 entries: 6.2 MB). `EdgePoles` holds the edges as runs along z
+with the sequence of poles they share (the order the compile step
+pushes them in, edge after edge, which is the order they are given
+back in): 32 bytes a run, and the installation reads an entry by its
+index as before. A Debye edge's previous field value is the field's
+`f32` (it was held as `f64`). Nothing else changes: cadlab's Touchstone
+files of the lossy lines and the capacitor are those of wave 31 byte
+for byte, and the process's peak on the via falls from 57.5 to 54.3 MB
+(47.8 to 44.9 on the line with solid copper). Not taken, with the
+reason: `cb` and `db` on a mesh graded in the plane (24 bytes per
+node) are products of a factor per axis and the edge's permittivity,
+but a product formed in the loop is not the stored `f32` bit for bit;
+the constants of a Debye pole per distinct edge likewise (§ below); a
+probe's series is 8 bytes a step and probe, which on these regions is
+under 2 MB of 35 to 55 (eight to sixteen series of 4400 to 27 000
+steps), and a running spectrum in its place would need the frequencies
+before the run.
+
 Remaining:
 - Time step (§5.4.1): the planes of sheets keep the geometric shares.
   Shares that differ across a slab (a thin layer above a strip and
@@ -8144,9 +8169,10 @@ Remaining:
 - Memory (§4.1): while an engine is built, the stability estimate of
   conformal PEC where it is still made (54 bytes per node) and the surface impedance's
   installed edges beside their final form; while running, the fields
-  (24 bytes per node), `cb` and `db` on a graded mesh (24), and a
-  probe's series (8 bytes a step: on a small region with many probes
-  the largest part).
+  (24 bytes per node), `cb` and `db` on a graded mesh (24), a Debye
+  laminate's state (33 bytes an edge and 24 a pole: 10 MB of the via's
+  35), and a probe's series (8 bytes a step: on a small region with
+  many probes the largest part).
 - Surface impedance (§5.9.1): the edges stay in the serial hooks behind
   conformal sheets and ladders (not behind merged faces any more); the
   merged faces themselves are serial and keep the steps of such a model
